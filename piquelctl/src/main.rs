@@ -2,6 +2,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 
 use piquelcore::config::SOCKET_PATH;
+use piquelcore::ipc::client::UdsClient;
 
 /// Sends a length-prefixed message over the stream.
 fn send_message(stream: &mut UnixStream, message: &str) -> io::Result<()> {
@@ -26,16 +27,20 @@ fn recv_message(stream: &mut UnixStream) -> io::Result<String> {
 }
 
 fn main() -> io::Result<()> {
-    let mut stream = UnixStream::connect(SOCKET_PATH)?;
+    let mut stream = match UdsClient::new() {
+        Ok(stream) => stream,
+        Err(_) => panic!("error"),
+    };
+
     println!("[client] Connected to {SOCKET_PATH}");
 
     let messages = ["Hello, server!", "How's IPC treating you?", "Goodbye!"];
 
     for msg in &messages {
         println!("[client] Sending: \"{msg}\"");
-        send_message(&mut stream, msg)?;
+        send_message(&mut stream.stream, msg)?;
 
-        let response = recv_message(&mut stream)?;
+        let response = recv_message(&mut stream.stream)?;
         println!("[client] Received: \"{response}\"");
     }
 
