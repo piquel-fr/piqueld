@@ -1,0 +1,10 @@
+[package]
+name = "piquel-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "piquelcore"
+
+[dependencies]
+serde.workspace = true

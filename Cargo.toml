@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+    "piquel-core",
+    "piqueld",
+    "piquelctl"
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
