@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 
-const SOCKET_PATH: &str = "/tmp/ipc_demo.sock";
+use piquelcore::config::SOCKET_PATH;
 
 /// Sends a length-prefixed message over the stream.
 fn send_message(stream: &mut UnixStream, message: &str) -> io::Result<()> {
@@ -29,11 +29,7 @@ fn main() -> io::Result<()> {
     let mut stream = UnixStream::connect(SOCKET_PATH)?;
     println!("[client] Connected to {SOCKET_PATH}");
 
-    let messages = [
-        "Hello, server!",
-        "How's IPC treating you?",
-        "Goodbye!",
-    ];
+    let messages = ["Hello, server!", "How's IPC treating you?", "Goodbye!"];
 
     for msg in &messages {
         println!("[client] Sending: \"{msg}\"");

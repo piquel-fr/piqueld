@@ -3,7 +3,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::thread;
 
-const SOCKET_PATH: &str = "/tmp/ipc_demo.sock";
+use piquelcore::config::SOCKET_PATH;
 
 fn handle_client(mut stream: UnixStream) {
     // UnixStream doesn't have a peer_addr in the same way, so we use a placeholder.
