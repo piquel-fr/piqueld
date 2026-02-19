@@ -1,10 +1,10 @@
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::os::unix::net::UnixStream;
 
-const ADDR: &str = "127.0.0.1:7878";
+const SOCKET_PATH: &str = "/tmp/ipc_demo.sock";
 
 /// Sends a length-prefixed message over the stream.
-fn send_message(stream: &mut TcpStream, message: &str) -> io::Result<()> {
+fn send_message(stream: &mut UnixStream, message: &str) -> io::Result<()> {
     let bytes = message.as_bytes();
     let len = (bytes.len() as u32).to_be_bytes();
 
@@ -14,7 +14,7 @@ fn send_message(stream: &mut TcpStream, message: &str) -> io::Result<()> {
 }
 
 /// Reads a length-prefixed message from the stream.
-fn recv_message(stream: &mut TcpStream) -> io::Result<String> {
+fn recv_message(stream: &mut UnixStream) -> io::Result<String> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
     let msg_len = u32::from_be_bytes(len_buf) as usize;
@@ -26,8 +26,8 @@ fn recv_message(stream: &mut TcpStream) -> io::Result<String> {
 }
 
 fn main() -> io::Result<()> {
-    let mut stream = TcpStream::connect(ADDR)?;
-    println!("[client] Connected to {ADDR}");
+    let mut stream = UnixStream::connect(SOCKET_PATH)?;
+    println!("[client] Connected to {SOCKET_PATH}");
 
     let messages = [
         "Hello, server!",

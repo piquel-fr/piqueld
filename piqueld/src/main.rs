@@ -1,12 +1,13 @@
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::thread;
 
-const ADDR: &str = "127.0.0.1:7878";
+const SOCKET_PATH: &str = "/tmp/ipc_demo.sock";
 
-fn handle_client(mut stream: TcpStream) {
-    let peer = stream.peer_addr().unwrap();
-    println!("[server] Connection from {peer}");
+fn handle_client(mut stream: UnixStream) {
+    // UnixStream doesn't have a peer_addr in the same way, so we use a placeholder.
+    println!("[server] New client connected.");
 
     loop {
         // --- Read the 4-byte length prefix ---
@@ -14,11 +15,11 @@ fn handle_client(mut stream: TcpStream) {
         match stream.read_exact(&mut len_buf) {
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                println!("[server] Client {peer} disconnected.");
+                println!("[server] Client disconnected.");
                 return;
             }
             Err(e) => {
-                eprintln!("[server] Error reading length from {peer}: {e}");
+                eprintln!("[server] Error reading length: {e}");
                 return;
             }
         }
@@ -28,12 +29,12 @@ fn handle_client(mut stream: TcpStream) {
         // --- Read exactly `msg_len` bytes ---
         let mut msg_buf = vec![0u8; msg_len];
         if let Err(e) = stream.read_exact(&mut msg_buf) {
-            eprintln!("[server] Error reading message body from {peer}: {e}");
+            eprintln!("[server] Error reading message body: {e}");
             return;
         }
 
         let message = String::from_utf8_lossy(&msg_buf);
-        println!("[server] Received from {peer}: \"{message}\"");
+        println!("[server] Received: \"{message}\"");
 
         // --- Echo the message back with the same framing ---
         let response = format!("Echo: {message}");
@@ -41,24 +42,28 @@ fn handle_client(mut stream: TcpStream) {
         let response_len = (response_bytes.len() as u32).to_be_bytes();
 
         if let Err(e) = stream.write_all(&response_len) {
-            eprintln!("[server] Error writing response length to {peer}: {e}");
+            eprintln!("[server] Error writing response length: {e}");
             return;
         }
         if let Err(e) = stream.write_all(response_bytes) {
-            eprintln!("[server] Error writing response body to {peer}: {e}");
+            eprintln!("[server] Error writing response body: {e}");
             return;
         }
     }
 }
 
 fn main() -> io::Result<()> {
-    let listener = TcpListener::bind(ADDR)?;
-    println!("[server] Listening on {ADDR}");
+    // Remove a leftover socket file from a previous run, if any.
+    if Path::new(SOCKET_PATH).exists() {
+        std::fs::remove_file(SOCKET_PATH)?;
+    }
+
+    let listener = UnixListener::bind(SOCKET_PATH)?;
+    println!("[server] Listening on {SOCKET_PATH}");
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                // Spawn a new thread for each incoming connection.
                 thread::spawn(|| handle_client(stream));
             }
             Err(e) => {
