@@ -1,4 +1,4 @@
-use crate::config::{LISTEN_ADDR, SOCKET_PATH};
+use crate::{config::{LISTEN_ADDR, SOCKET_PATH}, ipc::ClientType};
 
 use super::message::{Command, Response};
 use std::{
@@ -7,12 +7,6 @@ use std::{
     os::unix::net::UnixStream,
     usize,
 };
-
-#[derive(Clone, Copy)]
-pub enum ClientType {
-    TcpClient,
-    UdsClient,
-}
 
 pub struct Client<T: Read + Write> {
     stream: T,
