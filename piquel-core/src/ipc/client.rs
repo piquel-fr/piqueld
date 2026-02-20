@@ -8,6 +8,15 @@ use std::{
     usize,
 };
 
+// TODO: unify client type
+/* example:
+ *
+ * T<Read + Write>
+ * struct Client {
+ *     stream: T,
+ * }
+ */
+
 pub enum ClientType {
     TcpClient,
     UdsClient,
