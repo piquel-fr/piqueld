@@ -2,7 +2,7 @@ use std::io::{self};
 use std::panic;
 
 use piquelcore::config::SOCKET_PATH;
-use piquelcore::ipc::client::{Client, UdsClient};
+use piquelcore::ipc::client::UdsClient;
 use piquelcore::ipc::message::{Command, Response};
 
 fn main() -> io::Result<()> {

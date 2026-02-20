@@ -8,41 +8,22 @@ use std::{
     usize,
 };
 
-// TODO: unify client type
-/* example:
- *
- * T<Read + Write>
- * struct Client {
- *     stream: T,
- * }
- */
-
+#[derive(Clone, Copy)]
 pub enum ClientType {
     TcpClient,
     UdsClient,
 }
 
-pub trait Client {
-    fn send_command(&mut self, command: &Command) -> io::Result<Response>;
-    fn get_type(&self) -> ClientType;
+pub struct Client<T: Read + Write> {
+    stream: T,
+    client_type: ClientType,
 }
 
-pub struct TcpClient {
-    pub stream: TcpStream,
-}
-
-impl TcpClient {
-    pub fn new() -> io::Result<TcpClient> {
-        let stream = TcpStream::connect(LISTEN_ADDR)?;
-        Ok(TcpClient { stream })
+impl<T: Read + Write> Client<T> {
+    pub fn get_type(&self) -> ClientType {
+        self.client_type
     }
-}
-
-impl Client for TcpClient {
-    fn get_type(&self) -> ClientType {
-        ClientType::TcpClient
-    }
-    fn send_command(&mut self, command: &Command) -> io::Result<Response> {
+    pub fn send_command(&mut self, command: &Command) -> io::Result<Response> {
         let message = serialize_command(command)?;
         write_message(&mut self.stream, &message)?;
         let response = read_message(&mut self.stream)?;
@@ -50,26 +31,26 @@ impl Client for TcpClient {
     }
 }
 
-pub struct UdsClient {
-    pub stream: UnixStream,
+pub type TcpClient = Client<TcpStream>;
+pub type UdsClient = Client<UnixStream>;
+
+impl TcpClient {
+    pub fn new() -> io::Result<Self> {
+        let stream = TcpStream::connect(LISTEN_ADDR)?;
+        Ok(Self {
+            stream,
+            client_type: ClientType::TcpClient,
+        })
+    }
 }
 
 impl UdsClient {
-    pub fn new() -> io::Result<UdsClient> {
+    pub fn new() -> io::Result<Self> {
         let stream = UnixStream::connect(SOCKET_PATH)?;
-        Ok(UdsClient { stream })
-    }
-}
-
-impl Client for UdsClient {
-    fn get_type(&self) -> ClientType {
-        ClientType::UdsClient
-    }
-    fn send_command(&mut self, command: &Command) -> io::Result<Response> {
-        let message = serialize_command(command)?;
-        write_message(&mut self.stream, &message)?;
-        let response = read_message(&mut self.stream)?;
-        Ok(Response::Message(response))
+        Ok(Self {
+            stream,
+            client_type: ClientType::UdsClient,
+        })
     }
 }
 
