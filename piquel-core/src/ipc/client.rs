@@ -1,4 +1,7 @@
-use crate::{config::{LISTEN_ADDR, SOCKET_PATH}, ipc::ClientType};
+use crate::{
+    config::{LISTEN_ADDR, SOCKET_PATH},
+    ipc::ClientType,
+};
 
 use super::message::{Command, Response};
 use std::{
