@@ -1,7 +1,7 @@
 use crate::config::{LISTEN_ADDR, SOCKET_PATH};
 
 use super::message::{Command, Response};
-use std::{error::Error, io, net::TcpStream, os::unix::net::UnixStream};
+use std::{io, net::TcpStream, os::unix::net::UnixStream};
 
 pub enum ClientType {
     TcpClient,
@@ -9,7 +9,7 @@ pub enum ClientType {
 }
 
 pub trait Client {
-    fn run_command(&self, command: &Command) -> Result<Response, Box<dyn Error>>;
+    fn run_command(&self, command: &Command) -> io::Result<Response>;
     fn get_type(&self) -> ClientType;
 }
 
@@ -32,8 +32,8 @@ impl Client for TcpClient {
     fn get_type(&self) -> ClientType {
         ClientType::TcpClient
     }
-    fn run_command(&self, command: &Command) -> Result<Response, Box<dyn Error>> {
-        Result::Ok(Response::Ok)
+    fn run_command(&self, command: &Command) -> io::Result<Response> {
+        Ok(Response::Ok)
     }
 }
 
@@ -56,7 +56,7 @@ impl Client for UdsClient {
     fn get_type(&self) -> ClientType {
         ClientType::UdsClient
     }
-    fn run_command(&self, command: &Command) -> Result<Response, Box<dyn Error>> {
-        Result::Ok(Response::Ok)
+    fn run_command(&self, command: &Command) -> io::Result<Response> {
+        Ok(Response::Ok)
     }
 }
