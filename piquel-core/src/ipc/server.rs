@@ -1,5 +1,16 @@
-trait Server {}
+use std::{io, net::TcpListener, os::unix::net::UnixListener};
 
-struct TcpServer {}
+use crate::ipc::ServerType;
 
-struct UnixServer {}
+pub trait Server {
+    fn get_type(&self) -> ServerType;
+    fn listen(&self) -> Option<io::Error>;
+}
+
+pub struct TcpServer {
+    listener: TcpListener,
+}
+
+pub struct UdsServer {
+    listener: UnixListener,
+}

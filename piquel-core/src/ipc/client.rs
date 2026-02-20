@@ -29,7 +29,6 @@ impl<T: Read + Write> Client<T> {
 }
 
 pub type TcpClient = Client<TcpStream>;
-pub type UdsClient = Client<UnixStream>;
 
 impl TcpClient {
     pub fn new() -> io::Result<Self> {
@@ -40,6 +39,8 @@ impl TcpClient {
         })
     }
 }
+
+pub type UdsClient = Client<UnixStream>;
 
 impl UdsClient {
     pub fn new() -> io::Result<Self> {
