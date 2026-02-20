@@ -1,7 +1,7 @@
 use crate::config::{LISTEN_ADDR, SOCKET_PATH};
 
 use super::message::{Command, Response};
-use std::{error::Error, net::TcpStream, os::unix::net::UnixStream};
+use std::{error::Error, io, net::TcpStream, os::unix::net::UnixStream};
 
 pub enum ClientType {
     TcpClient,
@@ -42,10 +42,10 @@ pub struct UdsClient {
 }
 
 impl UdsClient {
-    pub fn new() -> Result<UdsClient, bool> {
+    pub fn new() -> Result<UdsClient, io::Error> {
         let stream = match UnixStream::connect(SOCKET_PATH) {
             Ok(tcp_stream) => tcp_stream,
-            Err(_) => return Err(false),
+            Err(err) => return Err(err),
         };
 
         Ok(UdsClient { stream })

@@ -27,8 +27,8 @@ fn recv_message(stream: &mut UnixStream) -> io::Result<String> {
 }
 
 fn main() -> io::Result<()> {
-    let mut stream = match UdsClient::new() {
-        Ok(stream) => stream,
+    let mut client = match UdsClient::new() {
+        Ok(client) => client,
         Err(_) => panic!("error"),
     };
 
@@ -38,9 +38,9 @@ fn main() -> io::Result<()> {
 
     for msg in &messages {
         println!("[client] Sending: \"{msg}\"");
-        send_message(&mut stream.stream, msg)?;
+        send_message(&mut client.stream, msg)?;
 
-        let response = recv_message(&mut stream.stream)?;
+        let response = recv_message(&mut client.stream)?;
         println!("[client] Received: \"{response}\"");
     }
 
