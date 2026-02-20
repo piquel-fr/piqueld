@@ -1,35 +1,14 @@
-use std::io::{self, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{self};
+use std::panic;
 
 use piquelcore::config::SOCKET_PATH;
-use piquelcore::ipc::client::UdsClient;
-
-/// Sends a length-prefixed message over the stream.
-fn send_message(stream: &mut UnixStream, message: &str) -> io::Result<()> {
-    let bytes = message.as_bytes();
-    let len = (bytes.len() as u32).to_be_bytes();
-
-    stream.write_all(&len)?;
-    stream.write_all(bytes)?;
-    Ok(())
-}
-
-/// Reads a length-prefixed message from the stream.
-fn recv_message(stream: &mut UnixStream) -> io::Result<String> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf)?;
-    let msg_len = u32::from_be_bytes(len_buf) as usize;
-
-    let mut msg_buf = vec![0u8; msg_len];
-    stream.read_exact(&mut msg_buf)?;
-
-    Ok(String::from_utf8_lossy(&msg_buf).into_owned())
-}
+use piquelcore::ipc::client::{Client, UdsClient};
+use piquelcore::ipc::message::{Command, Response};
 
 fn main() -> io::Result<()> {
     let mut client = match UdsClient::new() {
         Ok(client) => client,
-        Err(_) => panic!("error"),
+        Err(err) => panic!("{}", err),
     };
 
     println!("[client] Connected to {SOCKET_PATH}");
@@ -38,10 +17,17 @@ fn main() -> io::Result<()> {
 
     for msg in &messages {
         println!("[client] Sending: \"{msg}\"");
-        send_message(&mut client.stream, msg)?;
-
-        let response = recv_message(&mut client.stream)?;
-        println!("[client] Received: \"{response}\"");
+        match client.send_command(&Command::Echo(msg.to_string())) {
+            Ok(response) => {
+                let resp_msg: &str = match response {
+                    Response::Ok => "Ok",
+                    Response::Message(message) => &format!("Message: \"{message}\""),
+                    Response::Error(err) => &format!("Error: \"{err}\""),
+                };
+                println!("[client] Received: \"{resp_msg}\"");
+            }
+            Err(err) => panic!("{}", err),
+        };
     }
 
     println!("[client] Done. Closing connection.");
