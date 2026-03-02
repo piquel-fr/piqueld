@@ -19,7 +19,7 @@ impl Server {
             tcp_listener: TcpListener::bind(LISTEN_ADDR)?,
         };
 
-        println!("[server] Listening on {SOCKET_PATH} and {LISTEN_ADDR}");
+        println!("[server] Bound to {SOCKET_PATH} and {LISTEN_ADDR}");
 
         Ok(server)
     }
