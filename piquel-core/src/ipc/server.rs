@@ -1,9 +1,9 @@
 use std::{io, net::TcpListener, os::unix::net::UnixListener};
 
-use crate::ipc::ServerType;
+use crate::ipc::ConnectionType;
 
 pub trait Server {
-    fn get_type(&self) -> ServerType;
+    fn get_type(&self) -> ConnectionType;
     fn listen(&self) -> Option<io::Error>;
 }
 

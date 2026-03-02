@@ -1,6 +1,6 @@
 use crate::{
     config::{LISTEN_ADDR, SOCKET_PATH},
-    ipc::ClientType,
+    ipc::ConnectionType,
 };
 
 use super::message::{Command, Response};
@@ -13,11 +13,11 @@ use std::{
 
 pub struct Client<T: Read + Write> {
     stream: T,
-    client_type: ClientType,
+    client_type: ConnectionType,
 }
 
 impl<T: Read + Write> Client<T> {
-    pub fn get_type(&self) -> ClientType {
+    pub fn get_type(&self) -> ConnectionType {
         self.client_type
     }
     pub fn send_command(&mut self, command: &Command) -> io::Result<Response> {
@@ -35,7 +35,7 @@ impl TcpClient {
         let stream = TcpStream::connect(LISTEN_ADDR)?;
         Ok(Self {
             stream,
-            client_type: ClientType::TcpClient,
+            client_type: ConnectionType::Tcp,
         })
     }
 }
@@ -47,7 +47,7 @@ impl UdsClient {
         let stream = UnixStream::connect(SOCKET_PATH)?;
         Ok(Self {
             stream,
-            client_type: ClientType::UdsClient,
+            client_type: ConnectionType::Uds,
         })
     }
 }
