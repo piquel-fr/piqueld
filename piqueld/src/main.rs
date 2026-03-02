@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
@@ -56,8 +57,10 @@ fn handle_client(mut stream: UnixStream) {
     }
 }
 
-fn main() -> io::Result<()> {
-    let server = Server::new()?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let server = Server::new();
+    let future = server.listen();
 
     // Remove a leftover socket file from a previous run, if any.
     if Path::new(SOCKET_PATH).exists() {
@@ -77,6 +80,8 @@ fn main() -> io::Result<()> {
             }
         }
     }
+
+    future.await?;
 
     Ok(())
 }
