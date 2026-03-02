@@ -5,7 +5,9 @@ use std::thread;
 
 use piquelcore::config::SOCKET_PATH;
 
-mod server;
+use crate::ipc::server::Server;
+
+mod ipc;
 
 fn handle_client(mut stream: UnixStream) {
     // UnixStream doesn't have a peer_addr in the same way, so we use a placeholder.
@@ -55,6 +57,8 @@ fn handle_client(mut stream: UnixStream) {
 }
 
 fn main() -> io::Result<()> {
+    let server = Server::new()?;
+
     // Remove a leftover socket file from a previous run, if any.
     if Path::new(SOCKET_PATH).exists() {
         std::fs::remove_file(SOCKET_PATH)?;
