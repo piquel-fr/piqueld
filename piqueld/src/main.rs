@@ -5,6 +5,8 @@ use std::thread;
 
 use piquelcore::config::SOCKET_PATH;
 
+mod server;
+
 fn handle_client(mut stream: UnixStream) {
     // UnixStream doesn't have a peer_addr in the same way, so we use a placeholder.
     println!("[server] New client connected.");

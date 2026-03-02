@@ -1,6 +1,6 @@
 use std::{io, net::TcpListener, os::unix::net::UnixListener};
 
-use crate::ipc::ConnectionType;
+use piquelcore::ipc::ConnectionType;
 
 pub trait Server {
     fn get_type(&self) -> ConnectionType;
