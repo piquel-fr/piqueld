@@ -1,7 +1,4 @@
-use crate::{
-    config::{LISTEN_ADDR, SOCKET_PATH},
-    ipc::ConnectionType,
-};
+use crate::ipc::ConnectionType;
 
 use super::message::{Command, Response};
 use std::{
@@ -41,9 +38,9 @@ impl<T: Read + Write> Client<T> {
 pub type TcpClient = Client<TcpStream>;
 
 impl TcpClient {
-    pub fn new() -> io::Result<Self> {
-        let stream = TcpStream::connect(LISTEN_ADDR)?;
-        println!("[client] Connected to {LISTEN_ADDR}");
+    pub fn new(addr: &str) -> io::Result<Self> {
+        let stream = TcpStream::connect(addr)?;
+        println!("[client] Connected to {addr}");
         Ok(Self {
             stream,
             client_type: ConnectionType::Tcp,
@@ -54,9 +51,9 @@ impl TcpClient {
 pub type UdsClient = Client<UnixStream>;
 
 impl UdsClient {
-    pub fn new() -> io::Result<Self> {
-        let stream = UnixStream::connect(SOCKET_PATH)?;
-        println!("[client] Connected to {SOCKET_PATH}");
+    pub fn new(path: &str) -> io::Result<Self> {
+        let stream = UnixStream::connect(path)?;
+        println!("[client] Connected to {path}");
         Ok(Self {
             stream,
             client_type: ConnectionType::Uds,
