@@ -1,10 +1,7 @@
-use crate::ipc::server::Server;
+use std::io;
 
-mod ipc;
+use piquelcore::ipc::server::Server;
 
-#[tokio::main]
-async fn main() -> tokio::io::Result<()> {
-    let server = Server::new();
-    server.listen().await?;
-    Ok(())
+fn main() -> io::Result<()> {
+    Server::new().listen()
 }
