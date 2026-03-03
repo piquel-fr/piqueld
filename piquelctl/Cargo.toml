@@ -7,4 +7,3 @@ default-run = "piquelctl"
 [dependencies]
 piquel-core = { path = "../piquel-core/" }
 clap = { version = "4", features = ["derive"] }
-tokio.workspace = true
