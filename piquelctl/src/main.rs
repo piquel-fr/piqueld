@@ -1,14 +1,20 @@
 use std::io::{self};
 use std::panic;
 
-use piquelcore::ipc::client::UdsClient;
+use piquelcore::ipc::client::{Client, TcpClient, UdsClient};
 use piquelcore::ipc::message::{Command, Response};
 
+mod cli;
+
 fn main() -> io::Result<()> {
-    let mut client = match UdsClient::new() {
-        Ok(client) => client,
-        Err(err) => panic!("{}", err),
-    };
+    let cli = cli::parse();
+
+    let client;
+    if let Some(host) = cli.host {
+        client = TcpClient::new()?;
+    } else {
+        client = UdsClient::new()?;
+    }
 
     let commands = [
         Command::Status,
