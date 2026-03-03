@@ -5,12 +5,12 @@ pub fn parse() -> Cli {
     Cli::parse()
 }
 
-/// A CLI client for interacting with the daemon
+/// CLI client for interacting with piqueld
 #[derive(Parser, Debug)]
 #[command(name = "piquelctl")]
-#[command(about = "CLI client for the daemon", long_about = None)]
+#[command(about = "CLI for piqueld", long_about = None)]
 pub struct Cli {
-    /// Connect to a remote daemon over TCP (e.g. 127.0.0.1:9000)
+    /// Connect to a remote daemon over TCP (e.g. 127.0.0.1:7854)
     #[arg(short = 'H', long = "host", value_name = "HOST", global = true)]
     pub host: Option<String>,
 
@@ -32,7 +32,6 @@ pub struct Cli {
 pub enum Commands {
     /// Returns the hostname of the daemon
     Hostname,
-    Echo {
-        message: String,
-    },
+    /// Just echoes the message
+    Echo { message: String },
 }
