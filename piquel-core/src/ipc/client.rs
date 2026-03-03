@@ -8,16 +8,13 @@ use std::{
     usize,
 };
 
-pub struct Client<T: Read + Write> {
-    stream: T,
-    client_type: ConnectionType,
+pub trait IpcClient {
+    fn send_command(&mut self, command: &Command) -> io::Result<Response>;
+    fn get_type(&self) -> ConnectionType;
 }
 
-impl<T: Read + Write> Client<T> {
-    pub fn get_type(&self) -> ConnectionType {
-        self.client_type
-    }
-    pub fn send_command(&mut self, command: &Command) -> io::Result<Response> {
+impl<T: Read + Write> IpcClient for Client<T> {
+    fn send_command(&mut self, command: &Command) -> io::Result<Response> {
         let request = serde_json::to_vec(&command)?;
         let len = (request.len() as u32).to_be_bytes();
         self.stream.write_all(&len)?;
@@ -33,6 +30,14 @@ impl<T: Read + Write> Client<T> {
         let response: Response = serde_json::from_slice(&response_buf)?;
         Ok(response)
     }
+    fn get_type(&self) -> ConnectionType {
+        self.client_type
+    }
+}
+
+pub struct Client<T: Read + Write> {
+    stream: T,
+    client_type: ConnectionType,
 }
 
 pub type TcpClient = Client<TcpStream>;
