@@ -11,7 +11,7 @@ pub fn parse() -> Cli {
 #[command(about = "CLI client for the daemon", long_about = None)]
 pub struct Cli {
     /// Connect to a remote daemon over TCP (e.g. 127.0.0.1:9000)
-    #[arg(short = 'h', long = "host", value_name = "HOST", global = true)]
+    #[arg(short = 'H', long = "host", value_name = "HOST", global = true)]
     pub host: Option<String>,
 
     /// Path to the Unix socket to connect to
