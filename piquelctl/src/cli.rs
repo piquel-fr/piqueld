@@ -32,4 +32,7 @@ pub struct Cli {
 pub enum Commands {
     /// Returns the hostname of the daemon
     Hostname,
+    Echo {
+        message: String,
+    },
 }
