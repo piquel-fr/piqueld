@@ -83,7 +83,8 @@ fn process_command(command: Command) -> io::Result<Response> {
             Response::Ok
         }
         Command::Hostname => {
-            Response::Message("TODO: implement getting hostname on server".to_string())
+            // TODO: hostname
+            Response::Message("waiting for std::net::hostname() to become available".to_string())
         }
         Command::Echo(msg) => Response::Message(msg),
         Command::Reload => {
