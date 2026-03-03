@@ -5,6 +5,7 @@ use piquelcore::ipc::client::{IpcClient, TcpClient, UdsClient};
 use piquelcore::ipc::message::{Command, Response};
 
 mod cli;
+use cli::Commands;
 
 fn main() -> io::Result<()> {
     let cli = cli::parse();
@@ -14,27 +15,22 @@ fn main() -> io::Result<()> {
         None => Box::new(UdsClient::new(&cli.socket)?),
     };
 
-    let commands = [
-        Command::Status,
-        Command::Echo("Hello, server!".to_string()),
-        Command::Echo("How's IPC treating you?".to_string()),
-        Command::Echo("Goodbye!".to_string()),
-        Command::Stop,
-    ];
+    let cmd = match &cli.command {
+        Commands::Hostname => Command::Status,
+        Commands::Echo { message } => Command::Echo(message.to_string()),
+    };
 
-    for cmd in commands {
-        match client.send_command(&cmd) {
-            Ok(response) => {
-                let resp_msg: &str = match response {
-                    Response::Ok => "Ok",
-                    Response::Message(message) => &format!("Message: \"{message}\""),
-                    Response::Error(err) => &format!("Error: \"{err}\""),
-                };
-                println!("[client] Received: \"{resp_msg}\"");
-            }
-            Err(err) => panic!("{}", err),
-        };
-    }
+    match client.send_command(&cmd) {
+        Ok(response) => {
+            let resp_msg: &str = match response {
+                Response::Ok => "Ok",
+                Response::Message(message) => &format!("Message: \"{message}\""),
+                Response::Error(err) => &format!("Error: \"{err}\""),
+            };
+            println!("[client] Received {resp_msg}");
+        }
+        Err(err) => panic!("{}", err),
+    };
 
     println!("[client] Done. Closing connection.");
     Ok(())
