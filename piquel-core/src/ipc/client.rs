@@ -21,10 +21,20 @@ impl<T: Read + Write> Client<T> {
         self.client_type
     }
     pub fn send_command(&mut self, command: &Command) -> io::Result<Response> {
-        let message = serialize_command(command)?;
-        write_message(&mut self.stream, &message)?;
-        let response = read_message(&mut self.stream)?;
-        Ok(Response::Message(response))
+        let request = serde_json::to_vec(&command)?;
+        let len = (request.len() as u32).to_be_bytes();
+        self.stream.write_all(&len)?;
+        self.stream.write_all(&request)?;
+
+        let mut len_buf = [0u8; 4];
+        self.stream.read_exact(&mut len_buf)?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+
+        let mut response_buf = vec![0u8; len];
+        self.stream.read_exact(&mut response_buf)?;
+
+        let response: Response = serde_json::from_slice(&response_buf)?;
+        Ok(response)
     }
 }
 
@@ -33,6 +43,7 @@ pub type TcpClient = Client<TcpStream>;
 impl TcpClient {
     pub fn new() -> io::Result<Self> {
         let stream = TcpStream::connect(LISTEN_ADDR)?;
+        println!("[client] Connected to {LISTEN_ADDR}");
         Ok(Self {
             stream,
             client_type: ConnectionType::Tcp,
@@ -45,37 +56,10 @@ pub type UdsClient = Client<UnixStream>;
 impl UdsClient {
     pub fn new() -> io::Result<Self> {
         let stream = UnixStream::connect(SOCKET_PATH)?;
+        println!("[client] Connected to {SOCKET_PATH}");
         Ok(Self {
             stream,
             client_type: ConnectionType::Uds,
         })
     }
-}
-
-fn write_message<T: Write>(stream: &mut T, message: &str) -> io::Result<usize> {
-    let bytes = message.as_bytes();
-    let len = bytes.len() as usize;
-
-    stream.write_all(&len.to_be_bytes())?;
-    stream.write_all(bytes)?;
-
-    Ok(len)
-}
-
-fn read_message<T: Read>(stream: &mut T) -> io::Result<String> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf)?;
-    let msg_len = u32::from_be_bytes(len_buf) as usize;
-
-    let mut msg_buf = vec![0u8; msg_len];
-    stream.read_exact(&mut msg_buf)?;
-
-    Ok(String::from_utf8_lossy(&msg_buf).into_owned())
-}
-
-fn serialize_command(command: &Command) -> io::Result<String> {
-    Ok(match command {
-        Command::Echo(msg) => msg.to_string(),
-        _ => "No Content".to_string(),
-    })
 }
