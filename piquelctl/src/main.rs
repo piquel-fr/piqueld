@@ -1,7 +1,6 @@
 use std::io::{self};
 use std::panic;
 
-use piquelcore::config::SOCKET_PATH;
 use piquelcore::ipc::client::UdsClient;
 use piquelcore::ipc::message::{Command, Response};
 
@@ -11,13 +10,16 @@ fn main() -> io::Result<()> {
         Err(err) => panic!("{}", err),
     };
 
-    println!("[client] Connected to {SOCKET_PATH}");
+    let commands = [
+        Command::Status,
+        Command::Echo("Hello, server!".to_string()),
+        Command::Echo("How's IPC treating you?".to_string()),
+        Command::Echo("Goodbye!".to_string()),
+        Command::Stop,
+    ];
 
-    let messages = ["Hello, server!", "How's IPC treating you?", "Goodbye!"];
-
-    for msg in &messages {
-        println!("[client] Sending: \"{msg}\"");
-        match client.send_command(&Command::Echo(msg.to_string())) {
+    for cmd in commands {
+        match client.send_command(&cmd) {
             Ok(response) => {
                 let resp_msg: &str = match response {
                     Response::Ok => "Ok",
