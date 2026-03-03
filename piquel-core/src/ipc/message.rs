@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub enum Command {
     Echo(String),
     Status,
+    Hostname,
     Reload,
     Stop,
 }

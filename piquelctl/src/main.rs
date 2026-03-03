@@ -16,7 +16,7 @@ fn main() -> io::Result<()> {
     };
 
     let cmd = match &cli.command {
-        Commands::Hostname => Command::Status,
+        Commands::Hostname => Command::Hostname,
         Commands::Echo { message } => Command::Echo(message.to_string()),
     };
 
