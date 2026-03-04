@@ -76,12 +76,10 @@ where
     }
 }
 
+// TODO: processing should be handled by server
 fn process_command(command: Command) -> io::Result<Response> {
     Ok(match command {
-        Command::Status => {
-            println!("Received status command");
-            Response::Ok
-        }
+        Command::Status => Response::Message("Status OK".to_string()),
         Command::Hostname => {
             // TODO: hostname
             Response::Message("waiting for std::net::hostname() to become available".to_string())
