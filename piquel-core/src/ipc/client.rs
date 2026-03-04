@@ -8,13 +8,30 @@ use std::{
     usize,
 };
 
-pub trait IpcClient {
-    fn send_command(&mut self, command: &Command) -> io::Result<Response>;
-    fn get_type(&self) -> ConnectionType;
+trait ReadWrite: Write + Read {}
+impl<T: Write + Read> ReadWrite for T {}
+
+pub struct Client {
+    stream: Box<dyn ReadWrite>,
+    client_type: ConnectionType,
 }
 
-impl<T: Read + Write> IpcClient for Client<T> {
-    fn send_command(&mut self, command: &Command) -> io::Result<Response> {
+impl Client {
+    pub fn new_tcp(addr: &str) -> io::Result<Self> {
+        let stream = TcpStream::connect(addr)?;
+        Ok(Self {
+            stream: Box::new(stream),
+            client_type: ConnectionType::Tcp,
+        })
+    }
+    pub fn new_uds(path: &str) -> io::Result<Self> {
+        let stream = UnixStream::connect(path)?;
+        Ok(Self {
+            stream: Box::new(stream),
+            client_type: ConnectionType::Uds,
+        })
+    }
+    pub fn send_command(&mut self, command: &Command) -> io::Result<Response> {
         let request = serde_json::to_vec(&command)?;
         let len = (request.len() as u32).to_be_bytes();
         self.stream.write_all(&len)?;
@@ -30,38 +47,7 @@ impl<T: Read + Write> IpcClient for Client<T> {
         let response: Response = serde_json::from_slice(&response_buf)?;
         Ok(response)
     }
-    fn get_type(&self) -> ConnectionType {
+    pub fn get_type(&self) -> ConnectionType {
         self.client_type
-    }
-}
-
-pub struct Client<T: Read + Write> {
-    stream: T,
-    client_type: ConnectionType,
-}
-
-pub type TcpClient = Client<TcpStream>;
-
-impl TcpClient {
-    pub fn new(addr: &str) -> io::Result<Self> {
-        let stream = TcpStream::connect(addr)?;
-        println!("[client] Connected to {addr}");
-        Ok(Self {
-            stream,
-            client_type: ConnectionType::Tcp,
-        })
-    }
-}
-
-pub type UdsClient = Client<UnixStream>;
-
-impl UdsClient {
-    pub fn new(path: &str) -> io::Result<Self> {
-        let stream = UnixStream::connect(path)?;
-        println!("[client] Connected to {path}");
-        Ok(Self {
-            stream,
-            client_type: ConnectionType::Uds,
-        })
     }
 }
