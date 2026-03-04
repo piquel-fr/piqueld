@@ -28,10 +28,12 @@ fn main() -> io::Result<()> {
 }
 
 fn handle_response(command: &Command, response: &Response) {
-    let resp_msg: &str = match response {
-        Response::Ok => "Ok",
-        Response::Message(message) => &format!("Message: \"{message}\""),
-        Response::Error(err) => &format!("Error: \"{err}\""),
-    };
-    println!("[client] Received {resp_msg}");
+    println!(
+        "{}",
+        match response {
+            Response::Ok => "Success",
+            Response::Message(message) => &message,
+            Response::Error(err) => &err,
+        }
+    );
 }
