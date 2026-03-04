@@ -1,6 +1,7 @@
 use crate::config::{LISTEN_ADDR, SOCKET_PATH};
 use crate::ipc::message::{Command, Response};
 use std::path::Path;
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener};
 
@@ -16,37 +17,32 @@ impl Server {
             tcp_addr: LISTEN_ADDR,
         }
     }
-    pub async fn listen(&self) -> tokio::io::Result<()> {
-        tokio::try_join!(
-            self.listen_tcp(self.tcp_addr),
-            self.listen_uds(self.uds_path)
-        )?;
+    pub async fn listen(self) -> tokio::io::Result<()> {
+        let server = Arc::new(self);
+        tokio::try_join!(server.clone().listen_tcp(), server.clone().listen_uds(),)?;
         Ok(())
     }
-    async fn listen_tcp(&self, addr: &str) -> tokio::io::Result<()> {
-        let listener = TcpListener::bind(addr).await?;
-        println!("[TCP] Listening on {addr}");
-
+    async fn listen_tcp(self: Arc<Self>) -> tokio::io::Result<()> {
+        let listener = TcpListener::bind(self.tcp_addr).await?;
+        println!("[TCP] Listening on {}", self.tcp_addr);
         loop {
             let (stream, _) = listener.accept().await?;
-            tokio::spawn(self.handle(stream));
+            let server = Arc::clone(&self);
+            tokio::spawn(async move { server.handle(stream).await });
         }
     }
-
-    async fn listen_uds(&self, path: &str) -> tokio::io::Result<()> {
-        if Path::new(path).exists() {
-            std::fs::remove_file(path)?;
+    async fn listen_uds(self: Arc<Self>) -> tokio::io::Result<()> {
+        if Path::new(self.uds_path).exists() {
+            std::fs::remove_file(self.uds_path)?;
         }
-
-        let listener = UnixListener::bind(path)?;
-        println!("[UDS] Listening on {path}");
-
+        let listener = UnixListener::bind(self.uds_path)?;
+        println!("[UDS] Listening on {}", self.uds_path);
         loop {
             let (stream, _) = listener.accept().await?;
-            tokio::spawn(self.handle(stream));
+            let server = Arc::clone(&self);
+            tokio::spawn(async move { server.handle(stream).await });
         }
     }
-
     async fn handle<T>(&self, mut stream: T) -> tokio::io::Result<()>
     where
         T: AsyncRead + AsyncWrite + Unpin,
@@ -54,32 +50,23 @@ impl Server {
         loop {
             let mut len_buf = [0u8; 4];
             stream.read_exact(&mut len_buf).await?;
-
             let len = u32::from_be_bytes(len_buf) as usize;
-
             let mut cmd_buf = vec![0u8; len];
             stream.read_exact(&mut cmd_buf).await?;
             let command: Command = serde_json::from_slice(&cmd_buf)?;
-
             let response = self.process_command(command)?;
-
             let response_data = serde_json::to_vec(&response)?;
             let len = (response_data.len() as u32).to_be_bytes();
             stream.write_all(&len).await?;
             stream.write_all(&response_data).await?;
         }
     }
-
-    // TODO: processing should be handled by server
     fn process_command(&self, command: Command) -> tokio::io::Result<Response> {
         Ok(match command {
             Command::Status => Response::Message("Status OK".to_string()),
-            Command::Hostname => {
-                // TODO: hostname
-                Response::Message(
-                    "waiting for std::net::hostname() to become available".to_string(),
-                )
-            }
+            Command::Hostname => Response::Message(
+                "waiting for std::net::hostname() to become available".to_string(),
+            ),
             Command::Echo(msg) => Response::Message(msg),
             Command::Reload => {
                 println!("Received reload command");
