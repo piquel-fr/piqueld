@@ -1,9 +1,8 @@
+use crate::config::{LISTEN_ADDR, SOCKET_PATH};
+use crate::ipc::message::{Command, Response};
 use std::path::Path;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener};
-
-use crate::config::{LISTEN_ADDR, SOCKET_PATH};
-use crate::ipc::message::{Command, Response};
 
 pub struct Server {
     uds_path: &'static str,

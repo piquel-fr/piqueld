@@ -233,6 +233,7 @@ name = "piqueld"
 version = "0.1.0"
 dependencies = [
  "piquel-core",
+ "tokio",
 ]
 
 [[package]]
