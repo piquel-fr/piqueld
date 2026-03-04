@@ -1,7 +1,4 @@
-use crate::{
-    config::{LISTEN_ADDR, SOCKET_PATH},
-    ipc::ConnectionType,
-};
+use crate::ipc::ConnectionType;
 
 use super::message::{Command, Response};
 use std::{
@@ -11,14 +8,28 @@ use std::{
     usize,
 };
 
-pub struct Client<T: Read + Write> {
-    stream: T,
+trait ReadWrite: Write + Read {}
+impl<T: Write + Read> ReadWrite for T {}
+
+pub struct Client {
+    stream: Box<dyn ReadWrite>,
     client_type: ConnectionType,
 }
 
-impl<T: Read + Write> Client<T> {
-    pub fn get_type(&self) -> ConnectionType {
-        self.client_type
+impl Client {
+    pub fn new_tcp(addr: &str) -> io::Result<Self> {
+        let stream = TcpStream::connect(addr)?;
+        Ok(Self {
+            stream: Box::new(stream),
+            client_type: ConnectionType::Tcp,
+        })
+    }
+    pub fn new_uds(path: &str) -> io::Result<Self> {
+        let stream = UnixStream::connect(path)?;
+        Ok(Self {
+            stream: Box::new(stream),
+            client_type: ConnectionType::Uds,
+        })
     }
     pub fn send_command(&mut self, command: &Command) -> io::Result<Response> {
         let request = serde_json::to_vec(&command)?;
@@ -36,30 +47,7 @@ impl<T: Read + Write> Client<T> {
         let response: Response = serde_json::from_slice(&response_buf)?;
         Ok(response)
     }
-}
-
-pub type TcpClient = Client<TcpStream>;
-
-impl TcpClient {
-    pub fn new() -> io::Result<Self> {
-        let stream = TcpStream::connect(LISTEN_ADDR)?;
-        println!("[client] Connected to {LISTEN_ADDR}");
-        Ok(Self {
-            stream,
-            client_type: ConnectionType::Tcp,
-        })
-    }
-}
-
-pub type UdsClient = Client<UnixStream>;
-
-impl UdsClient {
-    pub fn new() -> io::Result<Self> {
-        let stream = UnixStream::connect(SOCKET_PATH)?;
-        println!("[client] Connected to {SOCKET_PATH}");
-        Ok(Self {
-            stream,
-            client_type: ConnectionType::Uds,
-        })
+    pub fn get_type(&self) -> ConnectionType {
+        self.client_type
     }
 }
