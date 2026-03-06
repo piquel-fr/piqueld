@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+pub mod defaults;
+
 #[derive(Debug)]
 pub enum ConfigError {
     AlreadyLoaded,
@@ -38,20 +40,4 @@ pub trait Config: serde::de::DeserializeOwned {
         Ok(config)
     }
     fn validate(&mut self) -> Result<(), ConfigError>;
-}
-
-/// Returns the default socket path
-pub fn default_socket_path() -> PathBuf {
-    // TODO: rename to "/run/piqueld.sock" when we run as root
-    PathBuf::from("/tmp/piqueld.sock")
-}
-
-/// Returns the default listen address
-pub fn default_listen_addr() -> String {
-    String::from("0.0.0.0:7854")
-}
-
-/// Returns the default data dir
-pub fn default_data_dir() -> PathBuf {
-    PathBuf::from("/var/lib/piqueld")
 }
