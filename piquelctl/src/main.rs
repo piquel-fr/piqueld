@@ -56,10 +56,17 @@ fn create_client(config: &Option<ClientConfig>, cli: &Cli) -> io::Result<Client>
         },
     };
 
-    let uds_client: bool = match config {
+    let mut uds_client: bool = match config {
         Some(config) => !config.default_to_tcp,
         None => true,
     };
+
+    if cli.uds {
+        uds_client = true;
+    }
+    if cli.tcp {
+        uds_client = false;
+    }
 
     Ok(if uds_client {
         Client::new_uds(&socket_path)?

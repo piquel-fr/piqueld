@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 
 pub fn parse() -> Cli {
     Cli::parse()
@@ -10,6 +10,12 @@ pub fn parse() -> Cli {
 #[derive(Parser, Debug)]
 #[command(name = "piquelctl")]
 #[command(about = "CLI for piqueld", long_about = None)]
+#[command(group(
+    ArgGroup::new("transport")
+        .args(["uds", "tcp"])
+        .multiple(false)  // ensures mutual exclusivity
+        .required(false)  // neither is required
+))]
 pub struct Cli {
     /// Custom path to configuration
     #[arg(long = "config", value_name = "path", global = true)]
@@ -22,6 +28,13 @@ pub struct Cli {
     /// Path to the Unix socket to connect to
     #[arg(short = 's', long = "socket", value_name = "sock", global = true)]
     pub socket: Option<PathBuf>,
+
+    /// Use Unix Domain Socket transport
+    #[arg(long = "uds", global = true)]
+    pub uds: bool,
+    /// Use TCP transport
+    #[arg(long = "tcp", global = true)]
+    pub tcp: bool,
 
     #[command(subcommand)]
     pub command: Commands,
