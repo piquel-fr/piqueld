@@ -62,6 +62,12 @@ in
       type = lib.types.bool;
     };
 
+    group = lib.mkOption {
+      type = lib.types.str;
+      default = "piqueld";
+      description = "Group that can access the piqueld socket.";
+    };
+
     daemonPackage = lib.mkOption {
       type = lib.types.package;
       default = piqueld;
@@ -96,23 +102,31 @@ in
     };
   };
 
-  config =
+  config = lib.mkMerge [
     (lib.mkIf cfg.enable {
       environment.systemPackages = [ cfg.ctlPackage ];
     })
-    // (lib.mkIf cfg.enableDaemon {
+    (lib.mkIf cfg.enableDaemon {
+      users.groups.piqueld = { };
+
       environment.etc."piqueld/config.json".source = daemonConfig;
 
-      systemd.services.your-daemon = {
+      systemd.services.piqueld = {
         description = "piqueld";
         wantedBy = [ "multi-user.target" ];
+        after = [ "network.target" ];
         serviceConfig = {
           ExecStart = "${piqueld}/bin/piqueld --config /etc/piqueld/config.json";
-          User = "piqueld";
           DynamicUser = true;
-          StateDirectory = "piqueld"; # creates /var/lib/piqueld
-          RuntimeDirectory = "piqueld"; # creates /run/piqueld
+          Group = cfg.group;
+          StateDirectory = "piqueld";
+          RuntimeDirectory = "piqueld";
+          RuntimeDirectoryMode = "0750";
+          PrivateTmp = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
         };
       };
-    });
+    })
+  ];
 }
