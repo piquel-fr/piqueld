@@ -11,7 +11,7 @@ pub struct ServerConfig {
     pub socket: PathBuf,
     #[serde(default = "config::defaults::listen_addr")]
     pub address: String,
-    #[serde(default = "config::defaults::listen_port")]
+    #[serde(default = "config::defaults::port")]
     pub port: u16,
 }
 
