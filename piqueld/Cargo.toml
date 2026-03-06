@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 piquel-core = { path = "../piquel-core/" }
+tokio.workspace = true
