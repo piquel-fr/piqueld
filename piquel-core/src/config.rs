@@ -48,10 +48,10 @@ pub fn default_socket_path() -> PathBuf {
 
 /// Returns the default listen address
 pub fn default_listen_addr() -> String {
-    "0.0.0.0:7854".into()
+    String::from("0.0.0.0:7854")
 }
 
 /// Returns the default data dir
-pub fn default_data_dir() -> String {
-    "/var/lib/piqueld".into()
+pub fn default_data_dir() -> PathBuf {
+    PathBuf::from("/var/lib/piqueld")
 }

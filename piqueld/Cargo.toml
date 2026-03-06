@@ -7,3 +7,4 @@ edition = "2024"
 piquel-core = { path = "../piquel-core/" }
 clap.workspace = true
 tokio.workspace = true
+serde.workspace = true
