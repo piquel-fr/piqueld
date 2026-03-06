@@ -1,12 +1,17 @@
 use std::path::PathBuf;
 
 pub fn socket_path() -> PathBuf {
-    // TODO: rename to "/run/piqueld.sock" when we run as root
-    PathBuf::from("/etc/piqueld/config.json")
+    PathBuf::from("/run/piqueld/piqueld.sock")
 }
 
 pub fn listen_addr() -> String {
-    String::from("0.0.0.0:7854")
+    String::from("0.0.0.0")
+}
+pub fn localhost() -> String {
+    String::from("127.0.0.1")
+}
+pub fn port() -> u16 {
+    7854
 }
 
 /// Returns the default data dir

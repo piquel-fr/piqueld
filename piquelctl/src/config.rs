@@ -6,7 +6,13 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 pub struct ClientConfig {
     #[serde(default = "config::defaults::socket_path")]
-    pub socket_path: PathBuf,
+    pub socket: PathBuf,
+    #[serde(default = "config::defaults::localhost")]
+    pub address: String,
+    #[serde(default = "config::defaults::port")]
+    pub port: u16,
+
+    pub default_to_tcp: bool,
 }
 
 impl Config for ClientConfig {

@@ -8,9 +8,11 @@ pub struct ServerConfig {
     #[serde(default = "config::defaults::data_dir")]
     pub data_dir: PathBuf,
     #[serde(default = "config::defaults::socket_path")]
-    pub socket_path: PathBuf,
+    pub socket: PathBuf,
     #[serde(default = "config::defaults::listen_addr")]
-    pub listen_addr: String,
+    pub address: String,
+    #[serde(default = "config::defaults::port")]
+    pub port: u16,
 }
 
 impl Config for ServerConfig {
