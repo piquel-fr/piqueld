@@ -37,7 +37,7 @@ in
 
     ctlSettings = lib.mkOption {
       description = "The configuration passed to the control cli";
-      default = {};
+      default = { };
       type = lib.types.submodule {
         freeformType = settingsFormat.type;
         options =
@@ -45,10 +45,25 @@ in
             inherit (lib) mkOption types;
           in
           {
-            socket_path = mkOption {
+            socket = mkOption {
               type = types.str;
               default = "/run/piqueld/piqueld.sock";
               description = "Path to the socket";
+            };
+            address = mkOption {
+              type = types.str;
+              default = "0.0.0.0";
+              description = "Address to listen to";
+            };
+            port = mkOption {
+              type = types.int;
+              default = 7854;
+              description = "Port on which to listen to";
+            };
+            default_to_tcp = mkOption {
+              type = types.bool;
+              default = false;
+              description = "Whether to connect to TCP socket by default.";
             };
           };
       };
@@ -76,7 +91,7 @@ in
 
     daemonSettings = lib.mkOption {
       description = "The configuration passed to the daemon";
-      default = {};
+      default = { };
       type = lib.types.submodule {
         freeformType = settingsFormat.type;
         options =
@@ -102,7 +117,7 @@ in
             port = mkOption {
               type = types.int;
               default = 7854;
-              description = "Address to listen to";
+              description = "Port on which to listen to";
             };
           };
       };
