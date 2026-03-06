@@ -46,7 +46,7 @@ in
           {
             socket_path = mkOption {
               type = types.str;
-              default = "/run/piqueld.sock";
+              default = "/run/piqueld/piqueld.sock";
               description = "Path to the socket";
             };
           };
@@ -89,7 +89,7 @@ in
             };
             socket_path = mkOption {
               type = types.str;
-              default = "/run/piqueld.sock";
+              default = "/run/piqueld/piqueld.sock";
               description = "Path to the socket";
             };
             listen_addr = mkOption {
@@ -119,7 +119,7 @@ in
           Group = cfg.group;
           StateDirectory = "piqueld";
           RuntimeDirectory = "piqueld";
-          RuntimeDirectoryMode = "0750";
+          RuntimeDirectoryMode = "0755";
           PrivateTmp = true;
           ProtectSystem = "strict";
           ProtectHome = true;
