@@ -5,7 +5,7 @@
   ...
 }:
 let
-  piqueld = pkgs.callPackage (import ./pkg.nix).piqueld { };
+  piqueld = pkgs.callPackage (import ./pkgs.nix).piqueld { };
 
   cfg = config.services.piqueld;
   settingsFormat = pkgs.formats.json { };
@@ -19,7 +19,7 @@ let
         nativeBuildInputs = [ pkgs.makeWrapper ];
       }
       ''
-        makeWrapper ${pkgs.callPackage (import ./pkg.nix).piquelctl { }}/bin/piquelctl $out/bin/piquelctl \
+        makeWrapper ${pkgs.callPackage (import ./pkgs.nix).piquelctl { }}/bin/piquelctl $out/bin/piquelctl \
             --add-flags "--config ${ctlConfig}"
       '';
 in
