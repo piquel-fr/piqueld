@@ -37,6 +37,7 @@ in
 
     ctlSettings = lib.mkOption {
       description = "The configuration passed to the control cli";
+      default = {};
       type = lib.types.submodule {
         freeformType = settingsFormat.type;
         options =
@@ -75,6 +76,7 @@ in
 
     daemonSettings = lib.mkOption {
       description = "The configuration passed to the daemon";
+      default = {};
       type = lib.types.submodule {
         freeformType = settingsFormat.type;
         options =
