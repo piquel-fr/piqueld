@@ -4,8 +4,10 @@ use std::panic;
 use piquelcore::ipc::client::Client;
 use piquelcore::ipc::message::{Command, Response};
 
-mod cli;
 use cli::Commands;
+
+mod config;
+mod cli;
 
 fn main() -> io::Result<()> {
     let cli = cli::parse();
