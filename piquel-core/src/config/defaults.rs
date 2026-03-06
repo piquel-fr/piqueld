@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 
-pub static SOCKET_PATH: &str = "/etc/piqueld/config.json";
 pub fn socket_path() -> PathBuf {
     // TODO: rename to "/run/piqueld.sock" when we run as root
-    PathBuf::from(SOCKET_PATH)
+    PathBuf::from("/etc/piqueld/config.json")
 }
 
 pub fn listen_addr() -> String {

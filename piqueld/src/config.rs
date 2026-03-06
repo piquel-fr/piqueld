@@ -18,4 +18,3 @@ impl Config for ServerConfig {
         Ok(())
     }
 }
-

@@ -1,6 +1,6 @@
-use std::io::{self};
 use std::panic;
 
+use piquelcore::config::{Config, defaults};
 use piquelcore::ipc::client::Client;
 use piquelcore::ipc::message::{Command, Response};
 
@@ -9,12 +9,25 @@ use cli::Commands;
 mod cli;
 mod config;
 
-fn main() -> io::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = cli::parse();
+
+    let config_path = match cli.config_path {
+        Some(path) => path,
+        None => defaults::client_config_path(),
+    };
+
+    let socket_path = match cli.socket {
+        Some(path) => path,
+        None => match config::ClientConfig::load(&config_path) {
+            Ok(config) => config.socket_path,
+            Err(_) => defaults::socket_path(),
+        },
+    };
 
     let mut client: Client = match cli.host {
         Some(addr) => Client::new_tcp(&addr)?,
-        None => Client::new_uds(&cli.socket)?,
+        None => Client::new_uds(&socket_path)?,
     };
 
     let cmd = match &cli.command {
