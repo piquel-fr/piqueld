@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "piquel-core",
     "piqueld",
@@ -9,3 +9,4 @@ members = [
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
+clap = { version = "4", features = ["derive"] }
