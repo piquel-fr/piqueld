@@ -107,8 +107,6 @@ in
       environment.systemPackages = [ cfg.ctlPackage ];
     })
     (lib.mkIf cfg.enableDaemon {
-      users.groups.piqueld = { };
-
       environment.etc."piqueld/config.json".source = daemonConfig;
 
       systemd.services.piqueld = {
