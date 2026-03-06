@@ -20,7 +20,7 @@ let
         nativeBuildInputs = [ pkgs.makeWrapper ];
       }
       ''
-        makeWrapper ${piquelpkgs.piquelctl { }}/bin/piquelctl $out/bin/piquelctl \
+        makeWrapper ${piquelpkgs.piquelctl}/bin/piquelctl $out/bin/piquelctl \
             --add-flags "--config ${ctlConfig}"
       '';
 in
