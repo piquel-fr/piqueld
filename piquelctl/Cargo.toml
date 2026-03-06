@@ -7,3 +7,4 @@ default-run = "piquelctl"
 [dependencies]
 piquel-core = { path = "../piquel-core/" }
 clap.workspace = true
+serde.workspace = true

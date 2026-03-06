@@ -6,8 +6,8 @@ use piquelcore::ipc::message::{Command, Response};
 
 use cli::Commands;
 
-mod config;
 mod cli;
+mod config;
 
 fn main() -> io::Result<()> {
     let cli = cli::parse();

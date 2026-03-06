@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
-use piquelcore::config::SOCKET_PATH;
+use piquelcore::config::defaults;
 
 pub fn parse() -> Cli {
     Cli::parse()
@@ -18,11 +20,11 @@ pub struct Cli {
     #[arg(
         short = 's',
         long = "socket",
-        value_name = "SOCK",
-        default_value = SOCKET_PATH,
+        value_name = "sock",
+        default_value = defaults::SOCKET_PATH,
         global = true
     )]
-    pub socket: String,
+    pub socket: PathBuf,
 
     #[command(subcommand)]
     pub command: Commands,

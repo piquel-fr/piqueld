@@ -1,11 +1,13 @@
-use crate::ipc::ConnectionType;
+use crate::ipc::{
+    ConnectionType,
+    message::{Command, Response},
+};
 
-use super::message::{Command, Response};
 use std::{
     io::{self, Read, Write},
     net::TcpStream,
     os::unix::net::UnixStream,
-    usize,
+    path::Path,
 };
 
 trait ReadWrite: Write + Read {}
@@ -24,7 +26,7 @@ impl Client {
             client_type: ConnectionType::Tcp,
         })
     }
-    pub fn new_uds(path: &str) -> io::Result<Self> {
+    pub fn new_uds(path: &Path) -> io::Result<Self> {
         let stream = UnixStream::connect(path)?;
         Ok(Self {
             stream: Box::new(stream),
