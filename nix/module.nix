@@ -24,7 +24,7 @@ let
       '';
 in
 {
-  options.programs.piquelcli = {
+  options.services.piqueld = {
     enable = lib.mkEnableOption "piquelctl";
 
     # CTL
