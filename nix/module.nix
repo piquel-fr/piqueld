@@ -7,7 +7,7 @@
 let
   piqueld = pkgs.callPackage (./pkg.nix).piqueld { };
 
-  cfg = config.programs.piquelcli;
+  cfg = config.services.piqueld;
   settingsFormat = pkgs.formats.json { };
 
   ctlConfig = settingsFormat.generate "piquelctl.json" cfg.ctlConfig;
@@ -55,8 +55,8 @@ in
     # DAEMON
 
     enableDaemon = lib.mkOption {
-      default = false;
-      example = true;
+      default = true;
+      example = false;
       description = "Whether to enable the daemon (piqueld).";
       type = lib.types.bool;
     };
@@ -95,7 +95,23 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ cfg.ctlPackage ];
-  };
+  config =
+    (lib.mkIf cfg.enable {
+      environment.systemPackages = [ cfg.ctlPackage ];
+    })
+    // (lib.mkIf cfg.enableDaemon {
+      environment.etc."piqueld/config.json".source = daemonConfig;
+
+      systemd.services.your-daemon = {
+        description = "piqueld";
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          ExecStart = "${piqueld}/bin/piqueld --config /etc/piqueld/config.json";
+          User = "piqueld";
+          DynamicUser = true;
+          StateDirectory = "piqueld"; # creates /var/lib/piqueld
+          RuntimeDirectory = "piqueld"; # creates /run/piqueld
+        };
+      };
+    });
 }
