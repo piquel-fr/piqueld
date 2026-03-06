@@ -6,12 +6,17 @@ use tokio::net::{TcpListener, UnixListener};
 
 pub struct Server {
     uds_path: PathBuf,
-    tcp_addr: String,
+    address: String,
+    port: u16,
 }
 
 impl Server {
-    pub fn new(tcp_addr: String, uds_path: PathBuf) -> Self {
-        Server { uds_path, tcp_addr }
+    pub fn new((address, port): (String, u16), uds_path: PathBuf) -> Self {
+        Server {
+            uds_path,
+            address,
+            port,
+        }
     }
     pub async fn listen(self) -> tokio::io::Result<()> {
         let server = Arc::new(self);
@@ -19,8 +24,9 @@ impl Server {
         Ok(())
     }
     async fn listen_tcp(self: Arc<Self>) -> tokio::io::Result<()> {
-        let listener = TcpListener::bind(&self.tcp_addr).await?;
-        println!("[TCP] Listening on {}", self.tcp_addr);
+        let addr = format!("{}:{}", self.address, self.port);
+        let listener = TcpListener::bind(&addr).await?;
+        println!("[TCP] Listening on {addr}");
         loop {
             let (stream, _) = listener.accept().await?;
             let server = Arc::clone(&self);

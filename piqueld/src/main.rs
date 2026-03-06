@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let config = config::ServerConfig::load(&cli.config_path)?;
 
-    Ok(Server::new(config.listen_addr, config.socket_path)
+    Ok(Server::new((config.address, config.port), config.socket)
         .listen()
         .await?)
 }

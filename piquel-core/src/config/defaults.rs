@@ -6,7 +6,10 @@ pub fn socket_path() -> PathBuf {
 }
 
 pub fn listen_addr() -> String {
-    String::from("0.0.0.0:7854")
+    String::from("0.0.0.0")
+}
+pub fn listen_port() -> u16 {
+    7854
 }
 
 /// Returns the default data dir
