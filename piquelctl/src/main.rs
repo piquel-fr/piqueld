@@ -17,11 +17,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => defaults::client_config_path(),
     };
 
+    let config = match config::ClientConfig::load(&config_path) {
+        Ok(config) => Some(config),
+        Err(_) => None,
+    };
+
     let socket_path = match cli.socket {
         Some(path) => path,
-        None => match config::ClientConfig::load(&config_path) {
-            Ok(config) => config.socket_path,
-            Err(_) => defaults::socket_path(),
+        None => match config {
+            Some(config) => config.socket_path,
+            None => defaults::socket_path(),
         },
     };
 
