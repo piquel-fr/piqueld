@@ -35,7 +35,6 @@ pub trait Config: serde::de::DeserializeOwned {
         let mut config: Self =
             serde_json::from_str(&config_file).map_err(ConfigError::ParseError)?;
 
-        // `set` fails only if another thread raced us — treat that as already loaded.
         config.validate()?;
         Ok(config)
     }
