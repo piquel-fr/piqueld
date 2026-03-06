@@ -45,7 +45,7 @@ in
           {
             socket_path = mkOption {
               type = types.str;
-              default = "/tmp/piqueld.sock";
+              default = "/run/piqueld.sock";
               description = "Path to the socket";
             };
           };
@@ -82,7 +82,7 @@ in
             };
             socket_path = mkOption {
               type = types.str;
-              default = "/tmp/piqueld.sock";
+              default = "/run/piqueld.sock";
               description = "Path to the socket";
             };
             listen_addr = mkOption {
