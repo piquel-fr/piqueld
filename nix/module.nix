@@ -89,14 +89,19 @@ in
               default = "/var/lib/piqueld";
               description = "Path to daemon data";
             };
-            socket_path = mkOption {
+            socket = mkOption {
               type = types.str;
               default = "/run/piqueld/piqueld.sock";
               description = "Path to the socket";
             };
-            listen_addr = mkOption {
+            address = mkOption {
               type = types.str;
-              default = "0.0.0.0:7854";
+              default = "0.0.0.0";
+              description = "Address to listen to";
+            };
+            port = mkOption {
+              type = types.int;
+              default = 7854;
               description = "Address to listen to";
             };
           };
