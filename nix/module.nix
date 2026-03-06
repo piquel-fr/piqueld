@@ -11,8 +11,8 @@ let
   cfg = config.services.piqueld;
   settingsFormat = pkgs.formats.json { };
 
-  ctlConfig = settingsFormat.generate "piquelctl.json" cfg.ctlConfig;
-  daemonConfig = settingsFormat.generate "piqueld.json" cfg.daemonConfig;
+  ctlConfig = settingsFormat.generate "piquelctl.json" cfg.ctlSettings;
+  daemonConfig = settingsFormat.generate "piqueld.json" cfg.daemonSettings;
 
   piquelctl =
     pkgs.runCommand "piquelctl-wrapped"
@@ -35,7 +35,7 @@ in
       default = piquelctl;
     };
 
-    ctlConfig = lib.mkOption {
+    ctlSettings = lib.mkOption {
       description = "The configuration passed to the control cli";
       type = lib.types.submodule {
         freeformType = settingsFormat.type;
