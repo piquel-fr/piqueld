@@ -1,21 +1,17 @@
-use crate::config::{LISTEN_ADDR, SOCKET_PATH};
 use crate::ipc::message::{Command, Response};
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener};
 
 pub struct Server {
-    uds_path: &'static str,
-    tcp_addr: &'static str,
+    uds_path: PathBuf,
+    tcp_addr: String,
 }
 
 impl Server {
-    pub fn new() -> Self {
-        Server {
-            uds_path: SOCKET_PATH,
-            tcp_addr: LISTEN_ADDR,
-        }
+    pub fn new(tcp_addr: String, uds_path: PathBuf) -> Self {
+        Server { uds_path, tcp_addr }
     }
     pub async fn listen(self) -> tokio::io::Result<()> {
         let server = Arc::new(self);
@@ -23,7 +19,7 @@ impl Server {
         Ok(())
     }
     async fn listen_tcp(self: Arc<Self>) -> tokio::io::Result<()> {
-        let listener = TcpListener::bind(self.tcp_addr).await?;
+        let listener = TcpListener::bind(&self.tcp_addr).await?;
         println!("[TCP] Listening on {}", self.tcp_addr);
         loop {
             let (stream, _) = listener.accept().await?;
@@ -32,11 +28,11 @@ impl Server {
         }
     }
     async fn listen_uds(self: Arc<Self>) -> tokio::io::Result<()> {
-        if Path::new(self.uds_path).exists() {
-            std::fs::remove_file(self.uds_path)?;
+        if self.uds_path.exists() {
+            std::fs::remove_file(&self.uds_path)?;
         }
-        let listener = UnixListener::bind(self.uds_path)?;
-        println!("[UDS] Listening on {}", self.uds_path);
+        let listener = UnixListener::bind(&self.uds_path)?;
+        println!("[UDS] Listening on {:?}", self.uds_path);
         loop {
             let (stream, _) = listener.accept().await?;
             let server = Arc::clone(&self);

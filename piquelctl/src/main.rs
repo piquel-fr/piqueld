@@ -1,18 +1,38 @@
-use std::io::{self};
 use std::panic;
 
+use piquelcore::config::{Config, defaults};
 use piquelcore::ipc::client::Client;
 use piquelcore::ipc::message::{Command, Response};
 
-mod cli;
 use cli::Commands;
 
-fn main() -> io::Result<()> {
+mod cli;
+mod config;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = cli::parse();
+
+    let config_path = match cli.config_path {
+        Some(path) => path,
+        None => defaults::client_config_path(),
+    };
+
+    let config = match config::ClientConfig::load(&config_path) {
+        Ok(config) => Some(config),
+        Err(_) => None,
+    };
+
+    let socket_path = match cli.socket {
+        Some(path) => path,
+        None => match config {
+            Some(config) => config.socket_path,
+            None => defaults::socket_path(),
+        },
+    };
 
     let mut client: Client = match cli.host {
         Some(addr) => Client::new_tcp(&addr)?,
-        None => Client::new_uds(&cli.socket)?,
+        None => Client::new_uds(&socket_path)?,
     };
 
     let cmd = match &cli.command {

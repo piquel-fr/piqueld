@@ -226,13 +226,16 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "piquel-core",
+ "serde",
 ]
 
 [[package]]
 name = "piqueld"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "piquel-core",
+ "serde",
  "tokio",
 ]
 

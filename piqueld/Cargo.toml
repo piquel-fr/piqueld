@@ -5,4 +5,6 @@ edition = "2024"
 
 [dependencies]
 piquel-core = { path = "../piquel-core/" }
+clap.workspace = true
 tokio.workspace = true
+serde.workspace = true
