@@ -1,32 +1,7 @@
-use clap::Parser;
-use std::path::PathBuf;
-
-use piquelcore::{
-    config::{Config, defaults},
-    ipc::server::Server,
-};
-
-mod config;
-
-#[derive(Parser, Debug)]
-#[command(name = "piquelctl")]
-#[command(about = "CLI for piqueld", long_about = None)]
-pub struct Cli {
-    /// Custom path to configuration
-    #[arg(long = "config",
-        value_name = "path",
-        global = true,
-        default_value = defaults::SERVER_CONFIG_PATH
-        )]
-    config_path: PathBuf,
-}
+use tokio;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-    let config = config::ServerConfig::load(&cli.config_path)?;
-
-    Ok(Server::new((config.address, config.port), config.socket)
-        .listen()
-        .await?)
+    // TODO: handle error
+    piqueld::run().await
 }

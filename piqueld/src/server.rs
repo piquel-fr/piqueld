@@ -1,4 +1,4 @@
-use crate::ipc::message::{Command, Response};
+use piquelcore::ipc::message::{Command, Response};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
