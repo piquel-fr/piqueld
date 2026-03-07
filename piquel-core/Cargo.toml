@@ -8,5 +8,6 @@ name = "piquelcore"
 
 [dependencies]
 log.workspace = true
+time.workspace = true
 serde.workspace = true
 serde_json.workspace = true
