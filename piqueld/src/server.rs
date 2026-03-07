@@ -1,3 +1,4 @@
+use log::info;
 use piquelcore::ipc::message::{Command, Response};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,7 +27,7 @@ impl Server {
     async fn listen_tcp(self: Arc<Self>) -> tokio::io::Result<()> {
         let addr = format!("{}:{}", self.address, self.port);
         let listener = TcpListener::bind(&addr).await?;
-        println!("[TCP] Listening on {addr}");
+        info!("[TCP] Listening on {addr}");
         loop {
             let (stream, _) = listener.accept().await?;
             let server = Arc::clone(&self);
@@ -38,7 +39,7 @@ impl Server {
             std::fs::remove_file(&self.uds_path)?;
         }
         let listener = UnixListener::bind(&self.uds_path)?;
-        println!("[UDS] Listening on {:?}", self.uds_path);
+        info!("[UDS] Listening on {:?}", self.uds_path);
         loop {
             let (stream, _) = listener.accept().await?;
             let server = Arc::clone(&self);
@@ -71,11 +72,11 @@ impl Server {
             ),
             Command::Echo(msg) => Response::Message(msg),
             Command::Reload => {
-                println!("Received reload command");
+                info!("Received reload command");
                 Response::Ok
             }
             Command::Stop => {
-                println!("Received stop command");
+                info!("Received stop command");
                 Response::Ok
             }
         })

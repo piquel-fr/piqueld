@@ -257,6 +257,7 @@ name = "piqueld"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "log",
  "piquel-core",
  "serde",
  "serde_json",
