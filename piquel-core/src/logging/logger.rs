@@ -1,4 +1,5 @@
 use log::{Level, Metadata, Record};
+use time;
 
 pub struct Logger {
     enable: bool,
