@@ -4,24 +4,20 @@ use time::{self, OffsetDateTime};
 pub struct Logger {
     enable: bool,
     max_level: Level,
-    date_time: bool,
-}
-
-pub fn init(logger: Box<Logger>) -> Result<(), Box<dyn std::error::Error>> {
-    let max_level = logger.max_level.to_level_filter();
-    log::set_boxed_logger(logger)?;
-    log::set_max_level(max_level);
-
-    Ok(())
+    prefix: bool,
 }
 
 impl Logger {
-    pub fn new(enable: bool, max_level: Level, date_time: bool) -> Self {
+    pub fn new(enable: bool, verbose: bool, prefix: bool) -> Self {
+        let max_level = if verbose { Level::Info } else { Level::Trace };
         Logger {
             enable,
             max_level,
-            date_time,
+            prefix,
         }
+    }
+    pub fn max_level(&self) -> Level {
+        self.max_level
     }
 }
 
@@ -37,6 +33,7 @@ impl log::Log for Logger {
         if !self.enabled(record.metadata()) {
             return;
         }
+
         let now = OffsetDateTime::now_utc();
         let fmt = time::format_description::parse("[year]/[month]/[day] [hour]:[minute]:[second]")
             .unwrap();
@@ -44,13 +41,13 @@ impl log::Log for Logger {
         let timestamp = now.format(&fmt).unwrap();
         let log_level = format_log_level(record.level());
 
-        let prefix = if self.date_time {
-            format!("{} {}", timestamp, log_level)
-        } else {
-            log_level
-        };
+        let prefix = format!("{} {}", timestamp, log_level);
 
-        let msg = format!("{} {}", prefix, record.args());
+        let msg = if self.prefix {
+            format!("{} {}", prefix, record.args())
+        } else {
+            record.args().to_string()
+        };
 
         if record.level() == Level::Error {
             println!("{msg}");
