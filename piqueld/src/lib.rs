@@ -1,5 +1,6 @@
 mod config;
 mod server;
+mod git;
 
 use clap::Parser;
 use std::path::PathBuf;
