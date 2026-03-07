@@ -4,7 +4,17 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'README.md'
   pull_request:
+    paths-ignore:
+      - 'nix/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'README.md'
 
 env:
   CARGO_TERM_COLOR: always
