@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::{io, panic};
 
 use piquelcore::config::{Config, defaults};
@@ -15,9 +16,23 @@ mod config;
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = cli::parse();
 
+    let pwd = match std::env::current_dir() {
+        Ok(mut path) => {
+            path.push("config.json");
+            path
+        }
+        Err(_) => PathBuf::new(),
+    };
+
     let config_path = match &cli.config_path {
         Some(path) => path,
-        None => &defaults::client_config_path(),
+        None => {
+            if pwd.is_file() {
+                &pwd
+            } else {
+                &defaults::client_config_path()
+            }
+        }
     };
 
     let config = match config::ClientConfig::load(&config_path) {
