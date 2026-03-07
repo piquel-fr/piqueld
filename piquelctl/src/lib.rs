@@ -95,7 +95,7 @@ fn create_client(config: &Option<ClientConfig>, cli: &Cli) -> io::Result<Client>
     })
 }
 
-fn handle_response(command: &Command, response: &Response) {
+fn handle_response(_command: &Command, response: &Response) {
     info!(
         "{}",
         match response {
