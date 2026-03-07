@@ -35,8 +35,7 @@ impl log::Log for Logger {
         }
 
         let now = OffsetDateTime::now_utc();
-        let fmt = time::format_description::parse("[year]/[month]/[day] [hour]:[minute]:[second]")
-            .unwrap();
+        let fmt = date_time_format();
 
         let timestamp = now.format(&fmt).unwrap();
         let log_level = format_log_level(record.level());
@@ -89,4 +88,17 @@ enum Color {
 
 fn make_colored_message(color: Color, message: &str) -> String {
     format!("\x1b[{}m{}\x1b[0m", color as usize, message)
+}
+
+fn date_time_format() -> Vec<time::format_description::BorrowedFormatItem<'static>> {
+    time::format_description::parse("[year]/[month]/[day] [hour]:[minute]:[second]").unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn date_time_format() {
+        // making sure the unwrap doesn't crash
+        super::date_time_format();
+    }
 }
