@@ -1,5 +1,5 @@
 use log::{Level, Metadata, Record};
-use time;
+use time::{self, OffsetDateTime};
 
 pub struct Logger {
     enable: bool,
@@ -37,9 +37,32 @@ impl log::Log for Logger {
         if !self.enabled(record.metadata()) {
             return;
         }
+        let now = OffsetDateTime::now_utc();
+        let fmt = time::format_description::parse("[year]/[month]/[day] [hour]:[minute]:[second]")
+            .unwrap();
 
-        println!("{} - {}", record.level(), record.args());
+        let timestamp = now.format(&fmt).unwrap();
+        let log_level = format_log_level(record.level());
+
+        let prefix = if self.date_time {
+            format!("{} {}", timestamp, log_level)
+        } else {
+            log_level
+        };
+
+        let msg = format!("{} {}", prefix, record.args());
+
+        if record.level() == Level::Error {
+            println!("{msg}");
+        } else {
+            eprintln!("{msg}");
+        }
     }
 
     fn flush(&self) {}
+}
+
+fn format_log_level(level: Level) -> String {
+    // TODO: color the string
+    format!("[{}]", level.to_string())
 }
