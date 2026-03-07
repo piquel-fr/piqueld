@@ -9,7 +9,7 @@ pub struct Logger {
 
 impl Logger {
     pub fn new(enable: bool, verbose: bool, prefix: bool) -> Self {
-        let max_level = if verbose { Level::Info } else { Level::Trace };
+        let max_level = if verbose { Level::Trace } else { Level::Info };
         Logger {
             enable,
             max_level,
