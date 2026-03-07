@@ -54,7 +54,6 @@ impl log::Log for Logger {
             eprintln!("{msg}");
         }
     }
-
     fn flush(&self) {}
 }
 
@@ -96,9 +95,9 @@ fn date_time_format() -> Vec<time::format_description::BorrowedFormatItem<'stati
 
 #[cfg(test)]
 mod tests {
+    /// Making sure the unwrap doesn't crash
     #[test]
     fn date_time_format() {
-        // making sure the unwrap doesn't crash
         super::date_time_format();
     }
 }
