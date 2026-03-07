@@ -1,3 +1,5 @@
+use log::debug;
+
 use crate::ipc::{
     ConnectionType,
     message::{Command, Response},
@@ -21,19 +23,26 @@ pub struct Client {
 impl Client {
     pub fn new_tcp(addr: &str) -> io::Result<Self> {
         let stream = TcpStream::connect(addr)?;
-        Ok(Self {
-            stream: Box::new(stream),
-            client_type: ConnectionType::Tcp,
-        })
+        Ok(Client::new(Box::new(stream), addr, ConnectionType::Tcp))
     }
     pub fn new_uds(path: &Path) -> io::Result<Self> {
         let stream = UnixStream::connect(path)?;
-        Ok(Self {
-            stream: Box::new(stream),
-            client_type: ConnectionType::Uds,
-        })
+        Ok(Client::new(
+            Box::new(stream),
+            &path.to_string_lossy(),
+            ConnectionType::Uds,
+        ))
+    }
+    fn new(stream: Box<dyn ReadWrite>, addr: &str, client_type: ConnectionType) -> Self {
+        debug!("[{client_type:#}] Connected to server on {addr}");
+        Client {
+            stream,
+            client_type,
+        }
     }
     pub fn send_command(&mut self, command: &Command) -> io::Result<Response> {
+        debug!("[{:#}] Sending command: {}", self.client_type, command);
+
         let request = serde_json::to_vec(&command)?;
         let len = (request.len() as u32).to_be_bytes();
         self.stream.write_all(&len)?;
