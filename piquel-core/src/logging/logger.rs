@@ -60,6 +60,33 @@ impl log::Log for Logger {
 }
 
 fn format_log_level(level: Level) -> String {
-    // TODO: color the string
-    format!("[{}]", level.to_string())
+    format!(
+        "[{}]",
+        make_colored_message(level.into(), &level.to_string())
+    )
+}
+
+impl From<Level> for Color {
+    fn from(level: Level) -> Self {
+        match level {
+            Level::Error => Color::Red,
+            Level::Warn => Color::Yellow,
+            Level::Info => Color::Green,
+            Level::Debug => Color::Blue,
+            Level::Trace => Color::Cyan,
+        }
+    }
+}
+
+enum Color {
+    Cyan = 36,
+    //Magenta = 35,
+    Blue = 34,
+    Yellow = 33,
+    Green = 32,
+    Red = 31,
+}
+
+fn make_colored_message(color: Color, message: &str) -> String {
+    format!("\x1b[{}m{}\x1b[0m", color as usize, message)
 }
