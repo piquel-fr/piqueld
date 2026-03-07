@@ -1,4 +1,5 @@
 mod config;
+mod docker;
 mod server;
 
 use clap::Parser;
@@ -31,6 +32,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let logger = Box::new(Logger::new(true, cli.verbose, true));
     logging::init(logger)?;
+
+    // TODO
+    docker::init().await?;
 
     Ok(Server::new((config.address, config.port), config.socket)
         .listen()
