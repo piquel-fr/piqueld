@@ -1,6 +1,6 @@
 mod config;
-mod server;
 mod git;
+mod server;
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -32,6 +32,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let logger = Box::new(Logger::new(true, cli.verbose, true));
     logging::init(logger)?;
+
+    git::init()?;
 
     Ok(Server::new((config.address, config.port), config.socket)
         .listen()
