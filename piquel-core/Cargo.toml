@@ -7,5 +7,7 @@ edition = "2024"
 name = "piquelcore"
 
 [dependencies]
+log.workspace = true
+time.workspace = true
 serde.workspace = true
 serde_json.workspace = true

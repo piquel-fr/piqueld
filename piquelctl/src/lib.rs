@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 use std::{io, panic};
 
+use log::info;
 use piquelcore::config::{Config, defaults};
 use piquelcore::ipc::client::Client;
 use piquelcore::ipc::message::{Command, Response};
 
 use cli::Commands;
+use piquelcore::logging::{self, logger::Logger};
 
 use crate::cli::Cli;
 use crate::config::ClientConfig;
@@ -15,6 +17,9 @@ mod config;
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = cli::parse();
+
+    let logger = Box::new(Logger::new(true, cli.verbose, false));
+    logging::init(logger)?;
 
     let pwd = match std::env::current_dir() {
         Ok(mut path) => {
@@ -90,8 +95,8 @@ fn create_client(config: &Option<ClientConfig>, cli: &Cli) -> io::Result<Client>
     })
 }
 
-fn handle_response(command: &Command, response: &Response) {
-    println!(
+fn handle_response(_command: &Command, response: &Response) {
+    info!(
         "{}",
         match response {
             Response::Ok => "Success",

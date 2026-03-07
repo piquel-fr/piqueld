@@ -8,3 +8,4 @@ default-run = "piquelctl"
 piquel-core = { path = "../piquel-core/" }
 clap.workspace = true
 serde.workspace = true
+log.workspace = true

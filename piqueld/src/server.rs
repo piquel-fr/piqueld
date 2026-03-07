@@ -1,3 +1,5 @@
+use log::info;
+use piquelcore::ipc::ConnectionType;
 use piquelcore::ipc::message::{Command, Response};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,11 +28,11 @@ impl Server {
     async fn listen_tcp(self: Arc<Self>) -> tokio::io::Result<()> {
         let addr = format!("{}:{}", self.address, self.port);
         let listener = TcpListener::bind(&addr).await?;
-        println!("[TCP] Listening on {addr}");
+        info!("[TCP] Listening on {addr}");
         loop {
             let (stream, _) = listener.accept().await?;
             let server = Arc::clone(&self);
-            tokio::spawn(async move { server.handle(stream).await });
+            tokio::spawn(async move { server.handle(ConnectionType::Tcp, stream).await });
         }
     }
     async fn listen_uds(self: Arc<Self>) -> tokio::io::Result<()> {
@@ -38,14 +40,14 @@ impl Server {
             std::fs::remove_file(&self.uds_path)?;
         }
         let listener = UnixListener::bind(&self.uds_path)?;
-        println!("[UDS] Listening on {:?}", self.uds_path);
+        info!("[UDS] Listening on {:?}", self.uds_path);
         loop {
             let (stream, _) = listener.accept().await?;
             let server = Arc::clone(&self);
-            tokio::spawn(async move { server.handle(stream).await });
+            tokio::spawn(async move { server.handle(ConnectionType::Uds, stream).await });
         }
     }
-    async fn handle<T>(&self, mut stream: T) -> tokio::io::Result<()>
+    async fn handle<T>(&self, conn_type: ConnectionType, mut stream: T) -> tokio::io::Result<()>
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
@@ -56,14 +58,20 @@ impl Server {
             let mut cmd_buf = vec![0u8; len];
             stream.read_exact(&mut cmd_buf).await?;
             let command: Command = serde_json::from_slice(&cmd_buf)?;
-            let response = self.process_command(command)?;
+            let response = self.process_command(conn_type, command)?;
             let response_data = serde_json::to_vec(&response)?;
             let len = (response_data.len() as u32).to_be_bytes();
             stream.write_all(&len).await?;
             stream.write_all(&response_data).await?;
         }
     }
-    fn process_command(&self, command: Command) -> tokio::io::Result<Response> {
+    fn process_command(
+        &self,
+        conn_type: ConnectionType,
+        command: Command,
+    ) -> tokio::io::Result<Response> {
+        info!("[{conn_type}] Received Command: {command:#}");
+
         Ok(match command {
             Command::Status => Response::Message("Status OK".to_string()),
             Command::Hostname => Response::Message(
@@ -71,11 +79,11 @@ impl Server {
             ),
             Command::Echo(msg) => Response::Message(msg),
             Command::Reload => {
-                println!("Received reload command");
+                info!("Received reload command");
                 Response::Ok
             }
             Command::Stop => {
-                println!("Received stop command");
+                info!("Received stop command");
                 Response::Ok
             }
         })
