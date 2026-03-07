@@ -70,11 +70,7 @@ impl Server {
         conn_type: ConnectionType,
         command: Command,
     ) -> tokio::io::Result<Response> {
-        let prefix = match conn_type {
-            ConnectionType::Tcp => "[TCP]",
-            ConnectionType::Uds => "[UDS]",
-        };
-        info!("{prefix} Received Command: {command:#}");
+        info!("[{conn_type}] Received Command: {command:#}");
 
         Ok(match command {
             Command::Status => Response::Message("Status OK".to_string()),
