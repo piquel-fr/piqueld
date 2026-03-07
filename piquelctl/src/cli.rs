@@ -17,6 +17,8 @@ pub fn parse() -> Cli {
         .required(false)  // neither is required
 ))]
 pub struct Cli {
+    #[arg(short = 'v', long = "verbose", global = true)]
+    pub verbose: bool,
     /// Custom path to configuration
     #[arg(long = "config", value_name = "path", global = true)]
     pub config_path: Option<PathBuf>,
