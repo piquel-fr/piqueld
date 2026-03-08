@@ -7,12 +7,12 @@ use crate::config::ServerConfig;
 
 const PREFIX: &str = "[GIT]";
 
-pub struct Git {
+pub struct GitService {
     path: PathBuf,
     repo_path: PathBuf,
 }
 
-impl Git {
+impl GitService {
     pub fn new(config: &ServerConfig) -> Self {
         let mut path = config.data_dir.clone();
         path.push("git");
@@ -23,9 +23,9 @@ impl Git {
         fs::create_dir_all(&path).expect("It don't know why this would fail");
         fs::create_dir_all(&repo_path).expect("It don't know why this would fail");
 
-        Git { path, repo_path }
+        Self { path, repo_path }
     }
-    pub fn get_repository(
+    fn get_repository(
         &self,
         owner: &str,
         repo: &str,
