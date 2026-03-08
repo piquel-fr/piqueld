@@ -1,4 +1,5 @@
-pub fn init() -> Result<(), Box<dyn std::error::Error>> {
-    gix::open("")?;
-    Ok(())
+pub struct Git;
+
+impl Git {
+    pub fn new() -> Git { Git }
 }
