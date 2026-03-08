@@ -12,10 +12,10 @@ pub enum GitCommand {
     GetRepository {
         owner: String,
         name: String,
-        reply: oneshot::Sender<io::Result<Repository>>,
+        reply: oneshot::Sender<piquel::Result<Repository>>,
     },
     ListRepositories {
-        reply: oneshot::Sender<Result<(), Box<dyn std::error::Error>>>,
+        reply: oneshot::Sender<piquel::Result<Vec<Repository>>>,
     },
 }
 
