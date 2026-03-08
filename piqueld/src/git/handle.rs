@@ -2,16 +2,16 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::config::ServerConfig;
 
-use super::{GitService, Repository};
+use super::{GitService, RepositoryInfo};
 
 enum GitCommand {
     GetRepository {
         owner: String,
         name: String,
-        reply: oneshot::Sender<piquel::Result<Repository>>,
+        reply: oneshot::Sender<Option<RepositoryInfo>>,
     },
     ListRepositories {
-        reply: oneshot::Sender<piquel::Result<Vec<Repository>>>,
+        reply: oneshot::Sender<piquel::Result<Vec<RepositoryInfo>>>,
     },
 }
 
@@ -20,7 +20,7 @@ pub struct GitHandle {
 }
 
 impl GitHandle {
-    pub async fn get_repository(&self, owner: &str, repo: &str) -> piquel::Result<Repository> {
+    pub async fn get_repository(&self, owner: &str, repo: &str) -> piquel::Result<RepositoryInfo> {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(GitCommand::GetRepository {
@@ -30,8 +30,9 @@ impl GitHandle {
             })
             .await?;
         rx.await?
+            .ok_or("Repository {owner}/{repo} not found".into())
     }
-    pub async fn list_repositories(&self) -> piquel::Result<Vec<Repository>> {
+    pub async fn list_repositories(&self) -> piquel::Result<Vec<RepositoryInfo>> {
         let (reply, rx) = oneshot::channel();
         self.tx.send(GitCommand::ListRepositories { reply }).await?;
         rx.await?
@@ -41,18 +42,19 @@ impl GitHandle {
 pub fn new_git_service(config: &ServerConfig) -> GitHandle {
     let (tx, mut rx) = mpsc::channel::<GitCommand>(32);
 
-    let service = GitService::new(&config);
+    // TODO: error
+    let service = GitService::init(&config).unwrap();
 
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 GitCommand::GetRepository { owner, name, reply } => {
-                    let result = service.get_repository(&owner, &name);
-                    let _ = reply.send(result);
+                    let result = service.get_repository((&owner, &name));
+                    let _ = reply.send(result.cloned());
                 }
                 GitCommand::ListRepositories { reply } => {
                     let result = service.list_repositories();
-                    let _ = reply.send(result);
+                    let _ = reply.send(Ok(result));
                 }
             };
         }

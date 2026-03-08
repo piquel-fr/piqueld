@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+use std::io;
 use std::{fs, path::PathBuf};
 
-use gix::bstr::BString;
-use log::{info, trace};
+use log::info;
+use serde::{Deserialize, Serialize};
 
 use crate::config::ServerConfig;
 
@@ -9,15 +11,23 @@ mod handle;
 pub use handle::GitHandle;
 pub use handle::new_git_service;
 
+mod repository;
+pub use repository::RepositoryInfo;
+
 const PREFIX: &str = "[GIT]";
 
+#[derive(Debug, Serialize, Deserialize)]
 struct GitService {
+    #[serde(skip)]
     path: PathBuf,
+    #[serde(skip)]
     repo_path: PathBuf,
+
+    repositories: HashMap<String, RepositoryInfo>,
 }
 
 impl GitService {
-    fn new(config: &ServerConfig) -> Self {
+    fn init(config: &ServerConfig) -> io::Result<Self> {
         let mut path = config.data_dir.clone();
         path.push("git");
 
@@ -27,81 +37,33 @@ impl GitService {
         fs::create_dir_all(&path).expect("It don't know why this would fail");
         fs::create_dir_all(&repo_path).expect("It don't know why this would fail");
 
-        Self { path, repo_path }
-    }
-    fn get_repository(&self, owner: &str, repo: &str) -> piquel::Result<Repository> {
-        let mut path = self.repo_path.clone();
-        path.push(repo);
-
-        let repository = match gix::open(path) {
-            Ok(repository) => {
-                trace!("{PREFIX} Found repository {owner}/{repo} on system");
-                repository
-            }
-            Err(_) => {
-                info!("{PREFIX} Couldn't load repository {owner}/{repo}. Attempting to clone...");
-                self.clone(owner, repo)?
-            }
-        };
-
-        Ok(Repository {
-            repository,
-            owner: owner.to_string(),
-            name: repo.to_string(),
+        Ok(Self {
+            path,
+            repo_path,
+            // TODO: load the state from disk
+            repositories: HashMap::new(),
         })
     }
-    fn clone(&self, owner: &str, repo: &str) -> piquel::Result<gix::Repository> {
+    fn get_repository(&self, (owner, repo): (&str, &str)) -> Option<&RepositoryInfo> {
+        self.repositories.get(&format!("{owner}/{repo}"))
+    }
+    fn clone(&mut self, info: RepositoryInfo) -> piquel::Result<gix::Repository> {
         let mut path = self.repo_path.clone();
-        path.push(repo);
+        path.push(info.name());
 
-        let mut prepare_checkout = gix::prepare_clone(make_repo_url(owner, repo)?, path)?
+        let mut prepare_checkout = gix::prepare_clone(info.make_url()?, path)?
             .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
             .0;
 
         let repository = prepare_checkout
             .main_worktree(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
             .0;
-        info!("{PREFIX} Successfully cloned {owner}/{repo}");
+        info!("{PREFIX} Successfully cloned {}", info.full_name());
+
+        self.repositories.insert(info.full_name(), info);
         Ok(repository)
     }
-    fn list_repositories(&self) -> piquel::Result<Vec<Repository>> {
-        let dir = fs::read_dir(&self.repo_path)?;
-        let repos = dir
-            .filter_map(Result::ok)
-            .filter_map(|entry| match gix::open(entry.path()) {
-                Ok(repository) => Some(Repository {
-                    repository,
-                    name: entry.file_name().to_string_lossy().into(),
-                    owner: "TBD".into(),
-                }),
-                Err(_) => None,
-            })
-            .collect();
-
-        Ok(repos)
+    fn list_repositories(&self) -> Vec<RepositoryInfo> {
+        self.repositories.values().map(Clone::clone).collect()
     }
-}
-
-pub struct Repository {
-    repository: gix::Repository,
-    owner: String,
-    name: String,
-}
-
-impl Repository {
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-fn make_repo_url(owner: &str, repo: &str) -> Result<gix::Url, gix::url::parse::Error> {
-    gix::Url::from_parts(
-        gix::url::Scheme::Ssh,
-        Some("git".into()),
-        None,
-        Some("github.com".into()),
-        None,
-        BString::from(format!("{owner}/{repo}")),
-        false,
-    )
 }
