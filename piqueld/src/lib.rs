@@ -35,7 +35,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = config::ServerConfig::load(&cli.config_path)?;
 
     if match config.data_dir.try_exists() {
-        Ok(found) => found,
+        Ok(found) => !found,
         Err(err) => return Err(format!("Failed to detect data directory: {err:#}").into()),
     } {
         info!(
