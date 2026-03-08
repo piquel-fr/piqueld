@@ -93,7 +93,7 @@ impl Server {
                     .list_repositories()
                     .await?
                     .iter()
-                    .map(|repo| repo.name().to_string())
+                    .map(|repo| repo.full_name().to_string())
                     .collect();
                 Response::RepositoryList(repos)
             }
