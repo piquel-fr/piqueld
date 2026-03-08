@@ -8,7 +8,7 @@ use log::info;
 use std::{fs, path::PathBuf};
 
 use crate::server::Server;
-use piquelcore::{
+use piquel::{
     config::{Config, defaults},
     logging::{self, logger::Logger},
 };
