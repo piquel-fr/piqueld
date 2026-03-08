@@ -98,9 +98,9 @@ fn create_client(config: &Option<ClientConfig>, cli: &Cli) -> io::Result<Client>
     })
 }
 
-fn handle_response(_command: &Command, response: &Response) {
+fn handle_response(command: &Command, response: &Response) {
     match response {
-        Response::Ok => info!("Success"),
+        Response::Success => info!("Successfully {command:#}"),
         Response::Message(message) => info!("{message}"),
         Response::Error(err) => error!("{err}"),
         Response::RepositoryList(list) => {

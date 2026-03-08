@@ -28,7 +28,7 @@ impl std::fmt::Display for Command {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Response {
-    Ok,
+    Success,
     Message(String),
     Error(String),
     RepositoryList(Vec<String>),
