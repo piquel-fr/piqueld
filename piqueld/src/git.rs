@@ -13,7 +13,7 @@ pub struct Git {
 }
 
 impl Git {
-    pub fn new(config: &ServerConfig) -> Result<Git, Box<dyn std::error::Error>> {
+    pub fn new(config: &ServerConfig) -> Git {
         let mut path = config.data_dir.clone();
         path.push("git");
 
@@ -23,7 +23,7 @@ impl Git {
         fs::create_dir_all(&path).expect("It don't know why this would fail");
         fs::create_dir_all(&repo_path).expect("It don't know why this would fail");
 
-        Ok(Git { path, repo_path })
+        Git { path, repo_path }
     }
     pub fn get_repository(
         &self,
