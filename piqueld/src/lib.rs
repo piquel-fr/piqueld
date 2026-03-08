@@ -64,6 +64,12 @@ pub async fn run() -> piquel::Result<()> {
         git: git::new_git_service(&config),
     };
 
+    // TODO: temp, just to remove unused warnings
+    let _ = match state.git.get_repository("piquel-fr", "backend").await {
+        Ok(repo) => repo,
+        Err(_) => state.git.clone("piquel-fr", "backend").await?,
+    };
+
     Ok(
         Server::new(state, (config.address, config.port), config.socket)
             .listen()
