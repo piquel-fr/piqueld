@@ -3,7 +3,7 @@ mod git;
 mod server;
 
 use clap::Parser;
-use log::info;
+use log::{info, trace};
 use std::{fs, path::PathBuf};
 
 use crate::{git::GitHandle, server::Server};
@@ -43,8 +43,10 @@ pub async fn run() -> piquel::Result<()> {
     let cli = Cli::parse();
     let logger = Box::new(Logger::new(true, cli.verbose, true));
     logging::init(logger);
+    trace!("Initialized logger");
 
     let config = config::ServerConfig::load(&cli.config_path)?;
+    trace!("Loaded config");
 
     if match config.data_dir.try_exists() {
         Ok(found) => !found,
@@ -59,6 +61,7 @@ pub async fn run() -> piquel::Result<()> {
             Err(err) => return Err(format!("Failed to create data directory: {err:#}").into()),
         };
     }
+    trace!("Setup data dir");
 
     let state: State = State {
         git: git::new_git_service(&config),

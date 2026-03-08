@@ -57,8 +57,8 @@ impl GitService {
             repositories: HashMap::new(),
         })
     }
-    fn get_repository(&self, owner: &str, repo: &str) -> Option<&RepositoryInfo> {
-        self.repositories.get(&format!("{owner}/{repo}"))
+    fn get_repository(&self, owner: &str, repo: &str) -> Option<RepositoryInfo> {
+        self.repositories.get(&format!("{owner}/{repo}")).cloned()
     }
     fn clone(&mut self, owner: &str, name: &str) -> piquel::Result<RepositoryInfo> {
         let info = RepositoryInfo::new(owner, name);

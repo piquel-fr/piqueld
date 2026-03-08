@@ -82,7 +82,7 @@ pub fn new_git_service(config: &ServerConfig) -> GitHandle {
             match cmd {
                 GitCommand::GetRepository { owner, name, reply } => {
                     let result = service.get_repository(&owner, &name);
-                    let _ = reply.send(result.cloned());
+                    let _ = reply.send(result);
                 }
                 GitCommand::ListRepositories { reply } => {
                     let result = service.list_repositories();
