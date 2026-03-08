@@ -54,7 +54,7 @@ impl Git {
         let mut path = self.repo_path.clone();
         path.push(repo);
 
-        let mut prepare_checkout = gix::prepare_clone(Git::make_repo_url(owner, repo)?, path)?
+        let mut prepare_checkout = gix::prepare_clone(make_repo_url(owner, repo)?, path)?
             .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
             .0;
 
@@ -64,19 +64,20 @@ impl Git {
         info!("{PREFIX} Successfully cloned {owner}/{repo}");
         Ok(repository)
     }
-    fn make_repo_url(owner: &str, repo: &str) -> Result<gix::Url, gix::url::parse::Error> {
-        gix::Url::from_parts(
-            gix::url::Scheme::Ssh,
-            Some("git".into()),
-            None,
-            Some("github.com".into()),
-            None,
-            BString::from(format!("{owner}/{repo}")),
-            false,
-        )
-    }
 }
 
 pub struct Repository {
     repository: gix::Repository,
+}
+
+fn make_repo_url(owner: &str, repo: &str) -> Result<gix::Url, gix::url::parse::Error> {
+    gix::Url::from_parts(
+        gix::url::Scheme::Ssh,
+        Some("git".into()),
+        None,
+        Some("github.com".into()),
+        None,
+        BString::from(format!("{owner}/{repo}")),
+        false,
+    )
 }
