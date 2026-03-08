@@ -22,6 +22,8 @@ struct GitService {
     path: PathBuf,
     #[serde(skip)]
     repo_path: PathBuf,
+    #[serde(skip)]
+    data_path: PathBuf,
 
     repositories: HashMap<String, RepositoryInfo>,
 }
@@ -49,6 +51,7 @@ impl GitService {
                 Self {
                     path,
                     repo_path,
+                    data_path,
                     repositories: HashMap::new(),
                 }
             }
@@ -71,9 +74,16 @@ impl GitService {
         info!("{PREFIX} Successfully cloned {}", info.full_name());
 
         self.repositories.insert(info.full_name(), info);
+        self.write_self()?;
         Ok(repository)
     }
     fn list_repositories(&self) -> Vec<RepositoryInfo> {
         self.repositories.values().map(Clone::clone).collect()
+    }
+    /// Will serialize this object to the data file.
+    fn write_self(&self) -> piquel::Result<()> {
+        let data = serde_json::to_string(&self)?;
+        fs::write(&self.data_path, data)?;
+        Ok(())
     }
 }
