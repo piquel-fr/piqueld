@@ -39,7 +39,7 @@ pub struct State {
     pub git: GitHandle,
 }
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run() -> piquel::Result<()> {
     let cli = Cli::parse();
     let logger = Box::new(Logger::new(true, cli.verbose, true));
     logging::init(logger);

@@ -26,12 +26,12 @@ impl Server {
             port,
         }
     }
-    pub async fn listen(self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn listen(self) -> piquel::Result<()> {
         let server = Arc::new(self);
         tokio::try_join!(server.clone().listen_tcp(), server.clone().listen_uds())?;
         Ok(())
     }
-    async fn listen_tcp(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
+    async fn listen_tcp(self: Arc<Self>) -> piquel::Result<()> {
         let conn_type = ConnectionType::Tcp;
         let addr = format!("{}:{}", self.address, self.port);
         let listener = match TcpListener::bind(&addr).await {
@@ -45,7 +45,7 @@ impl Server {
             tokio::spawn(async move { server.handle(conn_type, stream).await });
         }
     }
-    async fn listen_uds(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
+    async fn listen_uds(self: Arc<Self>) -> piquel::Result<()> {
         if self.uds_path.exists() {
             std::fs::remove_file(&self.uds_path)?;
         }
