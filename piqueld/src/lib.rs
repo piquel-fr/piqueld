@@ -3,7 +3,7 @@ mod git;
 mod server;
 
 use clap::Parser;
-use log::{debug, info};
+use log::info;
 use std::{fs, path::PathBuf};
 
 use crate::server::Server;
@@ -43,7 +43,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             config.data_dir
         );
         match fs::create_dir_all(&config.data_dir) {
-            Ok(_) => debug!("Data directory created"),
+            Ok(_) => info!("Data directory created"),
             Err(err) => return Err(format!("Failed to create data directory: {err:#}").into()),
         };
     }
