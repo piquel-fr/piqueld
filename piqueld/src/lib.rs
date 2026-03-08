@@ -49,8 +49,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
     }
 
-    let git = git::GitService::new(&config);
-
     Ok(Server::new((config.address, config.port), config.socket)
         .listen()
         .await?)

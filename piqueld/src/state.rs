@@ -1,4 +1,4 @@
-use crate::{config::ServerConfig, git::GitService};
+use crate::{config::ServerConfig, git::GitHandle};
 
 /// This is the mains struct of the daemon.
 /// It stores all the state, logic and configuration of the application.
@@ -10,7 +10,7 @@ use crate::{config::ServerConfig, git::GitService};
 /// - Cron scheduler (WIP)
 struct State {
     config: Box<ServerConfig>,
-    git: GitService,
+    git: GitHandle,
 }
 
 impl State {
