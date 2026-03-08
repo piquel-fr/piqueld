@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-// TODO: add ref as well. We should be able to manage a same repository
+// TODO: add ref as well. We should be able to manage a repository
 // with different refs
 pub struct RepositoryInfo {
     owner: String,
@@ -41,8 +41,8 @@ impl RepositoryInfo {
         )
     }
     pub fn path(&self, mut root: PathBuf) -> PathBuf {
-        // TODO: in the future we should hash the full name and use that as
-        // the path to avoid issues with duplicate paths
+        // TODO: in the future we should hash the full name & ref and use that
+        // as the path to avoid issues with duplicate paths
         root.push(self.name());
         root
     }
