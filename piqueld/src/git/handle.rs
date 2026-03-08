@@ -13,6 +13,11 @@ enum GitCommand {
     ListRepositories {
         reply: oneshot::Sender<piquel::Result<Vec<RepositoryInfo>>>,
     },
+    Clone {
+        owner: String,
+        name: String,
+        reply: oneshot::Sender<piquel::Result<RepositoryInfo>>,
+    },
 }
 
 pub struct GitHandle {
@@ -37,24 +42,39 @@ impl GitHandle {
         self.tx.send(GitCommand::ListRepositories { reply }).await?;
         rx.await?
     }
+    pub async fn clone(&self, owner: &str, repo: &str) -> piquel::Result<RepositoryInfo> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(GitCommand::Clone {
+                owner: owner.into(),
+                name: repo.into(),
+                reply,
+            })
+            .await?;
+        rx.await?
+    }
 }
 
 pub fn new_git_service(config: &ServerConfig) -> GitHandle {
     let (tx, mut rx) = mpsc::channel::<GitCommand>(32);
 
     // TODO: error
-    let service = GitService::init(&config).unwrap();
+    let mut service = GitService::init(&config).unwrap();
 
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 GitCommand::GetRepository { owner, name, reply } => {
-                    let result = service.get_repository((&owner, &name));
+                    let result = service.get_repository(&owner, &name);
                     let _ = reply.send(result.cloned());
                 }
                 GitCommand::ListRepositories { reply } => {
                     let result = service.list_repositories();
                     let _ = reply.send(Ok(result));
+                }
+                GitCommand::Clone { owner, name, reply } => {
+                    let result = service.clone(&owner, &name);
+                    let _ = reply.send(result);
                 }
             };
         }

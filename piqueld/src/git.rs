@@ -57,10 +57,11 @@ impl GitService {
             }
         })
     }
-    fn get_repository(&self, (owner, repo): (&str, &str)) -> Option<&RepositoryInfo> {
+    fn get_repository(&self, owner: &str, repo: &str) -> Option<&RepositoryInfo> {
         self.repositories.get(&format!("{owner}/{repo}"))
     }
-    fn clone(&mut self, info: RepositoryInfo) -> piquel::Result<gix::Repository> {
+    fn clone(&mut self, owner: &str, name: &str) -> piquel::Result<RepositoryInfo> {
+        let info = RepositoryInfo::new(owner, name);
         let mut path = self.repo_path.clone();
         path.push(info.name());
 
@@ -68,14 +69,14 @@ impl GitService {
             .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
             .0;
 
-        let repository = prepare_checkout
+        let _ = prepare_checkout
             .main_worktree(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
             .0;
         info!("{PREFIX} Successfully cloned {}", info.full_name());
 
-        self.repositories.insert(info.full_name(), info);
+        self.repositories.insert(info.full_name(), info.clone());
         self.write_self()?;
-        Ok(repository)
+        Ok(info)
     }
     fn list_repositories(&self) -> Vec<RepositoryInfo> {
         self.repositories.values().map(Clone::clone).collect()
