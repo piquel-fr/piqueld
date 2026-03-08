@@ -48,4 +48,7 @@ pub enum Commands {
     Echo { message: String },
     /// List the repositories cloned by the daemon
     ListRepositories,
+    /// Delete the repository by name. The name should be identical to the one
+    /// returned by `list-repositories`
+    DeleteRepository { name: String },
 }

@@ -8,6 +8,8 @@ pub enum Command {
     Status,
     /// Will list all the cloned repositories on the system
     ListRepositories,
+    /// Delete repository
+    DeleteRepository(String),
 }
 
 impl std::fmt::Display for Command {
@@ -21,6 +23,9 @@ impl std::fmt::Display for Command {
             }
             Self::ListRepositories => {
                 write!(f, "List Repositories")
+            }
+            Self::DeleteRepository(name) => {
+                write!(f, "Delete repository {name}")
             }
         }
     }

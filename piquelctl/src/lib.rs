@@ -53,6 +53,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cmd = match &cli.command {
         Commands::Echo { message } => Command::Echo(message.to_string()),
         Commands::ListRepositories => Command::ListRepositories,
+        Commands::DeleteRepository { name } => Command::DeleteRepository(name.to_string()),
     };
 
     match client.send_command(&cmd) {

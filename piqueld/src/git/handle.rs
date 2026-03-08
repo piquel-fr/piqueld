@@ -18,6 +18,11 @@ enum GitCommand {
         name: String,
         reply: oneshot::Sender<piquel::Result<RepositoryInfo>>,
     },
+    DeleteRepository {
+        owner: String,
+        name: String,
+        reply: oneshot::Sender<piquel::Result<()>>,
+    },
 }
 
 pub struct GitHandle {
@@ -53,6 +58,17 @@ impl GitHandle {
             .await?;
         rx.await?
     }
+    pub async fn delete(&self, owner: &str, repo: &str) -> piquel::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(GitCommand::DeleteRepository {
+                owner: owner.to_string(),
+                name: repo.to_string(),
+                reply,
+            })
+            .await?;
+        rx.await?
+    }
 }
 
 pub fn new_git_service(config: &ServerConfig) -> GitHandle {
@@ -74,6 +90,10 @@ pub fn new_git_service(config: &ServerConfig) -> GitHandle {
                 }
                 GitCommand::Clone { owner, name, reply } => {
                     let result = service.clone(&owner, &name);
+                    let _ = reply.send(result);
+                }
+                GitCommand::DeleteRepository { owner, name, reply } => {
+                    let result = service.delete(&owner, &name);
                     let _ = reply.send(result);
                 }
             };

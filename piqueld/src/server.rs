@@ -97,6 +97,20 @@ impl Server {
                     .collect();
                 Response::RepositoryList(repos)
             }
+            Command::DeleteRepository(full_name) => {
+                let (owner, name) = match full_name.split_once("/") {
+                    Some(tuple) => tuple,
+                    None => {
+                        return Ok(Response::Error(
+                            "Repository name  {full_name} is invalid".to_string(),
+                        ));
+                    }
+                };
+                match self.state.git.delete(owner, name).await {
+                    Ok(_) => Response::Success,
+                    Err(err) => Response::Error(err.to_string()),
+                }
+            }
         })
     }
 }

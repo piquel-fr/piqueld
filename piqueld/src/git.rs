@@ -87,4 +87,7 @@ impl GitService {
         fs::write(&self.data_path, data)?;
         Ok(())
     }
+    fn delete(&self, owner: &str, repo: &str) -> piquel::Result<()> {
+        todo!("Implement repository deletion")
+    }
 }
