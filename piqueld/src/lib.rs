@@ -1,13 +1,12 @@
 mod config;
 mod git;
 mod server;
-mod state;
 
 use clap::Parser;
 use log::info;
 use std::{fs, path::PathBuf};
 
-use crate::server::Server;
+use crate::{git::GitHandle, server::Server};
 use piquel::{
     config::{Config, defaults},
     logging::{self, logger::Logger},
@@ -28,12 +27,24 @@ struct Cli {
     config_path: PathBuf,
 }
 
+/// This is the mains struct of the daemon.
+/// It stores all the state, logic and configuration of the application.
+/// An instance of this is created by main and lent to all consumers.
+///
+/// Consumers are objects that receive external information. They include:
+/// - TCP/UDS server listening for piquelctl commands
+/// - Webhook listener (WIP)
+/// - Cron scheduler (WIP)
+pub struct State {
+    pub git: GitHandle,
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let logger = Box::new(Logger::new(true, cli.verbose, true));
     logging::init(logger);
 
-    let config = Box::new(config::ServerConfig::load(&cli.config_path)?);
+    let config = config::ServerConfig::load(&cli.config_path)?;
 
     if match config.data_dir.try_exists() {
         Ok(found) => !found,
@@ -49,7 +60,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
     }
 
-    Ok(Server::new((config.address, config.port), config.socket)
-        .listen()
-        .await?)
+    let state: State = State {
+        git: git::new_git_service(&config),
+    };
+
+    Ok(
+        Server::new(state, (config.address, config.port), config.socket)
+            .listen()
+            .await?,
+    )
 }

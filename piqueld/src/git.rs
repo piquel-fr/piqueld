@@ -142,6 +142,12 @@ pub struct Repository {
     name: String,
 }
 
+impl Repository {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 fn make_repo_url(owner: &str, repo: &str) -> Result<gix::Url, gix::url::parse::Error> {
     gix::Url::from_parts(
         gix::url::Scheme::Ssh,
