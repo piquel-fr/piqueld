@@ -1,6 +1,7 @@
 mod config;
 mod git;
 mod server;
+mod state;
 
 use clap::Parser;
 use log::info;
