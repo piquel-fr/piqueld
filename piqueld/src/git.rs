@@ -8,7 +8,7 @@ use crate::config::ServerConfig;
 
 const PREFIX: &str = "[GIT]";
 
-pub enum GitCommand {
+enum GitCommand {
     GetRepository {
         owner: String,
         name: String,
