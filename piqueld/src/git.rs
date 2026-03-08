@@ -86,7 +86,16 @@ impl GitService {
         fs::write(&self.data_path, data)?;
         Ok(())
     }
-    fn delete(&self, owner: &str, repo: &str) -> piquel::Result<()> {
-        todo!("Implement repository deletion")
+    fn delete(&mut self, owner: &str, repo: &str) -> piquel::Result<()> {
+        let info = match self.get_repository(owner, repo) {
+            Some(info) => info,
+            None => return Err("Repository {owner}/{repo} does not exist".into()),
+        };
+
+        fs::remove_dir_all(info.path(self.repo_path.clone()))?;
+        self.repositories.remove(&info.full_name());
+        self.write_self()?;
+        info!("Deleted repository {}", &info.full_name());
+        Ok(())
     }
 }
