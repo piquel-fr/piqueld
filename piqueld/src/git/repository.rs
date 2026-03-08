@@ -5,6 +5,8 @@ use serde::Deserialize;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// TODO: add ref as well. We should be able to manage a same repository
+// with different refs
 pub struct RepositoryInfo {
     owner: String,
     name: String,
