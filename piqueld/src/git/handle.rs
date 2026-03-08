@@ -1,3 +1,5 @@
+use std::io;
+
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::ServerConfig;
@@ -74,8 +76,7 @@ impl GitHandle {
 pub fn new_git_service(config: &ServerConfig) -> GitHandle {
     let (tx, mut rx) = mpsc::channel::<GitCommand>(32);
 
-    // TODO: error
-    let mut service = GitService::init(&config).unwrap();
+    let mut service = GitService::init(&config);
 
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {

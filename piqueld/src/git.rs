@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io;
 use std::{fs, path::PathBuf};
 
 use log::{debug, info, trace};
@@ -26,7 +25,7 @@ struct GitService {
 }
 
 impl GitService {
-    fn init(config: &ServerConfig) -> io::Result<Self> {
+    fn init(config: &ServerConfig) -> Self {
         let mut path = config.data_dir.clone();
         path.push("git");
 
@@ -42,17 +41,17 @@ impl GitService {
         if let Ok(data) = fs::read_to_string(&data_path) {
             if let Ok(service) = serde_json::from_str(&data) {
                 trace!("{PREFIX} Loaded from {data_path:?}");
-                return Ok(service);
+                return service;
             }
         }
 
         debug!("{PREFIX} Failed to load {data_path:?}");
-        Ok(Self {
+        Self {
             path,
             repo_path,
             data_path,
             repositories: HashMap::new(),
-        })
+        }
     }
     fn get_repository(&self, owner: &str, repo: &str) -> Option<RepositoryInfo> {
         self.repositories.get(&format!("{owner}/{repo}")).cloned()

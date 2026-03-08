@@ -85,6 +85,7 @@ impl Server {
 
         Ok(match command {
             Command::Echo(msg) => Response::Message(msg),
+            // TODO: get the status
             Command::Status => Response::Message("Status OK".to_string()),
             Command::ListRepositories => {
                 let repos = self

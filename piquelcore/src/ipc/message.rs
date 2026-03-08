@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 pub enum Command {
     /// A debug command
     Echo(String),
-    /// TODO: get status of the machine
+    /// Get status of the machine
     Status,
     /// Will list all the cloned repositories on the system
     ListRepositories,
