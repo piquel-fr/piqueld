@@ -44,8 +44,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Returns the hostname of the daemon
-    Hostname,
     /// Just echoes the message
     Echo { message: String },
+    /// List the repositories cloned by the daemon
+    ListRepositories,
 }

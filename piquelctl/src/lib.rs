@@ -1,7 +1,7 @@
 use std::path::PathBuf;
-use std::{io, panic};
+use std::{error, io, panic};
 
-use log::info;
+use log::{error, info};
 use piquelcore::config::{Config, defaults};
 use piquelcore::ipc::client::Client;
 use piquelcore::ipc::message::{Command, Response};
@@ -47,8 +47,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = create_client(&config, &cli)?;
 
     let cmd = match &cli.command {
-        Commands::Hostname => Command::Hostname,
         Commands::Echo { message } => Command::Echo(message.to_string()),
+        Commands::ListRepositories => Command::ListRepositories,
     };
 
     match client.send_command(&cmd) {
@@ -95,12 +95,14 @@ fn create_client(config: &Option<ClientConfig>, cli: &Cli) -> io::Result<Client>
 }
 
 fn handle_response(_command: &Command, response: &Response) {
-    info!(
-        "{}",
-        match response {
-            Response::Ok => "Success",
-            Response::Message(message) => &message,
-            Response::Error(err) => &err,
+    match response {
+        Response::Ok => info!("Success"),
+        Response::Message(message) => info!("{message}"),
+        Response::Error(err) => error!("{err}"),
+        Response::RepositoryList(list) => {
+            for repo in list {
+                info!("{repo}");
+            }
         }
-    );
+    };
 }
