@@ -1,7 +1,9 @@
 use tokio;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // TODO: handle error
-    piqueld::run().await
+async fn main() {
+    match piqueld::run().await {
+        Ok(_) => {}
+        Err(err) => panic!("Error: {err:#}"),
+    };
 }
