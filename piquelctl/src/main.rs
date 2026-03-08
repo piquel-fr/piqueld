@@ -1,3 +1,6 @@
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    piquelctl::run()
+fn main() {
+    match piquelctl::run() {
+        Ok(_) => {}
+        Err(err) => panic!("Error: {err:#}"),
+    }
 }

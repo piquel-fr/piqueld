@@ -3,7 +3,8 @@ mod git;
 mod server;
 
 use clap::Parser;
-use std::path::PathBuf;
+use log::{debug, info};
+use std::{fs, path::PathBuf};
 
 use crate::server::Server;
 use piquelcore::{
@@ -28,10 +29,24 @@ pub struct Cli {
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let logger = Box::new(Logger::new(true, cli.verbose, true));
+    logging::init(logger);
+
     let config = config::ServerConfig::load(&cli.config_path)?;
 
-    let logger = Box::new(Logger::new(true, cli.verbose, true));
-    logging::init(logger)?;
+    if match config.data_dir.try_exists() {
+        Ok(found) => found,
+        Err(err) => return Err(format!("Failed to detect data directory: {err:#}").into()),
+    } {
+        info!(
+            "Data directory does not exist. Creating {:?}",
+            config.data_dir
+        );
+        match fs::create_dir_all(config.data_dir) {
+            Ok(_) => debug!("Data directory created"),
+            Err(err) => return Err(format!("Failed to create data directory: {err:#}").into()),
+        };
+    }
 
     git::init()?;
 

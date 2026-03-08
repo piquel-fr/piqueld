@@ -20,15 +20,18 @@ impl Server {
             port,
         }
     }
-    pub async fn listen(self) -> tokio::io::Result<()> {
+    pub async fn listen(self) -> Result<(), Box<dyn std::error::Error>> {
         let server = Arc::new(self);
-        tokio::try_join!(server.clone().listen_tcp(), server.clone().listen_uds(),)?;
+        tokio::try_join!(server.clone().listen_tcp(), server.clone().listen_uds())?;
         Ok(())
     }
-    async fn listen_tcp(self: Arc<Self>) -> tokio::io::Result<()> {
+    async fn listen_tcp(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
         let conn_type = ConnectionType::Tcp;
         let addr = format!("{}:{}", self.address, self.port);
-        let listener = TcpListener::bind(&addr).await?;
+        let listener = match TcpListener::bind(&addr).await {
+            Ok(stream) => stream,
+            Err(err) => return Err(format!("Failed to connect to TCP socket: {err:#}").into()),
+        };
         info!("[{conn_type}] Listening on {addr}");
         loop {
             let (stream, _) = listener.accept().await?;
@@ -36,12 +39,15 @@ impl Server {
             tokio::spawn(async move { server.handle(conn_type, stream).await });
         }
     }
-    async fn listen_uds(self: Arc<Self>) -> tokio::io::Result<()> {
+    async fn listen_uds(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
         if self.uds_path.exists() {
             std::fs::remove_file(&self.uds_path)?;
         }
         let conn_type = ConnectionType::Uds;
-        let listener = UnixListener::bind(&self.uds_path)?;
+        let listener = match UnixListener::bind(&self.uds_path) {
+            Ok(stream) => stream,
+            Err(err) => return Err(format!("Failed to connect to Unix socket: {err:#}").into()),
+        };
         info!("[{conn_type}] Listening on {:?}", self.uds_path);
         loop {
             let (stream, _) = listener.accept().await?;
