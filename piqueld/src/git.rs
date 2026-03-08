@@ -64,6 +64,16 @@ impl Git {
         info!("{PREFIX} Successfully cloned {owner}/{repo}");
         Ok(repository)
     }
+    pub fn list_repositories(&self) -> Result<Vec<Repository>, Box<dyn std::error::Error>> {
+        let dir = fs::read_dir(&self.repo_path)?;
+        let repos = dir
+            .filter_map(Result::ok)
+            .filter_map(|entry| Result::ok(gix::open(entry.path())))
+            .map(|repository| Repository { repository })
+            .collect();
+
+        Ok(repos)
+    }
 }
 
 pub struct Repository {
