@@ -13,7 +13,7 @@ pub struct Git {
 }
 
 impl Git {
-    pub fn new(config: &ServerConfig) -> Git {
+    pub fn new(config: &ServerConfig) -> Self {
         let mut path = config.data_dir.clone();
         path.push("git");
 
@@ -44,7 +44,11 @@ impl Git {
             }
         };
 
-        Ok(Repository { repository })
+        Ok(Repository {
+            repository,
+            owner: owner.to_string(),
+            name: repo.to_string(),
+        })
     }
     fn clone(
         &self,
@@ -68,8 +72,14 @@ impl Git {
         let dir = fs::read_dir(&self.repo_path)?;
         let repos = dir
             .filter_map(Result::ok)
-            .filter_map(|entry| Result::ok(gix::open(entry.path())))
-            .map(|repository| Repository { repository })
+            .filter_map(|entry| match gix::open(entry.path()) {
+                Ok(repository) => Some(Repository {
+                    repository,
+                    name: entry.file_name().to_string_lossy().into(),
+                    owner: "TBD".into(),
+                }),
+                Err(_) => None,
+            })
             .collect();
 
         Ok(repos)
@@ -78,6 +88,8 @@ impl Git {
 
 pub struct Repository {
     repository: gix::Repository,
+    owner: String,
+    name: String,
 }
 
 fn make_repo_url(owner: &str, repo: &str) -> Result<gix::Url, gix::url::parse::Error> {
