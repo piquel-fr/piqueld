@@ -28,7 +28,7 @@ pub struct Cli {
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let logger = Box::new(Logger::new(true, cli.verbose, true));
-    logging::init(logger)?;
+    logging::init(logger);
 
     let config = config::ServerConfig::load(&cli.config_path)?;
 
