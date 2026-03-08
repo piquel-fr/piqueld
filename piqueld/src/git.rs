@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io;
 use std::{fs, path::PathBuf};
 
-use log::info;
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ServerConfig;
@@ -37,11 +37,21 @@ impl GitService {
         fs::create_dir_all(&path).expect("It don't know why this would fail");
         fs::create_dir_all(&repo_path).expect("It don't know why this would fail");
 
-        Ok(Self {
-            path,
-            repo_path,
-            // TODO: load the state from disk
-            repositories: HashMap::new(),
+        let mut data_path = path.clone();
+        data_path.push("git.json");
+
+        let data = fs::read_to_string(&data_path)?;
+
+        Ok(match serde_json::from_str(&data) {
+            Ok(service) => service,
+            Err(err) => {
+                debug!("{PREFIX} Failed to load {data_path:?}: {err:#}");
+                Self {
+                    path,
+                    repo_path,
+                    repositories: HashMap::new(),
+                }
+            }
         })
     }
     fn get_repository(&self, (owner, repo): (&str, &str)) -> Option<&RepositoryInfo> {
