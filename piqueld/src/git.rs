@@ -18,11 +18,8 @@ const PREFIX: &str = "[GIT]";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct GitService {
-    #[serde(skip)]
     path: PathBuf,
-    #[serde(skip)]
     repo_path: PathBuf,
-    #[serde(skip)]
     data_path: PathBuf,
 
     repositories: HashMap<String, RepositoryInfo>,
