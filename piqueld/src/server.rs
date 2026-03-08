@@ -81,6 +81,7 @@ impl Server {
             Command::Echo(msg) => Response::Message(msg),
             Command::Status => Response::Message("Status OK".to_string()),
             Command::ListRepositories => {
+                // TODO: actually get the repositories
                 Response::RepositoryList(vec!["test".into(), "test2".into()])
             }
         })

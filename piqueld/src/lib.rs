@@ -15,7 +15,7 @@ use piquelcore::{
 #[derive(Parser, Debug)]
 #[command(name = "piquelctl")]
 #[command(about = "CLI for piqueld", long_about = None)]
-pub struct Cli {
+struct Cli {
     #[arg(short = 'v', long = "verbose", global = true)]
     pub verbose: bool,
     /// Custom path to configuration
