@@ -78,18 +78,10 @@ impl Server {
         info!("Received Command: {command:#}");
 
         Ok(match command {
-            Command::Status => Response::Message("Status OK".to_string()),
-            Command::Hostname => Response::Message(
-                "waiting for std::net::hostname() to become available".to_string(),
-            ),
             Command::Echo(msg) => Response::Message(msg),
-            Command::Reload => {
-                info!("Received reload command");
-                Response::Ok
-            }
-            Command::Stop => {
-                info!("Received stop command");
-                Response::Ok
+            Command::Status => Response::Message("Status OK".to_string()),
+            Command::ListRepositories => {
+                Response::RepositoryList(vec!["test".into(), "test2".into()])
             }
         })
     }
