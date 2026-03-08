@@ -1,11 +1,23 @@
-use std::{fs, path::PathBuf};
+use std::{fs, io, path::PathBuf};
 
 use gix::bstr::BString;
 use log::{info, trace};
+use tokio::sync::oneshot;
 
 use crate::config::ServerConfig;
 
 const PREFIX: &str = "[GIT]";
+
+pub enum GitCommand {
+    GetRepository {
+        owner: String,
+        name: String,
+        reply: oneshot::Sender<io::Result<Repository>>,
+    },
+    ListRepositories {
+        reply: oneshot::Sender<Result<(), Box<dyn std::error::Error>>>,
+    },
+}
 
 pub struct GitService {
     path: PathBuf,
