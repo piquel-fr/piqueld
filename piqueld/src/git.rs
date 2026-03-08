@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io;
 use std::{fs, path::PathBuf};
 
-use log::{debug, info};
+use log::{debug, info, trace};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ServerConfig;
@@ -42,19 +42,19 @@ impl GitService {
         let mut data_path = path.clone();
         data_path.push("git.json");
 
-        let data = fs::read_to_string(&data_path)?;
-
-        Ok(match serde_json::from_str(&data) {
-            Ok(service) => service,
-            Err(err) => {
-                debug!("{PREFIX} Failed to load {data_path:?}: {err:#}");
-                Self {
-                    path,
-                    repo_path,
-                    data_path,
-                    repositories: HashMap::new(),
-                }
+        if let Ok(data) = fs::read_to_string(&data_path) {
+            if let Ok(service) = serde_json::from_str(&data) {
+                trace!("{PREFIX} Loaded from {data_path:?}");
+                return Ok(service);
             }
+        }
+
+        debug!("{PREFIX} Failed to load {data_path:?}");
+        Ok(Self {
+            path,
+            repo_path,
+            data_path,
+            repositories: HashMap::new(),
         })
     }
     fn get_repository(&self, owner: &str, repo: &str) -> Option<&RepositoryInfo> {
