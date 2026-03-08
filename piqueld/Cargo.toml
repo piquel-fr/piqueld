@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-piquel-core = { path = "../piquel-core/" }
+piquelcore = { path = "../piquelcore/" }
 log.workspace = true
 clap.workspace = true
 tokio.workspace = true

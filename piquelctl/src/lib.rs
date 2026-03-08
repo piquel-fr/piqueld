@@ -2,12 +2,16 @@ use std::path::PathBuf;
 use std::{io, panic};
 
 use log::info;
-use piquelcore::config::{Config, defaults};
-use piquelcore::ipc::client::Client;
-use piquelcore::ipc::message::{Command, Response};
+use piquel::{
+    config::{Config, defaults},
+    ipc::{
+        client::Client,
+        message::{Command, Response},
+    },
+    logging::{self, logger::Logger},
+};
 
 use cli::Commands;
-use piquelcore::logging::{self, logger::Logger};
 
 use crate::cli::Cli;
 use crate::config::ClientConfig;

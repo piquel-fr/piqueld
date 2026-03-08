@@ -1,10 +1,10 @@
 [package]
-name = "piquel-core"
+name = "piquelcore"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "piquelcore"
+name = "piquel"
 
 [dependencies]
 log.workspace = true

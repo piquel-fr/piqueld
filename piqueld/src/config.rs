@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use piquelcore::config::{self, Config};
+use piquel::config::{self, Config};
 use serde::{self, Deserialize};
 
 #[derive(Deserialize)]
