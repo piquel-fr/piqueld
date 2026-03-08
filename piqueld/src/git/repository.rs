@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use gix::bstr::BString;
 use serde::Deserialize;
 use serde::Serialize;
@@ -35,5 +37,11 @@ impl RepositoryInfo {
             BString::from(self.full_name()),
             false,
         )
+    }
+    pub fn path(&self, mut root: PathBuf) -> PathBuf {
+        // TODO: in the future we should hash the full name and use that as
+        // the path to avoid issues with duplicate paths
+        root.push(self.name());
+        root
     }
 }

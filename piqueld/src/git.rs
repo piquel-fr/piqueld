@@ -62,12 +62,11 @@ impl GitService {
     }
     fn clone(&mut self, owner: &str, name: &str) -> piquel::Result<RepositoryInfo> {
         let info = RepositoryInfo::new(owner, name);
-        let mut path = self.repo_path.clone();
-        path.push(info.name());
 
-        let mut prepare_checkout = gix::prepare_clone(info.make_url()?, path)?
-            .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
-            .0;
+        let mut prepare_checkout =
+            gix::prepare_clone(info.make_url()?, info.path(self.repo_path.clone()))?
+                .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
+                .0;
 
         let _ = prepare_checkout
             .main_worktree(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
