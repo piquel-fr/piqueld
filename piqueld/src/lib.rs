@@ -27,10 +27,10 @@ pub struct Cli {
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let config = config::ServerConfig::load(&cli.config_path)?;
-
     let logger = Box::new(Logger::new(true, cli.verbose, true));
     logging::init(logger)?;
+
+    let config = config::ServerConfig::load(&cli.config_path)?;
 
     Ok(Server::new((config.address, config.port), config.socket)
         .listen()

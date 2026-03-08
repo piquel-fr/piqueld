@@ -17,7 +17,6 @@ mod config;
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = cli::parse();
-
     let logger = Box::new(Logger::new(true, cli.verbose, false));
     logging::init(logger)?;
 
