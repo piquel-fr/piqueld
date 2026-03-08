@@ -5,7 +5,7 @@ edition = "2024"
 default-run = "piquelctl"
 
 [dependencies]
-piquel-core = { path = "../piquel-core/" }
+piquelcore = { path = "../piquelcore/" }
 clap.workspace = true
 serde.workspace = true
 log.workspace = true
