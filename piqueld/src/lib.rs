@@ -48,7 +48,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
     }
 
-    git::init()?;
+    let git = git::Git::new();
 
     Ok(Server::new((config.address, config.port), config.socket)
         .listen()
