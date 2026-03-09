@@ -32,8 +32,8 @@ impl GitServiceImpl {
         let mut repo_path = path.clone();
         repo_path.push("repositories");
 
-        fs::create_dir_all(&path).expect("It don't know why this would fail");
-        fs::create_dir_all(&repo_path).expect("It don't know why this would fail");
+        fs::create_dir_all(&path).expect("Error creating GitServiceImpl::path");
+        fs::create_dir_all(&repo_path).expect("Error creating GitServiceImpl::repo_path");
 
         let mut data_path = path.clone();
         data_path.push("git.json");
@@ -45,7 +45,7 @@ impl GitServiceImpl {
             }
         }
 
-        debug!("{PREFIX} Failed to load {data_path:?}");
+        debug!("{PREFIX} Failed to load from {data_path:?}");
         Self {
             path,
             repo_path,
