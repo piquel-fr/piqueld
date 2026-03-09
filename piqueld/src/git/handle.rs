@@ -2,7 +2,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::config::ServerConfig;
 
-use super::{GitService, RepositoryInfo};
+use super::{GitServiceImpl, RepositoryInfo};
 
 enum GitCommand {
     GetRepository {
@@ -25,11 +25,11 @@ enum GitCommand {
     },
 }
 
-pub struct GitHandle {
+pub struct GitService {
     tx: mpsc::Sender<GitCommand>,
 }
 
-impl GitHandle {
+impl GitService {
     pub async fn get_repository(&self, owner: &str, repo: &str) -> piquel::Result<RepositoryInfo> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -71,10 +71,10 @@ impl GitHandle {
     }
 }
 
-pub fn new_git_service(config: &ServerConfig) -> GitHandle {
+pub fn new_git_service(config: &ServerConfig) -> GitService {
     let (tx, mut rx) = mpsc::channel::<GitCommand>(32);
 
-    let mut service = GitService::init(&config);
+    let mut service = GitServiceImpl::init(&config);
 
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
@@ -99,5 +99,5 @@ pub fn new_git_service(config: &ServerConfig) -> GitHandle {
         }
     });
 
-    GitHandle { tx }
+    GitService { tx }
 }

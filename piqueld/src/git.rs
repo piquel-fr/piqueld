@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::ServerConfig;
 
 mod handle;
-pub use handle::GitHandle;
+pub use handle::GitService;
 pub use handle::new_git_service;
 
 mod repository;
@@ -16,7 +16,7 @@ pub use repository::RepositoryInfo;
 const PREFIX: &str = "[GIT]";
 
 #[derive(Debug, Serialize, Deserialize)]
-struct GitService {
+struct GitServiceImpl {
     path: PathBuf,
     repo_path: PathBuf,
     data_path: PathBuf,
@@ -24,7 +24,7 @@ struct GitService {
     repositories: HashMap<String, RepositoryInfo>,
 }
 
-impl GitService {
+impl GitServiceImpl {
     fn init(config: &ServerConfig) -> Self {
         let mut path = config.data_dir.clone();
         path.push("git");

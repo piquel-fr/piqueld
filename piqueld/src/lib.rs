@@ -6,7 +6,7 @@ use clap::Parser;
 use log::{info, trace};
 use std::{fs, path::PathBuf};
 
-use crate::{git::GitHandle, server::Server};
+use crate::{git::GitService, server::Server};
 use piquel::{
     config::{Config, defaults},
     logging::{self, logger::Logger},
@@ -36,7 +36,7 @@ struct Cli {
 /// - Webhook listener (WIP)
 /// - Cron scheduler (WIP)
 pub struct State {
-    pub git: GitHandle,
+    pub git: GitService,
 }
 
 pub async fn run() -> piquel::Result<()> {
