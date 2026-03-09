@@ -13,7 +13,7 @@ use piquel::{
 
 use cli::Commands;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, GitCommands, RepositoryCommands};
 use crate::config::ClientConfig;
 
 mod cli;
@@ -52,8 +52,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let cmd = match &cli.command {
         Commands::Echo { message } => Command::Echo(message.to_string()),
-        Commands::ListRepositories => Command::ListRepositories,
-        Commands::DeleteRepository { name } => Command::DeleteRepository(name.to_string()),
+        Commands::Git { command } => match command {
+            GitCommands::Repository { command } => match command {
+                RepositoryCommands::List => Command::ListRepositories,
+                RepositoryCommands::Delete { name } => Command::DeleteRepository(name.to_string()),
+            },
+        },
     };
 
     match client.send_command(&cmd) {
