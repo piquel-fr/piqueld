@@ -57,12 +57,11 @@ impl GitServiceImpl {
         self.repositories.get(&format!("{owner}/{repo}")).cloned()
     }
     fn clone(&mut self, owner: &str, name: &str) -> piquel::Result<RepositoryInfo> {
-        let info = RepositoryInfo::new(owner, name);
+        let info = RepositoryInfo::new(owner, name, &self.repo_path);
 
-        let mut prepare_checkout =
-            gix::prepare_clone(info.make_url()?, info.path(self.repo_path.clone()))?
-                .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
-                .0;
+        let mut prepare_checkout = gix::prepare_clone(info.make_url()?, info.path())?
+            .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
+            .0;
 
         let _ = prepare_checkout
             .main_worktree(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
@@ -88,7 +87,7 @@ impl GitServiceImpl {
             None => return Err("Repository {owner}/{repo} does not exist".into()),
         };
 
-        fs::remove_dir_all(info.path(self.repo_path.clone()))?;
+        fs::remove_dir_all(info.path())?;
         self.repositories.remove(&info.full_name());
         self.write_self()?;
         info!("Deleted repository {}", &info.full_name());

@@ -10,11 +10,13 @@ use serde::Serialize;
 pub struct RepositoryInfo {
     owner: String,
     name: String,
+    root: PathBuf,
 }
 
 impl RepositoryInfo {
-    pub fn new(owner: &str, name: &str) -> Self {
+    pub fn new(owner: &str, name: &str, root: &PathBuf) -> Self {
         Self {
+            root: root.to_path_buf(),
             owner: owner.to_string(),
             name: name.to_string(),
         }
@@ -40,10 +42,11 @@ impl RepositoryInfo {
             false,
         )
     }
-    pub fn path(&self, mut root: PathBuf) -> PathBuf {
+    pub fn path(&self) -> PathBuf {
         // TODO: in the future we should hash the full name & ref and use that
         // as the path to avoid issues with duplicate paths
-        root.push(self.name());
-        root
+        let mut path = self.root.clone();
+        path.push(self.name());
+        path
     }
 }
