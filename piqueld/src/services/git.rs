@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::{fs, path::PathBuf};
 
 use log::{debug, info, trace};
+use piquelmacros::service;
 use serde::{Deserialize, Serialize};
 
 use crate::config::ServerConfig;
-use crate::service;
 
 pub mod repository;
 use repository::RepositoryInfo;
@@ -14,15 +14,6 @@ pub mod error;
 use error::{GitError, Result};
 
 const PREFIX: &str = "[GIT]";
-
-// TODO: see about turning this macro into a derive
-service! {
-    GitService, GitServiceImpl, GitError;
-    get_repository(owner: String, name: String)  -> RepositoryInfo,
-    list_repositories()                          -> Vec<RepositoryInfo>,
-    clone_repo(owner: String, name: String)      -> RepositoryInfo,
-    delete(owner: String, name: String)          -> (),
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct GitServiceImpl {
@@ -33,6 +24,19 @@ struct GitServiceImpl {
     repositories: HashMap<String, RepositoryInfo>,
 }
 
+impl GitServiceImpl {
+    /// Serializes current state to the data file.
+    fn write_self(&self) -> Result<()> {
+        let data = serde_json::to_string(self)?;
+        fs::write(&self.data_path, &data).map_err(|source| GitError::WriteState {
+            path: self.data_path.clone(),
+            source,
+        })?;
+        Ok(())
+    }
+}
+
+#[service(error = GitError)]
 impl GitServiceImpl {
     fn init(config: &ServerConfig) -> Result<Self> {
         let mut path = config.data_dir.clone();
@@ -72,15 +76,6 @@ impl GitServiceImpl {
             data_path,
             repositories: HashMap::new(),
         })
-    }
-    /// Serializes current state to the data file.
-    fn write_self(&self) -> Result<()> {
-        let data = serde_json::to_string(self)?;
-        fs::write(&self.data_path, &data).map_err(|source| GitError::WriteState {
-            path: self.data_path.clone(),
-            source,
-        })?;
-        Ok(())
     }
     fn get_repository(&self, owner: String, repo: String) -> Result<RepositoryInfo> {
         self.repositories
