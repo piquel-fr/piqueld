@@ -1612,10 +1612,20 @@ dependencies = [
  "log",
  "paste",
  "piquelcore",
+ "piquelmacros",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "piquelmacros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
