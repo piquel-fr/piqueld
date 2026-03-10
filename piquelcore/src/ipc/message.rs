@@ -2,11 +2,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Command {
+    /// A debug command
     Echo(String),
+    /// Get status of the machine
     Status,
-    Hostname,
-    Reload,
-    Stop,
+    /// Will list all the cloned repositories on the system
+    ListRepositories,
+    /// Delete repository
+    DeleteRepository(String),
 }
 
 impl std::fmt::Display for Command {
@@ -18,14 +21,11 @@ impl std::fmt::Display for Command {
             Self::Status => {
                 write!(f, "Status")
             }
-            Self::Hostname => {
-                write!(f, "Hostname")
+            Self::ListRepositories => {
+                write!(f, "List Repositories")
             }
-            Self::Reload => {
-                write!(f, "Reload")
-            }
-            Self::Stop => {
-                write!(f, "Stop")
+            Self::DeleteRepository(name) => {
+                write!(f, "Delete repository {name}")
             }
         }
     }
@@ -33,7 +33,8 @@ impl std::fmt::Display for Command {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Response {
-    Ok,
+    Success,
     Message(String),
     Error(String),
+    RepositoryList(Vec<String>),
 }

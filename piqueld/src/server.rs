@@ -8,26 +8,30 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixListener};
 
+use crate::State;
+
 pub struct Server {
+    state: State,
     uds_path: PathBuf,
     address: String,
     port: u16,
 }
 
 impl Server {
-    pub fn new((address, port): (String, u16), uds_path: PathBuf) -> Self {
+    pub fn new(state: State, (address, port): (String, u16), uds_path: PathBuf) -> Self {
         Server {
+            state,
             uds_path,
             address,
             port,
         }
     }
-    pub async fn listen(self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn listen(self) -> piquel::Result<()> {
         let server = Arc::new(self);
         tokio::try_join!(server.clone().listen_tcp(), server.clone().listen_uds())?;
         Ok(())
     }
-    async fn listen_tcp(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
+    async fn listen_tcp(self: Arc<Self>) -> piquel::Result<()> {
         let conn_type = ConnectionType::Tcp;
         let addr = format!("{}:{}", self.address, self.port);
         let listener = match TcpListener::bind(&addr).await {
@@ -41,7 +45,7 @@ impl Server {
             tokio::spawn(async move { server.handle(conn_type, stream).await });
         }
     }
-    async fn listen_uds(self: Arc<Self>) -> Result<(), Box<dyn std::error::Error>> {
+    async fn listen_uds(self: Arc<Self>) -> piquel::Result<()> {
         if self.uds_path.exists() {
             std::fs::remove_file(&self.uds_path)?;
         }
@@ -57,7 +61,7 @@ impl Server {
             tokio::spawn(async move { server.handle(conn_type, stream).await });
         }
     }
-    async fn handle<T>(&self, conn_type: ConnectionType, mut stream: T) -> tokio::io::Result<()>
+    async fn handle<T>(&self, conn_type: ConnectionType, mut stream: T) -> piquel::Result<()>
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
@@ -69,29 +73,44 @@ impl Server {
             let mut cmd_buf = vec![0u8; len];
             stream.read_exact(&mut cmd_buf).await?;
             let command: Command = serde_json::from_slice(&cmd_buf)?;
-            let response = self.process_command(command)?;
+            let response = self.process_command(command).await?;
             let response_data = serde_json::to_vec(&response)?;
             let len = (response_data.len() as u32).to_be_bytes();
             stream.write_all(&len).await?;
             stream.write_all(&response_data).await?;
         }
     }
-    fn process_command(&self, command: Command) -> tokio::io::Result<Response> {
+    async fn process_command(&self, command: Command) -> piquel::Result<Response> {
         info!("Received Command: {command:#}");
 
         Ok(match command {
-            Command::Status => Response::Message("Status OK".to_string()),
-            Command::Hostname => Response::Message(
-                "waiting for std::net::hostname() to become available".to_string(),
-            ),
             Command::Echo(msg) => Response::Message(msg),
-            Command::Reload => {
-                info!("Received reload command");
-                Response::Ok
+            // TODO: get the status
+            Command::Status => Response::Message("Status OK".to_string()),
+            Command::ListRepositories => {
+                let repos = self
+                    .state
+                    .git
+                    .list_repositories()
+                    .await?
+                    .iter()
+                    .map(|repo| repo.full_name().to_string())
+                    .collect();
+                Response::RepositoryList(repos)
             }
-            Command::Stop => {
-                info!("Received stop command");
-                Response::Ok
+            Command::DeleteRepository(full_name) => {
+                let (owner, name) = match full_name.split_once("/") {
+                    Some(tuple) => tuple,
+                    None => {
+                        return Ok(Response::Error(
+                            "Repository name  {full_name} is invalid".to_string(),
+                        ));
+                    }
+                };
+                match self.state.git.delete(owner, name).await {
+                    Ok(_) => Response::Success,
+                    Err(err) => Response::Error(err.to_string()),
+                }
             }
         })
     }

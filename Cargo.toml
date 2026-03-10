@@ -12,4 +12,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
 clap = { version = "4", features = ["derive"] }
 log = { version = "0.4", features = ["std"] }
-time = { version = "0.3.47", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting"] }
+gix = { version = "0.80", features = ["blocking-network-client" ] }
