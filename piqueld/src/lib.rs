@@ -2,6 +2,7 @@ mod config;
 mod server;
 mod services;
 
+use anyhow::{Context, Result};
 use clap::Parser;
 use log::{info, trace};
 use std::{fs, path::PathBuf};
@@ -39,7 +40,7 @@ pub struct State {
     pub git: GitService,
 }
 
-pub async fn run() -> piquel::Result<()> {
+pub async fn run() -> Result<()> {
     let cli = Cli::parse();
     let logger = Box::new(Logger::new(true, cli.verbose, true));
     logging::init(logger);
@@ -48,23 +49,24 @@ pub async fn run() -> piquel::Result<()> {
     let config = config::ServerConfig::load(&cli.config_path)?;
     trace!("Loaded config");
 
-    if match config.data_dir.try_exists() {
-        Ok(found) => !found,
-        Err(err) => return Err(format!("Failed to detect data directory: {err:#}").into()),
-    } {
+    let data_dir = &config.data_dir;
+
+    if !data_dir
+        .try_exists()
+        .with_context(|| format!("failed to detect data dir {data_dir:?}"))?
+    {
         info!(
             "Data directory does not exist. Creating {:?}",
             config.data_dir
         );
-        match fs::create_dir_all(&config.data_dir) {
-            Ok(_) => info!("Data directory created"),
-            Err(err) => return Err(format!("Failed to create data directory: {err:#}").into()),
-        };
+        fs::create_dir_all(&config.data_dir)
+            .with_context(|| format!("failed to create data dir {data_dir:?}"))?;
     }
     trace!("Setup data dir");
 
     let state: State = State {
-        git: services::git::GitService::init(&config)?,
+        git: services::git::GitService::init(&config)
+            .context("failed to initialize git service")?,
     };
 
     Ok(
