@@ -30,6 +30,36 @@ pub struct GitService {
 }
 
 impl GitService {
+    pub fn init(config: &ServerConfig) -> GitService {
+        let (tx, mut rx) = mpsc::channel::<GitCommand>(32);
+
+        let mut service = GitServiceImpl::init(&config);
+
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    GitCommand::GetRepository { owner, name, reply } => {
+                        let result = service.get_repository(&owner, &name);
+                        let _ = reply.send(result);
+                    }
+                    GitCommand::ListRepositories { reply } => {
+                        let result = service.list_repositories();
+                        let _ = reply.send(Ok(result));
+                    }
+                    GitCommand::Clone { owner, name, reply } => {
+                        let result = service.clone(&owner, &name);
+                        let _ = reply.send(result);
+                    }
+                    GitCommand::DeleteRepository { owner, name, reply } => {
+                        let result = service.delete(&owner, &name);
+                        let _ = reply.send(result);
+                    }
+                };
+            }
+        });
+
+        GitService { tx }
+    }
     pub async fn get_repository(&self, owner: &str, repo: &str) -> piquel::Result<RepositoryInfo> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -69,35 +99,4 @@ impl GitService {
             .await?;
         rx.await?
     }
-}
-
-pub fn new_git_service(config: &ServerConfig) -> GitService {
-    let (tx, mut rx) = mpsc::channel::<GitCommand>(32);
-
-    let mut service = GitServiceImpl::init(&config);
-
-    tokio::spawn(async move {
-        while let Some(cmd) = rx.recv().await {
-            match cmd {
-                GitCommand::GetRepository { owner, name, reply } => {
-                    let result = service.get_repository(&owner, &name);
-                    let _ = reply.send(result);
-                }
-                GitCommand::ListRepositories { reply } => {
-                    let result = service.list_repositories();
-                    let _ = reply.send(Ok(result));
-                }
-                GitCommand::Clone { owner, name, reply } => {
-                    let result = service.clone(&owner, &name);
-                    let _ = reply.send(result);
-                }
-                GitCommand::DeleteRepository { owner, name, reply } => {
-                    let result = service.delete(&owner, &name);
-                    let _ = reply.send(result);
-                }
-            };
-        }
-    });
-
-    GitService { tx }
 }

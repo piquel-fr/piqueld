@@ -8,7 +8,6 @@ use crate::config::ServerConfig;
 
 mod handle;
 pub use handle::GitService;
-pub use handle::new_git_service;
 
 mod repository;
 pub use repository::RepositoryInfo;

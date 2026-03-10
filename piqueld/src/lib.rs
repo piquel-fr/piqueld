@@ -1,12 +1,12 @@
 mod config;
-mod services;
 mod server;
+mod services;
 
 use clap::Parser;
 use log::{info, trace};
 use std::{fs, path::PathBuf};
 
-use crate::{services::git::GitService, server::Server};
+use crate::{server::Server, services::git::GitService};
 use piquel::{
     config::{Config, defaults},
     logging::{self, logger::Logger},
@@ -64,7 +64,7 @@ pub async fn run() -> piquel::Result<()> {
     trace!("Setup data dir");
 
     let state: State = State {
-        git: services::git::new_git_service(&config),
+        git: services::git::GitService::init(&config),
     };
 
     Ok(
