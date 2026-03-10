@@ -7,10 +7,6 @@ use syn::{
     parse_macro_input,
 };
 
-// ---------------------------------------------------------------------------
-// Attribute argument parsing
-// ---------------------------------------------------------------------------
-
 /// Parses `#[service(error = SomeError)]`
 struct ServiceAttr {
     error: Type,
@@ -29,10 +25,6 @@ impl Parse for ServiceAttr {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// `get_repository` → `GetRepository`
 fn snake_to_pascal(ident: &Ident) -> Ident {
     let pascal: String = ident
@@ -40,6 +32,7 @@ fn snake_to_pascal(ident: &Ident) -> Ident {
         .split('_')
         .map(|word| {
             let mut chars = word.chars();
+            // just the first char
             match chars.next() {
                 None => String::new(),
                 Some(c) => c.to_uppercase().to_string() + chars.as_str(),
@@ -52,10 +45,14 @@ fn snake_to_pascal(ident: &Ident) -> Ident {
 /// Extracts `T` from `Result<T, _>` or `Result<T>` (type alias form).
 /// Falls back to the whole type if not recognised as a Result.
 fn unwrap_result_ok(ty: &Type) -> Type {
+    // if the type is a path
     if let Type::Path(tp) = ty {
+        // get the last segment of the path & check if it is Result
         if let Some(last) = tp.path.segments.last() {
             if last.ident == "Result" {
+                // get the type in angle brackets
                 if let syn::PathArguments::AngleBracketed(ref args) = last.arguments {
+                    // get the type of the first argument
                     if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
                         return inner.clone();
                     }
