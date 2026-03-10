@@ -10,13 +10,17 @@ use serde::Serialize;
 pub struct RepositoryInfo {
     owner: String,
     name: String,
-    root: PathBuf,
+    path: PathBuf,
 }
 
 impl RepositoryInfo {
-    pub fn new(owner: &str, name: &str, root: &PathBuf) -> Self {
+    pub fn new(owner: &str, name: &str, mut root: PathBuf) -> Self {
+        // TODO: in the future we should hash the full name & ref and use that
+        // as the path to avoid issues with duplicate paths
+        root.push(name);
+
         Self {
-            root: root.to_path_buf(),
+            path: root.to_path_buf(),
             owner: owner.to_string(),
             name: name.to_string(),
         }
@@ -42,11 +46,7 @@ impl RepositoryInfo {
             false,
         )
     }
-    pub fn path(&self) -> PathBuf {
-        // TODO: in the future we should hash the full name & ref and use that
-        // as the path to avoid issues with duplicate paths
-        let mut path = self.root.clone();
-        path.push(self.name());
-        path
+    pub fn path(&self) -> &PathBuf {
+        &self.path
     }
 }

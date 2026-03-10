@@ -57,7 +57,7 @@ impl GitServiceImpl {
         self.repositories.get(&format!("{owner}/{repo}")).cloned()
     }
     fn clone(&mut self, owner: &str, name: &str) -> piquel::Result<RepositoryInfo> {
-        let info = RepositoryInfo::new(owner, name, &self.repo_path);
+        let info = RepositoryInfo::new(owner, name, self.repo_path.clone());
 
         let mut prepare_checkout = gix::prepare_clone(info.make_url()?, info.path())?
             .fetch_then_checkout(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)?
