@@ -14,15 +14,15 @@ pub struct RepositoryInfo {
 }
 
 impl RepositoryInfo {
-    pub fn new(owner: &str, name: &str, mut root: PathBuf) -> Self {
+    pub fn new(owner: String, name: String, mut root: PathBuf) -> Self {
         // TODO: in the future we should hash the full name & ref and use that
         // as the path to avoid issues with duplicate paths
-        root.push(name);
+        root.push(&name);
 
         Self {
             path: root.to_path_buf(),
-            owner: owner.to_string(),
-            name: name.to_string(),
+            owner,
+            name,
         }
     }
     pub fn name(&self) -> &str {
