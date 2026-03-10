@@ -5,6 +5,7 @@ use log::{debug, info, trace};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ServerConfig;
+use crate::service;
 
 pub mod repository;
 use repository::RepositoryInfo;
@@ -13,6 +14,15 @@ pub mod error;
 use error::{GitError, Result};
 
 const PREFIX: &str = "[GIT]";
+
+// TODO: see about turning this macro into a derive
+service! {
+    GitService, GitServiceImpl, GitError;
+    get_repository(owner: String, name: String)  -> RepositoryInfo,
+    list_repositories()                          -> Vec<RepositoryInfo>,
+    clone_repo(owner: String, name: String)      -> RepositoryInfo,
+    delete(owner: String, name: String)          -> (),
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct GitServiceImpl {
