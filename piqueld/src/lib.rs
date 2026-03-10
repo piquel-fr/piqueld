@@ -64,7 +64,7 @@ pub async fn run() -> piquel::Result<()> {
     trace!("Setup data dir");
 
     let state: State = State {
-        git: services::git::GitService::init(&config),
+        git: services::git::GitService::init(&config)?,
     };
 
     Ok(
