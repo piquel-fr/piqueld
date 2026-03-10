@@ -139,7 +139,8 @@ impl ServiceMethod {
 
 /// Turns a synchronous `*Impl` struct into a fully async actor-pattern service.
 ///
-/// ## Rules
+/// # Rules
+///
 /// - Applied to an `impl` block whose type name ends in `Impl`
 ///   (e.g. `GitServiceImpl` → produces `GitService`).
 /// - The `fn init(config: &ServerConfig) -> Result<Self>` method is treated
@@ -149,18 +150,22 @@ impl ServiceMethod {
 /// - Private helpers should live in a **separate, plain `impl` block** —
 ///   they will never be seen by this macro.
 ///
-/// ## Example
+/// # Example
 /// ```rust
+/// use piquelmacros::service;
+///
+/// struct GitServiceImpl {}
+///
 /// #[service(error = GitError)]
 /// impl GitServiceImpl {
-///     fn init(config: &ServerConfig) -> Result<Self> { … }
-///     fn get_repository(&self, owner: String, name: String) -> Result<RepositoryInfo> { … }
-///     fn list_repositories(&self) -> Result<Vec<RepositoryInfo>> { … }
+///     fn init() -> Result<Self> { .. }
+///     fn clone_repository(&self, name: String) -> Result<()> { .. }
+///     fn list_repositories(&self) -> Result<Vec<String>> { .. }
 /// }
 ///
 /// // Helpers in a separate block — completely invisible to the macro.
 /// impl GitServiceImpl {
-///     fn write_self(&self) -> Result<()> { … }
+///     fn owner(&self) -> String { .. }
 /// }
 /// ```
 /// Expands to a `GitService` struct with `async fn get_repository`, etc.
