@@ -63,10 +63,6 @@ fn unwrap_result_ok(ty: &Type) -> Type {
     ty.clone()
 }
 
-// ---------------------------------------------------------------------------
-// Internal representation of a service method
-// ---------------------------------------------------------------------------
-
 struct ServiceMethod {
     name: Ident,
     params: Vec<(Ident, Type)>,
@@ -130,11 +126,7 @@ impl ServiceMethod {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The macro itself
-// ---------------------------------------------------------------------------
-
-/// Turns a synchronous `*Impl` struct into a fully async actor-pattern service.
+/// Turns a synchronous `*Service` struct into a fully async actor-pattern service.
 ///
 /// # Rules
 ///
@@ -168,9 +160,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let service_name = format_ident!("{}Handle", stripped, span = impl_ident.span());
     let command_enum = format_ident!("{}Command", stripped);
 
-    // -----------------------------------------------------------------------
     // Collect service methods (public, not `init`)
-    // -----------------------------------------------------------------------
     let unit_ty: Type = syn::parse2(quote! { () }).unwrap();
 
     let methods: Vec<ServiceMethod> = impl_block
@@ -209,9 +199,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // -----------------------------------------------------------------------
     // Code generation
-    // -----------------------------------------------------------------------
     let variants: Vec<_> = methods.iter().map(|m| m.enum_variant(&error)).collect();
     let match_arms: Vec<_> = methods.iter().map(|m| m.match_arm(&command_enum)).collect();
     let async_fns: Vec<_> = methods
