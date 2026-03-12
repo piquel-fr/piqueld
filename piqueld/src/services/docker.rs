@@ -36,6 +36,18 @@ impl DockerService {
             Err(err) => return Err(DockerError::SwarmDetectionError(err)),
         }
 
+        if docker
+            .inspect_node("self")
+            .await?
+            .spec
+            .ok_or(DockerError::NoSwarmSpecError)?
+            .role
+            .ok_or(DockerError::NoSwarmRoleError)?
+            != bollard::models::NodeSpecRoleEnum::MANAGER
+        {
+            return Err(DockerError::NotManagerNode);
+        }
+
         info!("{PREFIX} Initialised Docker service");
         Ok(DockerService { docker })
     }

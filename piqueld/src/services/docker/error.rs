@@ -11,4 +11,15 @@ pub enum DockerError {
     SwarmDetectionError(#[source] bollard::errors::Error),
     #[error("failed to initialize docker swarm: {0}")]
     SwarmInitializationError(#[source] bollard::errors::Error),
+
+    #[error("docker swarm did not return a spec")]
+    NoSwarmSpecError,
+    #[error("docker swarm does not have a role")]
+    NoSwarmRoleError,
+
+    #[error("docker swarm node is not a manager")]
+    NotManagerNode,
+
+    #[error(transparent)]
+    DockerError(#[from] bollard::errors::Error),
 }
