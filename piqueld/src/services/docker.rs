@@ -1,6 +1,6 @@
 use crate::config::ServerConfig;
 use bollard::{Docker, errors::Error, secret::SwarmInitRequest};
-use log::{debug, info, trace};
+use log::{info, trace};
 
 pub mod error;
 use error::{DockerError, Result};
