@@ -138,34 +138,14 @@ impl ServiceMethod {
 ///
 /// # Rules
 ///
-/// - Applied to an `impl` block whose type name ends in `Impl`
-///   (e.g. `GitServiceImpl` → produces `GitService`).
+/// - Applied to an `impl` block whose type name ends in `Service`
+///   (e.g. `GitService` → produces `GitHandle`).
 /// - The `fn init(config: &ServerConfig) -> Result<Self>` method is treated
 ///   specially and becomes the constructor of the public wrapper.
 /// - Every other `fn` in this block becomes an async method on the wrapper,
 ///   regardless of visibility.
 /// - Private helpers should live in a **separate, plain `impl` block** —
 ///   they will never be seen by this macro.
-///
-/// # Example
-/// ```rust
-/// use piquelmacros::service;
-///
-/// struct GitServiceImpl {}
-///
-/// #[service(error = GitError)]
-/// impl GitServiceImpl {
-///     fn init() -> Result<Self> { .. }
-///     fn clone_repository(&self, name: String) -> Result<()> { .. }
-///     fn list_repositories(&self) -> Result<Vec<String>> { .. }
-/// }
-///
-/// // Helpers in a separate block — completely invisible to the macro.
-/// impl GitServiceImpl {
-///     fn owner(&self) -> String { .. }
-/// }
-/// ```
-/// Expands to a `GitService` struct with `async fn get_repository`, etc.
 #[proc_macro_attribute]
 pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let ServiceAttr { error } = parse_macro_input!(attr as ServiceAttr);
