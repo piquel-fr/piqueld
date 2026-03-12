@@ -182,12 +182,11 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => panic!("#[service] must be applied to a plain `impl TypeName` block"),
     };
 
-    let service_name = {
-        let raw = impl_ident.to_string();
-        let stripped = raw.strip_suffix("Impl").unwrap_or(&raw);
-        format_ident!("{}", stripped, span = impl_ident.span())
-    };
-    let command_enum = format_ident!("{}Command", service_name);
+    let raw = impl_ident.to_string();
+    let stripped = raw.strip_suffix("Service").unwrap_or(&raw);
+
+    let service_name = format_ident!("{}Handle", stripped, span = impl_ident.span());
+    let command_enum = format_ident!("{}Command", stripped);
 
     // -----------------------------------------------------------------------
     // Collect service methods (public, not `init`)

@@ -16,7 +16,7 @@ use error::{GitError, Result};
 const PREFIX: &str = "[GIT]";
 
 #[derive(Debug, Serialize, Deserialize)]
-struct GitServiceImpl {
+struct GitService {
     path: PathBuf,
     repo_path: PathBuf,
     data_path: PathBuf,
@@ -24,7 +24,7 @@ struct GitServiceImpl {
     repositories: HashMap<String, RepositoryInfo>,
 }
 
-impl GitServiceImpl {
+impl GitService {
     /// Serializes current state to the data file.
     fn write_self(&self) -> Result<()> {
         let data = serde_json::to_string(self)?;
@@ -37,7 +37,7 @@ impl GitServiceImpl {
 }
 
 #[service(error = GitError)]
-impl GitServiceImpl {
+impl GitService {
     fn init(config: &ServerConfig) -> Result<Self> {
         let mut path = config.data_dir.clone();
         path.push("git");

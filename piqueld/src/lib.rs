@@ -7,7 +7,7 @@ use clap::Parser;
 use log::{info, trace};
 use std::{fs, path::PathBuf};
 
-use crate::{server::Server, services::git::GitService};
+use crate::{server::Server, services::git::GitHandle};
 use piquel::{
     config::{Config, defaults},
     logging::{self, logger::Logger},
@@ -37,7 +37,7 @@ struct Cli {
 /// - Webhook listener (WIP)
 /// - Cron scheduler (WIP)
 pub struct State {
-    pub git: GitService,
+    pub git: GitHandle,
 }
 
 pub async fn run() -> Result<()> {
@@ -65,7 +65,7 @@ pub async fn run() -> Result<()> {
     trace!("Setup data dir");
 
     let state: State = State {
-        git: services::git::GitService::init(&config)
+        git: services::git::GitHandle::init(&config)
             .context("failed to initialize git service")?,
     };
 
