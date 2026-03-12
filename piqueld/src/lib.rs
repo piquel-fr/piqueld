@@ -70,7 +70,7 @@ pub async fn run() -> Result<()> {
 
     let state: State = State {
         git: services::git::GitHandle::init(&config).context("failed to initialize git service")?,
-        docker: services::docker::DockerHandle::init(&config)?,
+        docker: services::docker::DockerHandle::init(&config).await.context("failed to initialize docker service")?,
     };
 
     Ok(
