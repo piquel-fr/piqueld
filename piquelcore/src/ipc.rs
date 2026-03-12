@@ -1,7 +1,7 @@
 pub mod client;
 pub mod message;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum ConnectionType {
     Tcp,
     Uds,

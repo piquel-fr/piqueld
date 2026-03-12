@@ -5,9 +5,14 @@ edition = "2024"
 
 [dependencies]
 piquelcore = { path = "../piquelcore/" }
+piquelmacros = { path = "../piquel-macros/" }
 log.workspace = true
 clap.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 bollard.workspace = true
+gix.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+paste.workspace = true

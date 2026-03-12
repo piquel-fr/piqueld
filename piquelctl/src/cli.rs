@@ -44,8 +44,29 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Returns the hostname of the daemon
-    Hostname,
     /// Just echoes the message
     Echo { message: String },
+    /// Interact with git service
+    Git {
+        #[command(subcommand)]
+        command: GitCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GitCommands {
+    /// Manage the repositories stored on the daemon
+    Repository {
+        #[command(subcommand)]
+        command: RepositoryCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RepositoryCommands {
+    /// List the repositories cloned by the daemon
+    List,
+    /// Delete the repository by name. The name should be identical to the one
+    /// returned by `list-repositories`
+    Delete { name: String },
 }

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::{io, panic};
 
-use log::info;
+use log::{error, info};
 use piquel::{
     config::{Config, defaults},
     ipc::{
@@ -13,7 +13,7 @@ use piquel::{
 
 use cli::Commands;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, GitCommands, RepositoryCommands};
 use crate::config::ClientConfig;
 
 mod cli;
@@ -51,8 +51,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = create_client(&config, &cli)?;
 
     let cmd = match &cli.command {
-        Commands::Hostname => Command::Hostname,
         Commands::Echo { message } => Command::Echo(message.to_string()),
+        Commands::Git { command } => match command {
+            GitCommands::Repository { command } => match command {
+                RepositoryCommands::List => Command::ListRepositories,
+                RepositoryCommands::Delete { name } => Command::DeleteRepository(name.to_string()),
+            },
+        },
     };
 
     match client.send_command(&cmd) {
@@ -98,13 +103,15 @@ fn create_client(config: &Option<ClientConfig>, cli: &Cli) -> io::Result<Client>
     })
 }
 
-fn handle_response(_command: &Command, response: &Response) {
-    info!(
-        "{}",
-        match response {
-            Response::Ok => "Success",
-            Response::Message(message) => &message,
-            Response::Error(err) => &err,
+fn handle_response(command: &Command, response: &Response) {
+    match response {
+        Response::Success => info!("Successfully {command:#}"),
+        Response::Message(message) => info!("{message}"),
+        Response::Error(err) => error!("{err}"),
+        Response::RepositoryList(list) => {
+            for repo in list {
+                info!("{repo}");
+            }
         }
-    );
+    };
 }
