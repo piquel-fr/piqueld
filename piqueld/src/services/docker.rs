@@ -14,7 +14,7 @@ struct DockerService {
 
 #[service(error = DockerError)]
 impl DockerService {
-    fn init(config: &ServerConfig) -> Result<Self> {
+    async fn init(config: &ServerConfig) -> Result<Self> {
         let docker = Docker::connect_with_socket_defaults()
             .map_err(|source| DockerError::SocketConnectionError(source))?;
         info!("{PREFIX} Connected docker socket");
