@@ -85,7 +85,7 @@ impl ServiceMethod {
         quote! {
             #variant {
                 #(#fields)*
-                reply: ::tokio::sync::oneshot::Sender
+                reply: ::tokio::sync::oneshot::Sender<
                     ::std::result::Result<#ok, #error>
                 >,
             }
