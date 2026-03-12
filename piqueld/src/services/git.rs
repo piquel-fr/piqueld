@@ -111,7 +111,9 @@ impl GitService {
         Ok(info)
     }
     fn list_repositories(&self) -> Result<Vec<RepositoryInfo>> {
-        // TODO: return error if no repositories
+        if self.repositories.len() < 1 {
+            return Err(GitError::NoReposFound);
+        }
         Ok(self.repositories.values().cloned().collect())
     }
     fn delete(&mut self, owner: String, repo: String) -> Result<()> {

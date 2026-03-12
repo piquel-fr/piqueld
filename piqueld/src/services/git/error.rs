@@ -12,6 +12,9 @@ pub enum GitError {
     #[error("invalid repository URL for '{0}'")]
     InvalidUrl(String),
 
+    #[error("no repositories found")]
+    NoReposFound,
+
     #[error("failed to create directory '{path}': {source}")]
     CreateDir {
         path: std::path::PathBuf,
