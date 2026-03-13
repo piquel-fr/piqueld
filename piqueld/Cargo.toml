@@ -6,12 +6,13 @@ edition = "2024"
 [dependencies]
 piquelcore = { path = "../piquelcore/" }
 piquelmacros = { path = "../piquel-macros/" }
-log.workspace = true
-clap.workspace = true
-tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-gix.workspace = true
-thiserror.workspace = true
-anyhow.workspace = true
-paste.workspace = true
+log.workspace = true
+clap.workspace = true
+
+paste = "1"
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+gix = { version = "0.80", features = ["blocking-network-client" ] }
