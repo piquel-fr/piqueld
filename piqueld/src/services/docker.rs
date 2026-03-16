@@ -36,8 +36,20 @@ impl DockerService {
             Err(err) => return Err(DockerError::SwarmDetectionError(err)),
         }
 
+        let info = docker
+            .info()
+            .await
+            .map_err(DockerError::SwarmDetectionError)?;
+
+        let node_id = info
+            .swarm
+            .as_ref()
+            .and_then(|s| s.node_id.as_deref())
+            .filter(|id| !id.is_empty())
+            .ok_or(DockerError::NoSwarmSpecError)?;
+
         if docker
-            .inspect_node("self")
+            .inspect_node(node_id)
             .await?
             .spec
             .ok_or(DockerError::NoSwarmSpecError)?
