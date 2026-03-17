@@ -68,6 +68,7 @@ struct ServiceMethod {
     params: Vec<(Ident, Type)>,
     /// The `T` in `Result<T, E>`
     ok_type: Type,
+    is_async: bool,
 }
 
 impl ServiceMethod {
@@ -96,9 +97,16 @@ impl ServiceMethod {
         let variant = self.variant_name();
         let method = &self.name;
         let param_names: Vec<_> = self.params.iter().map(|(n, _)| n).collect();
+
+        let call = if self.is_async {
+            quote! { service.#method(#(#param_names,)*).await }
+        } else {
+            quote! { service.#method(#(#param_names,)*) }
+        };
+
         quote! {
             #command_enum::#variant { #(#param_names,)* reply } => {
-                let _ = reply.send(service.#method(#(#param_names,)*));
+                let _ = reply.send(#call);
             }
         }
     }
@@ -143,9 +151,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let ServiceAttr { error } = parse_macro_input!(attr as ServiceAttr);
     let impl_block = parse_macro_input!(item as ItemImpl);
 
-    // -----------------------------------------------------------------------
-    // Derive names
-    // -----------------------------------------------------------------------
     let impl_ident: &Ident = match impl_block.self_ty.as_ref() {
         Type::Path(tp) => tp
             .path
@@ -160,9 +165,18 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     let service_name = format_ident!("{}Handle", stripped, span = impl_ident.span());
     let command_enum = format_ident!("{}Command", stripped);
 
-    // Collect service methods (public, not `init`)
+    let init_is_async = impl_block
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ImplItem::Fn(f) if f.sig.ident == "init" => Some(f.sig.asyncness.is_some()),
+            _ => None,
+        })
+        .unwrap_or(false);
+
     let unit_ty: Type = syn::parse2(quote! { () }).unwrap();
 
+    // Collect service methods (public, not `init`)
     let methods: Vec<ServiceMethod> = impl_block
         .items
         .iter()
@@ -191,10 +205,13 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                 ReturnType::Default => unit_ty.clone(),
             };
 
+            let is_async = f.sig.asyncness.is_some();
+
             ServiceMethod {
                 name,
                 params,
                 ok_type,
+                is_async,
             }
         })
         .collect();
@@ -206,6 +223,20 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         .iter()
         .map(|m| m.async_method(&command_enum, &error))
         .collect();
+
+    // The generated `Handle::init` must be async when the inner init is async,
+    // and must .await the inner call accordingly.
+    let (init_sig, init_call) = if init_is_async {
+        (
+            quote! { pub async fn init(config: &crate::config::ServerConfig) -> ::std::result::Result<Self, #error> },
+            quote! { #impl_ident::init(config).await? },
+        )
+    } else {
+        (
+            quote! { pub fn init(config: &crate::config::ServerConfig) -> ::std::result::Result<Self, #error> },
+            quote! { #impl_ident::init(config)? },
+        )
+    };
 
     quote! {
         // Keep the original impl block unchanged.
@@ -220,12 +251,9 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         impl #service_name {
-            pub fn init(
-                config: &crate::config::ServerConfig,
-            ) -> ::std::result::Result<Self, #error> {
-                let (tx, mut rx) =
-                    ::tokio::sync::mpsc::channel::<#command_enum>(32);
-                let mut service = #impl_ident::init(config)?;
+            #init_sig {
+                let (tx, mut rx) = ::tokio::sync::mpsc::channel::<#command_enum>(32);
+                let mut service = #init_call;
 
                 ::tokio::spawn(async move {
                     while let Some(cmd) = rx.recv().await {

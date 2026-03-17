@@ -1,4 +1,5 @@
 pub mod git;
+pub mod docker;
 
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};

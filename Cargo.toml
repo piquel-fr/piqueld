@@ -3,8 +3,9 @@ resolver = "3"
 members = [
     "piquelcore",
     "piqueld",
-    "piquelctl"
-, "piquel-macros"]
+    "piquelctl",
+    "piquel-macros"
+]
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }

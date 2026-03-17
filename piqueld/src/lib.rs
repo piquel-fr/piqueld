@@ -7,7 +7,10 @@ use clap::Parser;
 use log::{info, trace};
 use std::{fs, path::PathBuf};
 
-use crate::{server::Server, services::git::GitHandle};
+use crate::{
+    server::Server,
+    services::{docker::DockerHandle, git::GitHandle},
+};
 use piquel::{
     config::{Config, defaults},
     logging::{self, logger::Logger},
@@ -38,6 +41,7 @@ struct Cli {
 /// - Cron scheduler (WIP)
 pub struct State {
     pub git: GitHandle,
+    pub docker: DockerHandle,
 }
 
 pub async fn run() -> Result<()> {
@@ -65,8 +69,8 @@ pub async fn run() -> Result<()> {
     trace!("Setup data dir");
 
     let state: State = State {
-        git: services::git::GitHandle::init(&config)
-            .context("failed to initialize git service")?,
+        git: services::git::GitHandle::init(&config).context("failed to initialize git service")?,
+        docker: services::docker::DockerHandle::init(&config).await.context("failed to initialize docker service")?,
     };
 
     Ok(
