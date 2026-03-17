@@ -27,13 +27,26 @@ pub struct DockerConfig {
     pub jobs: JobsConfig,
 }
 
+impl Default for DockerConfig {
+    fn default() -> Self {
+        Self {
+            jobs: JobsConfig {
+                app: JobConfig {
+                    meta: JobMetadata { roles: Vec::new() },
+                    config: AppConfig {},
+                },
+            },
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct JobsConfig {
     pub app: JobConfig<AppConfig>,
 }
 
 #[derive(Deserialize)]
-pub struct JobInfo {
+pub struct JobMetadata {
     /// The Swarm Node roles that this job will be run on
     pub roles: Vec<String>,
 }
@@ -41,7 +54,7 @@ pub struct JobInfo {
 /// Generic config struct for job configuration.
 #[derive(Deserialize)]
 pub struct JobConfig<T> {
-    pub info: JobInfo,
+    pub meta: JobMetadata,
     pub config: T,
 }
 
