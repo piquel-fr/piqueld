@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use piquel::config::{self, Config};
 use serde::{self, Deserialize};
@@ -25,40 +25,22 @@ impl Config for ServerConfig {
 
 #[derive(Deserialize)]
 pub struct DockerConfig {
-    pub jobs: JobsConfig,
+    /// When starting a docker service of the specified type, will force the
+    /// service onto a Swarm node with the specified role label.
+    /// If no roles are specified, will run on any node.
+    pub roles: HashMap<ServiceType, Vec<String>>,
 }
 
 impl Default for DockerConfig {
     fn default() -> Self {
         Self {
-            jobs: JobsConfig {
-                app: JobConfig {
-                    meta: JobMetadata { roles: Vec::new() },
-                    config: AppConfig {},
-                },
-            },
+            roles: HashMap::new(),
         }
     }
 }
 
-#[derive(Deserialize)]
-pub struct JobsConfig {
-    pub app: JobConfig<AppConfig>,
+#[derive(Eq, PartialEq, Deserialize, Hash)]
+pub enum ServiceType {
+    /// Any process that needs storage.
+    Storage,
 }
-
-#[derive(Deserialize)]
-pub struct JobMetadata {
-    /// The Swarm Node roles that this job will be run on
-    pub roles: Vec<String>,
-}
-
-/// Generic config struct for job configuration.
-#[derive(Deserialize)]
-pub struct JobConfig<T> {
-    pub meta: JobMetadata,
-    pub config: T,
-}
-
-/// Placeholder job type.
-#[derive(Deserialize)]
-pub struct AppConfig {}
