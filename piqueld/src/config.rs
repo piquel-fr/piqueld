@@ -13,6 +13,7 @@ pub struct ServerConfig {
     pub address: String,
     #[serde(default = "config::defaults::port")]
     pub port: u16,
+    #[serde(default)]
     pub docker: DockerConfig,
 }
 
