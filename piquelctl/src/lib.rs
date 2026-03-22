@@ -58,6 +58,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 RepositoryCommands::Delete { name } => Command::DeleteRepository(name.to_string()),
             },
         },
+        Commands::Update => Command::Update {
+            verbose: cli.verbose,
+        },
     };
 
     match client.send_command(&cmd) {

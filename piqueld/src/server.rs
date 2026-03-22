@@ -129,6 +129,16 @@ impl Server {
                     Err(err) => Response::Error(err.to_string()),
                 }
             }
+            Command::Update { verbose } => {
+                let update = &self.state.config.update;
+                if !update.enable {
+                    return Ok(Response::Message(String::from(
+                        "Updating is disabled. Please enable it in configuration and try again.",
+                    )));
+                }
+
+                todo!("Implement running the update command from config")
+            }
         })
     }
 }

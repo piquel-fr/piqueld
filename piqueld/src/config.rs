@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use piquel::config::{self, Config, ConfigError};
 use serde::{self, Deserialize};
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct ServerConfig {
     #[serde(default = "config::defaults::data_dir")]
     pub data_dir: PathBuf,
@@ -44,7 +44,7 @@ impl Config for ServerConfig {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct UpdateConfig {
     pub enable: bool,
     pub command: Option<String>,
