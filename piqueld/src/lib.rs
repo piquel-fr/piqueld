@@ -65,9 +65,13 @@ pub async fn run() -> Result<()> {
     trace!("Setup data dir");
 
     let state: State = State {
-        git: services::git::GitHandle::init(&config)
-            .context("failed to initialize git service")?,
+        git: services::git::GitHandle::init(&config).context("failed to initialize git service")?,
     };
+
+    if config.update.enable && config.update.repo_split.is_some() {
+        let (owner, name) = config.update.repo_split.unwrap();
+        state.git.clone_repo(owner, name).await?;
+    }
 
     Ok(
         Server::new(state, (config.address, config.port), config.socket)
