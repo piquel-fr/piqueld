@@ -7,7 +7,7 @@ use clap::Parser;
 use log::{info, trace};
 use std::{fs, path::PathBuf};
 
-use crate::{server::Server, services::git::GitHandle};
+use crate::{config::ServerConfig, server::Server, services::git::GitHandle};
 use piquel::{
     config::{Config, defaults},
     logging::{self, logger::Logger},
@@ -37,6 +37,7 @@ struct Cli {
 /// - Webhook listener (WIP)
 /// - Cron scheduler (WIP)
 pub struct State {
+    pub config: ServerConfig,
     pub git: GitHandle,
 }
 
@@ -65,9 +66,18 @@ pub async fn run() -> Result<()> {
     trace!("Setup data dir");
 
     let state: State = State {
-        git: services::git::GitHandle::init(&config)
-            .context("failed to initialize git service")?,
+        config: config.clone(),
+        git: services::git::GitHandle::init(&config).context("failed to initialize git service")?,
     };
+
+    if config.update.enable && config.update.repo_split.is_some() {
+        let (owner, name) = config.update.repo_split.unwrap();
+        state
+            .git
+            .clone_repo(owner, name)
+            .await
+            .context("cloning update repository")?;
+    }
 
     Ok(
         Server::new(state, (config.address, config.port), config.socket)

@@ -10,6 +10,11 @@ pub enum Command {
     ListRepositories,
     /// Delete repository
     DeleteRepository(String),
+    /// Update the system
+    Update {
+        /// Will return the full command output even during success
+        verbose: bool,
+    },
 }
 
 impl std::fmt::Display for Command {
@@ -26,6 +31,9 @@ impl std::fmt::Display for Command {
             }
             Self::DeleteRepository(name) => {
                 write!(f, "Delete repository {name}")
+            }
+            Self::Update { verbose } => {
+                write!(f, "Update system. Verbose: {verbose}")
             }
         }
     }

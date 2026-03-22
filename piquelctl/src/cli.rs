@@ -51,6 +51,8 @@ pub enum Commands {
         #[command(subcommand)]
         command: GitCommands,
     },
+    /// Update the host of the daemon
+    Update,
 }
 
 #[derive(Subcommand, Debug)]

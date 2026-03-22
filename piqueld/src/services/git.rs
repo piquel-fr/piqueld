@@ -84,6 +84,10 @@ impl GitService {
             .ok_or(GitError::NotFound(repo))
     }
     fn clone_repo(&mut self, owner: String, name: String) -> Result<RepositoryInfo> {
+        if let Ok(info) = self.get_repository(owner.clone(), name.clone()) {
+            return Ok(info);
+        }
+
         let info = RepositoryInfo::new(owner, name, self.repo_path.clone());
         let full_name = info.full_name();
 
