@@ -1,0 +1,16 @@
+[package]
+name = "piqueld-ui"
+description = "Web administration interface for piqueld"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+piqueld-client.workspace = true
+piqueld-core.workspace = true
+
+[lints]
+workspace = true
+

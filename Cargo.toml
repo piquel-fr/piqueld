@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = [
+  "apps/piqueld",
+  "apps/piquelctl",
+  "apps/piqueld-ui",
+  "crates/piqueld-client",
+  "crates/piqueld-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/piquel-dev/piqueld"
+rust-version = "1.85"
+
+[workspace.dependencies]
+anyhow = "1.0.98"
+libsql = { version = "0.9.24", default-features = false, features = ["core"] }
+piqueld-client = { path = "crates/piqueld-client", version = "0.1.0" }
+piqueld-core = { path = "crates/piqueld-core", version = "0.1.0" }
+serde = { version = "1.0.219", features = ["derive"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tempfile = "3.20.0"
+thiserror = "2.0.12"
+tokio = { version = "1.45.1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio-util = { version = "0.7.15", features = ["rt"] }
+toml = "0.8.22"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "json"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
