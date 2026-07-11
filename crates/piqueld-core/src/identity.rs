@@ -1,18 +1,39 @@
 //! Stable application identity and deterministic Docker-safe names.
 #![allow(missing_docs)]
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use schemars::{
+    JsonSchema,
+    r#gen::SchemaGenerator,
+    schema::{InstanceType, Schema, SchemaObject, StringValidation},
+};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use sha2::{Digest, Sha256};
 use std::{fmt, str::FromStr};
 
 /// Stable internal application identity. It is assigned by persistence and is not
 /// derived from editable application metadata.
-#[derive(
-    Clone, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
-)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct ApplicationId(String);
+
+impl JsonSchema for ApplicationId {
+    fn schema_name() -> String {
+        "ApplicationId".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            string: Some(Box::new(StringValidation {
+                max_length: Some(64),
+                min_length: Some(8),
+                pattern: Some("^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$".into()),
+            })),
+            ..SchemaObject::default()
+        }
+        .into()
+    }
+}
 
 impl ApplicationId {
     /// Parses a storage-assigned identifier.
@@ -24,11 +45,19 @@ impl ApplicationId {
         if (8..=64).contains(&value.len())
             && value
                 .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            && value
+                .bytes()
+                .last()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            && value
+                .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
         {
             Ok(Self(value))
         } else {
-            Err("application IDs must be 8-64 lowercase ASCII letters, digits, or hyphens")
+            Err("application IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens")
         }
     }
 
@@ -36,6 +65,16 @@ impl ApplicationId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for ApplicationId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(de::Error::custom)
     }
 }
 
@@ -150,5 +189,12 @@ mod tests {
                 && a.bytes()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
         );
+    }
+
+    #[test]
+    fn deserialization_preserves_the_id_invariant() {
+        assert!(serde_json::from_str::<ApplicationId>(r#""01jz8r7b4w-test""#).is_ok());
+        assert!(serde_json::from_str::<ApplicationId>(r#""--------""#).is_err());
+        assert!(serde_json::from_str::<ApplicationId>(r#""UPPERCASE""#).is_err());
     }
 }

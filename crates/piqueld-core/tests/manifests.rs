@@ -1,7 +1,10 @@
 //! Manifest contract, fixture, property, and schema snapshot tests.
 
 use piqueld_core::manifest::{application_manifest_schema, normalized_application_schema};
-use piqueld_core::{ApplicationId, parse_json, parse_toml};
+use piqueld_core::{
+    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationId, ResourceKind, docker_resource_name,
+    parse_json, parse_toml, router_name,
+};
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
 
@@ -26,6 +29,18 @@ fn defaults_and_export_round_trip() {
         .unwrap()
         .normalize(id());
     assert_eq!(app.spec.services[0].replicas, 1);
+    let piqueld_core::manifest::Source::Git {
+        reference,
+        context,
+        dockerfile,
+        ..
+    } = &app.spec.services[0].source
+    else {
+        panic!("defaults fixture must use Git")
+    };
+    assert_eq!(reference, "main");
+    assert_eq!(context, ".");
+    assert_eq!(dockerfile, "Dockerfile");
     let exported = app.export_toml().unwrap();
     assert_eq!(app, parse_toml(&exported).unwrap().normalize(id()));
     assert!(!exported.to_ascii_lowercase().contains("plaintext"));
@@ -106,6 +121,12 @@ fn strict_unknown_fields_and_unsupported_sources_are_rejected() {
         "manifest_decode_failed"
     );
     assert!(parse_json(r#"{"api_version":"piqueld.dev/v1alpha1","kind":"Application","metadata":{"name":"a"},"spec":{"services":[{"name":"web","source":{"type":"ssh","repository":"x"}}]}}"#).is_err());
+
+    let field_error = parse_json(
+        r#"{"api_version":"piqueld.dev/v1alpha1","kind":"Application","metadata":{"name":"a"},"spec":{"services":[{"name":"web","source":{"type":"image","image":"alpine"},"do_not_echo_sensitive_token":true}]}}"#,
+    )
+    .unwrap_err();
+    assert_eq!(field_error.0[0].path, "spec.services[0]");
 }
 
 #[test]
@@ -167,17 +188,464 @@ port = 81
 }
 
 #[test]
+fn rejects_unsafe_runtime_values_paths_modes_and_target_collisions() {
+    let input = r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+command = ["web\u0000server"]
+arguments = ["--config\u0000bad"]
+[spec.services.source]
+type = "git"
+repository = "https://"
+context = "src//nested"
+dockerfile = "../Dockerfile"
+[[spec.services.mounts]]
+volume = "data"
+target = "/run//shared"
+[[spec.services.secrets]]
+source = "token"
+target = "/run//shared"
+mode = "0420"
+[[spec.volumes]]
+name = "data"
+"#;
+    let errors = parse_toml(input).unwrap_err();
+    for code in [
+        "git_repository_unsupported",
+        "source_path_unsafe",
+        "mount_target_unsafe",
+        "secret_mode_invalid",
+        "target_collision",
+        "process_argument_invalid",
+    ] {
+        assert!(
+            errors.0.iter().any(|error| error.code == code),
+            "missing {code}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn git_repository_credentials_are_not_accepted_in_manifests() {
+    let input = r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "git"
+repository = "https://token@example.com/private.git"
+"#;
+    let errors = parse_toml(input).unwrap_err();
+    assert!(
+        errors
+            .0
+            .iter()
+            .any(|error| error.code == "git_repository_unsupported")
+    );
+    assert!(
+        errors
+            .0
+            .iter()
+            .all(|error| !error.message.contains("token"))
+    );
+}
+
+#[test]
+fn image_and_git_sources_reject_ambiguous_or_sensitive_references() {
+    for image in [
+        "!",
+        "https://registry.example.com/team/image:latest",
+        "registry.example.com/Team/image:latest",
+        "token@example.com/private",
+        "alpine:",
+        "alpine@sha256:short",
+    ] {
+        let input = format!(
+            r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "{image}"
+"#
+        );
+        assert!(
+            parse_toml(&input)
+                .unwrap_err()
+                .0
+                .iter()
+                .any(|error| error.code == "image_invalid"),
+            "image {image:?} should be rejected"
+        );
+    }
+    for image in [
+        "alpine",
+        "alpine:3.20",
+        "registry.example.com:5000/team/image:Release-1",
+        "team/my__image@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    ] {
+        let input = format!(
+            r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "{image}"
+"#
+        );
+        assert!(
+            parse_toml(&input).is_ok(),
+            "image {image:?} should be accepted"
+        );
+    }
+
+    for repository in [
+        "https://example.com/private.git?access_token=sensitive",
+        "https://example.com/private.git#sensitive",
+        "ftp://example.com/private.git",
+    ] {
+        let input = format!(
+            r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "git"
+repository = "{repository}"
+"#
+        );
+        let errors = parse_toml(&input).unwrap_err();
+        assert!(
+            errors
+                .0
+                .iter()
+                .any(|error| error.code == "git_repository_unsupported")
+        );
+        assert!(
+            errors
+                .0
+                .iter()
+                .all(|error| !error.message.contains("sensitive"))
+        );
+    }
+}
+
+#[test]
+fn unsafe_git_references_are_rejected() {
+    for reference in ["../main", "refs//heads/main", "main.lock", "main~1", "@{"] {
+        let input = format!(
+            r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "git"
+repository = "https://example.com/repository.git"
+reference = "{reference}"
+"#
+        );
+        assert!(
+            parse_toml(&input)
+                .unwrap_err()
+                .0
+                .iter()
+                .any(|error| error.code == "git_reference_invalid"),
+            "Git reference {reference:?} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn invalid_absolute_secret_targets_have_secret_specific_errors() {
+    let input = r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "alpine"
+[[spec.services.secrets]]
+source = "token"
+target = "/run//token"
+"#;
+    let errors = parse_toml(input).unwrap_err();
+    assert!(
+        errors
+            .0
+            .iter()
+            .any(|error| error.code == "secret_target_unsafe")
+    );
+    assert!(
+        errors
+            .0
+            .iter()
+            .all(|error| error.code != "mount_target_unsafe")
+    );
+}
+
+#[test]
+fn effective_secret_paths_cannot_collide_with_mounts_or_each_other() {
+    let input = r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "alpine"
+[[spec.services.mounts]]
+volume = "data"
+target = "/run/secrets/token"
+[[spec.services.secrets]]
+source = "one"
+target = "token"
+[[spec.services.secrets]]
+source = "two"
+target = "/run/secrets/token"
+[[spec.volumes]]
+name = "data"
+"#;
+    let errors = parse_toml(input).unwrap_err();
+    assert!(
+        errors
+            .0
+            .iter()
+            .any(|error| error.code == "secret_target_duplicate")
+    );
+    assert_eq!(
+        errors
+            .0
+            .iter()
+            .filter(|error| error.code == "target_collision")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn applications_require_a_service_and_health_commands_require_an_executable() {
+    let no_services = r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "empty"
+[spec]
+"#;
+    assert!(
+        parse_toml(no_services)
+            .unwrap_err()
+            .0
+            .iter()
+            .any(|error| error.code == "service_required")
+    );
+
+    let empty_health_command = r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "alpine"
+[spec.services.healthcheck]
+type = "command"
+command = [""]
+"#;
+    assert!(
+        parse_toml(empty_health_command)
+            .unwrap_err()
+            .0
+            .iter()
+            .any(|error| error.code == "healthcheck_command_invalid")
+    );
+}
+
+#[test]
+fn health_paths_resource_limits_and_error_paths_are_safe() {
+    let input = r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "alpine"
+[spec.services.environment]
+"token\nvalue" = "bad\u0000value"
+[spec.services.healthcheck]
+type = "http"
+port = 8080
+path = "/../ready?token=sensitive"
+[spec.services.resources]
+"#;
+    let errors = parse_toml(input).unwrap_err();
+    for code in [
+        "environment_name_invalid",
+        "environment_value_invalid",
+        "healthcheck_path_invalid",
+        "resource_limits_empty",
+    ] {
+        assert!(
+            errors.0.iter().any(|error| error.code == code),
+            "missing {code}: {errors:?}"
+        );
+    }
+    assert!(
+        errors
+            .0
+            .iter()
+            .all(|error| !error.path.contains("token") && !error.message.contains("sensitive"))
+    );
+}
+
+#[test]
+fn secret_modes_require_read_only_permission_bits() {
+    for mode in ["0000", "0200", "1400", "0480"] {
+        let input = format!(
+            r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "alpine"
+[[spec.services.secrets]]
+source = "token"
+mode = "{mode}"
+"#
+        );
+        assert!(
+            parse_toml(&input)
+                .unwrap_err()
+                .0
+                .iter()
+                .any(|error| error.code == "secret_mode_invalid"),
+            "mode {mode} should be rejected"
+        );
+    }
+    for mode in ["0400", "0440", "0444", "0500"] {
+        let input = format!(
+            r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "test"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "alpine"
+[[spec.services.secrets]]
+source = "token"
+mode = "{mode}"
+"#
+        );
+        assert!(parse_toml(&input).is_ok(), "mode {mode} should be accepted");
+    }
+}
+
+#[test]
 fn schema_snapshots_are_stable() {
     let request = serde_json::to_string_pretty(&application_manifest_schema()).unwrap();
     let response = serde_json::to_string_pretty(&normalized_application_schema()).unwrap();
     assert_eq!(
-        format!("{:x}", Sha256::digest(request)),
+        format!("{:x}", Sha256::digest(&request)),
         include_str!("snapshots/application-manifest.schema.sha256").trim()
     );
     assert_eq!(
-        format!("{:x}", Sha256::digest(response)),
+        format!("{:x}", Sha256::digest(&response)),
         include_str!("snapshots/normalized-application.schema.sha256").trim()
     );
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let id_schema = &response["definitions"]["ApplicationId"];
+    assert_eq!(id_schema["minLength"], 8);
+    assert_eq!(id_schema["maxLength"], 64);
+    assert_eq!(id_schema["pattern"], "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$");
+    let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+    let replicas = &request["definitions"]["ServiceInput"]["properties"]["replicas"];
+    assert_eq!(replicas["minimum"].as_f64(), Some(1.0));
+    assert_eq!(replicas["maximum"].as_f64(), Some(100.0));
+    let name = &request["definitions"]["MetadataInput"]["properties"]["name"];
+    assert_eq!(name["minLength"], 1);
+    assert_eq!(name["maxLength"], 63);
+    assert_eq!(
+        request["properties"]["api_version"]["enum"][0],
+        APPLICATION_API_VERSION
+    );
+    assert_eq!(request["properties"]["kind"]["enum"][0], APPLICATION_KIND);
+    assert_eq!(
+        request["definitions"]["ApplicationSpecInput"]["properties"]["services"]["minItems"],
+        1
+    );
+}
+
+#[test]
+fn canonical_outputs_repair_order_and_hash_version_is_golden() {
+    let mut app = parse_toml(include_str!("fixtures/manifests/git-multi.toml"))
+        .unwrap()
+        .normalize(id());
+    let expected = app.clone();
+    app.spec.services.reverse();
+    app.spec
+        .services
+        .iter_mut()
+        .find(|service| service.name == "web")
+        .unwrap()
+        .ports = vec![8080, 8080];
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&app.canonical_json().unwrap()).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&expected.canonical_json().unwrap()).unwrap()
+    );
+    assert_eq!(app.spec_hash(), expected.spec_hash());
+    assert_eq!(
+        parse_toml(&app.export_toml().unwrap())
+            .unwrap()
+            .normalize(id()),
+        expected
+    );
+    assert_eq!(
+        expected.spec_hash(),
+        "sha256:9e490d86210d1db55be21c1bdfa79186a4658f99be28d52a4819d78086462931"
+    );
+
+    let other_id = ApplicationId::parse("another-application-id").unwrap();
+    let same_spec_other_id = parse_toml(include_str!("fixtures/manifests/git-multi.toml"))
+        .unwrap()
+        .normalize(other_id);
+    assert_eq!(expected.spec_hash(), same_spec_other_id.spec_hash());
 }
 
 proptest! {
@@ -195,5 +663,28 @@ proptest! {
         let app = parse_json(&json.to_string()).unwrap().normalize(id());
         prop_assert_eq!(app.clone().normalize(), app.clone());
         prop_assert_eq!(app.spec_hash(), app.clone().spec_hash());
+        let reparsed = parse_toml(&app.export_toml().unwrap()).unwrap().normalize(id());
+        prop_assert_eq!(reparsed, app);
+    }
+
+    #[test]
+    fn generated_resource_names_are_stable_safe_and_bounded(
+        logical_name in any::<String>(),
+        host in any::<String>(),
+        service in any::<String>(),
+        port in any::<u16>(),
+    ) {
+        let resource = docker_resource_name(&id(), ResourceKind::Service, Some(&logical_name));
+        prop_assert_eq!(
+            &resource,
+            &docker_resource_name(&id(), ResourceKind::Service, Some(&logical_name)),
+        );
+        prop_assert!(resource.len() <= 63);
+        prop_assert!(resource.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'));
+
+        let router = router_name(&id(), &host, &service, port);
+        prop_assert_eq!(&router, &router_name(&id(), &host, &service, port));
+        prop_assert!(router.len() <= 63);
+        prop_assert!(router.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'));
     }
 }

@@ -2,13 +2,18 @@
 #![allow(missing_docs)]
 
 use crate::ApplicationId;
-use schemars::{JsonSchema, schema::RootSchema};
+use schemars::{
+    JsonSchema,
+    r#gen::SchemaGenerator,
+    schema::{InstanceType, RootSchema, Schema, SchemaObject},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
 };
+use url::Url;
 
 /// Only application API version accepted by this prototype.
 pub const APPLICATION_API_VERSION: &str = "piqueld.dev/v1alpha1";
@@ -19,7 +24,9 @@ pub const APPLICATION_KIND: &str = "Application";
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationManifest {
+    #[schemars(schema_with = "api_version_schema")]
     pub api_version: String,
+    #[schemars(schema_with = "application_kind_schema")]
     pub kind: String,
     pub metadata: MetadataInput,
     pub spec: ApplicationSpecInput,
@@ -28,12 +35,17 @@ pub struct ApplicationManifest {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MetadataInput {
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub name: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ApplicationSpecInput {
+    #[schemars(length(min = 1))]
     pub services: Vec<ServiceInput>,
     pub volumes: Vec<VolumeInput>,
     pub routes: Vec<RouteInput>,
@@ -42,9 +54,14 @@ pub struct ApplicationSpecInput {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceInput {
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub name: String,
     pub source: SourceInput,
     #[serde(default = "default_replicas")]
+    #[schemars(range(min = 1, max = 100))]
     pub replicas: u16,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
@@ -96,12 +113,20 @@ fn default_dockerfile() -> String {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VolumeInput {
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MountInput {
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub volume: String,
     pub target: String,
     #[serde(default)]
@@ -111,6 +136,10 @@ pub struct MountInput {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretReferenceInput {
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub source: String,
     pub target: Option<String>,
     #[serde(default = "default_secret_mode")]
@@ -123,8 +152,14 @@ fn default_secret_mode() -> String {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteInput {
+    #[schemars(length(min = 1, max = 253))]
     pub host: String,
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub service: String,
+    #[schemars(range(min = 1))]
     pub port: u16,
 }
 
@@ -132,19 +167,24 @@ pub struct RouteInput {
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum HealthCheckInput {
     Http {
+        #[schemars(range(min = 1))]
         port: u16,
         #[serde(default = "default_health_path")]
         path: String,
         #[serde(default = "default_interval")]
+        #[schemars(range(min = 1))]
         interval_seconds: u32,
         #[serde(default = "default_timeout")]
+        #[schemars(range(min = 1))]
         timeout_seconds: u32,
     },
     Command {
         command: Vec<String>,
         #[serde(default = "default_interval")]
+        #[schemars(range(min = 1))]
         interval_seconds: u32,
         #[serde(default = "default_timeout")]
+        #[schemars(range(min = 1))]
         timeout_seconds: u32,
     },
 }
@@ -161,7 +201,9 @@ fn default_timeout() -> u32 {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimitsInput {
+    #[schemars(range(min = 1))]
     pub cpu_millis: Option<u32>,
+    #[schemars(range(min = 1))]
     pub memory_bytes: Option<u64>,
 }
 
@@ -198,7 +240,9 @@ pub struct ValidatedApplication {
 #[serde(deny_unknown_fields)]
 pub struct NormalizedApplication {
     pub id: ApplicationId,
+    #[schemars(schema_with = "api_version_schema")]
     pub api_version: String,
+    #[schemars(schema_with = "application_kind_schema")]
     pub kind: String,
     pub metadata: Metadata,
     pub spec: ApplicationSpec,
@@ -207,12 +251,17 @@ pub struct NormalizedApplication {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub name: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationSpec {
+    #[schemars(length(min = 1))]
     pub services: Vec<Service>,
     pub volumes: Vec<Volume>,
     pub routes: Vec<Route>,
@@ -221,8 +270,13 @@ pub struct ApplicationSpec {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Service {
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub name: String,
     pub source: Source,
+    #[schemars(range(min = 1, max = 100))]
     pub replicas: u16,
     pub environment: BTreeMap<String, String>,
     pub command: Vec<String>,
@@ -251,11 +305,19 @@ pub enum Source {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Volume {
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub name: String,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mount {
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub volume: String,
     pub target: String,
     pub read_only: bool,
@@ -263,6 +325,10 @@ pub struct Mount {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretReference {
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub source: String,
     pub target: String,
     pub mode: String,
@@ -270,8 +336,14 @@ pub struct SecretReference {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
+    #[schemars(length(min = 1, max = 253))]
     pub host: String,
+    #[schemars(
+        length(min = 1, max = 63),
+        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
+    )]
     pub service: String,
+    #[schemars(range(min = 1))]
     pub port: u16,
 }
 
@@ -279,21 +351,28 @@ pub struct Route {
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum HealthCheck {
     Http {
+        #[schemars(range(min = 1))]
         port: u16,
         path: String,
+        #[schemars(range(min = 1))]
         interval_seconds: u32,
+        #[schemars(range(min = 1))]
         timeout_seconds: u32,
     },
     Command {
         command: Vec<String>,
+        #[schemars(range(min = 1))]
         interval_seconds: u32,
+        #[schemars(range(min = 1))]
         timeout_seconds: u32,
     },
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimits {
+    #[schemars(range(min = 1))]
     pub cpu_millis: Option<u32>,
+    #[schemars(range(min = 1))]
     pub memory_bytes: Option<u64>,
 }
 
@@ -302,7 +381,8 @@ pub struct ResourceLimits {
 /// # Errors
 /// Returns validation errors, or one safe decode error for malformed input.
 pub fn parse_toml(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
-    let manifest = toml::from_str(input).map_err(|_| decode_error())?;
+    let manifest = serde_path_to_error::deserialize(toml::Deserializer::new(input))
+        .map_err(|error| decode_error(error.path()))?;
     validate(manifest)
 }
 
@@ -311,17 +391,95 @@ pub fn parse_toml(input: &str) -> Result<ValidatedApplication, ValidationErrors>
 /// # Errors
 /// Returns validation errors, or one safe decode error for malformed input.
 pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
-    let manifest = serde_json::from_str(input).map_err(|_| decode_error())?;
+    let mut deserializer = serde_json::Deserializer::from_str(input);
+    let manifest = serde_path_to_error::deserialize(&mut deserializer)
+        .map_err(|error| decode_error(error.path()))?;
     validate(manifest)
 }
 
-fn decode_error() -> ValidationErrors {
+fn decode_error(path: &serde_path_to_error::Path) -> ValidationErrors {
+    let path = safe_decode_path(&path.to_string());
     ValidationErrors(vec![ValidationError {
         code: "manifest_decode_failed".into(),
-        path: "$".into(),
+        path,
         message: "manifest does not match the strict piqueld.dev/v1alpha1 Application schema"
             .into(),
     }])
+}
+
+fn safe_decode_path(path: &str) -> String {
+    const FIELDS: &[&str] = &[
+        "api_version",
+        "kind",
+        "metadata",
+        "name",
+        "spec",
+        "services",
+        "volumes",
+        "routes",
+        "source",
+        "replicas",
+        "environment",
+        "command",
+        "arguments",
+        "ports",
+        "mounts",
+        "secrets",
+        "healthcheck",
+        "resources",
+        "type",
+        "image",
+        "repository",
+        "reference",
+        "context",
+        "dockerfile",
+        "volume",
+        "target",
+        "read_only",
+        "mode",
+        "host",
+        "service",
+        "port",
+        "path",
+        "interval_seconds",
+        "timeout_seconds",
+        "cpu_millis",
+        "memory_bytes",
+    ];
+    let mut safe = Vec::new();
+    for component in path.split('.') {
+        let field_end = component.find('[').unwrap_or(component.len());
+        let (field, indices) = component.split_at(field_end);
+        if !FIELDS.contains(&field) || !valid_path_indices(indices) {
+            break;
+        }
+        safe.push(component);
+    }
+    if safe.is_empty() {
+        "$".into()
+    } else {
+        safe.join(".")
+    }
+}
+
+fn valid_path_indices(mut value: &str) -> bool {
+    while !value.is_empty() {
+        let Some(after_open) = value.strip_prefix('[') else {
+            return false;
+        };
+        let Some(close) = after_open.find(']') else {
+            return false;
+        };
+        if close == 0
+            || !after_open[..close]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+        {
+            return false;
+        }
+        value = &after_open[close + 1..];
+    }
+    true
 }
 
 #[allow(clippy::too_many_lines)]
@@ -344,6 +502,14 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
         );
     }
     validate_name(&input.metadata.name, "metadata.name", &mut errors);
+    if input.spec.services.is_empty() {
+        error(
+            &mut errors,
+            "service_required",
+            "spec.services",
+            "application must declare at least one service",
+        );
+    }
     let service_names = unique_names(
         input.spec.services.iter().map(|s| &s.name),
         "spec.services",
@@ -370,12 +536,12 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
         }
         match &service.source {
             SourceInput::Image { image } => {
-                if image.is_empty() || image.chars().any(char::is_whitespace) {
+                if !valid_image_reference(image) {
                     error(
                         &mut errors,
                         "image_invalid",
                         &format!("{base}.source.image"),
-                        "image must be a non-empty reference without whitespace",
+                        "image must be a valid registry reference without credentials or a URL scheme",
                     );
                 }
             }
@@ -385,7 +551,7 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
                 context,
                 dockerfile,
             } => {
-                if !(repository.starts_with("https://") || repository.starts_with("http://")) {
+                if !valid_git_repository(repository) {
                     error(
                         &mut errors,
                         "git_repository_unsupported",
@@ -393,12 +559,12 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
                         "only HTTP(S) Git repositories are supported",
                     );
                 }
-                if reference.trim().is_empty() {
+                if !valid_git_reference(reference) {
                     error(
                         &mut errors,
                         "git_reference_invalid",
                         &format!("{base}.source.reference"),
-                        "Git reference must not be empty",
+                        "Git reference must use safe Git ref syntax",
                     );
                 }
                 validate_relative_path(context, &format!("{base}.source.context"), &mut errors);
@@ -409,12 +575,12 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
                 );
             }
         }
-        for (key, value) in &service.environment {
+        for (index, (key, value)) in service.environment.iter().enumerate() {
             if !valid_env_name(key) {
                 error(
                     &mut errors,
                     "environment_name_invalid",
-                    &format!("{base}.environment.{key}"),
+                    &format!("{base}.environment[{index}].name"),
                     "environment names must use letters, digits, and underscores and cannot start with a digit",
                 );
             }
@@ -422,7 +588,7 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
                 error(
                     &mut errors,
                     "environment_value_invalid",
-                    &format!("{base}.environment.{key}"),
+                    &format!("{base}.environment[{index}].value"),
                     "environment values cannot contain NUL",
                 );
             }
@@ -438,8 +604,14 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
                     "mount references an undeclared volume",
                 );
             }
-            validate_absolute_path(&mount.target, &format!("{path}.target"), &mut errors);
-            if !mount_targets.insert(&mount.target) {
+            validate_absolute_path(
+                &mount.target,
+                &format!("{path}.target"),
+                "mount_target_unsafe",
+                "mount target must be an absolute, normalized container path below root",
+                &mut errors,
+            );
+            if !mount_targets.insert(mount.target.as_str()) {
                 error(
                     &mut errors,
                     "mount_target_duplicate",
@@ -454,7 +626,8 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
             validate_name(&secret.source, &format!("{path}.source"), &mut errors);
             let target = secret.target.as_deref().unwrap_or(&secret.source);
             validate_secret_target(target, &format!("{path}.target"), &mut errors);
-            if !secret_targets.insert(target) {
+            let effective_target = effective_secret_target(target);
+            if !secret_targets.insert(effective_target.clone()) {
                 error(
                     &mut errors,
                     "secret_target_duplicate",
@@ -462,12 +635,20 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
                     "secret target is duplicated in this service",
                 );
             }
+            if mount_targets.contains(effective_target.as_str()) {
+                error(
+                    &mut errors,
+                    "target_collision",
+                    &format!("{path}.target"),
+                    "secret target conflicts with a volume mount target in this service",
+                );
+            }
             if !valid_mode(&secret.mode) {
                 error(
                     &mut errors,
                     "secret_mode_invalid",
                     &format!("{path}.mode"),
-                    "secret mode must be four octal digits and may not grant write access",
+                    "secret mode must be 0 plus three octal digits, grant read access, and grant no write access",
                 );
             }
         }
@@ -481,6 +662,24 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
                 );
             }
         }
+        validate_process_arguments(&service.command, &format!("{base}.command"), &mut errors);
+        if service
+            .command
+            .first()
+            .is_some_and(|argument| argument.trim().is_empty())
+        {
+            error(
+                &mut errors,
+                "process_command_invalid",
+                &format!("{base}.command[0]"),
+                "an explicit container command must start with a non-empty executable",
+            );
+        }
+        validate_process_arguments(
+            &service.arguments,
+            &format!("{base}.arguments"),
+            &mut errors,
+        );
         if let Some(health) = &service.healthcheck {
             validate_health(health, &format!("{base}.healthcheck"), &mut errors);
             if let HealthCheckInput::Http { port, .. } = health {
@@ -495,6 +694,14 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
             }
         }
         if let Some(resources) = &service.resources {
+            if resources.cpu_millis.is_none() && resources.memory_bytes.is_none() {
+                error(
+                    &mut errors,
+                    "resource_limits_empty",
+                    &format!("{base}.resources"),
+                    "resource limits must configure CPU, memory, or both",
+                );
+            }
             if resources.cpu_millis == Some(0) {
                 error(
                     &mut errors,
@@ -555,10 +762,11 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
             );
         }
         let host = route.host.to_ascii_lowercase();
-        if !route_keys.insert((host.clone(), route.service.clone(), route.port)) {
+        let duplicate = !route_keys.insert((host.clone(), route.service.clone(), route.port));
+        if duplicate {
             error(&mut errors, "route_duplicate", &base, "route is duplicated");
         }
-        if !route_hosts.insert(host) {
+        if !route_hosts.insert(host) && !duplicate {
             error(
                 &mut errors,
                 "public_route_conflict",
@@ -789,10 +997,12 @@ impl NormalizedApplication {
             metadata: &'a Metadata,
             spec: &'a ApplicationSpec,
         }
+        let mut spec = self.spec.clone();
+        normalize_spec(&mut spec);
         let bytes = serde_json::to_vec(&Envelope {
             hash_version: "piqueld-spec-hash/v1",
             metadata: &self.metadata,
-            spec: &self.spec,
+            spec: &spec,
         })
         .expect("domain serialization is infallible");
         format!("sha256:{:x}", Sha256::digest(bytes))
@@ -803,7 +1013,7 @@ impl NormalizedApplication {
     /// # Errors
     /// Propagates a JSON serialization error.
     pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(self)
+        serde_json::to_string(&self.clone().normalize())
     }
 
     /// Portable desired TOML. Internal identity is intentionally omitted and only
@@ -812,7 +1022,7 @@ impl NormalizedApplication {
     /// # Errors
     /// Propagates a TOML serialization error.
     pub fn export_toml(&self) -> Result<String, toml::ser::Error> {
-        toml::to_string_pretty(&self.to_manifest())
+        toml::to_string_pretty(&self.clone().normalize().to_manifest())
     }
 
     fn to_manifest(&self) -> ApplicationManifest {
@@ -930,6 +1140,23 @@ pub fn normalized_application_schema() -> RootSchema {
     schemars::schema_for!(NormalizedApplication)
 }
 
+fn api_version_schema(_generator: &mut SchemaGenerator) -> Schema {
+    constant_string_schema(APPLICATION_API_VERSION)
+}
+
+fn application_kind_schema(_generator: &mut SchemaGenerator) -> Schema {
+    constant_string_schema(APPLICATION_KIND)
+}
+
+fn constant_string_schema(value: &str) -> Schema {
+    SchemaObject {
+        instance_type: Some(InstanceType::String.into()),
+        enum_values: Some(vec![serde_json::Value::String(value.into())]),
+        ..SchemaObject::default()
+    }
+    .into()
+}
+
 fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     if value.is_empty()
         || value.len() > 63
@@ -947,6 +1174,183 @@ fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
         );
     }
 }
+
+fn valid_image_reference(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 512
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        || value.contains("//")
+        || value.contains(['?', '#'])
+    {
+        return false;
+    }
+
+    let mut digest_parts = value.split('@');
+    let name_and_tag = digest_parts.next().unwrap_or_default();
+    if let Some(digest) = digest_parts.next() {
+        if digest_parts.next().is_some() || !valid_image_digest(digest) {
+            return false;
+        }
+    }
+
+    let last_slash = name_and_tag.rfind('/');
+    let tag_separator = name_and_tag
+        .rfind(':')
+        .filter(|index| last_slash.is_none_or(|slash_index| *index > slash_index));
+    let (name, tag) = tag_separator.map_or((name_and_tag, None), |index| {
+        (&name_and_tag[..index], Some(&name_and_tag[index + 1..]))
+    });
+    if tag.is_some_and(|tag| {
+        tag.is_empty()
+            || tag.len() > 128
+            || !tag
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            || !tag
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+    }) {
+        return false;
+    }
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+
+    let components = name.split('/').collect::<Vec<_>>();
+    if components.iter().any(|component| component.is_empty()) {
+        return false;
+    }
+    let first_is_registry = components.len() > 1
+        && (components[0].contains(['.', ':']) || components[0] == "localhost");
+    let repository_components = if first_is_registry {
+        if !valid_registry_authority(components[0]) {
+            return false;
+        }
+        &components[1..]
+    } else {
+        components.as_slice()
+    };
+    repository_components
+        .iter()
+        .all(|component| valid_repository_component(component))
+}
+
+fn valid_registry_authority(value: &str) -> bool {
+    let (host, port) = value
+        .rsplit_once(':')
+        .map_or((value, None), |(host, port)| (host, Some(port)));
+    if port.is_some_and(|port| port.parse::<u16>().map_or(true, |port| port == 0)) {
+        return false;
+    }
+    host == "localhost"
+        || (!host.is_empty()
+            && host.split('.').all(|label| {
+                !label.is_empty()
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    })
+            }))
+}
+
+fn valid_repository_component(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if !bytes
+        .first()
+        .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        || !bytes
+            .last()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let mut index = 0;
+    while index < bytes.len() {
+        while index < bytes.len()
+            && (bytes[index].is_ascii_lowercase() || bytes[index].is_ascii_digit())
+        {
+            index += 1;
+        }
+        if index == bytes.len() {
+            return true;
+        }
+        let separator_start = index;
+        while index < bytes.len() && matches!(bytes[index], b'.' | b'_' | b'-') {
+            index += 1;
+        }
+        let separator = &value[separator_start..index];
+        if index == bytes.len()
+            || !(separator == "."
+                || separator == "_"
+                || separator == "__"
+                || separator.bytes().all(|byte| byte == b'-'))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn valid_image_digest(value: &str) -> bool {
+    let Some((algorithm, encoded)) = value.split_once(':') else {
+        return false;
+    };
+    let algorithm_parts = algorithm.split(['_', '+', '.', '-']).collect::<Vec<_>>();
+    algorithm_parts.iter().all(|part| {
+        part.bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    }) && encoded.len() >= 32
+        && encoded
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'=' | b'_' | b'-'))
+}
+
+fn valid_git_repository(value: &str) -> bool {
+    if value.len() > 2048
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return false;
+    }
+    Url::parse(value).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port() != Some(0)
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
+}
+
+fn valid_git_reference(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 1024
+        && value != "@"
+        && !value.starts_with('/')
+        && !value.ends_with(['/', '.'])
+        && !value.contains("..")
+        && !value.contains("@{")
+        && !value.contains("//")
+        && !value.chars().any(|character| {
+            character.is_whitespace()
+                || character.is_control()
+                || matches!(character, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        })
+        && value.split('/').all(|component| {
+            !component.starts_with('.') && component.strip_suffix(".lock").is_none()
+        })
+}
+
 fn validate_hostname(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     let valid = !value.is_empty()
         && value.len() <= 253
@@ -971,11 +1375,19 @@ fn validate_hostname(value: &str, path: &str, errors: &mut Vec<ValidationError>)
     }
 }
 fn validate_relative_path(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
-    if value.is_empty()
-        || value.starts_with('/')
-        || value.contains('\0')
-        || value.split('/').any(|p| p == "..")
-    {
+    let components = value.split('/').collect::<Vec<_>>();
+    let normalized = value == "."
+        || (!value.is_empty()
+            && !value.starts_with('/')
+            && !value.ends_with('/')
+            && value.len() <= 4096
+            && components.iter().all(|component| {
+                !component.is_empty()
+                    && component.len() <= 255
+                    && *component != "."
+                    && *component != ".."
+            }));
+    if !normalized || value.contains('\\') || value.chars().any(char::is_control) {
         error(
             errors,
             "source_path_unsafe",
@@ -984,30 +1396,60 @@ fn validate_relative_path(value: &str, path: &str, errors: &mut Vec<ValidationEr
         );
     }
 }
-fn validate_absolute_path(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
+fn validate_absolute_path(
+    value: &str,
+    path: &str,
+    code: &str,
+    message: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let components = value.split('/').skip(1);
     if !value.starts_with('/')
         || value == "/"
-        || value.contains('\0')
-        || value.split('/').any(|p| p == ".." || p == ".")
+        || value.ends_with('/')
+        || value.len() > 4096
+        || value.contains('\\')
+        || value.chars().any(char::is_control)
+        || components
+            .into_iter()
+            .any(|part| part.is_empty() || part.len() > 255 || part == ".." || part == ".")
     {
-        error(
-            errors,
-            "mount_target_unsafe",
-            path,
-            "mount target must be an absolute, normalized container path below root",
-        );
+        error(errors, code, path, message);
     }
 }
 fn validate_secret_target(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     if value.starts_with('/') {
-        validate_absolute_path(value, path, errors);
-    } else if value.is_empty() || value.contains('/') || value == "." || value == ".." {
+        validate_absolute_path(
+            value,
+            path,
+            "secret_target_unsafe",
+            "secret target must be a safe file name or absolute normalized container path",
+            errors,
+        );
+    } else if value.is_empty()
+        || value.contains('/')
+        || value.contains('\\')
+        || value == "."
+        || value == ".."
+        || value.len() > 255
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
         error(
             errors,
             "secret_target_unsafe",
             path,
             "secret target must be a safe file name or absolute normalized container path",
         );
+    }
+}
+
+fn effective_secret_target(value: &str) -> String {
+    if value.starts_with('/') {
+        value.to_owned()
+    } else {
+        format!("/run/secrets/{value}")
     }
 }
 fn valid_env_name(value: &str) -> bool {
@@ -1019,9 +1461,22 @@ fn valid_env_name(value: &str) -> bool {
 }
 fn valid_mode(value: &str) -> bool {
     value.len() == 4
+        && value.starts_with('0')
         && value.bytes().all(|b| matches!(b, b'0'..=b'7'))
-        && value.as_bytes()[2] <= b'5'
-        && value.as_bytes()[3] <= b'5'
+        && u16::from_str_radix(value, 8).is_ok_and(|mode| mode & 0o222 == 0 && mode & 0o444 != 0)
+}
+
+fn validate_process_arguments(values: &[String], path: &str, errors: &mut Vec<ValidationError>) {
+    for (index, value) in values.iter().enumerate() {
+        if value.contains('\0') {
+            error(
+                errors,
+                "process_argument_invalid",
+                &format!("{path}[{index}]"),
+                "container process arguments cannot contain NUL",
+            );
+        }
+    }
 }
 fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<ValidationError>) {
     let (interval, timeout) = match value {
@@ -1039,9 +1494,18 @@ fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<Valida
                     "port must be between 1 and 65535",
                 );
             }
-            if !request_path.starts_with('/')
-                || request_path.contains(char::is_whitespace)
-                || request_path.contains('\0')
+            let normalized_path = request_path == "/"
+                || (request_path.starts_with('/')
+                    && !request_path.ends_with('/')
+                    && request_path.split('/').skip(1).all(|component| {
+                        !component.is_empty() && component != "." && component != ".."
+                    }));
+            if request_path.len() > 2048
+                || !normalized_path
+                || request_path.contains(['\\', '?', '#'])
+                || request_path
+                    .chars()
+                    .any(|character| character.is_whitespace() || character.is_control())
             {
                 error(
                     errors,
@@ -1057,7 +1521,11 @@ fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<Valida
             interval_seconds,
             timeout_seconds,
         } => {
-            if command.is_empty() || command.iter().any(|v| v.contains('\0')) {
+            if command
+                .first()
+                .is_none_or(|argument| argument.trim().is_empty())
+                || command.iter().any(|v| v.contains('\0'))
+            {
                 error(
                     errors,
                     "healthcheck_command_invalid",
