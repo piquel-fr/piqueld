@@ -1,0 +1,14 @@
+api_version = "wrong"
+kind = "Application"
+[metadata]
+name = "Bad Name"
+[[spec.services]]
+name = "web"
+replicas = 0
+[spec.services.source]
+type = "image"
+image = "bad image"
+[[spec.routes]]
+host = "invalid"
+service = "missing"
+port = 0
