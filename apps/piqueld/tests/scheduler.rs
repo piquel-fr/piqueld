@@ -14,7 +14,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -25,6 +25,41 @@ fn application(id: &str, name: &str) -> NormalizedApplication {
     parse_json(&format!(r#"{{"api_version":"piqueld.dev/v1alpha1","kind":"Application","metadata":{{"name":"{name}"}},"spec":{{"services":[{{"name":"web","source":{{"type":"image","image":"example.test/web:1"}},"replicas":1,"environment":{{}},"command":[],"arguments":[],"ports":[],"mounts":[],"secrets":[],"healthcheck":null,"resources":null}}],"volumes":[],"routes":[]}}}}"#)).unwrap().normalize(ApplicationId::parse(id).unwrap())
 }
 
+struct ClaimedStateHandler(AtomicBool);
+
+#[async_trait]
+impl OperationHandler for ClaimedStateHandler {
+    async fn execute(
+        &self,
+        operation: &Operation,
+        _: &CancellationToken,
+    ) -> Result<(), (&'static str, &'static str)> {
+        self.0.store(
+            operation.state == WorkState::Running && operation.started_at_ms.is_some(),
+            Ordering::SeqCst,
+        );
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn handlers_receive_the_durably_claimed_operation() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        LibsqlStore::open(directory.path().join("claimed-state.db"))
+            .await
+            .unwrap(),
+    );
+    let app = application("scheduler-app-07", "claimed-state");
+    store.create(&app, None, &[]).await.unwrap();
+    let handler = Arc::new(ClaimedStateHandler(AtomicBool::new(false)));
+    OperationScheduler::new(store, handler.clone(), 1, 1)
+        .run_until_idle(CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(handler.0.load(Ordering::SeqCst));
+}
+
 #[derive(Default)]
 struct TrackingHandler {
     active: AtomicUsize,
@@ -33,6 +68,7 @@ struct TrackingHandler {
     build_maximum: AtomicUsize,
     per_app: Mutex<HashMap<String, usize>>,
     per_app_max: Mutex<HashMap<String, usize>>,
+    generations: Mutex<HashMap<String, Vec<u64>>>,
     delay_ms: u64,
 }
 
@@ -42,7 +78,7 @@ impl OperationHandler for TrackingHandler {
         &self,
         operation: &Operation,
         _: &CancellationToken,
-    ) -> Result<(), (&'static str, String)> {
+    ) -> Result<(), (&'static str, &'static str)> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.maximum.fetch_max(active, Ordering::SeqCst);
         if operation.kind == OperationKind::Build {
@@ -61,6 +97,12 @@ impl OperationHandler for TrackingHandler {
                 .and_modify(|v| *v = (*v).max(*count))
                 .or_insert(*count);
         }
+        self.generations
+            .lock()
+            .await
+            .entry(operation.application_id.to_string())
+            .or_default()
+            .push(operation.generation);
         tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
         {
             let mut current = self.per_app.lock().await;
@@ -156,6 +198,14 @@ async fn scheduler_serializes_each_application_and_honors_global_bound() {
             .values()
             .all(|maximum| *maximum == 1)
     );
+    assert!(
+        handler
+            .generations
+            .lock()
+            .await
+            .values()
+            .all(|generations| generations == &[1, 2])
+    );
     assert!(store.pending_operations(1).await.unwrap().is_empty());
 }
 
@@ -166,7 +216,7 @@ impl OperationHandler for BlockingHandler {
         &self,
         _: &Operation,
         cancellation: &CancellationToken,
-    ) -> Result<(), (&'static str, String)> {
+    ) -> Result<(), (&'static str, &'static str)> {
         cancellation.cancelled().await;
         Ok(())
     }
@@ -197,5 +247,42 @@ async fn cancellation_returns_running_work_to_durable_recovery() {
     assert_eq!(
         store.operation(&mutation.operation_id).await.unwrap().state,
         WorkState::Recovery
+    );
+}
+
+#[tokio::test]
+async fn concurrent_dispatchers_claim_each_durable_operation_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        LibsqlStore::open(directory.path().join("claim.db"))
+            .await
+            .unwrap(),
+    );
+    let app = application("scheduler-app-06", "single-claim");
+    let mutation = store.create(&app, None, &[]).await.unwrap();
+    let handler = Arc::new(TrackingHandler {
+        delay_ms: 30,
+        ..Default::default()
+    });
+    let first = OperationScheduler::new(store.clone(), handler.clone(), 1, 1);
+    let second = OperationScheduler::new(store.clone(), handler.clone(), 1, 1);
+    let (first_result, second_result) = tokio::join!(
+        first.run_until_idle(CancellationToken::new()),
+        second.run_until_idle(CancellationToken::new())
+    );
+    first_result.unwrap();
+    second_result.unwrap();
+    assert_eq!(
+        handler
+            .generations
+            .lock()
+            .await
+            .get(app.id.as_str())
+            .unwrap(),
+        &[1]
+    );
+    assert_eq!(
+        store.operation(&mutation.operation_id).await.unwrap().state,
+        WorkState::Succeeded
     );
 }

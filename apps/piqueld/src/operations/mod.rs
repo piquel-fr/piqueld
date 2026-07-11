@@ -18,7 +18,7 @@ pub trait OperationHandler: Send + Sync + 'static {
         &self,
         operation: &Operation,
         cancellation: &CancellationToken,
-    ) -> Result<(), (&'static str, String)>;
+    ) -> Result<(), (&'static str, &'static str)>;
 }
 
 /// Scheduler failures. Individual operation failures are journaled and are not scheduler failures.
@@ -46,6 +46,16 @@ where
     R: OperationRepository + 'static,
     H: OperationHandler,
 {
+    async fn execute_claimed(
+        repository: &R,
+        handler: &H,
+        operation_id: &str,
+        token: &CancellationToken,
+    ) -> Result<Result<(), (&'static str, &'static str)>, StoreError> {
+        let claimed = repository.operation(operation_id).await?;
+        Ok(handler.execute(&claimed, token).await)
+    }
+
     /// Creates a scheduler. Both concurrency limits must be non-zero.
     ///
     /// # Panics
@@ -109,18 +119,77 @@ where
                 let applications = Arc::clone(&self.applications);
                 let token = cancellation.child_token();
                 tasks.spawn(async move {
-                    let app_lock={let mut locks=applications.lock().await;Arc::clone(locks.entry(operation.application_id.to_string()).or_insert_with(||Arc::new(Mutex::new(()))))};
-                    let Ok(_global)=global.acquire_owned().await else{return Ok(())};
-                    let _build=if operation.kind==OperationKind::Build {Some(builds.acquire_owned().await.map_err(|_|StoreError::Database)?)}else{None};
-                    let _application=app_lock.lock().await;
-                    if token.is_cancelled(){return Ok(())}
-                    repository.transition_operation(&operation.id,operation.state,WorkState::Running,None).await?;
-                    let result=tokio::select!{
-                        biased;
-                        ()=token.cancelled()=>{repository.transition_operation(&operation.id,WorkState::Running,WorkState::Recovery,None).await?;return Ok(())},
-                        result=handler.execute(&operation,&token)=>result,
+                    let app_lock = {
+                        let mut locks = applications.lock().await;
+                        Arc::clone(
+                            locks
+                                .entry(operation.application_id.to_string())
+                                .or_insert_with(|| Arc::new(Mutex::new(()))),
+                        )
                     };
-                    match result {Ok(())=>repository.transition_operation(&operation.id,WorkState::Running,WorkState::Succeeded,None).await?,Err((code,message))=>repository.transition_operation(&operation.id,WorkState::Running,WorkState::Failed,Some((code,&message))).await?}
+                    let _global = tokio::select! {
+                        biased;
+                        () = token.cancelled() => return Ok(()),
+                        permit = global.acquire_owned() => permit.map_err(|_| StoreError::Database)?,
+                    };
+                    let _build = if operation.kind == OperationKind::Build {
+                        Some(tokio::select! {
+                            biased;
+                            () = token.cancelled() => return Ok(()),
+                            permit = builds.acquire_owned() => permit.map_err(|_| StoreError::Database)?,
+                        })
+                    } else {
+                        None
+                    };
+                    let _application = tokio::select! {
+                        biased;
+                        () = token.cancelled() => return Ok(()),
+                        guard = app_lock.lock() => guard,
+                    };
+                    match repository
+                        .transition_operation(
+                            &operation.id,
+                            operation.state,
+                            WorkState::Running,
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(StoreError::IllegalTransition) => return Ok(()),
+                        Err(error) => return Err(error),
+                    }
+                    let result = tokio::select! {
+                        biased;
+                        () = token.cancelled() => {
+                            repository.transition_operation(
+                                &operation.id,
+                                WorkState::Running,
+                                WorkState::Recovery,
+                                None,
+                            ).await?;
+                            return Ok(());
+                        },
+                        result = Self::execute_claimed(&repository, &handler, &operation.id, &token) => result?,
+                    };
+                    match result {
+                        Ok(()) => repository
+                            .transition_operation(
+                                &operation.id,
+                                WorkState::Running,
+                                WorkState::Succeeded,
+                                None,
+                            )
+                            .await?,
+                        Err((code, message)) => repository
+                            .transition_operation(
+                                &operation.id,
+                                WorkState::Running,
+                                WorkState::Failed,
+                                Some((code, message)),
+                            )
+                            .await?,
+                    }
                     Ok::<(),StoreError>(())
                 });
             }

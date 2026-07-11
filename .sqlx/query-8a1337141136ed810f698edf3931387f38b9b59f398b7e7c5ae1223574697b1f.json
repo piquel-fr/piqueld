@@ -1,0 +1,68 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id,name,desired_json,resolved_json,generation,spec_hash,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id=?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "desired_json",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "resolved_json",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "generation",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "spec_hash",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "delete_intent",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at_ms",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "updated_at_ms",
+        "ordinal": 8,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8a1337141136ed810f698edf3931387f38b9b59f398b7e7c5ae1223574697b1f"
+}
