@@ -1,6 +1,6 @@
 //! Integrated `SQLx` `SQLite` driver evidence for ADR 0001.
 
-use sqlx::{Connection, sqlite::SqliteConnection};
+use sqlx::{Connection, Executor, sqlite::SqliteConnection};
 
 #[tokio::test]
 async fn sqlx_owns_execution_and_compile_time_validation() {
@@ -8,6 +8,18 @@ async fn sqlx_owns_execution_and_compile_time_validation() {
     let database_path = directory.path().join("sqlx-validation-spike.db");
     let url = format!("sqlite://{}?mode=rwc", database_path.display());
     let mut connection = SqliteConnection::connect(&url).await.unwrap();
+    connection
+        .execute(sqlx::raw_sql(include_str!(
+            "../../../migrations/0001_control_plane.sql"
+        )))
+        .await
+        .unwrap();
+    connection
+        .execute(sqlx::raw_sql(include_str!(
+            "../../../migrations/0002_retention_indexes.sql"
+        )))
+        .await
+        .unwrap();
 
     // `query!` describes and type-checks the statement while this target is
     // compiled, then the same SQLx driver executes it against SQLite.
