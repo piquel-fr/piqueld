@@ -5,6 +5,7 @@ use crate::{
     ApplicationId, ResourceKind, docker_resource_name,
     manifest::{
         HealthCheck, Mount, NormalizedApplication, ResourceLimits, SecretReference, Source,
+        valid_image_reference,
     },
     router_name,
 };
@@ -218,7 +219,7 @@ pub struct DesiredSecret {
     pub name: String,
     pub labels: BTreeMap<String, String>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredSecretMount {
     pub logical_name: String,
@@ -226,7 +227,7 @@ pub struct DesiredSecretMount {
     pub target: String,
     pub mode: String,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredMount {
     pub volume_name: String,
@@ -288,7 +289,7 @@ pub fn compile_application(
 ) -> Result<DesiredApplication, Vec<CompileError>> {
     let requirements = preview_resolution(app, resolutions);
     if !requirements.is_empty() {
-        return Err(requirements
+        let mut errors = requirements
             .into_iter()
             .map(|r| match r {
                 ResolutionRequirement::ResolveImage { service, .. }
@@ -304,9 +305,17 @@ pub fn compile_application(
                     message: "logical secret has no current runtime generation".into(),
                 },
             })
-            .collect());
+            .collect::<Vec<_>>();
+        errors.dedup_by(|left, right| left.code == right.code && left.resource == right.resource);
+        return Err(errors);
     }
     let mut invalid = Vec::new();
+    let referenced_secrets = app
+        .spec
+        .services
+        .iter()
+        .flat_map(|service| service.secrets.iter().map(|secret| secret.source.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
     for service in &app.spec.services {
         let resolved = &resolutions.sources[&service.name];
         let matches_intent = match (&service.source, resolved) {
@@ -316,7 +325,11 @@ pub fn compile_application(
                     requested,
                     digest_reference,
                 },
-            ) => requested == image && immutable_digest_reference(digest_reference),
+            ) => {
+                requested == image
+                    && immutable_digest_reference(digest_reference)
+                    && same_image_repository(image, digest_reference)
+            }
             (
                 Source::Git {
                     repository,
@@ -339,8 +352,9 @@ pub fn compile_application(
                     && context == resolved_context
                     && dockerfile == resolved_dockerfile
                     && valid_commit(commit)
-                    && !registry_reference.is_empty()
+                    && mutable_image_reference(registry_reference)
                     && immutable_digest_reference(digest_reference)
+                    && same_image_repository(registry_reference, digest_reference)
             }
             _ => false,
         };
@@ -353,15 +367,22 @@ pub fn compile_application(
             });
         }
     }
-    for (logical_name, secret) in &resolutions.secrets {
+    for (logical_name, secret) in resolutions
+        .secrets
+        .iter()
+        .filter(|(logical_name, _)| referenced_secrets.contains(logical_name.as_str()))
+    {
+        let generation_identity = format!("{logical_name}-{}", secret.generation);
+        let expected_name =
+            docker_resource_name(&app.id, ResourceKind::Secret, Some(&generation_identity));
         if logical_name != &secret.logical_name
             || secret.generation.is_empty()
-            || secret.swarm_name.is_empty()
+            || secret.swarm_name != expected_name
         {
             invalid.push(CompileError {
                 code: "secret_generation_invalid".into(),
                 resource: logical_name.clone(),
-                message: "secret generation metadata is inconsistent or incomplete".into(),
+                message: "secret generation metadata is inconsistent or its Swarm name is not the deterministic application-scoped name".into(),
             });
         }
     }
@@ -402,12 +423,6 @@ pub fn compile_application(
             labels: base.labels(),
         })
         .collect::<Vec<_>>();
-    let referenced_secrets = app
-        .spec
-        .services
-        .iter()
-        .flat_map(|service| service.secrets.iter().map(|secret| secret.source.as_str()))
-        .collect::<std::collections::BTreeSet<_>>();
     let mut secrets = resolutions
         .secrets
         .values()
@@ -438,7 +453,7 @@ pub fn compile_application(
             let mut ownership = base.clone();
             ownership.service = Some(service.name.clone());
             let mut labels = ownership.labels();
-            compile_traefik_labels(app, &service.name, &mut labels);
+            compile_traefik_labels(app, &service.name, &ingress_network, &mut labels);
             DesiredService {
                 logical_name: service.name.clone(),
                 name: docker_resource_name(&app.id, ResourceKind::Service, Some(&service.name)),
@@ -492,22 +507,70 @@ pub fn compile_application(
 }
 
 fn immutable_digest_reference(reference: &str) -> bool {
-    reference
-        .rsplit_once("@sha256:")
-        .is_some_and(|(name, digest)| {
-            !name.is_empty()
-                && digest.len() == 64
-                && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
+    valid_image_reference(reference)
+        && reference
+            .split_once("@sha256:")
+            .is_some_and(|(name, digest)| {
+                !name.contains('@')
+                    && digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+}
+
+fn mutable_image_reference(reference: &str) -> bool {
+    valid_image_reference(reference)
+        && !reference.contains('@')
+        && image_repository(reference).is_some()
+}
+
+fn same_image_repository(reference: &str, digest_reference: &str) -> bool {
+    image_repository(reference)
+        .zip(image_repository(digest_reference))
+        .is_some_and(|(requested, resolved)| requested == resolved)
+}
+
+fn image_repository(reference: &str) -> Option<String> {
+    if !valid_image_reference(reference) {
+        return None;
+    }
+    let without_digest = reference
+        .split_once('@')
+        .map_or(reference, |(name, _)| name);
+    let last_slash = without_digest.rfind('/');
+    let repository = match without_digest.rfind(':') {
+        Some(colon) if last_slash.is_none_or(|slash| colon > slash) => &without_digest[..colon],
+        _ => without_digest,
+    };
+    if repository.is_empty() {
+        return None;
+    }
+    let mut components = repository.split('/');
+    let first = components.next()?;
+    let explicit_registry =
+        repository.contains('/') && (first.contains(['.', ':']) || first == "localhost");
+    if explicit_registry {
+        return Some(repository.to_owned());
+    }
+    if repository.contains('/') {
+        Some(format!("docker.io/{repository}"))
+    } else {
+        Some(format!("docker.io/library/{repository}"))
+    }
 }
 
 fn valid_commit(commit: &str) -> bool {
-    matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+    matches!(commit.len(), 40 | 64)
+        && commit
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn compile_traefik_labels(
     app: &NormalizedApplication,
     service: &str,
+    ingress_network: &str,
     labels: &mut BTreeMap<String, String>,
 ) {
     let service_routes = app
@@ -520,6 +583,7 @@ fn compile_traefik_labels(
         return;
     }
     labels.insert("traefik.enable".into(), "true".into());
+    labels.insert("traefik.swarm.network".into(), ingress_network.into());
     for route in service_routes {
         let router = router_name(&app.id, &route.host, service, route.port);
         let backend = format!("{router}-backend");
@@ -604,6 +668,7 @@ pub struct ObservedService {
     pub environment: BTreeMap<String, String>,
     pub command: Vec<String>,
     pub arguments: Vec<String>,
+    pub ports: Vec<u16>,
     pub mounts: Vec<DesiredMount>,
     pub secrets: Vec<DesiredSecretMount>,
     pub healthcheck: Option<HealthCheck>,
@@ -622,13 +687,21 @@ impl ObservedService {
             && self.environment == desired.environment
             && self.command == desired.command
             && self.arguments == desired.arguments
-            && self.mounts == desired.mounts
-            && self.secrets == desired.secrets
+            && unordered_eq(&self.ports, &desired.ports)
+            && unordered_eq(&self.mounts, &desired.mounts)
+            && unordered_eq(&self.secrets, &desired.secrets)
             && self.healthcheck == desired.healthcheck
             && self.resources == desired.resources
             && sorted(&self.networks) == sorted(&desired.networks)
             && owned_label_subset(&self.labels, &desired.labels)
     }
+}
+fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
+    let mut observed = observed.iter().collect::<Vec<_>>();
+    let mut desired = desired.iter().collect::<Vec<_>>();
+    observed.sort_unstable();
+    desired.sort_unstable();
+    observed == desired
 }
 fn sorted(values: &[String]) -> Vec<&str> {
     let mut v = values.iter().map(String::as_str).collect::<Vec<_>>();
@@ -640,11 +713,7 @@ fn owned_label_subset(
     observed: &BTreeMap<String, String>,
     desired: &BTreeMap<String, String>,
 ) -> bool {
-    let relevant = |key: &str| {
-        key.starts_with("io.piqueld.")
-            || key == "traefik.enable"
-            || key.starts_with("traefik.http.")
-    };
+    let relevant = |key: &str| key.starts_with("io.piqueld.") || key.starts_with("traefik.");
     desired.iter().all(|(k, v)| observed.get(k) == Some(v))
         && observed
             .iter()
@@ -676,7 +745,10 @@ pub fn ownership_state(
     if labels.get(MANAGED_LABEL).map(String::as_str) != Some("true") {
         return OwnershipState::Invalid;
     }
-    if labels.get(SPEC_HASH_LABEL).is_none_or(String::is_empty) {
+    if !labels
+        .get(SPEC_HASH_LABEL)
+        .is_some_and(|hash| valid_sha256(hash))
+    {
         return OwnershipState::Invalid;
     }
     if labels.get(INSTANCE_LABEL).map(String::as_str) != Some(instance.as_str())
@@ -685,4 +757,13 @@ pub fn ownership_state(
         return OwnershipState::Foreign;
     }
     OwnershipState::Owned
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }

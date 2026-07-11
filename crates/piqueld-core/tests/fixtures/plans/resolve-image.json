@@ -1,0 +1,28 @@
+{
+  "actions": [
+    {
+      "sequence": 1,
+      "kind": {
+        "action": "resolve_image",
+        "service": "web",
+        "reference": "alpine:3.20"
+      },
+      "reason": {
+        "reason": "resolution_required"
+      },
+      "risk": "none",
+      "mutates_runtime": false,
+      "destructive": false
+    }
+  ],
+  "diagnostics": [],
+  "summary": {
+    "action_count": 1,
+    "mutation_count": 0,
+    "destructive_count": 0,
+    "blocking_conflicts": 0,
+    "by_action": {
+      "resolve_image": 1
+    }
+  }
+}

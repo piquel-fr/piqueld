@@ -5,6 +5,7 @@ use crate::resource::{
     Convergence, DesiredApplication, DesiredNetwork, DesiredSecret, DesiredService, DesiredVolume,
     InstanceId, ObservedApplication, OwnershipState, ResolutionRequirement, ownership_state,
 };
+use crate::{ResourceKind, docker_resource_name};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,6 +83,12 @@ pub enum ActionKind {
     WaitForService {
         service: String,
     },
+    WaitForServiceRemoval {
+        service: String,
+    },
+    WaitForSecretUnused {
+        name: String,
+    },
     RemoveService {
         name: String,
     },
@@ -125,6 +132,10 @@ impl PlanAction {
                 ("ENSURE SERVICE", service.logical_name.as_str())
             }
             ActionKind::WaitForService { service } => ("WAIT SERVICE", service.as_str()),
+            ActionKind::WaitForServiceRemoval { service } => {
+                ("WAIT SERVICE REMOVAL", service.as_str())
+            }
+            ActionKind::WaitForSecretUnused { name } => ("WAIT SECRET UNUSED", name.as_str()),
             ActionKind::RemoveService { name } => ("REMOVE SERVICE", name.as_str()),
             ActionKind::RemoveNetwork { name } => ("REMOVE NETWORK", name.as_str()),
             ActionKind::RemoveSecret { name } => ("REMOVE SECRET", name.as_str()),
@@ -270,23 +281,29 @@ pub fn plan(request: &PlanRequest, observed: &ObservedApplication) -> Plan {
 fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Plan {
     let mut plan = Plan::default();
     let mut blocked_names = BTreeSet::new();
+    let mut infrastructure_ready = true;
     for network in &desired.networks {
         match observed.networks.iter().find(|v| v.name == network.name) {
-            None => plan.actions.push(new_action(
-                ActionKind::EnsureNetwork {
-                    network: network.clone(),
-                },
-                ActionReason::Missing,
-                ActionRisk::None,
-                true,
-            )),
+            None => {
+                infrastructure_ready = false;
+                plan.actions.push(new_action(
+                    ActionKind::EnsureNetwork {
+                        network: network.clone(),
+                    },
+                    ActionReason::Missing,
+                    ActionRisk::None,
+                    true,
+                ));
+            }
             Some(found) if !network_owned(found, network, desired) => {
+                infrastructure_ready = false;
                 collision(&mut plan, &network.name, &mut blocked_names);
             }
             Some(found)
                 if found.ingress != network.ingress
                     || relevant_labels(&found.labels) != relevant_labels(&network.labels) =>
             {
+                infrastructure_ready = false;
                 plan.actions.push(new_action(
                     ActionKind::EnsureNetwork {
                         network: network.clone(),
@@ -303,18 +320,22 @@ fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Pl
     }
     for volume in &desired.volumes {
         match observed.volumes.iter().find(|v| v.name == volume.name) {
-            None => plan.actions.push(new_action(
-                ActionKind::EnsureVolume {
-                    volume: volume.clone(),
-                },
-                ActionReason::Missing,
-                ActionRisk::DataAdjacent,
-                true,
-            )),
+            None => {
+                infrastructure_ready = false;
+                plan.actions.push(new_action(
+                    ActionKind::EnsureVolume {
+                        volume: volume.clone(),
+                    },
+                    ActionReason::Missing,
+                    ActionRisk::DataAdjacent,
+                    true,
+                ));
+            }
             Some(found)
                 if ownership_state(&found.labels, &desired.instance_id, &desired.id)
                     != OwnershipState::Owned =>
             {
+                infrastructure_ready = false;
                 collision(&mut plan, &volume.name, &mut blocked_names);
             }
             Some(_) => {}
@@ -325,9 +346,8 @@ fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Pl
         .iter()
         .map(|volume| volume.name.as_str())
         .collect::<BTreeSet<_>>();
-    for volume in observed
-        .volumes
-        .iter()
+    for volume in sorted_by_name(&observed.volumes, |volume| &volume.name)
+        .into_iter()
         .filter(|volume| !desired_volumes.contains(volume.name.as_str()))
     {
         if ownership_state(&volume.labels, &desired.instance_id, &desired.id)
@@ -347,24 +367,29 @@ fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Pl
     }
     for secret in &desired.secrets {
         match observed.secrets.iter().find(|v| v.name == secret.name) {
-            None => plan.actions.push(new_action(
-                ActionKind::EnsureSecret {
-                    secret: secret.clone(),
-                },
-                ActionReason::Missing,
-                ActionRisk::None,
-                true,
-            )),
+            None => {
+                infrastructure_ready = false;
+                plan.actions.push(new_action(
+                    ActionKind::EnsureSecret {
+                        secret: secret.clone(),
+                    },
+                    ActionReason::Missing,
+                    ActionRisk::None,
+                    true,
+                ));
+            }
             Some(found)
                 if ownership_state(&found.labels, &desired.instance_id, &desired.id)
                     != OwnershipState::Owned =>
             {
+                infrastructure_ready = false;
                 collision(&mut plan, &secret.name, &mut blocked_names);
             }
             Some(_) => {}
         }
     }
     let mut all_services_converged = true;
+    let mut convergence_actions = Vec::new();
     for service in &desired.services {
         match observed.services.iter().find(|v| v.name == service.name) {
             None => {
@@ -377,7 +402,7 @@ fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Pl
                     ActionRisk::Availability,
                     true,
                 ));
-                plan.actions.push(wait(&service.name));
+                convergence_actions.push(wait(&service.name));
             }
             Some(found) if !service_owned(found, service, desired) => {
                 all_services_converged = false;
@@ -385,7 +410,7 @@ fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Pl
             }
             Some(found) if !found.semantically_matches(service) => {
                 all_services_converged = false;
-                let reason = if found.secrets == service.secrets {
+                let reason = if unordered_eq(&found.secrets, &service.secrets) {
                     ActionReason::Drift {
                         fields: service_drift(found, service),
                     }
@@ -400,13 +425,13 @@ fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Pl
                     ActionRisk::Availability,
                     true,
                 ));
-                plan.actions.push(wait(&service.name));
+                convergence_actions.push(wait(&service.name));
             }
             Some(found) => match found.convergence {
                 Convergence::Converged => {}
                 Convergence::Updating | Convergence::Degraded => {
                     all_services_converged = false;
-                    plan.actions.push(wait(&service.name));
+                    convergence_actions.push(wait(&service.name));
                 }
                 Convergence::Failed => {
                     all_services_converged = false;
@@ -415,71 +440,74 @@ fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Pl
             },
         }
     }
+    plan.actions.append(&mut convergence_actions);
     let desired_services = desired
         .services
         .iter()
         .map(|v| v.name.as_str())
         .collect::<BTreeSet<_>>();
-    for service in observed
-        .services
-        .iter()
+    let cleanup_ready = infrastructure_ready && all_services_converged && !plan.is_blocked();
+    let mut removal_waits = Vec::new();
+    for service in sorted_by_name(&observed.services, |service| &service.name)
+        .into_iter()
         .filter(|v| !desired_services.contains(v.name.as_str()))
     {
-        if ownership_state(&service.labels, &desired.instance_id, &desired.id)
-            == OwnershipState::Owned
-        {
-            plan.actions.push(new_action(
-                ActionKind::RemoveService {
-                    name: service.name.clone(),
-                },
-                ActionReason::Obsolete,
-                ActionRisk::Availability,
-                true,
-            ));
+        if observed_service_owned(service, &desired.instance_id, &desired.id) {
+            if cleanup_ready {
+                plan.actions.push(new_action(
+                    ActionKind::RemoveService {
+                        name: service.name.clone(),
+                    },
+                    ActionReason::Obsolete,
+                    ActionRisk::Availability,
+                    true,
+                ));
+                removal_waits.push(wait_for_removal(&service.name));
+            }
         } else {
             ignored(&mut plan, &service.name);
         }
     }
+    plan.actions.append(&mut removal_waits);
     let desired_networks = desired
         .networks
         .iter()
         .map(|v| v.name.as_str())
         .collect::<BTreeSet<_>>();
-    for network in observed
-        .networks
-        .iter()
+    for network in sorted_by_name(&observed.networks, |network| &network.name)
+        .into_iter()
         .filter(|v| !desired_networks.contains(v.name.as_str()))
     {
         if ownership_state(&network.labels, &desired.instance_id, &desired.id)
             == OwnershipState::Owned
         {
-            plan.actions.push(new_action(
-                ActionKind::RemoveNetwork {
-                    name: network.name.clone(),
-                },
-                ActionReason::Obsolete,
-                ActionRisk::Availability,
-                true,
-            ));
+            if cleanup_ready {
+                plan.actions.push(new_action(
+                    ActionKind::RemoveNetwork {
+                        name: network.name.clone(),
+                    },
+                    ActionReason::Obsolete,
+                    ActionRisk::Availability,
+                    true,
+                ));
+            }
         } else {
             ignored(&mut plan, &network.name);
         }
     }
-    if all_services_converged {
-        let desired_secrets = desired
-            .secrets
-            .iter()
-            .map(|v| v.name.as_str())
-            .collect::<BTreeSet<_>>();
-        for secret in observed
-            .secrets
-            .iter()
-            .filter(|v| !desired_secrets.contains(v.name.as_str()))
+    let desired_secrets = desired
+        .secrets
+        .iter()
+        .map(|v| v.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for secret in sorted_by_name(&observed.secrets, |secret| &secret.name)
+        .into_iter()
+        .filter(|v| !desired_secrets.contains(v.name.as_str()))
+    {
+        if ownership_state(&secret.labels, &desired.instance_id, &desired.id)
+            == OwnershipState::Owned
         {
-            if ownership_state(&secret.labels, &desired.instance_id, &desired.id)
-                == OwnershipState::Owned
-                && !secret.in_use
-            {
+            if cleanup_ready && !secret.in_use {
                 plan.actions.push(new_action(
                     ActionKind::RemoveSecret {
                         name: secret.name.clone(),
@@ -488,11 +516,9 @@ fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Pl
                     ActionRisk::Destructive,
                     true,
                 ));
-            } else if ownership_state(&secret.labels, &desired.instance_id, &desired.id)
-                != OwnershipState::Owned
-            {
-                ignored(&mut plan, &secret.name);
             }
+        } else {
+            ignored(&mut plan, &secret.name);
         }
     }
     plan
@@ -504,8 +530,9 @@ fn deletion(
     observed: &ObservedApplication,
 ) -> Plan {
     let mut p = Plan::default();
-    for v in &observed.services {
-        if ownership_state(&v.labels, instance_id, application_id) == OwnershipState::Owned {
+    let mut removal_waits = Vec::new();
+    for v in sorted_by_name(&observed.services, |service| &service.name) {
+        if observed_service_owned(v, instance_id, application_id) {
             p.actions.push(new_action(
                 ActionKind::RemoveService {
                     name: v.name.clone(),
@@ -514,11 +541,13 @@ fn deletion(
                 ActionRisk::Availability,
                 true,
             ));
+            removal_waits.push(wait_for_removal(&v.name));
         } else {
             ignored(&mut p, &v.name);
         }
     }
-    for v in &observed.networks {
+    p.actions.append(&mut removal_waits);
+    for v in sorted_by_name(&observed.networks, |network| &network.name) {
         if ownership_state(&v.labels, instance_id, application_id) == OwnershipState::Owned {
             p.actions.push(new_action(
                 ActionKind::RemoveNetwork {
@@ -532,10 +561,11 @@ fn deletion(
             ignored(&mut p, &v.name);
         }
     }
-    for v in &observed.secrets {
-        if ownership_state(&v.labels, instance_id, application_id) == OwnershipState::Owned
-            && !v.in_use
-        {
+    for v in sorted_by_name(&observed.secrets, |secret| &secret.name) {
+        if ownership_state(&v.labels, instance_id, application_id) == OwnershipState::Owned {
+            if v.in_use {
+                p.actions.push(wait_for_secret_unused(&v.name));
+            }
             p.actions.push(new_action(
                 ActionKind::RemoveSecret {
                     name: v.name.clone(),
@@ -548,7 +578,7 @@ fn deletion(
             ignored(&mut p, &v.name);
         }
     }
-    for v in &observed.volumes {
+    for v in sorted_by_name(&observed.volumes, |volume| &volume.name) {
         if ownership_state(&v.labels, instance_id, application_id) == OwnershipState::Owned {
             p.actions.push(new_action(
                 ActionKind::RetainVolume {
@@ -597,6 +627,38 @@ fn service_owned(
             .map(String::as_str)
             == Some(desired_service.logical_name.as_str())
 }
+fn observed_service_owned(
+    service: &crate::resource::ObservedService,
+    instance_id: &InstanceId,
+    application_id: &crate::ApplicationId,
+) -> bool {
+    if ownership_state(&service.labels, instance_id, application_id) != OwnershipState::Owned {
+        return false;
+    }
+    let Some(logical_name) = service
+        .labels
+        .get(crate::resource::SERVICE_LABEL)
+        .filter(|name| !name.is_empty())
+    else {
+        return false;
+    };
+    service.name == docker_resource_name(application_id, ResourceKind::Service, Some(logical_name))
+}
+fn sorted_by_name<T, F>(values: &[T], name: F) -> Vec<&T>
+where
+    F: Fn(&T) -> &str,
+{
+    let mut values = values.iter().collect::<Vec<_>>();
+    values.sort_by(|left, right| name(left).cmp(name(right)));
+    values
+}
+fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
+    let mut observed = observed.iter().collect::<Vec<_>>();
+    let mut desired = desired.iter().collect::<Vec<_>>();
+    observed.sort_unstable();
+    desired.sort_unstable();
+    observed == desired
+}
 fn relevant_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
     labels
         .iter()
@@ -621,10 +683,13 @@ fn service_drift(
     if found.command != desired.command || found.arguments != desired.arguments {
         fields.push("process".into());
     }
-    if found.mounts != desired.mounts {
+    if !unordered_eq(&found.ports, &desired.ports) {
+        fields.push("ports".into());
+    }
+    if !unordered_eq(&found.mounts, &desired.mounts) {
         fields.push("mounts".into());
     }
-    if found.secrets != desired.secrets {
+    if !unordered_eq(&found.secrets, &desired.secrets) {
         fields.push("secrets".into());
     }
     if found.networks.iter().collect::<BTreeSet<_>>()
@@ -648,6 +713,24 @@ fn wait(service: &str) -> PlanAction {
         ActionKind::WaitForService {
             service: service.into(),
         },
+        ActionReason::ConvergencePending,
+        ActionRisk::None,
+        false,
+    )
+}
+fn wait_for_removal(service: &str) -> PlanAction {
+    new_action(
+        ActionKind::WaitForServiceRemoval {
+            service: service.into(),
+        },
+        ActionReason::ConvergencePending,
+        ActionRisk::None,
+        false,
+    )
+}
+fn wait_for_secret_unused(name: &str) -> PlanAction {
+    new_action(
+        ActionKind::WaitForSecretUnused { name: name.into() },
         ActionReason::ConvergencePending,
         ActionRisk::None,
         false,
@@ -707,6 +790,8 @@ fn action_name(action: &ActionKind) -> &'static str {
         ActionKind::EnsureSecret { .. } => "ensure_secret",
         ActionKind::EnsureService { .. } => "ensure_service",
         ActionKind::WaitForService { .. } => "wait_for_service",
+        ActionKind::WaitForServiceRemoval { .. } => "wait_for_service_removal",
+        ActionKind::WaitForSecretUnused { .. } => "wait_for_secret_unused",
         ActionKind::RemoveService { .. } => "remove_service",
         ActionKind::RemoveNetwork { .. } => "remove_network",
         ActionKind::RemoveSecret { .. } => "remove_secret",
