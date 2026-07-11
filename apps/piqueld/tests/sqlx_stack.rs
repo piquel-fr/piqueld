@@ -1,6 +1,6 @@
-//! `SQLx` validation-tooling half of the database ownership evidence in ADR 0001.
+//! `SQLx` compile-time checking half of the database ownership evidence in ADR 0001.
 
-use sqlx::{Connection, Row, sqlite::SqliteConnection};
+use sqlx::{Connection, sqlite::SqliteConnection};
 
 #[tokio::test]
 async fn sqlx_validates_sql_against_a_disposable_database() {
@@ -9,19 +9,12 @@ async fn sqlx_validates_sql_against_a_disposable_database() {
     let url = format!("sqlite://{}?mode=rwc", database_path.display());
     let mut connection = SqliteConnection::connect(&url).await.unwrap();
 
-    sqlx::query("CREATE TABLE evidence (value TEXT NOT NULL)")
-        .execute(&mut connection)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO evidence (value) VALUES (?)")
-        .bind("checked")
-        .execute(&mut connection)
-        .await
-        .unwrap();
-    let value: String = sqlx::query("SELECT value FROM evidence")
+    // `query!` asks SQLx to describe and type-check this statement while this
+    // test target is compiled. The workspace Cargo configuration supplies a
+    // disposable in-memory validation database; production never opens it.
+    let row = sqlx::query!(r#"SELECT CAST('checked' AS TEXT) AS "value!: String""#)
         .fetch_one(&mut connection)
         .await
-        .unwrap()
-        .get(0);
-    assert_eq!(value, "checked");
+        .unwrap();
+    assert_eq!(row.value, "checked");
 }

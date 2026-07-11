@@ -17,6 +17,9 @@
             src = pkgs.lib.cleanSource self;
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.cmake pkgs.pkg-config pkgs.rustPlatform.bindgenHook ];
+            # Compile the foundation SQLx query macro against a disposable,
+            # schema-free database. Real migration metadata arrives in Plan 04.
+            DATABASE_URL = "sqlite::memory:";
             doCheck = true;
           };
         });
@@ -37,10 +40,18 @@
             touch "$out"
           '';
           dependency-boundary = pkgs.runCommand "piqueld-dependency-boundary" {
+            nativeBuildInputs = [ pkgs.cargo pkgs.jq ];
             src = pkgs.lib.cleanSource self;
           } ''
-            if grep -E '^(axum|bollard|leptos|libsql|sqlx)([.]workspace)?[[:space:]]*=' \
-              "$src/crates/piqueld-core/Cargo.toml"; then
+            set -o pipefail
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+            if cargo metadata --offline --no-deps --format-version 1 \
+              | jq -e '.packages[] | select(.name == "piqueld-core")
+                | any(.dependencies[];
+                    .name == "axum" or .name == "bollard" or .name == "leptos"
+                    or .name == "libsql" or .name == "sqlx")'; then
               echo "piqueld-core has a forbidden dependency" >&2
               exit 1
             fi

@@ -64,7 +64,9 @@ impl DaemonConfig {
     /// Returns an error when the document has invalid TOML, unknown fields, or
     /// settings that violate a host-configuration invariant.
     pub fn from_toml(source: &str) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(source).map_err(ConfigError::Parse)?;
+        // Do not retain the parser error: its display output can quote source
+        // lines, which could disclose a mistakenly inlined credential.
+        let config: Self = toml::from_str(source).map_err(|_| ConfigError::Parse)?;
         config.validate()?;
         Ok(config)
     }
@@ -72,6 +74,11 @@ impl DaemonConfig {
     fn validate(&self) -> Result<(), ConfigError> {
         absolute_directory("data_dir", &self.data_dir)?;
         absolute_file("server.unix_socket", &self.server.unix_socket)?;
+        if self.server.http_listen.port() == 0 {
+            return Err(ConfigError::Invalid(
+                "server.http_listen port must be greater than zero".into(),
+            ));
+        }
         if !self.server.http_listen.ip().is_loopback() {
             return Err(ConfigError::Invalid(
                 "server.http_listen must bind to a loopback address".into(),
@@ -79,6 +86,11 @@ impl DaemonConfig {
         }
         absolute_file("database.path", &self.database.path)?;
         absolute_file("docker.socket", &self.docker.socket)?;
+        if self.registry.address.port() == 0 {
+            return Err(ConfigError::Invalid(
+                "registry.address port must be greater than zero".into(),
+            ));
+        }
         if !self.registry.address.ip().is_loopback() {
             return Err(ConfigError::Invalid(
                 "registry.address must use a loopback address in the prototype".into(),
@@ -258,10 +270,26 @@ pub enum CredentialReference {
 impl CredentialReference {
     fn validate(&self) -> Result<(), ConfigError> {
         match self {
-            Self::File { path } => absolute_file("credentials.encryption_key.path", path),
-            Self::SystemdCredential { name } if name.is_empty() || name.contains('/') => Err(
-                ConfigError::Invalid("systemd credential name must be a non-empty basename".into()),
-            ),
+            Self::File { path } => {
+                absolute_file("credentials.encryption_key.path", path)?;
+                if path.starts_with("/nix/store") {
+                    return Err(ConfigError::Invalid(
+                        "credentials.encryption_key.path must be outside the Nix store".into(),
+                    ));
+                }
+                Ok(())
+            }
+            Self::SystemdCredential { name }
+                if name.is_empty()
+                    || name == "."
+                    || name == ".."
+                    || name.contains(['/', '\0'])
+                    || name.len() > 255 =>
+            {
+                Err(ConfigError::Invalid(
+                    "systemd credential name must be a non-empty basename".into(),
+                ))
+            }
             Self::SystemdCredential { .. } => Ok(()),
         }
     }
@@ -290,7 +318,7 @@ pub enum ConfigError {
     Read(#[source] std::io::Error),
     /// TOML syntax or shape was invalid.
     #[error("configuration is not valid TOML")]
-    Parse(#[source] toml::de::Error),
+    Parse,
     /// A parsed setting violated a semantic invariant.
     #[error("configuration is invalid: {0}")]
     Invalid(String),

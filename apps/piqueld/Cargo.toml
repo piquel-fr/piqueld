@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+piqueld-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -24,4 +25,3 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
-

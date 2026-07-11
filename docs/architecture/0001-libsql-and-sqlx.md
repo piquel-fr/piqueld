@@ -36,8 +36,11 @@ engines into one process:
 
 - `apps/piqueld/tests/libsql_stack.rs` creates and queries an embedded database via
   the official SDK.
-- `apps/piqueld/tests/sqlx_stack.rs` compiles and executes schema/query validation
-  against a disposable SQLx database.
+- `apps/piqueld/tests/sqlx_stack.rs` uses SQLx's `query!` macro, so compilation
+  describes and type-checks a query against a disposable in-memory database before
+  the test executes it. Workspace Cargo configuration forcibly isolates that macro
+  from any ambient `DATABASE_URL`. Plan 04 will replace this schema-free foundation
+  spike with offline metadata generated from the real migrations.
 
 The initial same-artifact spike was rejected because the linker reported duplicate
 SQLite symbols, directly confirming the unsafe topology this decision forbids.

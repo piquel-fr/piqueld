@@ -2,7 +2,9 @@
 set -euo pipefail
 
 forbidden='^(axum|bollard|leptos|libsql|sqlx)( |$)'
-dependencies="$(cargo tree --package piqueld-core --edges normal --prefix none)"
+# Include normal, build, and development edges: the core boundary applies to all
+# targets, not only to production library dependencies.
+dependencies="$(cargo tree --package piqueld-core --edges all --prefix none)"
 
 if printf '%s\n' "$dependencies" | grep -E "$forbidden"; then
   echo "piqueld-core contains a forbidden runtime dependency" >&2
@@ -10,4 +12,3 @@ if printf '%s\n' "$dependencies" | grep -E "$forbidden"; then
 fi
 
 echo "piqueld-core dependency boundary is intact"
-

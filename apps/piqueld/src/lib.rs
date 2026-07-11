@@ -1,16 +1,16 @@
 //! Daemon bootstrap and internal module boundaries.
 
-pub mod api;
-pub mod auth;
-pub mod build;
+mod api;
+mod auth;
+mod build;
 pub mod config;
-pub mod docker;
-pub mod operations;
-pub mod proxy;
-pub mod reconcile;
-pub mod registry;
-pub mod secrets;
-pub mod store;
+mod docker;
+mod operations;
+mod proxy;
+mod reconcile;
+mod registry;
+mod secrets;
+mod store;
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
