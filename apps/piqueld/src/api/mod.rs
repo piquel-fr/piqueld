@@ -4,9 +4,10 @@
 use async_trait::async_trait;
 use axum::{
     Router,
-    body::Bytes,
-    extract::{Path, Query, State},
+    body::{Body, Bytes},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, Method, StatusCode, header},
+    middleware::{self, Next},
     response::{
         IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
@@ -22,21 +23,23 @@ use piqueld_client::{
 };
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, PlanRequest,
-    ResolutionSet, plan, preview_resolution, resource::ResolvedApplication,
+    ResolutionSet, compile_application, plan, preview_resolution,
+    resource::{ResolvedApplication, ResolvedSource, SecretGeneration},
 };
+use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{convert::Infallible, pin::Pin, sync::Arc, time::Duration};
 use tower_http::{
-    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
 
 use crate::store::{
-    ApplicationRepository, ApplicationState, ApplicationStatus, LibsqlStore, MutationResult,
-    Operation, OperationKind, OperationRepository, OperationStep, StatusRepository, StepState,
-    StoreError, StoredApplication, WorkState,
+    ApplicationRepository, ApplicationState, ApplicationStatus, Operation, OperationKind,
+    OperationRepository, OperationStep, SqliteStore, StatusRepository, StepState, StoreError,
+    StoredApplication, WorkState,
 };
 
 const JSON: &str = "application/json";
@@ -77,10 +80,6 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
         &self,
         application: &StoredApplication,
     ) -> Result<ObservedApplication, BoundaryError>;
-    async fn reconcile(
-        &self,
-        application: &StoredApplication,
-    ) -> Result<MutationResult, BoundaryError>;
 }
 
 /// Honest production boundary until Docker reconciliation lands in Plan 06.
@@ -105,25 +104,24 @@ impl RuntimeBoundary for UnavailableRuntime {
     async fn observe(&self, _: &StoredApplication) -> Result<ObservedApplication, BoundaryError> {
         Err(BoundaryError::Unavailable)
     }
-    async fn reconcile(&self, _: &StoredApplication) -> Result<MutationResult, BoundaryError> {
-        Err(BoundaryError::Unavailable)
-    }
 }
 
 #[derive(Clone)]
 pub struct ApiState {
-    store: Arc<LibsqlStore>,
+    store: Arc<SqliteStore>,
     runtime: Arc<dyn RuntimeBoundary>,
     instance_id: String,
+    create_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ApiState {
     #[must_use]
-    pub fn new(store: Arc<LibsqlStore>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
+    pub fn new(store: Arc<SqliteStore>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
         Self {
             instance_id: store.instance_id().to_owned(),
             store,
             runtime,
+            create_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 }
@@ -161,6 +159,11 @@ impl From<StoreError> for ApiError {
                 StatusCode::CONFLICT,
                 "application_name_collision",
                 "application identity or name already exists",
+            ),
+            StoreError::IdempotencyConflict => Self::new(
+                StatusCode::CONFLICT,
+                "idempotency_key_reused",
+                "Idempotency-Key was already used for a different request",
             ),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
@@ -268,8 +271,44 @@ pub fn router(state: ApiState) -> Router {
         .fallback(fallback)
         .with_state(state)
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
+        .layer(middleware::from_fn(bind_error_request_id))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
+}
+
+async fn bind_error_request_id(request: Request, next: Next) -> Response {
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .and_then(|value| value.header_value().to_str().ok())
+        .map(str::to_owned);
+    let response = next.run(request).await;
+    if !response.status().is_client_error() && !response.status().is_server_error() {
+        return response;
+    }
+    let is_json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with(JSON));
+    if !is_json {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let Ok(bytes) = http_body_util::BodyExt::collect(body)
+        .await
+        .map(http_body_util::Collected::to_bytes)
+    else {
+        return Response::from_parts(parts, Body::empty());
+    };
+    let Ok(mut error) = serde_json::from_slice::<ErrorBody>(&bytes) else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+    if let Some(request_id) = request_id {
+        error.request_id = request_id;
+    }
+    let bytes = serde_json::to_vec(&error).unwrap_or_else(|_| b"{}".to_vec());
+    Response::from_parts(parts, Body::from(bytes))
 }
 
 async fn system_status(State(state): State<ApiState>) -> impl IntoResponse {
@@ -376,25 +415,21 @@ async fn create_application(
     let validated = parse_manifest(&headers, &body, RequestShape::Create)?;
     let id = idempotent_application_id(key);
     let app = validated.normalize(id.clone());
-    if let Ok(existing) = state.store.get(&id).await {
-        if existing.spec_hash != app.spec_hash() {
-            return Err(ApiError::new(
-                StatusCode::CONFLICT,
-                "idempotency_key_reused",
-                "Idempotency-Key was already used for a different request",
-            ));
-        }
-        let operation = state
-            .store
-            .operations_for_application(&id, 1)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or(StoreError::Corrupt)?;
+    let key_hash = idempotency_key_hash(key);
+    let request_hash = app.spec_hash();
+    // There is exactly one active daemon in the prototype. Serializing create
+    // preparation prevents concurrent retries from duplicating resolver/build
+    // work before the durable binding can be committed.
+    let _create_guard = state.create_lock.lock().await;
+    if let Some(mutation) = state
+        .store
+        .create_idempotency(&id, &key_hash, &request_hash)
+        .await?
+    {
         return Ok(accepted(AcceptedOperation {
-            operation_id: operation.id,
+            operation_id: mutation.operation_id,
             application_id: id.to_string(),
-            generation: existing.generation,
+            generation: mutation.generation,
         }));
     }
     reject_name_collision(&state, &app, None).await?;
@@ -416,7 +451,13 @@ async fn create_application(
     let steps = p.actions.iter().map(operation_step).collect::<Vec<_>>();
     let mutation = state
         .store
-        .create(&app, Some(&prepared.resolved), &steps)
+        .create_idempotent(
+            &app,
+            Some(&prepared.resolved),
+            &steps,
+            &key_hash,
+            &request_hash,
+        )
         .await?;
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
@@ -471,6 +512,7 @@ async fn delete_application(
 ) -> Result<Response, ApiError> {
     require_json(&headers)?;
     let request: DeleteApplicationRequest = decode_json(&body)?;
+    valid_expected_generation(request.expected_generation)?;
     if request.force {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -490,6 +532,14 @@ async fn delete_application(
         },
         &observed,
     );
+    if p.is_blocked() {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "plan_blocked",
+            "runtime plan contains blocking conflicts",
+        )
+        .details(json!({"diagnostics": p.diagnostics})));
+    }
     let steps = p.actions.iter().map(operation_step).collect::<Vec<_>>();
     let mutation = state
         .store
@@ -546,29 +596,103 @@ async fn preview_plan(
     app: &NormalizedApplication,
     current: Option<&StoredApplication>,
 ) -> Result<piqueld_core::Plan, ApiError> {
-    match state.runtime.prepare(app).await {
-        Ok(prepared) => Ok(plan(
-            &PlanRequest::Reconcile {
-                desired: prepared.resolved,
-            },
-            &prepared.observed,
-        )),
-        Err(BoundaryError::Unavailable) => {
-            let observed = if let Some(current) = current {
-                state.runtime.observe(current).await.unwrap_or_default()
-            } else {
-                ObservedApplication::default()
-            };
-            Ok(plan(
-                &PlanRequest::Preview {
-                    unresolved: preview_resolution(app, &ResolutionSet::default()),
-                    desired: None,
-                },
-                &observed,
-            ))
+    let observed = if let Some(current) = current {
+        match state.runtime.observe(current).await {
+            Ok(observed) => observed,
+            Err(error) => return Err(error.into()),
         }
-        Err(error) => Err(error.into()),
-    }
+    } else {
+        ObservedApplication::default()
+    };
+    let resolutions = current
+        .and_then(|stored| stored.resolved.as_ref())
+        .map_or_else(ResolutionSet::default, |resolved| {
+            reusable_resolutions(app, resolved)
+        });
+    let unresolved = preview_resolution(app, &resolutions);
+    let desired = if unresolved.is_empty() {
+        current
+            .and_then(|stored| stored.resolved.as_ref())
+            .and_then(|resolved| {
+                let ingress = resolved.networks.iter().find(|network| network.ingress)?;
+                compile_application(
+                    app,
+                    resolved.instance_id.clone(),
+                    ingress.name.clone(),
+                    &resolutions,
+                )
+                .ok()
+            })
+    } else {
+        None
+    };
+    Ok(plan(
+        &PlanRequest::Preview {
+            unresolved,
+            desired,
+        },
+        &observed,
+    ))
+}
+
+fn reusable_resolutions(
+    app: &NormalizedApplication,
+    current: &ResolvedApplication,
+) -> ResolutionSet {
+    let sources = app
+        .spec
+        .services
+        .iter()
+        .filter_map(|service| {
+            let resolved = current
+                .services
+                .iter()
+                .find(|candidate| candidate.logical_name == service.name)?;
+            let reusable = match (&service.source, &resolved.source) {
+                (
+                    piqueld_core::manifest::Source::Image { image },
+                    ResolvedSource::Image { requested, .. },
+                ) => image == requested,
+                (
+                    piqueld_core::manifest::Source::Git {
+                        repository,
+                        reference,
+                        context,
+                        dockerfile,
+                    },
+                    ResolvedSource::Git {
+                        repository: resolved_repository,
+                        requested_reference,
+                        context: resolved_context,
+                        dockerfile: resolved_dockerfile,
+                        ..
+                    },
+                ) => {
+                    repository == resolved_repository
+                        && reference == requested_reference
+                        && context == resolved_context
+                        && dockerfile == resolved_dockerfile
+                }
+                _ => false,
+            };
+            reusable.then(|| (service.name.clone(), resolved.source.clone()))
+        })
+        .collect();
+    let secrets = current
+        .secrets
+        .iter()
+        .map(|secret| {
+            (
+                secret.logical_name.clone(),
+                SecretGeneration {
+                    logical_name: secret.logical_name.clone(),
+                    generation: secret.generation.clone(),
+                    swarm_name: secret.name.clone(),
+                },
+            )
+        })
+        .collect();
+    ResolutionSet { sources, secrets }
 }
 
 async fn reject_name_collision(
@@ -597,10 +721,46 @@ async fn reconcile_application(
 ) -> Result<Response, ApiError> {
     require_json(&headers)?;
     let request: ExpectedGeneration = decode_json(&body)?;
+    valid_expected_generation(request.expected_generation)?;
     let id = application_id(&id)?;
     let current = state.store.get(&id).await?;
     generation(request.expected_generation, current.generation)?;
-    let mutation = state.runtime.reconcile(&current).await?;
+    if let Some(mutation) = state
+        .store
+        .active_reconcile(&id, request.expected_generation)
+        .await?
+    {
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
+    if !state.runtime.capabilities().runtime_execution {
+        return Err(BoundaryError::Unavailable.into());
+    }
+    let desired = current.resolved.clone().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runtime_unavailable",
+            "application has no resolved state available for reconciliation",
+        )
+    })?;
+    let observed = state.runtime.observe(&current).await?;
+    let plan = plan(&PlanRequest::Reconcile { desired }, &observed);
+    if plan.is_blocked() {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "plan_blocked",
+            "runtime plan contains blocking conflicts",
+        )
+        .details(json!({"diagnostics": plan.diagnostics})));
+    }
+    let steps = plan.actions.iter().map(operation_step).collect::<Vec<_>>();
+    let mutation = state
+        .store
+        .request_reconcile(&id, request.expected_generation, &steps)
+        .await?;
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
         application_id: id.to_string(),
@@ -662,88 +822,88 @@ async fn application_events(
 type EventStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
 
 fn operation_event_stream(
-    store: Arc<LibsqlStore>,
+    store: Arc<SqliteStore>,
     id: String,
     last: Option<String>,
 ) -> EventStream {
     Box::pin(stream::unfold(
-        (store, id, last, false),
-        |(store, id, last, done)| async move {
+        (store, id, last, false, true),
+        |(store, id, last, done, reconnect)| async move {
             if done {
                 return None;
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            let Ok(operation) = store.operation(&id).await else {
-                return None;
-            };
-            let event_id = format!(
-                "{}:{}",
-                operation.updated_at_ms,
-                state_name(operation.state)
-            );
-            let terminal = matches!(
-                operation.state,
-                WorkState::Succeeded | WorkState::Failed | WorkState::Cancelled
-            );
-            if last.as_deref() == Some(event_id.as_str()) {
-                return if terminal {
-                    None
-                } else {
-                    Some((
-                        Ok(Event::default().comment("unchanged")),
-                        (store, id, last, false),
-                    ))
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let Ok(operation) = store.operation(&id).await else {
+                    return None;
                 };
+                let terminal = matches!(
+                    operation.state,
+                    WorkState::Succeeded | WorkState::Failed | WorkState::Cancelled
+                );
+                let Ok(steps) = store.operation_steps(&id).await else {
+                    return None;
+                };
+                let data = serde_json::to_string(&operation_view(operation, steps))
+                    .unwrap_or_else(|_| "{}".into());
+                let event_id = current_state_event_id("operation", &data);
+                if last.as_deref() == Some(event_id.as_str()) {
+                    if terminal {
+                        return None;
+                    }
+                    continue;
+                }
+                if reconnect && last.is_some() {
+                    let reset = Event::default()
+                        .id(format!("reset:{event_id}"))
+                        .event("replay_reset")
+                        .data("{\"reason\":\"bounded_replay_exhausted\"}");
+                    return Some((Ok(reset), (store, id, None, false, false)));
+                }
+                let event = Event::default()
+                    .id(event_id.clone())
+                    .event(if terminal { "terminal" } else { "operation" })
+                    .data(data);
+                return Some((Ok(event), (store, id, Some(event_id), terminal, false)));
             }
-            if last.is_some() {
-                let reset = Event::default()
-                    .id(event_id)
-                    .event("replay_reset")
-                    .data("{\"reason\":\"bounded_replay_exhausted\"}");
-                return Some((Ok(reset), (store, id, None, false)));
-            }
-            let data = serde_json::to_string(&operation_view(
-                operation,
-                store.operation_steps(&id).await.unwrap_or_default(),
-            ))
-            .unwrap_or_else(|_| "{}".into());
-            let event = Event::default()
-                .id(event_id.clone())
-                .event(if terminal { "terminal" } else { "operation" })
-                .data(data);
-            Some((Ok(event), (store, id, Some(event_id), terminal)))
         },
     ))
 }
 
 fn application_event_stream(
-    store: Arc<LibsqlStore>,
+    store: Arc<SqliteStore>,
     id: ApplicationId,
     last: Option<String>,
 ) -> EventStream {
     Box::pin(stream::unfold(
-        (store, id, last),
-        |(store, id, last)| async move {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            let Ok(status) = store.status(&id).await else {
-                return None;
-            };
-            let event_id = format!(
-                "{}:{}",
-                status.updated_at_ms,
-                application_state_name(status.state)
-            );
-            if last.as_deref() == Some(event_id.as_str()) {
-                return Some((Ok(Event::default().comment("unchanged")), (store, id, last)));
+        (store, id, last, true),
+        |(store, id, last, reconnect)| async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let Ok(status) = store.status(&id).await else {
+                    return None;
+                };
+                let data =
+                    serde_json::to_string(&status_view(status)).unwrap_or_else(|_| "{}".into());
+                let event_id = current_state_event_id("application", &data);
+                if last.as_deref() == Some(event_id.as_str()) {
+                    continue;
+                }
+                if reconnect && last.is_some() {
+                    let reset = Event::default()
+                        .id(format!("reset:{event_id}"))
+                        .event("replay_reset")
+                        .data("{\"reason\":\"bounded_replay_exhausted\"}");
+                    return Some((Ok(reset), (store, id, None, false)));
+                }
+                return Some((
+                    Ok(Event::default()
+                        .id(event_id.clone())
+                        .event("application")
+                        .data(data)),
+                    (store, id, Some(event_id), false),
+                ));
             }
-            let data = serde_json::to_string(&status_view(status)).unwrap_or_else(|_| "{}".into());
-            Some((
-                Ok(Event::default()
-                    .id(event_id.clone())
-                    .event("application")
-                    .data(data)),
-                (store, id, Some(event_id)),
-            ))
         },
     ))
 }
@@ -789,12 +949,23 @@ fn generation(expected: u64, actual: u64) -> Result<(), ApiError> {
         }))
     }
 }
+fn valid_expected_generation(expected: u64) -> Result<(), ApiError> {
+    if expected == 0 {
+        Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "expected_generation_invalid",
+            "expected generation must be a positive integer",
+        ))
+    } else {
+        Ok(())
+    }
+}
 fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok()
 }
 fn require_json(headers: &HeaderMap) -> Result<(), ApiError> {
     match content_type(headers) {
-        Some(JSON) => Ok(()),
+        Some(value) if value.eq_ignore_ascii_case(JSON) => Ok(()),
         _ => Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "content_type_unsupported",
@@ -826,7 +997,7 @@ fn parse_manifest(
     shape: RequestShape,
 ) -> Result<piqueld_core::ValidatedApplication, ApiError> {
     match content_type(headers) {
-        Some(JSON) => {
+        Some(value) if value.eq_ignore_ascii_case(JSON) => {
             let manifest = match shape {
                 RequestShape::Create => decode_json::<CreateApplicationRequest>(body)?.manifest,
                 RequestShape::PlanCreate => decode_json::<PlanApplicationRequest>(body)?.manifest,
@@ -840,15 +1011,19 @@ fn parse_manifest(
             })?;
             piqueld_core::parse_json(&encoded).map_err(validation_error)
         }
-        Some(TOML | "text/toml") => std::str::from_utf8(body)
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "toml_malformed",
-                    "request TOML is malformed",
-                )
-            })
-            .and_then(|v| piqueld_core::parse_toml(v).map_err(validation_error)),
+        Some(value)
+            if value.eq_ignore_ascii_case(TOML) || value.eq_ignore_ascii_case("text/toml") =>
+        {
+            std::str::from_utf8(body)
+                .map_err(|_| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "toml_malformed",
+                        "request TOML is malformed",
+                    )
+                })
+                .and_then(|v| piqueld_core::parse_toml(v).map_err(toml_manifest_error))
+        }
         _ => Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "content_type_unsupported",
@@ -862,8 +1037,9 @@ fn parse_update(
     body: &[u8],
 ) -> Result<(piqueld_core::ValidatedApplication, u64), ApiError> {
     match content_type(headers) {
-        Some(JSON) => {
+        Some(value) if value.eq_ignore_ascii_case(JSON) => {
             let request: ReplaceApplicationRequest = decode_json(body)?;
+            valid_expected_generation(request.expected_generation)?;
             let encoded = serde_json::to_string(&request.manifest).map_err(|_| {
                 ApiError::new(
                     StatusCode::BAD_REQUEST,
@@ -876,7 +1052,9 @@ fn parse_update(
                 request.expected_generation,
             ))
         }
-        Some(TOML | "text/toml") => {
+        Some(value)
+            if value.eq_ignore_ascii_case(TOML) || value.eq_ignore_ascii_case("text/toml") =>
+        {
             let expected = header_text(headers, "x-expected-generation")
                 .ok_or_else(|| {
                     ApiError::new(
@@ -893,6 +1071,7 @@ fn parse_update(
                         "expected generation is invalid",
                     )
                 })?;
+            valid_expected_generation(expected)?;
             let text = std::str::from_utf8(body).map_err(|_| {
                 ApiError::new(
                     StatusCode::BAD_REQUEST,
@@ -901,7 +1080,7 @@ fn parse_update(
                 )
             })?;
             Ok((
-                piqueld_core::parse_toml(text).map_err(validation_error)?,
+                piqueld_core::parse_toml(text).map_err(toml_manifest_error)?,
                 expected,
             ))
         }
@@ -922,6 +1101,21 @@ fn validation_error(errors: piqueld_core::ValidationErrors) -> ApiError {
     )
     .details(json!({"errors": errors}))
 }
+fn toml_manifest_error(errors: piqueld_core::ValidationErrors) -> ApiError {
+    if errors
+        .0
+        .iter()
+        .all(|error| error.code == "manifest_decode_failed")
+    {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "toml_malformed",
+            "request TOML is malformed or does not match the application schema",
+        )
+    } else {
+        validation_error(errors)
+    }
+}
 fn operation_step(action: &piqueld_core::PlanAction) -> String {
     let mut value = action.human_description();
     if value.len() > 64 {
@@ -933,6 +1127,13 @@ fn idempotent_application_id(key: &str) -> ApplicationId {
     let digest = Sha256::digest(format!("piqueld-create/v1\0{key}").as_bytes());
     ApplicationId::parse(format!("app-{}", hex(&digest[..16])))
         .expect("digest application ID is valid")
+}
+fn idempotency_key_hash(key: &str) -> String {
+    format!("sha256:{}", hex(&Sha256::digest(key.as_bytes())))
+}
+fn current_state_event_id(kind: &str, data: &str) -> String {
+    let digest = Sha256::digest(format!("piqueld-sse/v1\0{kind}\0{data}").as_bytes());
+    format!("current:{}", hex(&digest[..16]))
 }
 fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -1040,30 +1241,268 @@ fn step_state_name(v: StepState) -> &'static str {
 
 /// Generated `OpenAPI` contract. Core domain schemas are linked as explicit JSON objects to avoid coupling core to Utoipa.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn openapi_document() -> Value {
-    let paths = [
-        ("/api/v1/system/status", vec!["get"]),
-        ("/api/v1/system/capabilities", vec!["get"]),
-        ("/api/v1/applications", vec!["get", "post"]),
-        ("/api/v1/applications/plan", vec!["post"]),
-        ("/api/v1/applications/{id}", vec!["get", "put", "delete"]),
-        ("/api/v1/applications/{id}/plan", vec!["post"]),
-        ("/api/v1/applications/{id}/reconcile", vec!["post"]),
-        ("/api/v1/applications/{id}/status", vec!["get"]),
-        ("/api/v1/applications/{id}/events", vec!["get"]),
-        ("/api/v1/operations/{id}", vec!["get"]),
-        ("/api/v1/operations/{id}/events", vec!["get"]),
-        ("/api/v1/openapi.json", vec!["get"]),
-    ];
-    let mut map = serde_json::Map::new();
-    for (path, methods) in paths {
-        let mut item = serde_json::Map::new();
-        for method in methods {
-            item.insert(method.into(), json!({"responses":{"200":{"description":"Success"},"400":{"description":"Structured client error","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorBody"}}}},"500":{"description":"Sanitized server error","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorBody"}}}}}}));
-        }
-        map.insert(path.into(), Value::Object(item));
+    let mut schemas = serde_json::Map::new();
+    add_schema::<ErrorBody>(&mut schemas, "ErrorBody");
+    add_schema::<Envelope<SystemStatus>>(&mut schemas, "SystemStatusEnvelope");
+    add_schema::<Envelope<SystemCapabilities>>(&mut schemas, "SystemCapabilitiesEnvelope");
+    add_schema::<Envelope<Page<ApplicationView>>>(&mut schemas, "ApplicationPageEnvelope");
+    add_schema::<Envelope<ApplicationView>>(&mut schemas, "ApplicationEnvelope");
+    add_schema::<CreateApplicationRequest>(&mut schemas, "CreateApplicationRequest");
+    add_schema::<ReplaceApplicationRequest>(&mut schemas, "ReplaceApplicationRequest");
+    add_schema::<PlanApplicationRequest>(&mut schemas, "PlanApplicationRequest");
+    add_schema::<piqueld_client::ReplacePlanRequest>(&mut schemas, "ReplacePlanRequest");
+    add_schema::<DeleteApplicationRequest>(&mut schemas, "DeleteApplicationRequest");
+    if let Some(force) = schemas
+        .get_mut("DeleteApplicationRequest")
+        .and_then(|schema| schema.pointer_mut("/properties/force"))
+    {
+        force["enum"] = json!([false]);
+        force["description"] =
+            json!("Must be false. Force deletion is unsupported and named volumes are retained.");
     }
-    json!({"openapi":"3.1.0","info":{"title":"piqueld API","version":"v1"},"paths":map,"components":{"schemas":{"ErrorBody":{"type":"object","required":["code","message","request_id"],"properties":{"code":{"type":"string"},"message":{"type":"string"},"details":{},"request_id":{"type":"string"}}}}}})
+    add_schema::<ExpectedGeneration>(&mut schemas, "ExpectedGeneration");
+    add_schema::<Envelope<AcceptedOperation>>(&mut schemas, "AcceptedOperationEnvelope");
+    add_schema::<Envelope<PlanView>>(&mut schemas, "PlanEnvelope");
+    add_schema::<Envelope<ApplicationStatusView>>(&mut schemas, "ApplicationStatusEnvelope");
+    add_schema::<Envelope<OperationView>>(&mut schemas, "OperationEnvelope");
+
+    let id = json!({"name":"id","in":"path","required":true,"schema":{"type":"string","minLength":8,"maxLength":64}});
+    let last_event_id = json!({"name":"Last-Event-ID","in":"header","required":false,"schema":{"type":"string"},"description":"Last durable/current-state event ID received by the client."});
+    let expected_generation = json!({"name":"X-Expected-Generation","in":"header","required":false,"schema":{"type":"integer","format":"uint64","minimum":1},"description":"Required for application/toml replacement and replacement planning."});
+    let json_toml = |schema: &str| {
+        json!({
+            "required":true,
+            "content":{
+                "application/json":{"schema":{"$ref":format!("#/components/schemas/{schema}")}},
+                "application/toml":{"schema":{"type":"string"}},
+                "text/toml":{"schema":{"type":"string"}}
+            }
+        })
+    };
+    let json_body = |schema: &str| json!({"required":true,"content":{"application/json":{"schema":{"$ref":format!("#/components/schemas/{schema}")}}}});
+    let response = |description: &str, schema: &str| json!({"description":description,"content":{"application/json":{"schema":{"$ref":format!("#/components/schemas/{schema}")}}}});
+    let errors = |statuses: &[&str]| {
+        let mut map = serde_json::Map::new();
+        for status in statuses {
+            map.insert(
+                (*status).into(),
+                response("Structured, sanitized error", "ErrorBody"),
+            );
+        }
+        map
+    };
+    let operation = |operation_id: &str,
+                     success_status: &str,
+                     success_schema: &str,
+                     statuses: &[&str]| {
+        let mut responses = errors(statuses);
+        responses.insert(success_status.into(), response("Success", success_schema));
+        json!({"operationId":operation_id,"summary":operation_summary(operation_id),"responses":responses})
+    };
+    let mut paths = serde_json::Map::new();
+    paths.insert(
+        "/api/v1/system/status".into(),
+        json!({"get":operation("systemStatus","200","SystemStatusEnvelope", &["500","503"])}),
+    );
+    paths.insert(
+        "/api/v1/system/capabilities".into(),
+        json!({"get":operation("systemCapabilities","200","SystemCapabilitiesEnvelope", &["500"])}),
+    );
+    paths.insert("/api/v1/openapi.json".into(), json!({"get":{"operationId":"openApiDocument","summary":operation_summary("openApiDocument"),"responses":{"200":{"description":"OpenAPI 3.1 document","content":{"application/vnd.oai.openapi+json":{"schema":{"type":"object"}}}}}}}));
+
+    let mut list = operation(
+        "listApplications",
+        "200",
+        "ApplicationPageEnvelope",
+        &["400", "500", "503"],
+    );
+    list["parameters"] = json!([
+        {"name":"cursor","in":"query","required":false,"schema":{"type":"string"}},
+        {"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}
+    ]);
+    let mut create = operation(
+        "createApplication",
+        "202",
+        "AcceptedOperationEnvelope",
+        &["400", "409", "415", "422", "500", "502", "503"],
+    );
+    create["parameters"] = json!([{"name":"Idempotency-Key","in":"header","required":true,"schema":{"type":"string","minLength":1,"maxLength":128}}]);
+    create["requestBody"] = json_toml("CreateApplicationRequest");
+    paths.insert(
+        "/api/v1/applications".into(),
+        json!({"get":list,"post":create}),
+    );
+
+    let mut create_plan = operation(
+        "planApplicationCreate",
+        "200",
+        "PlanEnvelope",
+        &["400", "409", "415", "422", "500", "503"],
+    );
+    create_plan["requestBody"] = json_toml("PlanApplicationRequest");
+    paths.insert(
+        "/api/v1/applications/plan".into(),
+        json!({"post":create_plan}),
+    );
+
+    let mut get_app = operation(
+        "getApplication",
+        "200",
+        "ApplicationEnvelope",
+        &["400", "404", "500", "503"],
+    );
+    get_app["parameters"] = json!([id.clone()]);
+    let mut replace = operation(
+        "replaceApplication",
+        "202",
+        "AcceptedOperationEnvelope",
+        &["400", "404", "409", "415", "422", "500", "502", "503"],
+    );
+    replace["parameters"] = json!([id.clone(), expected_generation.clone()]);
+    replace["requestBody"] = json_toml("ReplaceApplicationRequest");
+    let mut delete = operation(
+        "deleteApplication",
+        "202",
+        "AcceptedOperationEnvelope",
+        &["400", "404", "409", "415", "500", "502", "503"],
+    );
+    delete["parameters"] = json!([id.clone()]);
+    delete["requestBody"] = json_body("DeleteApplicationRequest");
+    paths.insert(
+        "/api/v1/applications/{id}".into(),
+        json!({"get":get_app,"put":replace,"delete":delete}),
+    );
+
+    let mut replace_plan = operation(
+        "planApplicationReplace",
+        "200",
+        "PlanEnvelope",
+        &["400", "404", "409", "415", "422", "500", "502", "503"],
+    );
+    replace_plan["parameters"] = json!([id.clone(), expected_generation]);
+    replace_plan["requestBody"] = json_toml("ReplacePlanRequest");
+    paths.insert(
+        "/api/v1/applications/{id}/plan".into(),
+        json!({"post":replace_plan}),
+    );
+
+    let mut reconcile = operation(
+        "reconcileApplication",
+        "202",
+        "AcceptedOperationEnvelope",
+        &["400", "404", "409", "415", "500", "502", "503"],
+    );
+    reconcile["parameters"] = json!([id.clone()]);
+    reconcile["requestBody"] = json_body("ExpectedGeneration");
+    paths.insert(
+        "/api/v1/applications/{id}/reconcile".into(),
+        json!({"post":reconcile}),
+    );
+
+    let mut status = operation(
+        "applicationStatus",
+        "200",
+        "ApplicationStatusEnvelope",
+        &["400", "404", "500", "503"],
+    );
+    status["parameters"] = json!([id.clone()]);
+    paths.insert(
+        "/api/v1/applications/{id}/status".into(),
+        json!({"get":status}),
+    );
+
+    let event_response = json!({"description":"Server-Sent Events with durable/current-state IDs and bounded replay reset events.","content":{"text/event-stream":{"schema":{"type":"string"}}}});
+    let mut app_events = json!({"operationId":"watchApplication","summary":operation_summary("watchApplication"),"parameters":[id.clone(),last_event_id.clone()],"responses":{"200":event_response.clone(),"400":response("Structured, sanitized error","ErrorBody"),"404":response("Structured, sanitized error","ErrorBody"),"500":response("Structured, sanitized error","ErrorBody"),"503":response("Structured, sanitized error","ErrorBody")}});
+    app_events["x-sse-keepalive-seconds"] = json!(15);
+    paths.insert(
+        "/api/v1/applications/{id}/events".into(),
+        json!({"get":app_events}),
+    );
+
+    let mut get_operation = operation(
+        "getOperation",
+        "200",
+        "OperationEnvelope",
+        &["404", "500", "503"],
+    );
+    get_operation["parameters"] = json!([id.clone()]);
+    paths.insert(
+        "/api/v1/operations/{id}".into(),
+        json!({"get":get_operation}),
+    );
+    let mut operation_events = json!({"operationId":"watchOperation","summary":operation_summary("watchOperation"),"parameters":[id,last_event_id],"responses":{"200":event_response,"404":response("Structured, sanitized error","ErrorBody"),"500":response("Structured, sanitized error","ErrorBody"),"503":response("Structured, sanitized error","ErrorBody")}});
+    operation_events["x-sse-terminal-closes"] = json!(true);
+    operation_events["x-sse-keepalive-seconds"] = json!(15);
+    paths.insert(
+        "/api/v1/operations/{id}/events".into(),
+        json!({"get":operation_events}),
+    );
+
+    json!({
+        "openapi":"3.1.0",
+        "info":{"title":"piqueld API","version":"v1","description":"Plan 05 control-plane API. Mutation responses identify durable operations; named volumes are retained on deletion.","license":{"name":"MIT","identifier":"MIT"}},
+        "servers":[{"url":"http://127.0.0.1:7845","description":"Default loopback TCP endpoint; clients may also use the configured Unix socket."}],
+        "security":[],
+        "paths":paths,
+        "components":{"schemas":schemas}
+    })
+}
+
+fn operation_summary(operation_id: &str) -> &'static str {
+    match operation_id {
+        "systemStatus" => "Get daemon status",
+        "systemCapabilities" => "Get daemon capabilities",
+        "openApiDocument" => "Get the OpenAPI document",
+        "listApplications" => "List applications",
+        "createApplication" => "Create an application",
+        "planApplicationCreate" => "Preview application creation",
+        "getApplication" => "Get an application",
+        "replaceApplication" => "Replace an application",
+        "deleteApplication" => "Request application deletion",
+        "planApplicationReplace" => "Preview application replacement",
+        "reconcileApplication" => "Request application reconciliation",
+        "applicationStatus" => "Get application status",
+        "watchApplication" => "Watch application status events",
+        "getOperation" => "Get an operation",
+        "watchOperation" => "Watch operation events",
+        _ => "piqueld API operation",
+    }
+}
+
+fn add_schema<T: JsonSchema>(schemas: &mut serde_json::Map<String, Value>, name: &str) {
+    let root = schema_for!(T);
+    let mut schema = serde_json::to_value(root.schema).expect("schema serialization cannot fail");
+    rewrite_schema_refs(&mut schema);
+    schemas.insert(name.into(), schema);
+    for (definition_name, definition) in root.definitions {
+        let mut definition =
+            serde_json::to_value(definition).expect("schema serialization cannot fail");
+        rewrite_schema_refs(&mut definition);
+        schemas.entry(definition_name).or_insert(definition);
+    }
+}
+
+fn rewrite_schema_refs(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(reference)) = map.get_mut("$ref")
+                && let Some(name) = reference.strip_prefix("#/definitions/")
+            {
+                *reference = format!("#/components/schemas/{name}");
+            }
+            for value in map.values_mut() {
+                rewrite_schema_refs(value);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                rewrite_schema_refs(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -1140,25 +1579,80 @@ mod tests {
         ) -> Result<ObservedApplication, BoundaryError> {
             Ok(ObservedApplication::default())
         }
-        async fn reconcile(
+    }
+
+    struct PreviewOnlyRuntime;
+    #[async_trait]
+    impl RuntimeBoundary for PreviewOnlyRuntime {
+        fn capabilities(&self) -> RuntimeCapabilities {
+            RuntimeCapabilities {
+                source_resolution: true,
+                runtime_observation: false,
+                runtime_execution: false,
+                reason: None,
+            }
+        }
+        async fn prepare(
             &self,
-            app: &StoredApplication,
-        ) -> Result<MutationResult, BoundaryError> {
-            Ok(MutationResult {
-                operation_id: "operation-fake".into(),
-                generation: app.generation,
-            })
+            _: &NormalizedApplication,
+        ) -> Result<PreparedApplication, BoundaryError> {
+            panic!("pure preview must not invoke source resolution")
+        }
+        async fn observe(
+            &self,
+            _: &StoredApplication,
+        ) -> Result<ObservedApplication, BoundaryError> {
+            panic!("create preview has no current runtime state to observe")
         }
     }
 
-    async fn fixture(runtime: Arc<dyn RuntimeBoundary>) -> (TempDir, Arc<LibsqlStore>, Router) {
+    struct ActiveRetryRuntime;
+    #[async_trait]
+    impl RuntimeBoundary for ActiveRetryRuntime {
+        fn capabilities(&self) -> RuntimeCapabilities {
+            RuntimeCapabilities {
+                source_resolution: true,
+                runtime_observation: true,
+                runtime_execution: true,
+                reason: None,
+            }
+        }
+        async fn prepare(
+            &self,
+            _: &NormalizedApplication,
+        ) -> Result<PreparedApplication, BoundaryError> {
+            panic!("an active reconcile retry must not prepare an application")
+        }
+        async fn observe(
+            &self,
+            _: &StoredApplication,
+        ) -> Result<ObservedApplication, BoundaryError> {
+            panic!("an active reconcile retry must not repeat runtime observation")
+        }
+    }
+
+    async fn fixture(runtime: Arc<dyn RuntimeBoundary>) -> (TempDir, Arc<SqliteStore>, Router) {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(
-            LibsqlStore::open(temp.path().join("state.db"))
+            SqliteStore::open(temp.path().join("state.db"))
                 .await
                 .unwrap(),
         );
         let app = router(ApiState::new(Arc::clone(&store), runtime));
+        (temp, store, app)
+    }
+    async fn fake_fixture() -> (TempDir, Arc<SqliteStore>, Router) {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            SqliteStore::open(temp.path().join("state.db"))
+                .await
+                .unwrap(),
+        );
+        let instance = InstanceId::parse(store.instance_id().to_owned()).unwrap();
+        let app = router(ApiState::new(
+            Arc::clone(&store),
+            Arc::new(FakeRuntime { instance }),
+        ));
         (temp, store, app)
     }
     fn manifest() -> Value {
@@ -1175,12 +1669,33 @@ mod tests {
     async fn json_body(response: Response) -> Value {
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
     }
+    fn assert_refs_resolve(value: &Value, schemas: &serde_json::Map<String, Value>) {
+        match value {
+            Value::Object(object) => {
+                if let Some(Value::String(reference)) = object.get("$ref") {
+                    let name = reference
+                        .strip_prefix("#/components/schemas/")
+                        .expect("only local component schema references are generated");
+                    assert!(schemas.contains_key(name), "missing schema {name}");
+                }
+                for nested in object.values() {
+                    assert_refs_resolve(nested, schemas);
+                }
+            }
+            Value::Array(values) => {
+                for nested in values {
+                    assert_refs_resolve(nested, schemas);
+                }
+            }
+            _ => {}
+        }
+    }
 
     #[tokio::test]
     async fn create_is_accepted_idempotent_and_queryable() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(
-            LibsqlStore::open(temp.path().join("state.db"))
+            SqliteStore::open(temp.path().join("state.db"))
                 .await
                 .unwrap(),
         );
@@ -1225,10 +1740,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_retry_returns_original_result_after_later_replacement() {
+        let (temp, store, app) = fake_fixture().await;
+        let create = || {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/applications")
+                .header(header::CONTENT_TYPE, JSON)
+                .header("idempotency-key", "durable-create-retry")
+                .body(Body::from(json!({"manifest":manifest()}).to_string()))
+                .unwrap()
+        };
+        let original = json_body(app.clone().oneshot(create()).await.unwrap()).await;
+        let id = original["data"]["application_id"].as_str().unwrap();
+        let replaced = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &format!("/api/v1/applications/{id}"),
+                json!({"expected_generation":1,"manifest":manifest()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(replaced.status(), StatusCode::ACCEPTED);
+        assert_eq!(json_body(replaced).await["data"]["generation"], 2);
+        let original_operation = original["data"]["operation_id"].as_str().unwrap();
+        store
+            .transition_operation(
+                original_operation,
+                WorkState::Pending,
+                WorkState::Running,
+                None,
+            )
+            .await
+            .unwrap();
+        for step in store.operation_steps(original_operation).await.unwrap() {
+            store
+                .transition_step(&step.id, StepState::Pending, StepState::Running, None)
+                .await
+                .unwrap();
+            store
+                .transition_step(&step.id, StepState::Running, StepState::Succeeded, None)
+                .await
+                .unwrap();
+        }
+        store
+            .transition_operation(
+                original_operation,
+                WorkState::Running,
+                WorkState::Succeeded,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .prune_finished_operations_before(i64::MAX, 100)
+                .await
+                .unwrap(),
+            0
+        );
+        drop(app);
+        drop(store);
+        let reopened = Arc::new(
+            SqliteStore::open(temp.path().join("state.db"))
+                .await
+                .unwrap(),
+        );
+        let app = router(ApiState::new(reopened, Arc::new(UnavailableRuntime)));
+        assert_eq!(
+            json_body(app.oneshot(create()).await.unwrap()).await,
+            original
+        );
+    }
+
+    #[tokio::test]
     async fn operation_sse_has_ids_replay_reset_and_terminal_cleanup() {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(
-            LibsqlStore::open(temp.path().join("state.db"))
+            SqliteStore::open(temp.path().join("state.db"))
                 .await
                 .unwrap(),
         );
@@ -1291,6 +1881,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn operation_current_state_id_changes_when_only_a_step_advances() {
+        let (_temp, store, app) = fake_fixture().await;
+        let created = json_body(
+            app.oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/applications")
+                    .header(header::CONTENT_TYPE, JSON)
+                    .header("idempotency-key", "step-event-id")
+                    .body(Body::from(json!({"manifest":manifest()}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        let operation_id = created["data"]["operation_id"].as_str().unwrap();
+        store
+            .transition_operation(operation_id, WorkState::Pending, WorkState::Running, None)
+            .await
+            .unwrap();
+        let operation = store.operation(operation_id).await.unwrap();
+        let steps = store.operation_steps(operation_id).await.unwrap();
+        let before =
+            serde_json::to_string(&operation_view(operation.clone(), steps.clone())).unwrap();
+        let before_id = current_state_event_id("operation", &before);
+        store
+            .transition_step(&steps[0].id, StepState::Pending, StepState::Running, None)
+            .await
+            .unwrap();
+        let after = serde_json::to_string(&operation_view(
+            store.operation(operation_id).await.unwrap(),
+            store.operation_steps(operation_id).await.unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(store.operation(operation_id).await.unwrap(), operation);
+        assert_ne!(current_state_event_id("operation", &after), before_id);
+    }
+
+    #[tokio::test]
     async fn preview_is_pure_and_unavailable_runtime_is_honest() {
         let (_temp, _store, app) = fixture(Arc::new(UnavailableRuntime)).await;
         let preview = app
@@ -1342,6 +1972,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_preview_never_invokes_resolution_or_observation() {
+        let (_temp, _store, app) = fixture(Arc::new(PreviewOnlyRuntime)).await;
+        let response = app
+            .oneshot(request(
+                Method::POST,
+                "/api/v1/applications/plan",
+                json!({"manifest":manifest()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            json_body(response).await["data"]["plan"]["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action["kind"]["action"] == "resolve_image")
+        );
+    }
+
+    #[tokio::test]
+    async fn replacement_preview_reuses_unchanged_resolutions_without_resolver_io() {
+        let (_temp, _store, app) = fake_fixture().await;
+        let created = json_body(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/v1/applications")
+                        .header(header::CONTENT_TYPE, JSON)
+                        .header("idempotency-key", "preview-reuse")
+                        .body(Body::from(json!({"manifest":manifest()}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = created["data"]["application_id"].as_str().unwrap();
+        let preview = app
+            .oneshot(request(
+                Method::POST,
+                &format!("/api/v1/applications/{id}/plan"),
+                json!({"expected_generation":1,"manifest":manifest()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(preview.status(), StatusCode::OK);
+        let body = json_body(preview).await;
+        let actions = body["data"]["plan"]["actions"].as_array().unwrap();
+        assert!(
+            actions
+                .iter()
+                .any(|action| action["mutates_runtime"] == true)
+        );
+        assert!(
+            actions
+                .iter()
+                .all(|action| action["kind"]["action"] != "resolve_image")
+        );
+    }
+
+    #[tokio::test]
     async fn transport_failures_are_structured_and_safe() {
         let (_temp, _store, app) = fixture(Arc::new(UnavailableRuntime)).await;
         let missing_key = app
@@ -1388,6 +2081,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn validation_not_found_force_and_malformed_json_are_structured() {
+        let (_temp, _store, app) = fake_fixture().await;
+        let invalid = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/api/v1/applications/plan",
+                json!({"manifest":{"api_version":"piqueld.dev/v1alpha1","kind":"Application","metadata":{"name":"INVALID"},"spec":{"services":[]}}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            json_body(invalid).await["code"],
+            "manifest_validation_failed"
+        );
+
+        let malformed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/applications/plan")
+                    .header(header::CONTENT_TYPE, JSON)
+                    .body(Body::from("{\"manifest\":"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(malformed).await["code"], "json_malformed");
+
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/applications/app-does-not-exist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(json_body(missing).await["code"], "not_found");
+
+        let created = json_body(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/v1/applications")
+                        .header(header::CONTENT_TYPE, JSON)
+                        .header("idempotency-key", "force-delete")
+                        .body(Body::from(json!({"manifest":manifest()}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = created["data"]["application_id"].as_str().unwrap();
+        let force = app
+            .oneshot(request(
+                Method::DELETE,
+                &format!("/api/v1/applications/{id}"),
+                json!({"expected_generation":1,"force":true}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(force.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(force).await["code"], "force_delete_unsupported");
+    }
+
+    #[tokio::test]
     async fn openapi_snapshot_lists_exact_plan_five_surface() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/openapi-v1.json");
@@ -1405,6 +2172,260 @@ mod tests {
             snapshot["paths"]
                 .get("/api/v1/applications/{id}/logs")
                 .is_none()
+        );
+        for item in snapshot["paths"].as_object().unwrap().values() {
+            for operation in item.as_object().unwrap().values() {
+                assert!(operation.get("operationId").is_some());
+                assert!(operation.get("responses").is_some());
+            }
+        }
+        assert!(snapshot["components"]["schemas"].as_object().unwrap().len() > 20);
+        assert_refs_resolve(
+            &snapshot,
+            snapshot["components"]["schemas"].as_object().unwrap(),
+        );
+    }
+
+    #[tokio::test]
+    async fn request_ids_match_headers_and_transport_errors_are_complete() {
+        let (_temp, _store, app) = fixture(Arc::new(UnavailableRuntime)).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/api/v1/applications")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = json_body(response).await;
+        assert_eq!(body["code"], "method_not_allowed");
+        assert_eq!(body["request_id"], request_id);
+    }
+
+    #[tokio::test]
+    async fn json_and_toml_share_normalization_and_malformed_toml_is_safe() {
+        let (_temp, _store, app) = fake_fixture().await;
+        let json_plan = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                "/api/v1/applications/plan",
+                json!({"manifest":manifest()}),
+            ))
+            .await
+            .unwrap();
+        let toml = r#"api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "notes"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "ghcr.io/example/notes:1"
+"#;
+        let toml_plan = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/applications/plan")
+                    .header(header::CONTENT_TYPE, TOML)
+                    .body(Body::from(toml))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(json_plan.status(), StatusCode::OK);
+        assert_eq!(toml_plan.status(), StatusCode::OK);
+        assert_eq!(json_body(json_plan).await, json_body(toml_plan).await);
+
+        let malformed = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/applications/plan")
+                    .header(header::CONTENT_TYPE, TOML)
+                    .body(Body::from("[metadata\nsecret = 'must-not-echo'"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(malformed).await["code"], "toml_malformed");
+    }
+
+    #[tokio::test]
+    async fn conflicts_and_reconcile_retries_preserve_durable_identity() {
+        let (_temp, _store, app) = fake_fixture().await;
+        let create = |key: &'static str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/applications")
+                .header(header::CONTENT_TYPE, JSON)
+                .header("idempotency-key", key)
+                .body(Body::from(json!({"manifest":manifest()}).to_string()))
+                .unwrap()
+        };
+        let created = json_body(app.clone().oneshot(create("first")).await.unwrap()).await;
+        let id = created["data"]["application_id"].as_str().unwrap();
+        let collision = app.clone().oneshot(create("second")).await.unwrap();
+        assert_eq!(collision.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            json_body(collision).await["code"],
+            "application_name_collision"
+        );
+        let stale = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &format!("/api/v1/applications/{id}"),
+                json!({"expected_generation":2,"manifest":manifest()}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(json_body(stale).await["details"]["current_generation"], 1);
+
+        let reconcile = || {
+            request(
+                Method::POST,
+                &format!("/api/v1/applications/{id}/reconcile"),
+                json!({"expected_generation":1}),
+            )
+        };
+        let first = json_body(app.clone().oneshot(reconcile()).await.unwrap()).await;
+        let second = json_body(app.clone().oneshot(reconcile()).await.unwrap()).await;
+        assert_eq!(first, second);
+        let operation_id = first["data"]["operation_id"].as_str().unwrap();
+        let operation = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/operations/{operation_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(operation.status(), StatusCode::OK);
+        assert_eq!(json_body(operation).await["data"]["kind"], "reconcile");
+    }
+
+    #[tokio::test]
+    async fn concurrent_create_retries_and_name_collisions_have_one_durable_winner() {
+        let (_temp, _store, app) = fake_fixture().await;
+        let create = |key: &'static str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/applications")
+                .header(header::CONTENT_TYPE, JSON)
+                .header("idempotency-key", key)
+                .body(Body::from(json!({"manifest":manifest()}).to_string()))
+                .unwrap()
+        };
+        let (same_left, same_right) = tokio::join!(
+            app.clone().oneshot(create("same-race")),
+            app.clone().oneshot(create("same-race"))
+        );
+        let same_left = same_left.unwrap();
+        let same_right = same_right.unwrap();
+        assert_eq!(same_left.status(), StatusCode::ACCEPTED);
+        assert_eq!(same_right.status(), StatusCode::ACCEPTED);
+        assert_eq!(json_body(same_left).await, json_body(same_right).await);
+
+        let second_manifest = json!({
+            "api_version":"piqueld.dev/v1alpha1",
+            "kind":"Application",
+            "metadata":{"name":"other"},
+            "spec":{"services":[{"name":"web","source":{"type":"image","image":"ghcr.io/example/notes:1"}}]}
+        });
+        let conflicting_key = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/applications")
+            .header(header::CONTENT_TYPE, JSON)
+            .header("idempotency-key", "same-race")
+            .body(Body::from(json!({"manifest":second_manifest}).to_string()))
+            .unwrap();
+        let reused = app.clone().oneshot(conflicting_key).await.unwrap();
+        assert_eq!(reused.status(), StatusCode::CONFLICT);
+        assert_eq!(json_body(reused).await["code"], "idempotency_key_reused");
+
+        let (_collision_temp, _collision_store, collision_app) = fake_fixture().await;
+        let (collision_left, collision_right) = tokio::join!(
+            collision_app.clone().oneshot(create("collision-left")),
+            collision_app.clone().oneshot(create("collision-right"))
+        );
+        let statuses = [
+            collision_left.unwrap().status(),
+            collision_right.unwrap().status(),
+        ];
+        assert!(statuses.contains(&StatusCode::ACCEPTED));
+        assert!(statuses.contains(&StatusCode::CONFLICT));
+        assert_eq!(
+            json_body(
+                collision_app
+                    .oneshot(
+                        Request::builder()
+                            .uri("/api/v1/applications")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+            )
+            .await["data"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn active_reconcile_retry_does_not_repeat_runtime_io() {
+        let (_temp, store, app) = fake_fixture().await;
+        let created = json_body(
+            app.oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/applications")
+                    .header(header::CONTENT_TYPE, JSON)
+                    .header("idempotency-key", "reconcile-lost-response")
+                    .body(Body::from(json!({"manifest":manifest()}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        let id = application_id(created["data"]["application_id"].as_str().unwrap()).unwrap();
+        let durable = store
+            .request_reconcile(&id, 1, &["already durable".into()])
+            .await
+            .unwrap();
+        let retry_router = router(ApiState::new(store, Arc::new(ActiveRetryRuntime)));
+        let response = retry_router
+            .oneshot(request(
+                Method::POST,
+                &format!("/api/v1/applications/{id}/reconcile"),
+                json!({"expected_generation":1}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            json_body(response).await["data"]["operation_id"],
+            durable.operation_id
         );
     }
 }

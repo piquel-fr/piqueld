@@ -24,3 +24,6 @@ after `prepare` for the CI freshness check.
 
 Migration reviews must check constraints, indexes, forward compatibility, and that
 no secret fixture or plaintext is present in SQL, diagnostics, snapshots, or logs.
+Create idempotency records retain only SHA-256 key/request hashes and stable resource
+identities. Their referenced create operations are excluded from ordinary operation
+retention so a lost-response retry remains durable.

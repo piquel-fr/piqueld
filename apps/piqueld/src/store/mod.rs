@@ -33,6 +33,7 @@ use uuid::Uuid;
 const MIGRATIONS: &[&str] = &[
     include_str!("../../../../migrations/0001_control_plane.sql"),
     include_str!("../../../../migrations/0002_retention_indexes.sql"),
+    include_str!("../../../../migrations/0003_api_idempotency.sql"),
 ];
 /// Latest schema understood by this binary.
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
@@ -52,6 +53,9 @@ pub enum StoreError {
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,
+    /// An idempotency key was previously bound to different normalized intent.
+    #[error("idempotency key was reused for a different request")]
+    IdempotencyConflict,
     /// An optimistic write used a stale generation.
     #[error("application generation conflict")]
     GenerationConflict { expected: u64, actual: u64 },
@@ -76,6 +80,10 @@ impl StoreError {
         let (code, message) = match self {
             Self::NotFound => ("not_found", "resource was not found"),
             Self::AlreadyExists => ("already_exists", "resource already exists"),
+            Self::IdempotencyConflict => (
+                "idempotency_key_reused",
+                "idempotency key was reused for a different request",
+            ),
             Self::GenerationConflict { .. } => {
                 ("generation_conflict", "application generation is stale")
             }
@@ -392,6 +400,23 @@ pub trait ApplicationRepository: Send + Sync {
         resolved: Option<&ResolvedApplication>,
         steps: &[String],
     ) -> Result<MutationResult, StoreError>;
+    /// Atomically creates an application or returns the original create result
+    /// for a durable idempotency-key binding.
+    async fn create_idempotent(
+        &self,
+        app: &NormalizedApplication,
+        resolved: Option<&ResolvedApplication>,
+        steps: &[String],
+        key_hash: &str,
+        request_hash: &str,
+    ) -> Result<MutationResult, StoreError>;
+    /// Looks up an existing create key without invoking runtime preparation.
+    async fn create_idempotency(
+        &self,
+        app_id: &ApplicationId,
+        key_hash: &str,
+        request_hash: &str,
+    ) -> Result<Option<MutationResult>, StoreError>;
     async fn replace(
         &self,
         app: &NormalizedApplication,
@@ -405,6 +430,19 @@ pub trait ApplicationRepository: Send + Sync {
         expected_generation: u64,
         steps: &[String],
     ) -> Result<MutationResult, StoreError>;
+    /// Atomically creates, or returns, durable reconcile work for a generation.
+    async fn request_reconcile(
+        &self,
+        id: &ApplicationId,
+        expected_generation: u64,
+        steps: &[String],
+    ) -> Result<MutationResult, StoreError>;
+    /// Returns already-durable active reconcile work for a generation.
+    async fn active_reconcile(
+        &self,
+        id: &ApplicationId,
+        expected_generation: u64,
+    ) -> Result<Option<MutationResult>, StoreError>;
     async fn get(&self, id: &ApplicationId) -> Result<StoredApplication, StoreError>;
     async fn list(&self) -> Result<Vec<StoredApplication>, StoreError>;
 }
@@ -810,6 +848,11 @@ fn valid_logical_name(value: &str) -> bool {
 }
 fn valid_bounded_text(value: &str, max_len: usize) -> bool {
     !value.is_empty() && value.len() <= max_len && !value.chars().any(char::is_control)
+}
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 fn valid_error(error: Option<(&str, &str)>) -> bool {
     error.is_none_or(|(code, message)| {

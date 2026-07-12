@@ -60,6 +60,7 @@ pub struct SystemCapabilities {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct ApplicationView {
     pub application: NormalizedApplication,
+    #[schemars(range(min = 1))]
     pub generation: u64,
     pub spec_hash: String,
     pub delete_intent: bool,
@@ -76,6 +77,7 @@ pub struct CreateApplicationRequest {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplaceApplicationRequest {
+    #[schemars(range(min = 1))]
     pub expected_generation: u64,
     pub manifest: ApplicationManifest,
 }
@@ -89,6 +91,7 @@ pub struct PlanApplicationRequest {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplacePlanRequest {
+    #[schemars(range(min = 1))]
     pub expected_generation: u64,
     pub manifest: ApplicationManifest,
 }
@@ -96,12 +99,14 @@ pub struct ReplacePlanRequest {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExpectedGeneration {
+    #[schemars(range(min = 1))]
     pub expected_generation: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeleteApplicationRequest {
+    #[schemars(range(min = 1))]
     pub expected_generation: u64,
     #[serde(default)]
     pub force: bool,
@@ -111,12 +116,14 @@ pub struct DeleteApplicationRequest {
 pub struct AcceptedOperation {
     pub operation_id: String,
     pub application_id: String,
+    #[schemars(range(min = 1))]
     pub generation: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct PlanView {
     pub application_id: String,
+    #[schemars(range(min = 1))]
     pub proposed_generation: u64,
     pub plan: Plan,
 }
@@ -125,6 +132,7 @@ pub struct PlanView {
 pub struct ApplicationStatusView {
     pub application_id: String,
     pub state: String,
+    #[schemars(range(min = 1))]
     pub observed_generation: Option<u64>,
     pub message: Option<String>,
     pub updated_at_ms: i64,
@@ -146,6 +154,7 @@ pub struct OperationStepView {
 pub struct OperationView {
     pub id: String,
     pub application_id: String,
+    #[schemars(range(min = 1))]
     pub generation: u64,
     pub kind: String,
     pub state: String,
@@ -163,6 +172,12 @@ pub struct SseEvent {
     pub id: Option<String>,
     pub event: Option<String>,
     pub data: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ListApplicationsOptions {
+    pub cursor: Option<String>,
+    pub limit: Option<u16>,
 }
 
 #[derive(Clone, Debug)]
@@ -203,14 +218,21 @@ impl Client {
             || url.path() != "/"
             || url.query().is_some()
             || url.fragment().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
         {
             return Err(ClientError::Endpoint);
         }
         let host = url.host_str().ok_or(ClientError::Endpoint)?.to_owned();
         let port = url.port_or_known_default().ok_or(ClientError::Endpoint)?;
+        let authority = if host.contains(':') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        };
         Ok(Self {
             endpoint: Endpoint::Tcp {
-                authority: format!("{host}:{port}"),
+                authority,
                 host,
                 port,
             },
@@ -244,6 +266,20 @@ impl Client {
             .transpose()
             .map_err(|_| ClientError::Decode)?
             .unwrap_or_default();
+        let mut headers = headers.to_vec();
+        if body.is_some() {
+            headers.push(("content-type", "application/json"));
+        }
+        self.raw_bytes(method, path, bytes, &headers).await
+    }
+
+    async fn raw_bytes(
+        &self,
+        method: Method,
+        path: &str,
+        bytes: Vec<u8>,
+        headers: &[(&str, &str)],
+    ) -> Result<hyper::Response<hyper::body::Incoming>, ClientError> {
         let authority = match &self.endpoint {
             Endpoint::Tcp { authority, .. } => authority.as_str(),
             Endpoint::Unix(_) => "localhost",
@@ -252,9 +288,6 @@ impl Client {
             .method(method)
             .uri(format!("http://{authority}{path}"))
             .header(header::ACCEPT, "application/json");
-        if body.is_some() {
-            builder = builder.header(header::CONTENT_TYPE, "application/json");
-        }
         for (name, value) in headers {
             builder = builder.header(*name, *value);
         }
@@ -304,6 +337,19 @@ impl Client {
         .map_err(|_| ClientError::Transport)?
     }
 
+    async fn send_text<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<T, ClientError> {
+        let response = self
+            .raw_bytes(method, path, body.as_bytes().to_vec(), headers)
+            .await?;
+        decode_envelope(response).await
+    }
+
     async fn send<T: DeserializeOwned, B: Serialize>(
         &self,
         method: Method,
@@ -311,26 +357,7 @@ impl Client {
         body: Option<&B>,
         headers: &[(&str, &str)],
     ) -> Result<T, ClientError> {
-        let response = self.raw_request(method, path, body, headers).await?;
-        let status = response.status();
-        let payload = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(|_| ClientError::Transport)?
-            .to_bytes();
-        if !status.is_success() {
-            let error = serde_json::from_slice(&payload).unwrap_or(ErrorBody {
-                code: "invalid_error_response".into(),
-                message: "server returned an unreadable error".into(),
-                details: serde_json::Value::Null,
-                request_id: String::new(),
-            });
-            return Err(ClientError::Api { status, error });
-        }
-        serde_json::from_slice::<Envelope<T>>(&payload)
-            .map(|v| v.data)
-            .map_err(|_| ClientError::Decode)
+        decode_envelope(self.raw_request(method, path, body, headers).await?).await
     }
 
     pub async fn system_status(&self) -> Result<SystemStatus, ClientError> {
@@ -342,13 +369,32 @@ impl Client {
             .await
     }
     pub async fn applications(&self) -> Result<Page<ApplicationView>, ClientError> {
-        self.send::<_, ()>(Method::GET, "/api/v1/applications", None, &[])
+        self.applications_with(&ListApplicationsOptions::default())
             .await
+    }
+    pub async fn applications_with(
+        &self,
+        options: &ListApplicationsOptions,
+    ) -> Result<Page<ApplicationView>, ClientError> {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        if let Some(cursor) = &options.cursor {
+            query.append_pair("cursor", cursor);
+        }
+        if let Some(limit) = options.limit {
+            query.append_pair("limit", &limit.to_string());
+        }
+        let query = query.finish();
+        let path = if query.is_empty() {
+            "/api/v1/applications".to_owned()
+        } else {
+            format!("/api/v1/applications?{query}")
+        };
+        self.send::<_, ()>(Method::GET, &path, None, &[]).await
     }
     pub async fn application(&self, id: &str) -> Result<ApplicationView, ClientError> {
         self.send::<_, ()>(
             Method::GET,
-            &format!("/api/v1/applications/{id}"),
+            &format!("/api/v1/applications/{}", path_segment(id)),
             None,
             &[],
         )
@@ -374,7 +420,7 @@ impl Client {
     ) -> Result<AcceptedOperation, ClientError> {
         self.send(
             Method::PUT,
-            &format!("/api/v1/applications/{id}"),
+            &format!("/api/v1/applications/{}", path_segment(id)),
             Some(request),
             &[],
         )
@@ -387,7 +433,7 @@ impl Client {
     ) -> Result<AcceptedOperation, ClientError> {
         self.send(
             Method::DELETE,
-            &format!("/api/v1/applications/{id}"),
+            &format!("/api/v1/applications/{}", path_segment(id)),
             Some(request),
             &[],
         )
@@ -412,7 +458,7 @@ impl Client {
     ) -> Result<PlanView, ClientError> {
         self.send(
             Method::POST,
-            &format!("/api/v1/applications/{id}/plan"),
+            &format!("/api/v1/applications/{}/plan", path_segment(id)),
             Some(request),
             &[],
         )
@@ -425,7 +471,7 @@ impl Client {
     ) -> Result<AcceptedOperation, ClientError> {
         self.send(
             Method::POST,
-            &format!("/api/v1/applications/{id}/reconcile"),
+            &format!("/api/v1/applications/{}/reconcile", path_segment(id)),
             Some(&ExpectedGeneration {
                 expected_generation,
             }),
@@ -436,26 +482,125 @@ impl Client {
     pub async fn application_status(&self, id: &str) -> Result<ApplicationStatusView, ClientError> {
         self.send::<_, ()>(
             Method::GET,
-            &format!("/api/v1/applications/{id}/status"),
+            &format!("/api/v1/applications/{}/status", path_segment(id)),
             None,
             &[],
         )
         .await
     }
     pub async fn operation(&self, id: &str) -> Result<OperationView, ClientError> {
-        self.send::<_, ()>(Method::GET, &format!("/api/v1/operations/{id}"), None, &[])
-            .await
+        self.send::<_, ()>(
+            Method::GET,
+            &format!("/api/v1/operations/{}", path_segment(id)),
+            None,
+            &[],
+        )
+        .await
+    }
+
+    pub async fn openapi(&self) -> Result<serde_json::Value, ClientError> {
+        let response = self
+            .raw_request::<()>(Method::GET, "/api/v1/openapi.json", None, &[])
+            .await?;
+        if !response.status().is_success() {
+            return Err(decode_api_error(response).await);
+        }
+        serde_json::from_slice(
+            &response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|_| ClientError::Transport)?
+                .to_bytes(),
+        )
+        .map_err(|_| ClientError::Decode)
+    }
+
+    pub async fn create_application_toml(
+        &self,
+        manifest: &str,
+        idempotency_key: &str,
+    ) -> Result<AcceptedOperation, ClientError> {
+        self.send_text(
+            Method::POST,
+            "/api/v1/applications",
+            manifest,
+            &[
+                ("content-type", "application/toml"),
+                ("idempotency-key", idempotency_key),
+            ],
+        )
+        .await
+    }
+
+    pub async fn replace_application_toml(
+        &self,
+        id: &str,
+        manifest: &str,
+        expected_generation: u64,
+    ) -> Result<AcceptedOperation, ClientError> {
+        let generation = expected_generation.to_string();
+        self.send_text(
+            Method::PUT,
+            &format!("/api/v1/applications/{}", path_segment(id)),
+            manifest,
+            &[
+                ("content-type", "application/toml"),
+                ("x-expected-generation", &generation),
+            ],
+        )
+        .await
+    }
+
+    pub async fn plan_create_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
+        self.send_text(
+            Method::POST,
+            "/api/v1/applications/plan",
+            manifest,
+            &[("content-type", "application/toml")],
+        )
+        .await
+    }
+
+    pub async fn plan_replace_toml(
+        &self,
+        id: &str,
+        manifest: &str,
+        expected_generation: u64,
+    ) -> Result<PlanView, ClientError> {
+        let generation = expected_generation.to_string();
+        self.send_text(
+            Method::POST,
+            &format!("/api/v1/applications/{}/plan", path_segment(id)),
+            manifest,
+            &[
+                ("content-type", "application/toml"),
+                ("x-expected-generation", &generation),
+            ],
+        )
+        .await
     }
 
     /// Watches operation progress. Dropping the receiver cancels socket reading and closes the connection.
+    #[must_use]
     pub fn watch_operation(
         &self,
         id: &str,
         last_event_id: Option<&str>,
     ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
+        self.watch_events(
+            format!("/api/v1/operations/{}/events", path_segment(id)),
+            last_event_id,
+        )
+    }
+
+    fn watch_events(
+        &self,
+        path: String,
+        last_event_id: Option<&str>,
+    ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
         let (tx, rx) = tokio::sync::mpsc::channel(32);
         let client = self.clone();
-        let path = format!("/api/v1/operations/{id}/events");
         let last = last_event_id.map(str::to_owned);
         tokio::spawn(async move {
             let mut headers = vec![("accept", "text/event-stream")];
@@ -468,21 +613,7 @@ impl Client {
             {
                 Ok(response) if response.status().is_success() => response,
                 Ok(response) => {
-                    let status = response.status();
-                    let payload = response
-                        .into_body()
-                        .collect()
-                        .await
-                        .ok()
-                        .map(http_body_util::Collected::to_bytes)
-                        .unwrap_or_default();
-                    let error = serde_json::from_slice(&payload).unwrap_or(ErrorBody {
-                        code: "invalid_error_response".into(),
-                        message: "server returned an unreadable error".into(),
-                        details: serde_json::Value::Null,
-                        request_id: String::new(),
-                    });
-                    let _ = tx.send(Err(ClientError::Api { status, error })).await;
+                    let _ = tx.send(Err(decode_api_error(response).await)).await;
                     return;
                 }
                 Err(error) => {
@@ -492,13 +623,21 @@ impl Client {
             };
             let mut body = response.into_body();
             let mut buffer = String::new();
-            while let Some(frame) = body.frame().await {
+            loop {
+                let frame = tokio::select! {
+                    () = tx.closed() => return,
+                    frame = body.frame() => frame,
+                };
+                let Some(frame) = frame else {
+                    return;
+                };
                 let Ok(frame) = frame else {
                     let _ = tx.send(Err(ClientError::Transport)).await;
                     return;
                 };
                 if let Ok(data) = frame.into_data() {
                     buffer.push_str(&String::from_utf8_lossy(&data));
+                    buffer = buffer.replace("\r\n", "\n");
                     while let Some(end) = buffer.find("\n\n") {
                         let block = buffer[..end].to_owned();
                         buffer.drain(..end + 2);
@@ -513,6 +652,76 @@ impl Client {
         });
         rx
     }
+
+    #[must_use]
+    pub fn watch_application(
+        &self,
+        id: &str,
+        last_event_id: Option<&str>,
+    ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
+        self.watch_events(
+            format!("/api/v1/applications/{}/events", path_segment(id)),
+            last_event_id,
+        )
+    }
+}
+
+async fn decode_envelope<T: DeserializeOwned>(
+    response: hyper::Response<hyper::body::Incoming>,
+) -> Result<T, ClientError> {
+    let status = response.status();
+    let payload = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|_| ClientError::Transport)?
+        .to_bytes();
+    if !status.is_success() {
+        return Err(ClientError::Api {
+            status,
+            error: error_body(&payload),
+        });
+    }
+    serde_json::from_slice::<Envelope<T>>(&payload)
+        .map(|value| value.data)
+        .map_err(|_| ClientError::Decode)
+}
+
+async fn decode_api_error(response: hyper::Response<hyper::body::Incoming>) -> ClientError {
+    let status = response.status();
+    let payload = response
+        .into_body()
+        .collect()
+        .await
+        .ok()
+        .map(http_body_util::Collected::to_bytes)
+        .unwrap_or_default();
+    ClientError::Api {
+        status,
+        error: error_body(&payload),
+    }
+}
+
+fn error_body(payload: &[u8]) -> ErrorBody {
+    serde_json::from_slice(payload).unwrap_or(ErrorBody {
+        code: "invalid_error_response".into(),
+        message: "server returned an unreadable error".into(),
+        details: serde_json::Value::Null,
+        request_id: String::new(),
+    })
+}
+
+fn path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 fn parse_sse(block: &str) -> Option<SseEvent> {

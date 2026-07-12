@@ -347,7 +347,7 @@ impl OperationRepository for SqliteStore {
     ) -> Result<u64, StoreError> {
         let limit = i64::from(limit);
         sqlx::query!(
-            "DELETE FROM operations WHERE id IN (SELECT id FROM operations WHERE finished_at_ms IS NOT NULL AND finished_at_ms < ?1 ORDER BY finished_at_ms,id LIMIT ?2)",
+            "DELETE FROM operations WHERE id IN (SELECT id FROM operations WHERE finished_at_ms IS NOT NULL AND finished_at_ms < ?1 AND NOT EXISTS (SELECT 1 FROM application_create_idempotency i WHERE i.operation_id=operations.id) ORDER BY finished_at_ms,id LIMIT ?2)",
             cutoff_ms,
             limit
         )

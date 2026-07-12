@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM operations WHERE id IN (SELECT id FROM operations WHERE finished_at_ms IS NOT NULL AND finished_at_ms < ?1 AND NOT EXISTS (SELECT 1 FROM application_create_idempotency i WHERE i.operation_id=operations.id) ORDER BY finished_at_ms,id LIMIT ?2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "b375c740830315d31b6d501a6537e38e932bb3f1128dff3daf20a93f9480dc0a"
+}
