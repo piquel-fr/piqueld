@@ -5,7 +5,7 @@ workspace foundation for the first single-node Docker Swarm prototype.
 
 ## Development
 
-Enter the reproducible shell with `nix develop`, or use a Rust 1.85-or-newer
+Enter the reproducible shell with `nix develop`, or use a Rust 1.97-or-newer
 toolchain directly. The standard verification commands are:
 
 ```console
