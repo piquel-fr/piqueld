@@ -11,9 +11,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
-repository = "https://github.com/piquel-dev/piqueld"
-rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/piquel-fr/piqueld"
+rust-version = "1.97"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
