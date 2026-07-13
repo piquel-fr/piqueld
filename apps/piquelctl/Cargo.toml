@@ -1,5 +1,6 @@
 [package]
 name = "piquelctl"
+default-run = "piquelctl"
 description = "Command-line client for piqueld"
 version.workspace = true
 edition.workspace = true
