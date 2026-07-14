@@ -8,6 +8,3 @@ and `piqueld-ui` depend on the client and core contracts. The `piqueld` daemon d
 on core directly; persistence, Docker, API, and other
 adapters remain internal daemon modules. Applications never become dependencies of
 libraries.
-
-Run `./scripts/check-dependency-boundaries.sh` after changing manifests. An
-equivalent metadata-based guard is part of the Nix flake checks.
