@@ -192,7 +192,10 @@ async fn scheduler_serializes_each_application_and_honors_global_bound() {
         store.replace(&app, None, 1, &[]).await.unwrap();
     }
     let handler = Arc::new(TrackingHandler {
-        delay_ms: 30,
+        // Keep the first handler alive long enough for a second SQLite claim on
+        // a heavily loaded CI runner; the assertion is about concurrency bounds,
+        // not sub-100 ms scheduling latency.
+        delay_ms: 250,
         ..Default::default()
     });
     OperationScheduler::new(store.clone(), handler.clone(), 2, 1)
