@@ -506,13 +506,14 @@ impl SqliteStore {
             .await
             .map_err(|_| StoreError::Database)?;
 
-        // SQLite does not expose PRAGMA assignment through bind parameters or a
-        // stable result declaration, so schema-version PRAGMAs are the only
-        // dynamically described statements in the store.
-        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        // SQLite does not expose PRAGMA assignment through bind parameters, so
+        // the schema-version assignment below is the only dynamically assembled
+        // statement in the store.
+        let version: i64 = sqlx::query_scalar!("PRAGMA user_version")
             .fetch_one(&pool)
             .await
-            .map_err(|_| StoreError::Database)?;
+            .map_err(|_| StoreError::Database)?
+            .ok_or(StoreError::Database)?;
         let version = u64::try_from(version).map_err(|_| StoreError::SchemaMismatch)?;
         if version > SCHEMA_VERSION {
             return Err(StoreError::SchemaMismatch);
