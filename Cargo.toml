@@ -16,10 +16,13 @@ repository = "https://github.com/piquel-fr/piqueld"
 rust-version = "1.97"
 
 [workspace.dependencies]
+# Internal
+piqueld-client = { version = "0.1.0", path = "crates/piqueld-client" }
+piqueld-core   = { version = "0.1.0", path = "crates/piqueld-core"   }
+
+# External
 anyhow = "1.0.98"
 libsql = { version = "0.9.24", default-features = false, features = ["core"] }
-piqueld-client = { path = "crates/piqueld-client", version = "0.1.0" }
-piqueld-core = { path = "crates/piqueld-core", version = "0.1.0" }
 serde = { version = "1.0.219", features = ["derive"] }
 sqlx = { version = "0.8.6", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }
 tempfile = "3.20.0"
