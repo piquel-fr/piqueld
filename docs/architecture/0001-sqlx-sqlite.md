@@ -22,10 +22,9 @@ against the migrated schema. Offline metadata under `.sqlx/` makes normal builds
 deterministic and prevents build-time access to an operator database. CI regenerates
 the schema in a disposable database and checks that metadata remains current.
 
-The schema-version PRAGMA assignment is the only dynamically assembled SQL because
-SQLite does not expose PRAGMA assignment through bind parameters. Its value comes
-only from the fixed, embedded migration index. All reads and repository queries are
-compile-time checked.
+SQLite does not expose PRAGMA assignment through bind parameters, so each supported
+schema-version assignment is an explicit SQLx macro invocation selected from the
+fixed, embedded migration index. Every production query is compile-time checked.
 
 ## Consequences
 

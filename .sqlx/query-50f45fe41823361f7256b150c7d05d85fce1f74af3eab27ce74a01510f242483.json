@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "PRAGMA user_version = 7",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "50f45fe41823361f7256b150c7d05d85fce1f74af3eab27ce74a01510f242483"
+}
