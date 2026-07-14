@@ -682,15 +682,16 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
         );
         if let Some(health) = &service.healthcheck {
             validate_health(health, &format!("{base}.healthcheck"), &mut errors);
-            if let HealthCheckInput::Http { port, .. } = health {
-                if !service.ports.is_empty() && !service.ports.contains(port) {
-                    error(
-                        &mut errors,
-                        "healthcheck_port_missing",
-                        &format!("{base}.healthcheck.port"),
-                        "health-check port is not declared by its service",
-                    );
-                }
+            if let HealthCheckInput::Http { port, .. } = health
+                && !service.ports.is_empty()
+                && !service.ports.contains(port)
+            {
+                error(
+                    &mut errors,
+                    "healthcheck_port_missing",
+                    &format!("{base}.healthcheck.port"),
+                    "health-check port is not declared by its service",
+                );
             }
         }
         if let Some(resources) = &service.resources {
@@ -743,15 +744,15 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
             .services
             .iter()
             .find(|service| service.name == route.service)
+            && !service.ports.is_empty()
+            && !service.ports.contains(&route.port)
         {
-            if !service.ports.is_empty() && !service.ports.contains(&route.port) {
-                error(
-                    &mut errors,
-                    "route_port_missing",
-                    &format!("{base}.port"),
-                    "route port is not declared by its service",
-                );
-            }
+            error(
+                &mut errors,
+                "route_port_missing",
+                &format!("{base}.port"),
+                "route port is not declared by its service",
+            );
         }
         if route.port == 0 {
             error(
@@ -1189,10 +1190,10 @@ fn valid_image_reference(value: &str) -> bool {
 
     let mut digest_parts = value.split('@');
     let name_and_tag = digest_parts.next().unwrap_or_default();
-    if let Some(digest) = digest_parts.next() {
-        if digest_parts.next().is_some() || !valid_image_digest(digest) {
-            return false;
-        }
+    if let Some(digest) = digest_parts.next()
+        && (digest_parts.next().is_some() || !valid_image_digest(digest))
+    {
+        return false;
     }
 
     let last_slash = name_and_tag.rfind('/');
