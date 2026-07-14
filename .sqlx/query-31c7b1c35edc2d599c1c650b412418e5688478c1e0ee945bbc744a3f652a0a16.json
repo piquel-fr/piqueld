@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE builds SET source_commit=?1,image_reference=?2,image_digest=?3,updated_at_ms=?4 WHERE id=?5 AND state='running' AND (source_commit IS NULL OR source_commit=?1) AND (image_reference IS NULL OR image_reference=?2) AND (image_digest IS NULL OR image_digest=?3) AND EXISTS (SELECT 1 FROM operations WHERE id=builds.operation_id AND state='running')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "31c7b1c35edc2d599c1c650b412418e5688478c1e0ee945bbc744a3f652a0a16"
+}

@@ -1,14 +1,17 @@
 #![allow(missing_docs)]
 
-use libsql::Builder;
 use piqueld::store::{
-    ApplicationRepository, ApplicationState, BuildRepository, LibsqlStore, OperationRepository,
+    ApplicationRepository, ApplicationState, BuildRepository, OperationRepository, SqliteStore,
     StatusRepository, StepState, StoreError, WorkState,
 };
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ResolutionSet, compile_application,
     parse_json,
     resource::{ResolvedApplication, ResolvedSource},
+};
+use sqlx::{
+    Connection, Executor,
+    sqlite::{SqliteConnectOptions, SqliteConnection},
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -52,15 +55,18 @@ fn resolved(app: &NormalizedApplication, instance_id: &str) -> ResolvedApplicati
 }
 
 async fn raw(path: &Path, sql: &str) {
-    let db = Builder::new_local(path).build().await.unwrap();
-    db.connect().unwrap().execute_batch(sql).await.unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true);
+    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+    connection.execute(sqlx::raw_sql(sql)).await.unwrap();
 }
 
 #[tokio::test]
 async fn fresh_migration_instance_and_roundtrip_are_stable() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     let first_instance = store.instance_id().to_owned();
     let app = application("application-0001", "notes", None);
     let resolved = resolved(&app, store.instance_id());
@@ -81,7 +87,7 @@ async fn fresh_migration_instance_and_roundtrip_are_stable() {
     );
     drop(store);
     assert_eq!(
-        LibsqlStore::open(path).await.unwrap().instance_id(),
+        SqliteStore::open(path).await.unwrap().instance_id(),
         first_instance
     );
 }
@@ -90,7 +96,7 @@ async fn fresh_migration_instance_and_roundtrip_are_stable() {
 async fn missing_secret_rejects_the_whole_create_without_partial_rows() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     let app = application("application-0002", "secret-app", Some("database-url"));
     assert_eq!(
         store
@@ -108,7 +114,7 @@ async fn missing_secret_rejects_the_whole_create_without_partial_rows() {
 async fn expected_generation_conflicts_and_delete_intent_are_atomic() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     let app = application("application-0003", "updates", None);
     store.create(&app, None, &["deploy".into()]).await.unwrap();
     store
@@ -144,7 +150,7 @@ async fn expected_generation_conflicts_and_delete_intent_are_atomic() {
 async fn concurrent_writers_have_one_winner_and_one_clean_conflict() {
     let directory = tempfile::tempdir().unwrap();
     let store = std::sync::Arc::new(
-        LibsqlStore::open(directory.path().join("state.db"))
+        SqliteStore::open(directory.path().join("state.db"))
             .await
             .unwrap(),
     );
@@ -187,7 +193,7 @@ async fn concurrent_writers_have_one_winner_and_one_clean_conflict() {
 async fn operation_insert_failure_rolls_back_delete_generation_and_status() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     let app = application("application-0004", "rollback", None);
     store.create(&app, None, &[]).await.unwrap();
     raw(&path, "CREATE TRIGGER reject_delete BEFORE INSERT ON operations WHEN NEW.kind='delete' BEGIN SELECT RAISE(ABORT, 'injected'); END;").await;
@@ -208,7 +214,7 @@ async fn operation_insert_failure_rolls_back_delete_generation_and_status() {
 async fn operation_insert_faults_roll_back_create_and_replacement() {
     let directory = tempfile::tempdir().unwrap();
     let create_path = directory.path().join("create.db");
-    let create_store = LibsqlStore::open(&create_path).await.unwrap();
+    let create_store = SqliteStore::open(&create_path).await.unwrap();
     raw(&create_path, "CREATE TRIGGER reject_create BEFORE INSERT ON operations WHEN NEW.kind='create' BEGIN SELECT RAISE(ABORT, 'injected'); END;").await;
     let create_app = application("application-0008", "create-fault", None);
     assert_eq!(
@@ -224,7 +230,7 @@ async fn operation_insert_faults_roll_back_create_and_replacement() {
     );
 
     let replace_path = directory.path().join("replace.db");
-    let replace_store = LibsqlStore::open(&replace_path).await.unwrap();
+    let replace_store = SqliteStore::open(&replace_path).await.unwrap();
     let replace_app = application("application-0009", "replace-fault", None);
     let replacement_resolved = resolved(&replace_app, replace_store.instance_id());
     replace_store.create(&replace_app, None, &[]).await.unwrap();
@@ -244,7 +250,7 @@ async fn operation_insert_faults_roll_back_create_and_replacement() {
 #[tokio::test]
 async fn step_status_and_build_state_machines_reject_illegal_transitions_and_prune() {
     let directory = tempfile::tempdir().unwrap();
-    let store = LibsqlStore::open(directory.path().join("state.db"))
+    let store = SqliteStore::open(directory.path().join("state.db"))
         .await
         .unwrap();
     let app = application("application-0010", "states", None);
@@ -315,7 +321,7 @@ async fn step_status_and_build_state_machines_reject_illegal_transitions_and_pru
 #[tokio::test]
 async fn steps_are_claimed_in_order_and_only_one_can_run() {
     let directory = tempfile::tempdir().unwrap();
-    let store = LibsqlStore::open(directory.path().join("ordered-steps.db"))
+    let store = SqliteStore::open(directory.path().join("ordered-steps.db"))
         .await
         .unwrap();
     let app = application("application-0021", "ordered-steps", None);
@@ -366,7 +372,7 @@ async fn steps_are_claimed_in_order_and_only_one_can_run() {
 async fn terminal_operation_atomically_cancels_unfinished_children() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("terminal-tree.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     let app = application("application-0022", "terminal-tree", None);
     let mutation = store
         .create(&app, None, &["first".into(), "second".into()])
@@ -442,7 +448,7 @@ async fn terminal_operation_atomically_cancels_unfinished_children() {
 #[tokio::test]
 async fn application_status_transitions_are_guarded_and_bounded() {
     let directory = tempfile::tempdir().unwrap();
-    let store = LibsqlStore::open(directory.path().join("status.db"))
+    let store = SqliteStore::open(directory.path().join("status.db"))
         .await
         .unwrap();
     let app = application("application-0020", "status", None);
@@ -546,7 +552,7 @@ async fn application_status_transitions_are_guarded_and_bounded() {
 #[tokio::test]
 async fn build_outputs_are_durable_and_required_before_success() {
     let directory = tempfile::tempdir().unwrap();
-    let store = LibsqlStore::open(directory.path().join("build.db"))
+    let store = SqliteStore::open(directory.path().join("build.db"))
         .await
         .unwrap();
     let app = application("application-0018", "build-output", None);
@@ -646,7 +652,7 @@ async fn build_outputs_are_durable_and_required_before_success() {
 async fn interrupted_running_work_becomes_recovery_on_restart() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     let app = application("application-0005", "recovery", None);
     let mutation = store.create(&app, None, &["resolve".into()]).await.unwrap();
     store
@@ -676,7 +682,7 @@ async fn interrupted_running_work_becomes_recovery_on_restart() {
         .await
         .unwrap();
     drop(store);
-    let reopened = LibsqlStore::open(path).await.unwrap();
+    let reopened = SqliteStore::open(path).await.unwrap();
     assert_eq!(reopened.recover_interrupted().await.unwrap(), 3);
     assert_eq!(
         reopened
@@ -704,7 +710,7 @@ async fn interrupted_running_work_becomes_recovery_on_restart() {
 async fn returning_an_operation_to_recovery_atomically_recovers_running_children() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("recovery-children.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     let app = application("application-0019", "recover-children", None);
     let mutation = store.create(&app, None, &["resolve".into()]).await.unwrap();
     store
@@ -772,12 +778,12 @@ async fn newer_schema_and_corrupt_canonical_state_are_rejected_safely() {
     let newer = directory.path().join("newer.db");
     raw(&newer, "PRAGMA user_version = 99;").await;
     assert!(matches!(
-        LibsqlStore::open(newer).await,
+        SqliteStore::open(newer).await,
         Err(StoreError::SchemaMismatch)
     ));
 
     let path = directory.path().join("corrupt.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     let app = application("application-0006", "corrupt", None);
     store.create(&app, None, &[]).await.unwrap();
     raw(
@@ -795,7 +801,7 @@ async fn newer_schema_and_corrupt_canonical_state_are_rejected_safely() {
 async fn user_and_metadata_schema_versions_must_agree_before_upgrade() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("mismatched-version.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     drop(store);
     raw(
         &path,
@@ -803,7 +809,7 @@ async fn user_and_metadata_schema_versions_must_agree_before_upgrade() {
     )
     .await;
     assert!(matches!(
-        LibsqlStore::open(path).await,
+        SqliteStore::open(path).await,
         Err(StoreError::SchemaMismatch)
     ));
 }
@@ -812,7 +818,7 @@ async fn user_and_metadata_schema_versions_must_agree_before_upgrade() {
 async fn resolved_state_is_bound_to_desired_hash_instance_and_canonical_compilation() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("resolved.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     let app = application("application-0011", "resolved", None);
     let wrong_instance = resolved(&app, "instance-wrong");
     assert_eq!(
@@ -840,7 +846,7 @@ async fn resolved_state_is_bound_to_desired_hash_instance_and_canonical_compilat
 #[tokio::test]
 async fn build_application_mismatches_are_rejected_before_persistence() {
     let directory = tempfile::tempdir().unwrap();
-    let store = LibsqlStore::open(directory.path().join("foreign-keys.db"))
+    let store = SqliteStore::open(directory.path().join("foreign-keys.db"))
         .await
         .unwrap();
     let first = application("application-0012", "first", None);
@@ -859,7 +865,7 @@ async fn build_application_mismatches_are_rejected_before_persistence() {
 #[tokio::test]
 async fn delete_intent_cannot_be_repeated_or_silently_replaced() {
     let directory = tempfile::tempdir().unwrap();
-    let store = LibsqlStore::open(directory.path().join("delete-state.db"))
+    let store = SqliteStore::open(directory.path().join("delete-state.db"))
         .await
         .unwrap();
     let app = application("application-0014", "delete-state", None);
@@ -902,7 +908,7 @@ async fn delete_intent_cannot_be_repeated_or_silently_replaced() {
 #[tokio::test]
 async fn transition_missing_rows_are_distinct_from_illegal_transitions() {
     let directory = tempfile::tempdir().unwrap();
-    let store = LibsqlStore::open(directory.path().join("missing.db"))
+    let store = SqliteStore::open(directory.path().join("missing.db"))
         .await
         .unwrap();
     assert_eq!(
@@ -924,7 +930,7 @@ async fn missing_status_rows_roll_back_replace_and_delete_mutations() {
     let directory = tempfile::tempdir().unwrap();
     for delete in [false, true] {
         let path = directory.path().join(format!("missing-status-{delete}.db"));
-        let store = LibsqlStore::open(&path).await.unwrap();
+        let store = SqliteStore::open(&path).await.unwrap();
         let app = application(
             if delete {
                 "application-0016"
@@ -963,7 +969,7 @@ async fn missing_status_rows_roll_back_replace_and_delete_mutations() {
 async fn database_identity_columns_and_instance_id_are_revalidated() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("identity.db");
-    let store = LibsqlStore::open(&path).await.unwrap();
+    let store = SqliteStore::open(&path).await.unwrap();
     let app = application("application-0017", "identity", None);
     store.create(&app, None, &[]).await.unwrap();
     raw(
@@ -982,7 +988,7 @@ async fn database_identity_columns_and_instance_id_are_revalidated() {
     )
     .await;
     assert!(matches!(
-        LibsqlStore::open(path).await,
+        SqliteStore::open(path).await,
         Err(StoreError::Corrupt)
     ));
 }
@@ -1006,21 +1012,27 @@ async fn sanitized_errors_never_echo_database_or_secret_canaries() {
 async fn forward_upgrade_from_version_one_updates_metadata() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("v1.db");
-    let db = Builder::new_local(&path).build().await.unwrap();
-    let connection = db.connect().unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true);
+    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
     connection
-        .execute_batch(include_str!("../../../migrations/0001_control_plane.sql"))
+        .execute(sqlx::raw_sql(include_str!(
+            "../../../migrations/0001_control_plane.sql"
+        )))
         .await
         .unwrap();
-    connection.execute("INSERT INTO instance_metadata(singleton,instance_id,schema_version,created_at_ms) VALUES(1,'instance-old',1,1)", ()).await.unwrap();
     connection
-        .execute_batch("PRAGMA user_version = 1;")
+        .execute(sqlx::query("INSERT INTO instance_metadata(singleton,instance_id,schema_version,created_at_ms) VALUES(1,'instance-old',1,1)"))
+        .await
+        .unwrap();
+    connection
+        .execute(sqlx::query("PRAGMA user_version = 1;"))
         .await
         .unwrap();
     drop(connection);
-    drop(db);
     assert_eq!(
-        LibsqlStore::open(path).await.unwrap().instance_id(),
+        SqliteStore::open(path).await.unwrap().instance_id(),
         "instance-old"
     );
 }

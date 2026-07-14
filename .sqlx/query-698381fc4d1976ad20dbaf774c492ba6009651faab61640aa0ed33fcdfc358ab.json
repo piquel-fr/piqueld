@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE operations SET state=?1,error_code=?2,error_message=?3,updated_at_ms=?4,started_at_ms=COALESCE(started_at_ms,?5),finished_at_ms=?6 WHERE id=?7 AND state=?8 AND (?1 != 'running' OR NOT EXISTS (SELECT 1 FROM operations active WHERE active.application_id=(SELECT target.application_id FROM operations target WHERE target.id=?7) AND active.state='running' AND active.id != ?7)) AND (?1 NOT IN ('failed','cancelled') OR (NOT EXISTS (SELECT 1 FROM operation_steps WHERE operation_id=?7 AND state='running') AND NOT EXISTS (SELECT 1 FROM builds WHERE operation_id=?7 AND state='running'))) AND (?1 != 'succeeded' OR (NOT EXISTS (SELECT 1 FROM operation_steps WHERE operation_id=?7 AND state NOT IN ('succeeded','skipped')) AND NOT EXISTS (SELECT 1 FROM builds WHERE operation_id=?7 AND state != 'succeeded')))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "698381fc4d1976ad20dbaf774c492ba6009651faab61640aa0ed33fcdfc358ab"
+}

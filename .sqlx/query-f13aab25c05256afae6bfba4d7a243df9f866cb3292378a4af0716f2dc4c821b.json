@@ -1,20 +1,20 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id,name,desired_json,resolved_json,generation,spec_hash,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id=?1",
+  "query": "SELECT id AS \"id!\",name AS \"name!\",desired_json AS \"desired_json!\",resolved_json,generation AS \"generation!\",spec_hash AS \"spec_hash!\",delete_intent AS \"delete_intent!\",created_at_ms AS \"created_at_ms!\",updated_at_ms AS \"updated_at_ms!\" FROM applications ORDER BY name,id",
   "describe": {
     "columns": [
       {
-        "name": "id",
+        "name": "id!",
         "ordinal": 0,
         "type_info": "Text"
       },
       {
-        "name": "name",
+        "name": "name!",
         "ordinal": 1,
         "type_info": "Text"
       },
       {
-        "name": "desired_json",
+        "name": "desired_json!",
         "ordinal": 2,
         "type_info": "Text"
       },
@@ -24,33 +24,33 @@
         "type_info": "Text"
       },
       {
-        "name": "generation",
+        "name": "generation!",
         "ordinal": 4,
         "type_info": "Integer"
       },
       {
-        "name": "spec_hash",
+        "name": "spec_hash!",
         "ordinal": 5,
         "type_info": "Text"
       },
       {
-        "name": "delete_intent",
+        "name": "delete_intent!",
         "ordinal": 6,
         "type_info": "Integer"
       },
       {
-        "name": "created_at_ms",
+        "name": "created_at_ms!",
         "ordinal": 7,
         "type_info": "Integer"
       },
       {
-        "name": "updated_at_ms",
+        "name": "updated_at_ms!",
         "ordinal": 8,
         "type_info": "Integer"
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 0
     },
     "nullable": [
       true,
@@ -64,5 +64,5 @@
       false
     ]
   },
-  "hash": "8a1337141136ed810f698edf3931387f38b9b59f398b7e7c5ae1223574697b1f"
+  "hash": "f13aab25c05256afae6bfba4d7a243df9f866cb3292378a4af0716f2dc4c821b"
 }

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT instance_id,schema_version FROM instance_metadata WHERE singleton=1",
+  "describe": {
+    "columns": [
+      {
+        "name": "instance_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "schema_version",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "6e85ec4ad486103c7a63b337ea16ecabe866157cce41db183ddb10c9dd9e9cd0"
+}

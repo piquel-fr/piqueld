@@ -1,15 +1,18 @@
 #![allow(missing_docs)]
 
 use async_trait::async_trait;
-use libsql::{Builder, params};
 use piqueld::{
     operations::{OperationHandler, OperationScheduler},
     store::{
-        ApplicationRepository, LibsqlStore, Operation, OperationKind, OperationRepository,
+        ApplicationRepository, Operation, OperationKind, OperationRepository, SqliteStore,
         WorkState,
     },
 };
 use piqueld_core::{ApplicationId, NormalizedApplication, parse_json};
+use sqlx::{
+    Connection,
+    sqlite::{SqliteConnectOptions, SqliteConnection},
+};
 use std::{
     collections::HashMap,
     sync::{
@@ -46,7 +49,7 @@ impl OperationHandler for ClaimedStateHandler {
 async fn handlers_receive_the_durably_claimed_operation() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        LibsqlStore::open(directory.path().join("claimed-state.db"))
+        SqliteStore::open(directory.path().join("claimed-state.db"))
             .await
             .unwrap(),
     );
@@ -122,7 +125,7 @@ impl OperationHandler for TrackingHandler {
 async fn scheduler_honors_the_separate_build_bound() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.db");
-    let store = Arc::new(LibsqlStore::open(&path).await.unwrap());
+    let store = Arc::new(SqliteStore::open(&path).await.unwrap());
     let mut applications = Vec::new();
     for (id, name) in [
         ("scheduler-app-04", "build-one"),
@@ -150,13 +153,20 @@ async fn scheduler_honors_the_separate_build_bound() {
             .unwrap();
         applications.push(app);
     }
-    let db = Builder::new_local(&path).build().await.unwrap();
-    let connection = db.connect().unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(&path)
+        .create_if_missing(true);
+    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
     for (index, app) in applications.iter().enumerate() {
-        connection.execute("INSERT INTO operations(id,application_id,generation,kind,state,created_at_ms,updated_at_ms) VALUES(?1,?2,1,'build','pending',1,1)", params![format!("build-operation-{index}"), app.id.as_str()]).await.unwrap();
+        let operation_id = format!("build-operation-{index}");
+        sqlx::query("INSERT INTO operations(id,application_id,generation,kind,state,created_at_ms,updated_at_ms) VALUES(?1,?2,1,'build','pending',1,1)")
+            .bind(operation_id)
+            .bind(app.id.as_str())
+            .execute(&mut connection)
+            .await
+            .unwrap();
     }
     drop(connection);
-    drop(db);
     let handler = Arc::new(TrackingHandler {
         delay_ms: 25,
         ..Default::default()
@@ -172,7 +182,7 @@ async fn scheduler_honors_the_separate_build_bound() {
 async fn scheduler_serializes_each_application_and_honors_global_bound() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        LibsqlStore::open(directory.path().join("state.db"))
+        SqliteStore::open(directory.path().join("state.db"))
             .await
             .unwrap(),
     );
@@ -226,7 +236,7 @@ impl OperationHandler for BlockingHandler {
 async fn cancellation_returns_running_work_to_durable_recovery() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        LibsqlStore::open(directory.path().join("state.db"))
+        SqliteStore::open(directory.path().join("state.db"))
             .await
             .unwrap(),
     );
@@ -254,7 +264,7 @@ async fn cancellation_returns_running_work_to_durable_recovery() {
 async fn concurrent_dispatchers_claim_each_durable_operation_once() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        LibsqlStore::open(directory.path().join("claim.db"))
+        SqliteStore::open(directory.path().join("claim.db"))
             .await
             .unwrap(),
     );

@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use piqueld::config::DaemonConfig;
-use piqueld::store::{LibsqlStore, OperationRepository};
+use piqueld::store::{OperationRepository, SqliteStore};
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
         )
     })?;
     piqueld::config::init_tracing().context("failed to initialize tracing")?;
-    let store = LibsqlStore::open(&config.database.path)
+    let store = SqliteStore::open(&config.database.path)
         .await
         .context("failed to open control-plane state")?;
     store
