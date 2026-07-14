@@ -29,8 +29,8 @@
               pkgs.pkg-config
               pkgs.rustPlatform.bindgenHook
             ];
-            # Compile the foundation SQLx query macro against a disposable,
-            # schema-free database. Real migration metadata arrives in Plan 04.
+            # Compile the foundation SQLx SQLite query macros against a
+            # disposable database. Real migration metadata arrives in Plan 04.
             DATABASE_URL = "sqlite::memory:";
             doCheck = true;
           };
@@ -78,7 +78,7 @@
                   | jq -e '.packages[] | select(.name == "piqueld-core")
                     | any(.dependencies[];
                         .name == "axum" or .name == "bollard" or .name == "leptos"
-                        or .name == "libsql" or .name == "sqlx")'; then
+                        or .name == "sqlx")'; then
                   echo "piqueld-core has a forbidden dependency" >&2
                   exit 1
                 fi

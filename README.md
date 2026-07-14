@@ -21,4 +21,4 @@ nix flake check
 The daemon reads `/etc/piqueld/config.toml` by default; set `PIQUELD_CONFIG` to an
 alternative read-only host configuration. Application intent does not belong in
 this file. See `docs/architecture/dependency-flow.md` for crate boundaries and
-`docs/architecture/0001-libsql-and-sqlx.md` for database ownership.
+`docs/architecture/0001-sqlx-sqlite.md` for database ownership.

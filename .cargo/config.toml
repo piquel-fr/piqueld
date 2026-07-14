@@ -1,5 +1,5 @@
 [env]
-# Gives SQLx's compile-time query spike a disposable schema-free database. Plan 04
-# will replace this foundation evidence with checked-in offline metadata generated
-# from the real migrations.
+# Gives the integrated SQLx SQLite query spike a disposable schema-free database.
+# Plan 04 will replace this foundation evidence with checked-in offline metadata
+# generated from the real migrations.
 DATABASE_URL = { value = "sqlite::memory:", force = true }
