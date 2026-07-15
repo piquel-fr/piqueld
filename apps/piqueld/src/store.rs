@@ -577,45 +577,13 @@ impl SqliteStore {
         tx: &mut Transaction<'_, Sqlite>,
         version: usize,
     ) -> Result<(), StoreError> {
-        let result = match version {
-            1 => {
-                sqlx::query!("PRAGMA user_version = 1")
-                    .execute(&mut **tx)
-                    .await
-            }
-            2 => {
-                sqlx::query!("PRAGMA user_version = 2")
-                    .execute(&mut **tx)
-                    .await
-            }
-            3 => {
-                sqlx::query!("PRAGMA user_version = 3")
-                    .execute(&mut **tx)
-                    .await
-            }
-            4 => {
-                sqlx::query!("PRAGMA user_version = 4")
-                    .execute(&mut **tx)
-                    .await
-            }
-            5 => {
-                sqlx::query!("PRAGMA user_version = 5")
-                    .execute(&mut **tx)
-                    .await
-            }
-            6 => {
-                sqlx::query!("PRAGMA user_version = 6")
-                    .execute(&mut **tx)
-                    .await
-            }
-            7 => {
-                sqlx::query!("PRAGMA user_version = 7")
-                    .execute(&mut **tx)
-                    .await
-            }
-            _ => return Err(StoreError::SchemaMismatch),
-        };
-        result.map(|_| ()).map_err(|_| StoreError::Database)
+        let statement = format!("PRAGMA user_version = {version}");
+        // sqlc cant construct queries for this statement with bindings.
+        sqlx::query(&statement)
+            .execute(&mut **tx)
+            .await
+            .map(|_| ())
+            .map_err(|_| StoreError::Database)
     }
 
     /// Stable identity of this control-plane database.
