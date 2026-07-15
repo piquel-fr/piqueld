@@ -18,9 +18,10 @@ execution.
 
 Production repository statements use `query!`, `query_as!`, or `query_scalar!`
 so SQL syntax, bind counts, result columns, types, and nullability are checked
-against the migrated schema. Offline metadata under `.sqlx/` makes normal builds
-deterministic and prevents build-time access to an operator database. CI regenerates
-the schema in a disposable database and checks that metadata remains current.
+against the migrated schema. The `piqueld` build provisions a fresh SQLite database
+under Cargo's build output directory, applies every migration, and directs the SQLx
+macros to that database. Builds therefore validate the current migrations directly
+and never connect to an operator database or rely on checked-in query metadata.
 
 SQLite does not expose PRAGMA assignment through bind parameters, so each supported
 schema-version assignment is an explicit SQLx macro invocation selected from the
@@ -32,5 +33,6 @@ fixed, embedded migration index. Every production query is compile-time checked.
 - Production and checked queries are the same Rust macro invocations.
 - `BEGIN IMMEDIATE` preserves the existing write-serialization and compare-and-swap
   behavior.
-- Checked-in SQLx metadata must be refreshed whenever migrations or queries change.
+- Building the daemon provisions a disposable migrated SQLite database before its
+  SQLx query macros are compiled.
 - No second SQLite-family driver is linked or allowed to write the database.

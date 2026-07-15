@@ -1,4 +1,0 @@
-[env]
-# Production query macros compile exclusively from checked-in `.sqlx` metadata.
-# Runtime connections still use SQLx's integrated SQLite driver.
-SQLX_OFFLINE = { value = "true" }

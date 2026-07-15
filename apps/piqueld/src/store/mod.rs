@@ -30,11 +30,13 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const MIGRATIONS: &[&str] = &[
-    include_str!("../../../../migrations/0001_control_plane.sql"),
-    include_str!("../../../../migrations/0002_retention_indexes.sql"),
-    include_str!("../../../../migrations/0003_api_idempotency.sql"),
-];
+macro_rules! include_migrations {
+    () => {
+        include!(concat!(env!("OUT_DIR"), "/migrations.rs"))
+    };
+}
+
+const MIGRATIONS: &[&str] = include_migrations!();
 /// Latest schema understood by this binary.
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 
@@ -615,45 +617,13 @@ impl SqliteStore {
         tx: &mut Transaction<'_, Sqlite>,
         version: usize,
     ) -> Result<(), StoreError> {
-        let result = match version {
-            1 => {
-                sqlx::query!("PRAGMA user_version = 1")
-                    .execute(&mut **tx)
-                    .await
-            }
-            2 => {
-                sqlx::query!("PRAGMA user_version = 2")
-                    .execute(&mut **tx)
-                    .await
-            }
-            3 => {
-                sqlx::query!("PRAGMA user_version = 3")
-                    .execute(&mut **tx)
-                    .await
-            }
-            4 => {
-                sqlx::query!("PRAGMA user_version = 4")
-                    .execute(&mut **tx)
-                    .await
-            }
-            5 => {
-                sqlx::query!("PRAGMA user_version = 5")
-                    .execute(&mut **tx)
-                    .await
-            }
-            6 => {
-                sqlx::query!("PRAGMA user_version = 6")
-                    .execute(&mut **tx)
-                    .await
-            }
-            7 => {
-                sqlx::query!("PRAGMA user_version = 7")
-                    .execute(&mut **tx)
-                    .await
-            }
-            _ => return Err(StoreError::SchemaMismatch),
-        };
-        result.map(|_| ()).map_err(|_| StoreError::Database)
+        let statement = format!("PRAGMA user_version = {version}");
+        // sqlc cant construct queries for this statement with bindings.
+        sqlx::query(&statement)
+            .execute(&mut **tx)
+            .await
+            .map(|_| ())
+            .map_err(|_| StoreError::Database)
     }
 
     /// Stable identity of this control-plane database.
@@ -724,11 +694,11 @@ impl SqliteStore {
                 missing.push(name);
             }
         }
-        missing.sort();
-        missing.dedup();
         if missing.is_empty() {
             Ok(())
         } else {
+            missing.sort();
+            missing.dedup();
             Err(StoreError::MissingSecrets(missing))
         }
     }
@@ -949,32 +919,31 @@ struct ApplicationRow {
     updated_at_ms: i64,
 }
 
-fn decode_stored_application(
-    row: ApplicationRow,
-    instance_id: &str,
-) -> Result<StoredApplication, StoreError> {
-    let application = decode_application(&row.desired_json, &row.spec_hash)?;
-    if application.id.as_str() != row.id || application.metadata.name.as_str() != row.name {
-        return Err(StoreError::Corrupt);
-    }
-    let resolved: Option<ResolvedApplication> = row
-        .resolved_json
-        .map(|json| {
-            let decoded = serde_json::from_str(&json).map_err(|_| StoreError::Corrupt)?;
-            validate_resolved(&application, &decoded, instance_id)?;
-            if serde_json::to_string(&decoded).map_err(|_| StoreError::Corrupt)? != json {
-                return Err(StoreError::Corrupt);
-            }
-            Ok(decoded)
+impl ApplicationRow {
+    fn decode(self, instance_id: &str) -> Result<StoredApplication, StoreError> {
+        let application = decode_application(&self.desired_json, &self.spec_hash)?;
+        if application.id.as_str() != self.id || application.metadata.name.as_str() != self.name {
+            return Err(StoreError::Corrupt);
+        }
+        let resolved: Option<ResolvedApplication> = self
+            .resolved_json
+            .map(|json| {
+                let decoded = serde_json::from_str(&json).map_err(|_| StoreError::Corrupt)?;
+                validate_resolved(&application, &decoded, instance_id)?;
+                if serde_json::to_string(&decoded).map_err(|_| StoreError::Corrupt)? != json {
+                    return Err(StoreError::Corrupt);
+                }
+                Ok(decoded)
+            })
+            .transpose()?;
+        Ok(StoredApplication {
+            application,
+            resolved,
+            generation: u64::try_from(self.generation).map_err(|_| StoreError::Corrupt)?,
+            spec_hash: self.spec_hash,
+            delete_intent: self.delete_intent == 1,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
         })
-        .transpose()?;
-    Ok(StoredApplication {
-        application,
-        resolved,
-        generation: u64::try_from(row.generation).map_err(|_| StoreError::Corrupt)?,
-        spec_hash: row.spec_hash,
-        delete_intent: row.delete_intent == 1,
-        created_at_ms: row.created_at_ms,
-        updated_at_ms: row.updated_at_ms,
-    })
+    }
 }
