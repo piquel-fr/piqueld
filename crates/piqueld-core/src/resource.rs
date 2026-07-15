@@ -287,6 +287,7 @@ pub fn compile_application(
     ingress_network: impl Into<String>,
     resolutions: &ResolutionSet,
 ) -> Result<DesiredApplication, Vec<CompileError>> {
+    // make sure there are no resolution requirements before compiling
     let requirements = preview_resolution(app, resolutions);
     if !requirements.is_empty() {
         let mut errors = requirements
@@ -309,13 +310,10 @@ pub fn compile_application(
         errors.dedup_by(|left, right| left.code == right.code && left.resource == right.resource);
         return Err(errors);
     }
-    let mut invalid = Vec::new();
-    let referenced_secrets = app
-        .spec
-        .services
-        .iter()
-        .flat_map(|service| service.secrets.iter().map(|secret| secret.source.as_str()))
-        .collect::<std::collections::BTreeSet<_>>();
+
+    let mut invalid: Vec<CompileError> = Vec::new();
+
+    // make sure the resoleved sources & the service's sources actually match
     for service in &app.spec.services {
         let resolved = &resolutions.sources[&service.name];
         let matches_intent = match (&service.source, resolved) {
@@ -367,6 +365,14 @@ pub fn compile_application(
             });
         }
     }
+
+    // resolved secrets don't match the referenced secrets
+    let referenced_secrets = app
+        .spec
+        .services
+        .iter()
+        .flat_map(|service| service.secrets.iter().map(|secret| secret.source.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
     for (logical_name, secret) in resolutions
         .secrets
         .iter()
@@ -386,9 +392,13 @@ pub fn compile_application(
             });
         }
     }
+
+    // validation is finished, return if any errors occured
     if !invalid.is_empty() {
         return Err(invalid);
     }
+
+    // actually compile the application
     let spec_hash = app.spec_hash();
     let base = Ownership {
         instance_id: instance_id.clone(),
@@ -396,6 +406,8 @@ pub fn compile_application(
         service: None,
         spec_hash: spec_hash.clone(),
     };
+
+    // network stuff
     let private_name = docker_resource_name(&app.id, ResourceKind::Network, None);
     let ingress_network = ingress_network.into();
     let networks = vec![
@@ -413,6 +425,7 @@ pub fn compile_application(
             labels: base.labels(),
         },
     ];
+
     let volumes = app
         .spec
         .volumes
@@ -423,6 +436,7 @@ pub fn compile_application(
             labels: base.labels(),
         })
         .collect::<Vec<_>>();
+
     let mut secrets = resolutions
         .secrets
         .values()
@@ -439,6 +453,7 @@ pub fn compile_application(
             labels: base.labels(),
         })
         .collect();
+
     let services = app
         .spec
         .services
@@ -494,6 +509,7 @@ pub fn compile_application(
             }
         })
         .collect();
+
     Ok(DesiredApplication {
         id: app.id.clone(),
         name: app.metadata.name.clone(),

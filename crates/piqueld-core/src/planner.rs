@@ -20,6 +20,8 @@ pub enum PlanRequest {
         application_id: crate::ApplicationId,
         instance_id: InstanceId,
     },
+    /// Will create a Plan with actions to resolve the resolution requirements
+    /// and optionally reconcile with a desired application afterwards.
     Preview {
         unresolved: Vec<ResolutionRequirement>,
         desired: Option<DesiredApplication>,
@@ -218,7 +220,7 @@ pub fn plan(request: &PlanRequest, observed: &ObservedApplication) -> Plan {
             let mut plan = desired
                 .as_ref()
                 .map_or_else(Plan::default, |d| reconcile(d, observed));
-            let mut prefix = Vec::new();
+            let mut prefix: Vec<PlanAction> = Vec::new();
             for requirement in unresolved {
                 let kind = match requirement {
                     ResolutionRequirement::ResolveImage { service, reference } => {
