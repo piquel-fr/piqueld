@@ -8,7 +8,9 @@ pub mod identity;
 pub mod manifest;
 
 pub use error::{ErrorCode, PublicError};
-pub use identity::{ApplicationId, ResourceKind, docker_resource_name, router_name};
+pub use identity::{
+    ApplicationId, ApplicationIdError, ResourceKind, docker_resource_name, router_name,
+};
 pub use manifest::{
     APPLICATION_API_VERSION, APPLICATION_KIND, NormalizedApplication, ValidatedApplication,
     ValidationError, ValidationErrors, parse_json, parse_toml,

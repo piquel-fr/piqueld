@@ -9,6 +9,12 @@ use schemars::{
 use serde::{Deserialize, Deserializer, Serialize, de};
 use sha2::{Digest, Sha256};
 use std::{fmt, str::FromStr};
+use thiserror::Error;
+
+/// An error returned when an application identifier violates its storage invariant.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("application IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens")]
+pub struct ApplicationIdError;
 
 /// Stable internal application identity. It is assigned by persistence and is not
 /// derived from editable application metadata.
@@ -40,7 +46,7 @@ impl ApplicationId {
     ///
     /// # Errors
     /// Returns an error when the identifier is outside its safe alphabet or length.
-    pub fn parse(value: impl Into<String>) -> Result<Self, &'static str> {
+    pub fn parse(value: impl Into<String>) -> Result<Self, ApplicationIdError> {
         let value = value.into();
         if (8..=64).contains(&value.len())
             && value
@@ -57,7 +63,7 @@ impl ApplicationId {
         {
             Ok(Self(value))
         } else {
-            Err("application IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens")
+            Err(ApplicationIdError)
         }
     }
 
@@ -85,7 +91,7 @@ impl fmt::Display for ApplicationId {
 }
 
 impl FromStr for ApplicationId {
-    type Err = &'static str;
+    type Err = ApplicationIdError;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::parse(value)
     }
@@ -196,5 +202,13 @@ mod tests {
         assert!(serde_json::from_str::<ApplicationId>(r#""01jz8r7b4w-test""#).is_ok());
         assert!(serde_json::from_str::<ApplicationId>(r#""--------""#).is_err());
         assert!(serde_json::from_str::<ApplicationId>(r#""UPPERCASE""#).is_err());
+    }
+
+    #[test]
+    fn parsing_returns_a_typed_error() {
+        assert_eq!(
+            ApplicationId::parse("UPPERCASE").unwrap_err(),
+            ApplicationIdError
+        );
     }
 }
