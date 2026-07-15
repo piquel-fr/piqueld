@@ -19,6 +19,6 @@ pub use manifest::{
 };
 pub use planner::{Plan, PlanAction, PlanDiagnostic, PlanRequest, plan};
 pub use resource::{
-    CompileError, DesiredApplication, InstanceId, ObservedApplication, ResolutionSet,
-    compile_application, preview_resolution,
+    CompileError, DesiredApplication, InstanceId, InstanceIdError, ObservedApplication,
+    ResolutionSet, Sha256Digest, Sha256DigestError, compile_application, preview_resolution,
 };
