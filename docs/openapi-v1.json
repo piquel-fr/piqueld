@@ -1,0 +1,3480 @@
+{
+  "components": {
+    "schemas": {
+      "AcceptedOperation": {
+        "properties": {
+          "application_id": {
+            "type": "string"
+          },
+          "generation": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "operation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id",
+          "generation",
+          "operation_id"
+        ],
+        "type": "object"
+      },
+      "AcceptedOperationEnvelope": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AcceptedOperation"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "Envelope_for_AcceptedOperation",
+        "type": "object"
+      },
+      "ActionKind": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "resolve_image"
+                ],
+                "type": "string"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "service": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "reference",
+              "service"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "resolve_git"
+                ],
+                "type": "string"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "repository": {
+                "type": "string"
+              },
+              "service": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "reference",
+              "repository",
+              "service"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "build_image"
+                ],
+                "type": "string"
+              },
+              "service": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "service"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "push_image"
+                ],
+                "type": "string"
+              },
+              "service": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "service"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "ensure_network"
+                ],
+                "type": "string"
+              },
+              "network": {
+                "$ref": "#/components/schemas/DesiredNetwork"
+              }
+            },
+            "required": [
+              "action",
+              "network"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "ensure_volume"
+                ],
+                "type": "string"
+              },
+              "volume": {
+                "$ref": "#/components/schemas/DesiredVolume"
+              }
+            },
+            "required": [
+              "action",
+              "volume"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "ensure_secret"
+                ],
+                "type": "string"
+              },
+              "secret": {
+                "$ref": "#/components/schemas/DesiredSecret"
+              }
+            },
+            "required": [
+              "action",
+              "secret"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "ensure_service"
+                ],
+                "type": "string"
+              },
+              "service": {
+                "$ref": "#/components/schemas/DesiredService"
+              }
+            },
+            "required": [
+              "action",
+              "service"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "wait_for_service"
+                ],
+                "type": "string"
+              },
+              "service": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "service"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "wait_for_service_removal"
+                ],
+                "type": "string"
+              },
+              "service": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "service"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "wait_for_secret_unused"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "remove_service"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "remove_network"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "remove_secret"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "retain_volume"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "await_secret_generation"
+                ],
+                "type": "string"
+              },
+              "logical_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "logical_name"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ActionReason": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "enum": [
+                  "missing"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "fields": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reason": {
+                "enum": [
+                  "drift"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "fields",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "enum": [
+                  "obsolete"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "enum": [
+                  "convergence_pending"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "enum": [
+                  "resolution_required"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "enum": [
+                  "secret_generation_changed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "enum": [
+                  "application_deletion"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "enum": [
+                  "volume_retention_policy"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ActionRisk": {
+        "enum": [
+          "none",
+          "availability",
+          "data_adjacent",
+          "destructive"
+        ],
+        "type": "string"
+      },
+      "ApplicationEnvelope": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ApplicationView"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "Envelope_for_ApplicationView",
+        "type": "object"
+      },
+      "ApplicationId": {
+        "maxLength": 64,
+        "minLength": 8,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+        "type": "string"
+      },
+      "ApplicationManifest": {
+        "additionalProperties": false,
+        "description": "Strict public application request and export shape.",
+        "properties": {
+          "api_version": {
+            "enum": [
+              "piqueld.dev/v1alpha1"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "Application"
+            ],
+            "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/MetadataInput"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ApplicationSpecInput"
+          }
+        },
+        "required": [
+          "api_version",
+          "kind",
+          "metadata",
+          "spec"
+        ],
+        "type": "object"
+      },
+      "ApplicationPageEnvelope": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Page_for_ApplicationView"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "Envelope_for_Page_for_ApplicationView",
+        "type": "object"
+      },
+      "ApplicationSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "routes": {
+            "items": {
+              "$ref": "#/components/schemas/Route"
+            },
+            "type": "array"
+          },
+          "services": {
+            "items": {
+              "$ref": "#/components/schemas/Service"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "volumes": {
+            "items": {
+              "$ref": "#/components/schemas/Volume"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "routes",
+          "services",
+          "volumes"
+        ],
+        "type": "object"
+      },
+      "ApplicationSpecInput": {
+        "additionalProperties": false,
+        "properties": {
+          "routes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RouteInput"
+            },
+            "type": "array"
+          },
+          "services": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ServiceInput"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "volumes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/VolumeInput"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ApplicationStatusEnvelope": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ApplicationStatusView"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "Envelope_for_ApplicationStatusView",
+        "type": "object"
+      },
+      "ApplicationStatusView": {
+        "properties": {
+          "application_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_generation": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "application_id",
+          "state",
+          "updated_at_ms"
+        ],
+        "type": "object"
+      },
+      "ApplicationView": {
+        "properties": {
+          "application": {
+            "$ref": "#/components/schemas/NormalizedApplication"
+          },
+          "created_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "delete_intent": {
+            "type": "boolean"
+          },
+          "generation": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "spec_hash": {
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "application",
+          "created_at_ms",
+          "delete_intent",
+          "generation",
+          "spec_hash",
+          "updated_at_ms"
+        ],
+        "type": "object"
+      },
+      "CreateApplicationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "manifest": {
+            "$ref": "#/components/schemas/ApplicationManifest"
+          }
+        },
+        "required": [
+          "manifest"
+        ],
+        "title": "CreateApplicationRequest",
+        "type": "object"
+      },
+      "DeleteApplicationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_generation": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "force": {
+            "default": false,
+            "description": "Must be false. Force deletion is unsupported and named volumes are retained.",
+            "enum": [
+              false
+            ],
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "expected_generation"
+        ],
+        "title": "DeleteApplicationRequest",
+        "type": "object"
+      },
+      "DesiredMount": {
+        "additionalProperties": false,
+        "properties": {
+          "read_only": {
+            "type": "boolean"
+          },
+          "target": {
+            "type": "string"
+          },
+          "volume_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "read_only",
+          "target",
+          "volume_name"
+        ],
+        "type": "object"
+      },
+      "DesiredNetwork": {
+        "additionalProperties": false,
+        "properties": {
+          "ingress": {
+            "type": "boolean"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ingress",
+          "labels",
+          "name"
+        ],
+        "type": "object"
+      },
+      "DesiredSecret": {
+        "additionalProperties": false,
+        "properties": {
+          "generation": {
+            "$ref": "#/components/schemas/Sha256Digest"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "logical_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "generation",
+          "labels",
+          "logical_name",
+          "name"
+        ],
+        "type": "object"
+      },
+      "DesiredSecretMount": {
+        "additionalProperties": false,
+        "properties": {
+          "logical_name": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "swarm_name": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "logical_name",
+          "mode",
+          "swarm_name",
+          "target"
+        ],
+        "type": "object"
+      },
+      "DesiredService": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "environment": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "healthcheck": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HealthCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "image": {
+            "type": "string"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "logical_name": {
+            "type": "string"
+          },
+          "mounts": {
+            "items": {
+              "$ref": "#/components/schemas/DesiredMount"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "networks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ports": {
+            "items": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "replicas": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "resources": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResourceLimits"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "secrets": {
+            "items": {
+              "$ref": "#/components/schemas/DesiredSecretMount"
+            },
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ResolvedSource"
+          }
+        },
+        "required": [
+          "arguments",
+          "command",
+          "environment",
+          "image",
+          "labels",
+          "logical_name",
+          "mounts",
+          "name",
+          "networks",
+          "ports",
+          "replicas",
+          "secrets",
+          "source"
+        ],
+        "type": "object"
+      },
+      "DesiredVolume": {
+        "additionalProperties": false,
+        "properties": {
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "logical_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "labels",
+          "logical_name",
+          "name"
+        ],
+        "type": "object"
+      },
+      "DiagnosticSeverity": {
+        "enum": [
+          "info",
+          "warning",
+          "error"
+        ],
+        "type": "string"
+      },
+      "ErrorBody": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "details": true,
+          "message": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "request_id"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "ExpectedGeneration": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_generation": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_generation"
+        ],
+        "title": "ExpectedGeneration",
+        "type": "object"
+      },
+      "HealthCheck": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "interval_seconds": {
+                "format": "uint32",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              },
+              "port": {
+                "format": "uint16",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "timeout_seconds": {
+                "format": "uint32",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "http"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "interval_seconds",
+              "path",
+              "port",
+              "timeout_seconds",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "interval_seconds": {
+                "format": "uint32",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "timeout_seconds": {
+                "format": "uint32",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "command"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "interval_seconds",
+              "timeout_seconds",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "HealthCheckInput": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "interval_seconds": {
+                "default": 10,
+                "format": "uint32",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "path": {
+                "default": "/health",
+                "type": "string"
+              },
+              "port": {
+                "format": "uint16",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "timeout_seconds": {
+                "default": 3,
+                "format": "uint32",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "http"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "port",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "interval_seconds": {
+                "default": 10,
+                "format": "uint32",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "timeout_seconds": {
+                "default": 3,
+                "format": "uint32",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "command"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Metadata": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "MetadataInput": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Mount": {
+        "additionalProperties": false,
+        "properties": {
+          "read_only": {
+            "type": "boolean"
+          },
+          "target": {
+            "type": "string"
+          },
+          "volume": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "read_only",
+          "target",
+          "volume"
+        ],
+        "type": "object"
+      },
+      "MountInput": {
+        "additionalProperties": false,
+        "properties": {
+          "read_only": {
+            "default": false,
+            "type": "boolean"
+          },
+          "target": {
+            "type": "string"
+          },
+          "volume": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "volume"
+        ],
+        "type": "object"
+      },
+      "NormalizedApplication": {
+        "additionalProperties": false,
+        "description": "Canonical desired application plus persistence-assigned identity.",
+        "properties": {
+          "api_version": {
+            "enum": [
+              "piqueld.dev/v1alpha1"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/ApplicationId"
+          },
+          "kind": {
+            "enum": [
+              "Application"
+            ],
+            "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/Metadata"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ApplicationSpec"
+          }
+        },
+        "required": [
+          "api_version",
+          "id",
+          "kind",
+          "metadata",
+          "spec"
+        ],
+        "type": "object"
+      },
+      "OperationEnvelope": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/OperationView"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "Envelope_for_OperationView",
+        "type": "object"
+      },
+      "OperationStepView": {
+        "properties": {
+          "attempt": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "position": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempt",
+          "id",
+          "kind",
+          "position",
+          "state",
+          "updated_at_ms"
+        ],
+        "type": "object"
+      },
+      "OperationView": {
+        "properties": {
+          "application_id": {
+            "type": "string"
+          },
+          "created_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "generation": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "started_at_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/OperationStepView"
+            },
+            "type": "array"
+          },
+          "updated_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "application_id",
+          "created_at_ms",
+          "generation",
+          "id",
+          "kind",
+          "state",
+          "steps",
+          "updated_at_ms"
+        ],
+        "type": "object"
+      },
+      "Page_for_ApplicationView": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApplicationView"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "Plan": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/PlanAction"
+            },
+            "type": "array"
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/PlanDiagnostic"
+            },
+            "type": "array"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/PlanSummary"
+          }
+        },
+        "required": [
+          "actions",
+          "diagnostics",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "PlanAction": {
+        "additionalProperties": false,
+        "properties": {
+          "destructive": {
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ActionKind"
+          },
+          "mutates_runtime": {
+            "type": "boolean"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ActionReason"
+          },
+          "risk": {
+            "$ref": "#/components/schemas/ActionRisk"
+          },
+          "sequence": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "destructive",
+          "kind",
+          "mutates_runtime",
+          "reason",
+          "risk",
+          "sequence"
+        ],
+        "type": "object"
+      },
+      "PlanApplicationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "manifest": {
+            "$ref": "#/components/schemas/ApplicationManifest"
+          }
+        },
+        "required": [
+          "manifest"
+        ],
+        "title": "PlanApplicationRequest",
+        "type": "object"
+      },
+      "PlanDiagnostic": {
+        "additionalProperties": false,
+        "properties": {
+          "blocking": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/DiagnosticSeverity"
+          }
+        },
+        "required": [
+          "blocking",
+          "code",
+          "message",
+          "resource",
+          "severity"
+        ],
+        "type": "object"
+      },
+      "PlanEnvelope": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PlanView"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "Envelope_for_PlanView",
+        "type": "object"
+      },
+      "PlanSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "action_count": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "blocking_conflicts": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "by_action": {
+            "additionalProperties": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "destructive_count": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "mutation_count": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action_count",
+          "blocking_conflicts",
+          "by_action",
+          "destructive_count",
+          "mutation_count"
+        ],
+        "type": "object"
+      },
+      "PlanView": {
+        "properties": {
+          "application_id": {
+            "type": "string"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/Plan"
+          },
+          "proposed_generation": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "application_id",
+          "plan",
+          "proposed_generation"
+        ],
+        "type": "object"
+      },
+      "ReplaceApplicationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_generation": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/ApplicationManifest"
+          }
+        },
+        "required": [
+          "expected_generation",
+          "manifest"
+        ],
+        "title": "ReplaceApplicationRequest",
+        "type": "object"
+      },
+      "ReplacePlanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_generation": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/ApplicationManifest"
+          }
+        },
+        "required": [
+          "expected_generation",
+          "manifest"
+        ],
+        "title": "ReplacePlanRequest",
+        "type": "object"
+      },
+      "ResolvedSource": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "digest_reference": {
+                "type": "string"
+              },
+              "requested": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "digest_reference",
+              "requested",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "commit": {
+                "type": "string"
+              },
+              "context": {
+                "type": "string"
+              },
+              "digest_reference": {
+                "type": "string"
+              },
+              "dockerfile": {
+                "type": "string"
+              },
+              "registry_reference": {
+                "type": "string"
+              },
+              "repository": {
+                "type": "string"
+              },
+              "requested_reference": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "git"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "commit",
+              "context",
+              "digest_reference",
+              "dockerfile",
+              "registry_reference",
+              "repository",
+              "requested_reference",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ResourceLimits": {
+        "additionalProperties": false,
+        "properties": {
+          "cpu_millis": {
+            "format": "uint32",
+            "minimum": 1.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "memory_bytes": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ResourceLimitsInput": {
+        "additionalProperties": false,
+        "properties": {
+          "cpu_millis": {
+            "format": "uint32",
+            "minimum": 1.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "memory_bytes": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Route": {
+        "additionalProperties": false,
+        "properties": {
+          "host": {
+            "maxLength": 253,
+            "minLength": 1,
+            "type": "string"
+          },
+          "port": {
+            "format": "uint16",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "service": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "port",
+          "service"
+        ],
+        "type": "object"
+      },
+      "RouteInput": {
+        "additionalProperties": false,
+        "properties": {
+          "host": {
+            "maxLength": 253,
+            "minLength": 1,
+            "type": "string"
+          },
+          "port": {
+            "format": "uint16",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "service": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "port",
+          "service"
+        ],
+        "type": "object"
+      },
+      "SecretReference": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "source",
+          "target"
+        ],
+        "type": "object"
+      },
+      "SecretReferenceInput": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "default": "0400",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "Service": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "environment": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "healthcheck": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HealthCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mounts": {
+            "items": {
+              "$ref": "#/components/schemas/Mount"
+            },
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          },
+          "ports": {
+            "items": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "replicas": {
+            "format": "uint16",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "resources": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResourceLimits"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "secrets": {
+            "items": {
+              "$ref": "#/components/schemas/SecretReference"
+            },
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source"
+          }
+        },
+        "required": [
+          "arguments",
+          "command",
+          "environment",
+          "mounts",
+          "name",
+          "ports",
+          "replicas",
+          "secrets",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ServiceInput": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "environment": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "type": "object"
+          },
+          "healthcheck": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HealthCheckInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mounts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MountInput"
+            },
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          },
+          "ports": {
+            "default": [],
+            "items": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "replicas": {
+            "default": 1,
+            "format": "uint16",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "resources": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResourceLimitsInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "secrets": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SecretReferenceInput"
+            },
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceInput"
+          }
+        },
+        "required": [
+          "name",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Sha256Digest": {
+        "maxLength": 71,
+        "minLength": 71,
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "Source": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "image": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "image",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "type": "string"
+              },
+              "dockerfile": {
+                "type": "string"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "repository": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "git"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "context",
+              "dockerfile",
+              "reference",
+              "repository",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SourceInput": {
+        "description": "Exactly one supported service source. The tag makes image/Git exhaustive.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "image": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "image",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "default": ".",
+                "type": "string"
+              },
+              "dockerfile": {
+                "default": "Dockerfile",
+                "type": "string"
+              },
+              "reference": {
+                "default": "main",
+                "type": "string"
+              },
+              "repository": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "git"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SystemCapabilities": {
+        "properties": {
+          "persistence": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtime_execution": {
+            "type": "boolean"
+          },
+          "runtime_observation": {
+            "type": "boolean"
+          },
+          "source_resolution": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "persistence",
+          "runtime_execution",
+          "runtime_observation",
+          "source_resolution"
+        ],
+        "type": "object"
+      },
+      "SystemCapabilitiesEnvelope": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/SystemCapabilities"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "Envelope_for_SystemCapabilities",
+        "type": "object"
+      },
+      "SystemStatus": {
+        "properties": {
+          "api_version": {
+            "type": "string"
+          },
+          "instance_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_version",
+          "instance_id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "SystemStatusEnvelope": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/SystemStatus"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "Envelope_for_SystemStatus",
+        "type": "object"
+      },
+      "Volume": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "VolumeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 63,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Plan 05 control-plane API. Mutation responses identify durable operations; named volumes are retained on deletion.",
+    "license": {
+      "identifier": "MIT",
+      "name": "MIT"
+    },
+    "title": "piqueld API",
+    "version": "v1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/applications": {
+      "get": {
+        "operationId": "listApplications",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationPageEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "List applications"
+      },
+      "post": {
+        "operationId": "createApplication",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApplicationRequest"
+              }
+            },
+            "application/toml": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "text/toml": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedOperationEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Create an application"
+      }
+    },
+    "/api/v1/applications/plan": {
+      "post": {
+        "operationId": "planApplicationCreate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanApplicationRequest"
+              }
+            },
+            "application/toml": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "text/toml": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Preview application creation"
+      }
+    },
+    "/api/v1/applications/{id}": {
+      "delete": {
+        "operationId": "deleteApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteApplicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedOperationEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Request application deletion"
+      },
+      "get": {
+        "operationId": "getApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get an application"
+      },
+      "put": {
+        "operationId": "replaceApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required for application/toml replacement and replacement planning.",
+            "in": "header",
+            "name": "X-Expected-Generation",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceApplicationRequest"
+              }
+            },
+            "application/toml": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "text/toml": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedOperationEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Replace an application"
+      }
+    },
+    "/api/v1/applications/{id}/events": {
+      "get": {
+        "operationId": "watchApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Last durable/current-state event ID received by the client.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Server-Sent Events with durable/current-state IDs and bounded replay reset events."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Watch application status events",
+        "x-sse-keepalive-seconds": 15
+      }
+    },
+    "/api/v1/applications/{id}/plan": {
+      "post": {
+        "operationId": "planApplicationReplace",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required for application/toml replacement and replacement planning.",
+            "in": "header",
+            "name": "X-Expected-Generation",
+            "required": false,
+            "schema": {
+              "format": "uint64",
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplacePlanRequest"
+              }
+            },
+            "application/toml": {
+              "schema": {
+                "type": "string"
+              }
+            },
+            "text/toml": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Preview application replacement"
+      }
+    },
+    "/api/v1/applications/{id}/reconcile": {
+      "post": {
+        "operationId": "reconcileApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExpectedGeneration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedOperationEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Request application reconciliation"
+      }
+    },
+    "/api/v1/applications/{id}/status": {
+      "get": {
+        "operationId": "applicationStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationStatusEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get application status"
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "operationId": "openApiDocument",
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.oai.openapi+json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OpenAPI 3.1 document"
+          }
+        },
+        "summary": "Get the OpenAPI document"
+      }
+    },
+    "/api/v1/operations/{id}": {
+      "get": {
+        "operationId": "getOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get an operation"
+      }
+    },
+    "/api/v1/operations/{id}/events": {
+      "get": {
+        "operationId": "watchOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Last durable/current-state event ID received by the client.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Server-Sent Events with durable/current-state IDs and bounded replay reset events."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Watch operation events",
+        "x-sse-keepalive-seconds": 15,
+        "x-sse-terminal-closes": true
+      }
+    },
+    "/api/v1/system/capabilities": {
+      "get": {
+        "operationId": "systemCapabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemCapabilitiesEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get daemon capabilities"
+      }
+    },
+    "/api/v1/system/status": {
+      "get": {
+        "operationId": "systemStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemStatusEnvelope"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get daemon status"
+      }
+    }
+  },
+  "security": [],
+  "servers": [
+    {
+      "description": "Default loopback TCP endpoint; clients may also use the configured Unix socket.",
+      "url": "http://127.0.0.1:7845"
+    }
+  ]
+}
