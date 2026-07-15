@@ -1,0 +1,41 @@
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "shop"
+
+[[spec.services]]
+name = "worker"
+command = ["worker"]
+arguments = ["--queue", "default"]
+[spec.services.source]
+type = "git"
+repository = "https://github.com/example/shop.git"
+
+[[spec.services]]
+name = "web"
+replicas = 2
+ports = [8080]
+[spec.services.source]
+type = "git"
+repository = "https://github.com/example/shop.git"
+reference = "release"
+context = "backend"
+dockerfile = "Containerfile"
+[spec.services.environment]
+RUST_LOG = "info"
+
+[[spec.services.mounts]]
+volume = "data"
+target = "/var/lib/shop"
+
+[[spec.services.secrets]]
+source = "database-url"
+target = "/run/secrets/database-url"
+
+[[spec.volumes]]
+name = "data"
+
+[[spec.routes]]
+host = "shop.example.com"
+service = "web"
+port = 8080

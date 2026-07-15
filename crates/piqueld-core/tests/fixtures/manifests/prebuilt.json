@@ -1,0 +1,13 @@
+{
+  "api_version": "piqueld.dev/v1alpha1",
+  "kind": "Application",
+  "metadata": { "name": "notes" },
+  "spec": {
+    "services": [{
+      "name": "web",
+      "source": { "type": "image", "image": "ghcr.io/example/notes:1.4.0" },
+      "ports": [3000]
+    }],
+    "routes": [{ "host": "notes.example.com", "service": "web", "port": 3000 }]
+  }
+}

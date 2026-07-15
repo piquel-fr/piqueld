@@ -23,6 +23,10 @@ piqueld-core   = { version = "0.1.0", path = "crates/piqueld-core"   }
 # External
 anyhow = "1.0.98"
 serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+serde_path_to_error = "0.1.17"
+schemars = { version = "0.8.22", features = ["derive"] }
+sha2 = "0.10.9"
 sqlx = { version = "0.8.6", default-features = false, features = ["macros", "runtime-tokio", "sqlite"] }
 tempfile = "3.20.0"
 thiserror = "2.0.12"
@@ -31,6 +35,9 @@ tokio-util = { version = "0.7.15", features = ["rt"] }
 toml = "0.8.22"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "json"] }
+url = "2.5.4"
+
+proptest = "1.6.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
