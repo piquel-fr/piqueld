@@ -253,10 +253,10 @@ fn plan_human_and_json_representations_are_golden() {
         include_str!("fixtures/plans/resolve-image.json").trim()
     );
     assert_eq!(
-        result.human_summary(),
+        result.to_string(),
         "1 action(s), 0 runtime mutation(s), 0 destructive, 0 blocking conflict(s)"
     );
-    assert_eq!(result.actions[0].human_description(), "RESOLVE IMAGE web");
+    assert_eq!(result.actions[0].to_string(), "RESOLVE IMAGE web");
 }
 
 #[test]
@@ -770,7 +770,7 @@ fn removed_volume_is_retained_during_ordinary_reconciliation() {
         .find(|action| matches!(action.kind, ActionKind::RetainVolume { .. }))
         .unwrap();
     assert!(!retained.mutates_runtime);
-    assert_eq!(retained.human_description(), "RETAIN VOLUME previous-data");
+    assert_eq!(retained.to_string(), "RETAIN VOLUME previous-data");
 }
 
 proptest! {

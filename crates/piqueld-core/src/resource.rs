@@ -813,6 +813,26 @@ pub struct ObservedNetwork {
     pub ingress: bool,
     pub labels: BTreeMap<String, String>,
 }
+impl ObservedNetwork {
+    #[must_use]
+    pub fn matches_ownership(
+        &self,
+        desired_network: &DesiredNetwork,
+        desired_application: &DesiredApplication,
+    ) -> bool {
+        if desired_network.ingress {
+            self.labels.get(MANAGED_LABEL).map(String::as_str) == Some("true")
+                && self.labels.get(INSTANCE_LABEL).map(String::as_str)
+                    == Some(desired_application.instance_id.as_str())
+        } else {
+            OwnershipState::from_labels(
+                &self.labels,
+                &desired_application.instance_id,
+                &desired_application.id,
+            ) == OwnershipState::Owned
+        }
+    }
+}
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedVolume {
@@ -848,7 +868,7 @@ pub struct ObservedService {
 
 impl ObservedService {
     #[must_use]
-    pub fn semantically_matches(&self, desired: &DesiredService) -> bool {
+    pub fn matches(&self, desired: &DesiredService) -> bool {
         self.image == desired.image
             && self.replicas == desired.replicas
             && self.environment == desired.environment
@@ -861,6 +881,37 @@ impl ObservedService {
             && self.resources == desired.resources
             && sorted(&self.networks) == sorted(&desired.networks)
             && owned_label_subset(&self.labels, &desired.labels)
+    }
+
+    #[must_use]
+    pub fn matches_ownership(
+        &self,
+        desired_service: &DesiredService,
+        desired_application: &DesiredApplication,
+    ) -> bool {
+        OwnershipState::from_labels(
+            &self.labels,
+            &desired_application.instance_id,
+            &desired_application.id,
+        ) == OwnershipState::Owned
+            && self.labels.get(SERVICE_LABEL).map(String::as_str)
+                == Some(desired_service.logical_name.as_str())
+    }
+
+    #[must_use]
+    pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
+        if OwnershipState::from_labels(&self.labels, instance, application) != OwnershipState::Owned
+        {
+            return false;
+        }
+        let Some(logical_name) = self
+            .labels
+            .get(SERVICE_LABEL)
+            .filter(|name| !name.is_empty())
+        else {
+            return false;
+        };
+        self.name == docker_resource_name(application, ResourceKind::Service, Some(logical_name))
     }
 }
 fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
@@ -903,27 +954,29 @@ pub enum OwnershipState {
     Foreign,
     Invalid,
 }
-#[must_use]
-pub fn ownership_state(
-    labels: &BTreeMap<String, String>,
-    instance: &InstanceId,
-    application: &ApplicationId,
-) -> OwnershipState {
-    if labels.get(MANAGED_LABEL).map(String::as_str) != Some("true") {
-        return OwnershipState::Invalid;
+impl OwnershipState {
+    #[must_use]
+    pub fn from_labels(
+        labels: &BTreeMap<String, String>,
+        instance: &InstanceId,
+        application: &ApplicationId,
+    ) -> Self {
+        if labels.get(MANAGED_LABEL).map(String::as_str) != Some("true") {
+            return Self::Invalid;
+        }
+        if !labels
+            .get(SPEC_HASH_LABEL)
+            .is_some_and(|hash| valid_sha256(hash))
+        {
+            return Self::Invalid;
+        }
+        if labels.get(INSTANCE_LABEL).map(String::as_str) != Some(instance.as_str())
+            || labels.get(APPLICATION_LABEL).map(String::as_str) != Some(application.as_str())
+        {
+            return Self::Foreign;
+        }
+        Self::Owned
     }
-    if !labels
-        .get(SPEC_HASH_LABEL)
-        .is_some_and(|hash| valid_sha256(hash))
-    {
-        return OwnershipState::Invalid;
-    }
-    if labels.get(INSTANCE_LABEL).map(String::as_str) != Some(instance.as_str())
-        || labels.get(APPLICATION_LABEL).map(String::as_str) != Some(application.as_str())
-    {
-        return OwnershipState::Foreign;
-    }
-    OwnershipState::Owned
 }
 
 fn valid_sha256(value: &str) -> bool {
