@@ -23,26 +23,24 @@ struct BuildRow {
     finished_at_ms: Option<i64>,
 }
 
-impl Build {
-    fn parse_row(row: BuildRow) -> Result<Self, StoreError> {
-        Ok(Self {
-            id: row.id,
-            operation_id: row.operation_id,
-            application_id: ApplicationId::parse(row.application_id)
-                .map_err(|_| StoreError::Corrupt)?,
-            service_name: row.service_name,
-            state: WorkState::parse(&row.state)?,
-            source_commit: row.source_commit,
-            image_reference: row.image_reference,
-            image_digest: row.image_digest,
-            error_code: row.error_code,
-            error_message: row.error_message,
-            created_at_ms: row.created_at_ms,
-            updated_at_ms: row.updated_at_ms,
-            started_at_ms: row.started_at_ms,
-            finished_at_ms: row.finished_at_ms,
-        })
-    }
+fn parse_build_row(row: BuildRow) -> Result<Build, StoreError> {
+    Ok(Build {
+        id: row.id,
+        operation_id: row.operation_id,
+        application_id: ApplicationId::parse(row.application_id)
+            .map_err(|_| StoreError::Corrupt)?,
+        service_name: row.service_name,
+        state: WorkState::parse(&row.state)?,
+        source_commit: row.source_commit,
+        image_reference: row.image_reference,
+        image_digest: row.image_digest,
+        error_code: row.error_code,
+        error_message: row.error_message,
+        created_at_ms: row.created_at_ms,
+        updated_at_ms: row.updated_at_ms,
+        started_at_ms: row.started_at_ms,
+        finished_at_ms: row.finished_at_ms,
+    })
 }
 
 #[async_trait]
@@ -134,7 +132,7 @@ impl BuildRepository for SqliteStore {
         .await
         .map_err(|_| StoreError::Database)?
         .ok_or(StoreError::NotFound)?;
-        Build::parse_row(row)
+        parse_build_row(row)
     }
 
     async fn builds_for_operation(&self, operation_id: &str) -> Result<Vec<Build>, StoreError> {
@@ -146,7 +144,7 @@ impl BuildRepository for SqliteStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|_| StoreError::Database)?;
-        rows.into_iter().map(Build::parse_row).collect()
+        rows.into_iter().map(parse_build_row).collect()
     }
 
     async fn record_build_output(
