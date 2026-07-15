@@ -1176,7 +1176,7 @@ fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     }
 }
 
-fn valid_image_reference(value: &str) -> bool {
+pub(crate) fn valid_image_reference(value: &str) -> bool {
     if value.is_empty()
         || value.len() > 512
         || value
