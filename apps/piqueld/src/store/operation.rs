@@ -20,6 +20,25 @@ struct OperationRow {
     finished_at_ms: Option<i64>,
 }
 
+impl Operation {
+    fn parse_row(row: OperationRow) -> Result<Self, StoreError> {
+        Ok(Self {
+            id: row.id,
+            application_id: ApplicationId::parse(row.application_id)
+                .map_err(|_| StoreError::Corrupt)?,
+            generation: u64::try_from(row.generation).map_err(|_| StoreError::Corrupt)?,
+            kind: OperationKind::parse(&row.kind)?,
+            state: WorkState::parse(&row.state)?,
+            error_code: row.error_code,
+            error_message: row.error_message,
+            created_at_ms: row.created_at_ms,
+            updated_at_ms: row.updated_at_ms,
+            started_at_ms: row.started_at_ms,
+            finished_at_ms: row.finished_at_ms,
+        })
+    }
+}
+
 #[derive(Debug)]
 struct OperationStepRow {
     id: String,
@@ -36,51 +55,35 @@ struct OperationStepRow {
     finished_at_ms: Option<i64>,
 }
 
-fn parse_operation_row(row: OperationRow) -> Result<Operation, StoreError> {
-    Ok(Operation {
-        id: row.id,
-        application_id: ApplicationId::parse(row.application_id)
-            .map_err(|_| StoreError::Corrupt)?,
-        generation: u64::try_from(row.generation).map_err(|_| StoreError::Corrupt)?,
-        kind: OperationKind::parse(&row.kind)?,
-        state: WorkState::parse(&row.state)?,
-        error_code: row.error_code,
-        error_message: row.error_message,
-        created_at_ms: row.created_at_ms,
-        updated_at_ms: row.updated_at_ms,
-        started_at_ms: row.started_at_ms,
-        finished_at_ms: row.finished_at_ms,
-    })
+impl OperationStep {
+    fn parse_step_row(row: OperationStepRow) -> Result<Self, StoreError> {
+        let state = match row.state.as_str() {
+            "pending" => StepState::Pending,
+            "running" => StepState::Running,
+            "recovery" => StepState::Recovery,
+            "succeeded" => StepState::Succeeded,
+            "failed" => StepState::Failed,
+            "cancelled" => StepState::Cancelled,
+            "skipped" => StepState::Skipped,
+            _ => return Err(StoreError::Corrupt),
+        };
+        Ok(Self {
+            id: row.id,
+            operation_id: row.operation_id,
+            position: u32::try_from(row.position).map_err(|_| StoreError::Corrupt)?,
+            kind: row.kind,
+            state,
+            attempt: u32::try_from(row.attempt).map_err(|_| StoreError::Corrupt)?,
+            error_code: row.error_code,
+            error_message: row.error_message,
+            created_at_ms: row.created_at_ms,
+            updated_at_ms: row.updated_at_ms,
+            started_at_ms: row.started_at_ms,
+            finished_at_ms: row.finished_at_ms,
+        })
+    }
 }
 
-fn parse_step_row(row: OperationStepRow) -> Result<OperationStep, StoreError> {
-    let state = match row.state.as_str() {
-        "pending" => StepState::Pending,
-        "running" => StepState::Running,
-        "recovery" => StepState::Recovery,
-        "succeeded" => StepState::Succeeded,
-        "failed" => StepState::Failed,
-        "cancelled" => StepState::Cancelled,
-        "skipped" => StepState::Skipped,
-        _ => return Err(StoreError::Corrupt),
-    };
-    Ok(OperationStep {
-        id: row.id,
-        operation_id: row.operation_id,
-        position: u32::try_from(row.position).map_err(|_| StoreError::Corrupt)?,
-        kind: row.kind,
-        state,
-        attempt: u32::try_from(row.attempt).map_err(|_| StoreError::Corrupt)?,
-        error_code: row.error_code,
-        error_message: row.error_message,
-        created_at_ms: row.created_at_ms,
-        updated_at_ms: row.updated_at_ms,
-        started_at_ms: row.started_at_ms,
-        finished_at_ms: row.finished_at_ms,
-    })
-}
-
-#[allow(clippy::too_many_lines)]
 #[async_trait]
 impl OperationRepository for SqliteStore {
     async fn operation(&self, id: &str) -> Result<Operation, StoreError> {
@@ -93,7 +96,7 @@ impl OperationRepository for SqliteStore {
         .await
         .map_err(|_| StoreError::Database)?
         .ok_or(StoreError::NotFound)?;
-        parse_operation_row(row)
+        Operation::parse_row(row)
     }
 
     async fn operation_steps(&self, id: &str) -> Result<Vec<OperationStep>, StoreError> {
@@ -105,7 +108,9 @@ impl OperationRepository for SqliteStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|_| StoreError::Database)?;
-        rows.into_iter().map(parse_step_row).collect()
+        rows.into_iter()
+            .map(OperationStep::parse_step_row)
+            .collect()
     }
 
     async fn operations_for_application(
@@ -124,7 +129,7 @@ impl OperationRepository for SqliteStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|_| StoreError::Database)?;
-        rows.into_iter().map(parse_operation_row).collect()
+        rows.into_iter().map(Operation::parse_row).collect()
     }
 
     async fn pending_operations(&self, limit: u32) -> Result<Vec<Operation>, StoreError> {
@@ -140,9 +145,10 @@ impl OperationRepository for SqliteStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|_| StoreError::Database)?;
-        rows.into_iter().map(parse_operation_row).collect()
+        rows.into_iter().map(Operation::parse_row).collect()
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn transition_operation(
         &self,
         id: &str,
