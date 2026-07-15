@@ -30,10 +30,13 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const MIGRATIONS: &[&str] = &[
-    include_str!("../../../migrations/0001_control_plane.sql"),
-    include_str!("../../../migrations/0002_retention_indexes.sql"),
-];
+macro_rules! include_migrations {
+    () => {
+        include!(concat!(env!("OUT_DIR"), "/migrations.rs"))
+    };
+}
+
+const MIGRATIONS: &[&str] = include_migrations!();
 /// Latest schema understood by this binary.
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 

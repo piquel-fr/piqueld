@@ -1,6 +1,6 @@
 //! Provisions the migrated `SQLite` schema used by `SQLx` compile-time query checks.
 
-use std::{env, error::Error, fs, path::PathBuf};
+use std::{env, error::Error, fmt::Write, fs, path::PathBuf};
 
 use sqlx::{
     Connection,
@@ -34,6 +34,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         env::var_os("OUT_DIR")
             .ok_or("Cargo did not provide OUT_DIR to the piqueld build script")?,
     );
+    let mut embedded_migrations = String::from("&[\n");
+    for (path, _) in &migrations {
+        let path = path.to_str().ok_or_else(|| {
+            std::io::Error::other(format!(
+                "migration path is not valid UTF-8: {}",
+                path.display()
+            ))
+        })?;
+        writeln!(embedded_migrations, "    include_str!({path:?}),")?;
+    }
+    embedded_migrations.push_str("]\n");
+    fs::write(out_dir.join("migrations.rs"), embedded_migrations)?;
+
     let database_path = out_dir.join("sqlx-build.db");
     match fs::remove_file(&database_path) {
         Ok(()) => {}
