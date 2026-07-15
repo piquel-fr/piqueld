@@ -1,38 +1,38 @@
-# ADR 0001: SQLx owns SQLite persistence and checked queries
+# ADR 0001: SQLx SQLite as the integrated persistence runtime
 
 - Status: accepted
 - Date: 2026-07-11
 
 ## Context
 
-The prototype needs one embedded database authority, explicit forward migrations,
-and compile-time validation of repository SQL. Splitting execution and validation
-between two SQLite-compatible libraries would duplicate connection, transaction,
-and migration ownership while allowing the SQL actually executed in production to
-drift from the SQL checked by the compiler.
+The prototype needs one embedded SQLite database, explicit forward migrations,
+transactional repository operations, and compile-time query validation. Using a
+separate runtime driver and SQLx only in tests duplicated the query surface and
+allowed production SQL to drift away from the checked statements.
 
 ## Decision
 
-`SQLx` with its integrated `sqlite` driver is the only database library. It owns
-the production connection pool, transactions, migration execution, and repository
-queries.
+SQLx's integrated SQLite driver is the sole database runtime. It owns the connection
+pool, SQLite configuration, migrations, transactions, and repository query
+execution.
 
-Production repository statements use `query!`, `query_as!`, or `query_scalar!` so
-their bind parameters and result shapes are checked during compilation. Once the
-schema arrives in Plan 04, checked-in `.sqlx/` metadata allows ordinary and CI
-builds to perform those checks without connecting to an operator database. Explicit
-SQL migration files remain the source of truth for schema changes.
+Production repository statements use `query!`, `query_as!`, or `query_scalar!`
+so SQL syntax, bind counts, result columns, types, and nullability are checked
+against the migrated schema. The `piqueld` build provisions a fresh SQLite database
+under Cargo's build output directory, applies every migration, and directs the SQLx
+macros to that database. Builds therefore validate the current migrations directly
+and never connect to an operator database or rely on checked-in query metadata.
 
-## Executable evidence
-
-`apps/piqueld/tests/sqlx_stack.rs` opens a disposable database and executes a
-compile-time checked query through the integrated `SQLx` `SQLite` driver. Plan 04
-replaces this schema-free foundation spike with the real migration stack and
-offline query metadata.
+SQLite does not expose PRAGMA assignment through bind parameters, so each supported
+schema-version assignment is an explicit SQLx macro invocation selected from the
+fixed, embedded migration index. Every production query is compile-time checked.
 
 ## Consequences
 
-- There is one database, pool, transaction, and migration authority.
-- The SQL executed in production is the SQL checked by `SQLx`.
-- Repository query changes must refresh and commit `.sqlx/` metadata.
-- Runtime builds do not need access to a live validation database.
+- There is one SQLite driver, pool, migration owner, and transaction authority.
+- Production and checked queries are the same Rust macro invocations.
+- `BEGIN IMMEDIATE` preserves the existing write-serialization and compare-and-swap
+  behavior.
+- Building the daemon provisions a disposable migrated SQLite database before its
+  SQLx query macros are compiled.
+- No second SQLite-family driver is linked or allowed to write the database.

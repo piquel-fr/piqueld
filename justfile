@@ -6,6 +6,7 @@ lint:
 
 check:
     @cargo check --workspace --all-targets
+    @./scripts/check-dependency-boundaries.sh
 
 test:
     @cargo nextest run --workspace

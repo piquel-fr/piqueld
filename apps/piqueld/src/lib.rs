@@ -5,12 +5,12 @@ mod auth;
 mod build;
 pub mod config;
 mod docker;
-mod operations;
+pub mod operations;
 mod proxy;
 mod reconcile;
 mod registry;
 mod secrets;
-mod store;
+pub mod store;
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;

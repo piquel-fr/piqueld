@@ -1,0 +1,83 @@
+//! Status repository implementation.
+
+use super::{
+    ApplicationId, ApplicationState, ApplicationStatus, SqliteStore, StatusRepository, StoreError,
+    async_trait, now_ms, valid_bounded_text,
+};
+
+#[async_trait]
+impl StatusRepository for SqliteStore {
+    async fn status(&self, id: &ApplicationId) -> Result<ApplicationStatus, StoreError> {
+        let id_value = id.as_str();
+        let row = sqlx::query!(
+            r#"SELECT state AS "state!",observed_generation,message,updated_at_ms AS "updated_at_ms!" FROM application_status WHERE application_id=?1"#,
+            id_value
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| StoreError::Database)?
+        .ok_or(StoreError::NotFound)?;
+        Ok(ApplicationStatus {
+            application_id: id.clone(),
+            state: ApplicationState::parse(&row.state)?,
+            observed_generation: row
+                .observed_generation
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| StoreError::Corrupt)?,
+            message: row.message,
+            updated_at_ms: row.updated_at_ms,
+        })
+    }
+
+    async fn set_status(
+        &self,
+        id: &ApplicationId,
+        from: ApplicationState,
+        to: ApplicationState,
+        observed_generation: Option<u64>,
+        message: Option<&str>,
+    ) -> Result<(), StoreError> {
+        if !from.can_transition_to(to) {
+            return Err(StoreError::IllegalTransition);
+        }
+        if observed_generation.is_some()
+            && !matches!(
+                to,
+                ApplicationState::Ready | ApplicationState::Degraded | ApplicationState::Failed
+            )
+        {
+            return Err(StoreError::IllegalTransition);
+        }
+        if to == ApplicationState::Ready && observed_generation.is_none() {
+            return Err(StoreError::IllegalTransition);
+        }
+        if message.is_some_and(|value| !valid_bounded_text(value, 2048)) {
+            return Err(StoreError::InvalidInput);
+        }
+        let mut connection = self.connection().await?;
+        let observed_generation = observed_generation.map(|value| value as i64);
+        let to_state = to.as_str();
+        let from_state = from.as_str();
+        let now = now_ms();
+        let id_value = id.as_str();
+        let changed = sqlx::query!(
+            "UPDATE application_status SET state=?1,observed_generation=?2,message=?3,updated_at_ms=?4 WHERE application_id=?5 AND state=?6 AND (?2 IS NULL OR (observed_generation IS NULL OR ?2 >= observed_generation)) AND (?2 IS NULL OR ?2 <= (SELECT generation FROM applications WHERE id=?5)) AND (?1 != 'ready' OR ?2 = (SELECT generation FROM applications WHERE id=?5)) AND (?1 != 'deleting' OR (SELECT delete_intent FROM applications WHERE id=?5)=1) AND ((SELECT delete_intent FROM applications WHERE id=?5)=0 OR ?1 IN ('deleting','degraded','failed'))",
+            to_state,
+            observed_generation,
+            message,
+            now,
+            id_value,
+            from_state
+        )
+        .execute(&mut *connection)
+        .await
+        .map_err(|_| StoreError::Database)?
+        .rows_affected();
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(Self::transition_miss(&mut connection, "application_status", id_value).await?)
+        }
+    }
+}
