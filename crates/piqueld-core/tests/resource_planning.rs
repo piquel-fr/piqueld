@@ -5,7 +5,7 @@ use piqueld_core::resource::{
     APPLICATION_LABEL, Convergence, DesiredApplication, INSTANCE_LABEL, InstanceId, MANAGED_LABEL,
     ObservedApplication, ObservedNetwork, ObservedSecret, ObservedService, ObservedVolume,
     ResolutionRequirement, ResolutionSet, ResolvedSource, SERVICE_LABEL, SPEC_HASH_LABEL,
-    SecretGeneration, compile_application, preview_resolution,
+    SecretGeneration, Sha256Digest, compile_application, preview_resolution,
 };
 use piqueld_core::{ApplicationId, ResourceKind, docker_resource_name, parse_toml};
 use proptest::prelude::*;
@@ -16,6 +16,14 @@ fn app_id() -> ApplicationId {
 }
 fn instance() -> InstanceId {
     InstanceId::parse("home-1").unwrap()
+}
+fn generation_digest(label: &str) -> Sha256Digest {
+    let digit = match label {
+        "g1" => '1',
+        "g2" => '2',
+        _ => panic!("unknown test secret generation"),
+    };
+    Sha256Digest::parse(format!("sha256:{}", digit.to_string().repeat(64))).unwrap()
 }
 
 fn image_desired() -> DesiredApplication {
@@ -49,6 +57,7 @@ fn git_desired(secret_generation: &str) -> DesiredApplication {
             registry_reference: format!("registry.local/piqueld/{service}:0123456789ab"),
             digest_reference: format!("registry.local/piqueld/{service}@sha256:{}", "b".repeat(64)),
         };
+    let generation = generation_digest(secret_generation);
     let resolutions = ResolutionSet {
         sources: BTreeMap::from([
             (
@@ -61,11 +70,11 @@ fn git_desired(secret_generation: &str) -> DesiredApplication {
             "database-url".into(),
             SecretGeneration {
                 logical_name: "database-url".into(),
-                generation: secret_generation.into(),
+                generation: generation.clone(),
                 swarm_name: docker_resource_name(
                     &app_id(),
                     ResourceKind::Secret,
-                    Some(&format!("database-url-{secret_generation}")),
+                    Some(&format!("database-url-{generation}")),
                 ),
             },
         )]),
@@ -244,10 +253,10 @@ fn plan_human_and_json_representations_are_golden() {
         include_str!("fixtures/plans/resolve-image.json").trim()
     );
     assert_eq!(
-        result.human_summary(),
+        result.to_string(),
         "1 action(s), 0 runtime mutation(s), 0 destructive, 0 blocking conflict(s)"
     );
-    assert_eq!(result.actions[0].human_description(), "RESOLVE IMAGE web");
+    assert_eq!(result.actions[0].to_string(), "RESOLVE IMAGE web");
 }
 
 #[test]
@@ -299,7 +308,7 @@ fn compilation_rejects_cross_repository_digests_and_arbitrary_secret_names() {
         "database-url".into(),
         SecretGeneration {
             logical_name: "database-url".into(),
-            generation: "g1".into(),
+            generation: generation_digest("g1"),
             swarm_name: "operator-selected-name".into(),
         },
     );
@@ -353,11 +362,11 @@ fn compilation_rejects_credential_bearing_or_malformed_resolved_image_references
         "database-url".into(),
         SecretGeneration {
             logical_name: "database-url".into(),
-            generation: "g1".into(),
+            generation: generation_digest("g1"),
             swarm_name: docker_resource_name(
                 &app_id(),
                 ResourceKind::Secret,
-                Some("database-url-g1"),
+                Some(&format!("database-url-{}", generation_digest("g1"))),
             ),
         },
     );
@@ -761,7 +770,7 @@ fn removed_volume_is_retained_during_ordinary_reconciliation() {
         .find(|action| matches!(action.kind, ActionKind::RetainVolume { .. }))
         .unwrap();
     assert!(!retained.mutates_runtime);
-    assert_eq!(retained.human_description(), "RETAIN VOLUME previous-data");
+    assert_eq!(retained.to_string(), "RETAIN VOLUME previous-data");
 }
 
 proptest! {

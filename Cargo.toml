@@ -49,6 +49,8 @@ utoipa = { version = "5.3.1", features = ["axum_extras", "uuid"] }
 url = "2.5.4"
 uuid = { version = "1.17.0", features = ["v7"] }
 
+proptest = "1.6.0"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
