@@ -1117,7 +1117,7 @@ fn toml_manifest_error(errors: piqueld_core::ValidationErrors) -> ApiError {
     }
 }
 fn operation_step(action: &piqueld_core::PlanAction) -> String {
-    let mut value = action.human_description();
+    let mut value = format!("{action}");
     if value.len() > 64 {
         value.truncate(64);
     }

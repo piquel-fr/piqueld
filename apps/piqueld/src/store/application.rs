@@ -3,7 +3,7 @@
 use super::{
     ApplicationId, ApplicationRepository, ApplicationRow, MutationResult, NormalizedApplication,
     OperationKind, ResolvedApplication, SqliteStore, StoreError, StoredApplication, async_trait,
-    canonical_resolved, decode_stored_application, now_ms, valid_sha256,
+    canonical_resolved, now_ms, valid_sha256,
 };
 
 #[async_trait]

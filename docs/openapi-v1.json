@@ -777,7 +777,7 @@
         "additionalProperties": false,
         "properties": {
           "generation": {
-            "type": "string"
+            "$ref": "#/components/schemas/Sha256Digest"
           },
           "labels": {
             "additionalProperties": {
@@ -2020,6 +2020,12 @@
           "source"
         ],
         "type": "object"
+      },
+      "Sha256Digest": {
+        "maxLength": 71,
+        "minLength": 71,
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
       },
       "Source": {
         "oneOf": [
