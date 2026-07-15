@@ -2,7 +2,7 @@
 
 use super::{
     ApplicationId, ApplicationRow, Build, BuildRepository, SqliteStore, StoreError, WorkState,
-    async_trait, decode_stored_application, new_id, now_ms, valid_error,
+    async_trait, new_id, now_ms, valid_error,
 };
 
 #[derive(Debug)]
@@ -75,7 +75,7 @@ impl BuildRepository for SqliteStore {
         .await
         .map_err(|_| StoreError::Database)?
         .ok_or(StoreError::NotFound)?;
-        let application = decode_stored_application(application, &self.instance_id)?;
+        let application = application.decode(&self.instance_id)?;
         if !application
             .application
             .spec

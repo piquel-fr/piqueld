@@ -654,11 +654,11 @@ impl SqliteStore {
                 missing.push(name);
             }
         }
-        missing.sort();
-        missing.dedup();
         if missing.is_empty() {
             Ok(())
         } else {
+            missing.sort();
+            missing.dedup();
             Err(StoreError::MissingSecrets(missing))
         }
     }
@@ -874,32 +874,31 @@ struct ApplicationRow {
     updated_at_ms: i64,
 }
 
-fn decode_stored_application(
-    row: ApplicationRow,
-    instance_id: &str,
-) -> Result<StoredApplication, StoreError> {
-    let application = decode_application(&row.desired_json, &row.spec_hash)?;
-    if application.id.as_str() != row.id || application.metadata.name.as_str() != row.name {
-        return Err(StoreError::Corrupt);
-    }
-    let resolved: Option<ResolvedApplication> = row
-        .resolved_json
-        .map(|json| {
-            let decoded = serde_json::from_str(&json).map_err(|_| StoreError::Corrupt)?;
-            validate_resolved(&application, &decoded, instance_id)?;
-            if serde_json::to_string(&decoded).map_err(|_| StoreError::Corrupt)? != json {
-                return Err(StoreError::Corrupt);
-            }
-            Ok(decoded)
+impl ApplicationRow {
+    fn decode(self, instance_id: &str) -> Result<StoredApplication, StoreError> {
+        let application = decode_application(&self.desired_json, &self.spec_hash)?;
+        if application.id.as_str() != self.id || application.metadata.name.as_str() != self.name {
+            return Err(StoreError::Corrupt);
+        }
+        let resolved: Option<ResolvedApplication> = self
+            .resolved_json
+            .map(|json| {
+                let decoded = serde_json::from_str(&json).map_err(|_| StoreError::Corrupt)?;
+                validate_resolved(&application, &decoded, instance_id)?;
+                if serde_json::to_string(&decoded).map_err(|_| StoreError::Corrupt)? != json {
+                    return Err(StoreError::Corrupt);
+                }
+                Ok(decoded)
+            })
+            .transpose()?;
+        Ok(StoredApplication {
+            application,
+            resolved,
+            generation: u64::try_from(self.generation).map_err(|_| StoreError::Corrupt)?,
+            spec_hash: self.spec_hash,
+            delete_intent: self.delete_intent == 1,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
         })
-        .transpose()?;
-    Ok(StoredApplication {
-        application,
-        resolved,
-        generation: u64::try_from(row.generation).map_err(|_| StoreError::Corrupt)?,
-        spec_hash: row.spec_hash,
-        delete_intent: row.delete_intent == 1,
-        created_at_ms: row.created_at_ms,
-        updated_at_ms: row.updated_at_ms,
-    })
+    }
 }

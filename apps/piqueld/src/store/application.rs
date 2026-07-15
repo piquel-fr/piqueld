@@ -3,7 +3,7 @@
 use super::{
     ApplicationId, ApplicationRepository, ApplicationRow, MutationResult, NormalizedApplication,
     OperationKind, ResolvedApplication, SqliteStore, StoreError, StoredApplication, async_trait,
-    canonical_resolved, decode_stored_application, now_ms,
+    canonical_resolved, now_ms,
 };
 
 #[async_trait]
@@ -215,7 +215,7 @@ impl ApplicationRepository for SqliteStore {
         .await
         .map_err(|_| StoreError::Database)?
         .ok_or(StoreError::NotFound)?;
-        let stored = decode_stored_application(row, &self.instance_id)?;
+        let stored = row.decode(&self.instance_id)?;
         if stored.application.id != *id {
             return Err(StoreError::Corrupt);
         }
@@ -231,7 +231,7 @@ impl ApplicationRepository for SqliteStore {
         .await
         .map_err(|_| StoreError::Database)?;
         rows.into_iter()
-            .map(|row| decode_stored_application(row, &self.instance_id))
+            .map(|row| row.decode(&self.instance_id))
             .collect()
     }
 }
