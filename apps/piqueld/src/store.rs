@@ -31,8 +31,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const MIGRATIONS: &[&str] = &[
-    include_str!("../../../../migrations/0001_control_plane.sql"),
-    include_str!("../../../../migrations/0002_retention_indexes.sql"),
+    include_str!("../../../migrations/0001_control_plane.sql"),
+    include_str!("../../../migrations/0002_retention_indexes.sql"),
 ];
 /// Latest schema understood by this binary.
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
