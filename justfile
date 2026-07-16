@@ -3,12 +3,12 @@
 all: gen validate
 
 # Runs all validation commands
-validate: format lint check test doc-test
+validate: fmt lint check test doc-test
 
 # Runs all code generation
 gen: generate-openapi
 
-format:
+fmt:
     @cargo fmt --all
 
 lint:
