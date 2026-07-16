@@ -13,8 +13,8 @@ use utoipa::{OpenApi, ToResponse, ToSchema};
     info(
         title = "piqueld API",
         version = "v1",
-        description = "Plan 05 control-plane API. Mutation responses identify durable operations; named volumes are retained on deletion.",
-        license(name = "MIT", identifier = "MIT")
+        description = "piqueld control-plane API. Mutation responses identify durable operations; named volumes are retained on deletion.",
+        license(name = "Apache-2.0", identifier = "Apache-2.0")
     ),
     servers(
         (url = "http://127.0.0.1:7845", description = "Default loopback TCP endpoint; clients may also use the configured Unix socket.")
