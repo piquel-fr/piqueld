@@ -122,6 +122,14 @@ impl ApiState {
             create_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
+
+    fn require_runtime_execution(&self) -> Result<(), ApiError> {
+        if self.runtime.capabilities().runtime_execution {
+            Ok(())
+        } else {
+            Err(BoundaryError::Unavailable.into())
+        }
+    }
 }
 
 #[derive(Debug)]
