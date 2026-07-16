@@ -381,6 +381,7 @@ fn parse_sse(block: &str) -> Option<SseEvent> {
     })
 }
 
+/// Returns the client crate version embedded at build time.
 #[must_use]
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
