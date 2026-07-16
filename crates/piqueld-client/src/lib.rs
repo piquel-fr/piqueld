@@ -2,13 +2,24 @@
 #![allow(missing_docs)]
 #![allow(clippy::missing_errors_doc, clippy::struct_excessive_bools)]
 
+pub mod applications;
+mod openapi;
+pub mod operations;
+pub mod system;
+
+pub use applications::{
+    AcceptedOperation, ApplicationStatusView, ApplicationView, CreateApplicationRequest,
+    DeleteApplicationRequest, ExpectedGeneration, ListApplicationsOptions, PlanApplicationRequest,
+    PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
+};
+pub use operations::{OperationStepView, OperationView};
+pub use system::{SystemCapabilities, SystemStatus};
+
 use bytes::Bytes;
 use http::{Method, Request, StatusCode, header};
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
-use piqueld_core::manifest::ApplicationManifest;
-use piqueld_core::{NormalizedApplication, Plan};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -42,142 +53,10 @@ pub struct ErrorBody {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct SystemStatus {
-    pub status: String,
-    pub api_version: String,
-    pub instance_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct SystemCapabilities {
-    pub persistence: bool,
-    pub source_resolution: bool,
-    pub runtime_observation: bool,
-    pub runtime_execution: bool,
-    pub reason: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct ApplicationView {
-    pub application: NormalizedApplication,
-    #[schemars(range(min = 1))]
-    pub generation: u64,
-    pub spec_hash: String,
-    pub delete_intent: bool,
-    pub created_at_ms: i64,
-    pub updated_at_ms: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateApplicationRequest {
-    pub manifest: ApplicationManifest,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReplaceApplicationRequest {
-    #[schemars(range(min = 1))]
-    pub expected_generation: u64,
-    pub manifest: ApplicationManifest,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PlanApplicationRequest {
-    pub manifest: ApplicationManifest,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReplacePlanRequest {
-    #[schemars(range(min = 1))]
-    pub expected_generation: u64,
-    pub manifest: ApplicationManifest,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExpectedGeneration {
-    #[schemars(range(min = 1))]
-    pub expected_generation: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct DeleteApplicationRequest {
-    #[schemars(range(min = 1))]
-    pub expected_generation: u64,
-    #[serde(default)]
-    pub force: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct AcceptedOperation {
-    pub operation_id: String,
-    pub application_id: String,
-    #[schemars(range(min = 1))]
-    pub generation: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct PlanView {
-    pub application_id: String,
-    #[schemars(range(min = 1))]
-    pub proposed_generation: u64,
-    pub plan: Plan,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct ApplicationStatusView {
-    pub application_id: String,
-    pub state: String,
-    #[schemars(range(min = 1))]
-    pub observed_generation: Option<u64>,
-    pub message: Option<String>,
-    pub updated_at_ms: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct OperationStepView {
-    pub id: String,
-    pub position: u32,
-    pub kind: String,
-    pub state: String,
-    pub attempt: u32,
-    pub error_code: Option<String>,
-    pub error_message: Option<String>,
-    pub updated_at_ms: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct OperationView {
-    pub id: String,
-    pub application_id: String,
-    #[schemars(range(min = 1))]
-    pub generation: u64,
-    pub kind: String,
-    pub state: String,
-    pub error_code: Option<String>,
-    pub error_message: Option<String>,
-    pub created_at_ms: i64,
-    pub updated_at_ms: i64,
-    pub started_at_ms: Option<i64>,
-    pub finished_at_ms: Option<i64>,
-    pub steps: Vec<OperationStepView>,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct SseEvent {
     pub id: Option<String>,
     pub event: Option<String>,
     pub data: String,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ListApplicationsOptions {
-    pub cursor: Option<String>,
-    pub limit: Option<u16>,
 }
 
 #[derive(Clone, Debug)]
@@ -360,240 +239,6 @@ impl Client {
         decode_envelope(self.raw_request(method, path, body, headers).await?).await
     }
 
-    pub async fn system_status(&self) -> Result<SystemStatus, ClientError> {
-        self.send::<_, ()>(Method::GET, "/api/v1/system/status", None, &[])
-            .await
-    }
-    pub async fn capabilities(&self) -> Result<SystemCapabilities, ClientError> {
-        self.send::<_, ()>(Method::GET, "/api/v1/system/capabilities", None, &[])
-            .await
-    }
-    pub async fn applications(&self) -> Result<Page<ApplicationView>, ClientError> {
-        self.applications_with(&ListApplicationsOptions::default())
-            .await
-    }
-    pub async fn applications_with(
-        &self,
-        options: &ListApplicationsOptions,
-    ) -> Result<Page<ApplicationView>, ClientError> {
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        if let Some(cursor) = &options.cursor {
-            query.append_pair("cursor", cursor);
-        }
-        if let Some(limit) = options.limit {
-            query.append_pair("limit", &limit.to_string());
-        }
-        let query = query.finish();
-        let path = if query.is_empty() {
-            "/api/v1/applications".to_owned()
-        } else {
-            format!("/api/v1/applications?{query}")
-        };
-        self.send::<_, ()>(Method::GET, &path, None, &[]).await
-    }
-    pub async fn application(&self, id: &str) -> Result<ApplicationView, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("/api/v1/applications/{}", path_segment(id)),
-            None,
-            &[],
-        )
-        .await
-    }
-    pub async fn create_application(
-        &self,
-        request: &CreateApplicationRequest,
-        idempotency_key: &str,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.send(
-            Method::POST,
-            "/api/v1/applications",
-            Some(request),
-            &[("idempotency-key", idempotency_key)],
-        )
-        .await
-    }
-    pub async fn replace_application(
-        &self,
-        id: &str,
-        request: &ReplaceApplicationRequest,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.send(
-            Method::PUT,
-            &format!("/api/v1/applications/{}", path_segment(id)),
-            Some(request),
-            &[],
-        )
-        .await
-    }
-    pub async fn delete_application(
-        &self,
-        id: &str,
-        request: &DeleteApplicationRequest,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.send(
-            Method::DELETE,
-            &format!("/api/v1/applications/{}", path_segment(id)),
-            Some(request),
-            &[],
-        )
-        .await
-    }
-    pub async fn plan_create(
-        &self,
-        request: &PlanApplicationRequest,
-    ) -> Result<PlanView, ClientError> {
-        self.send(
-            Method::POST,
-            "/api/v1/applications/plan",
-            Some(request),
-            &[],
-        )
-        .await
-    }
-    pub async fn plan_replace(
-        &self,
-        id: &str,
-        request: &ReplacePlanRequest,
-    ) -> Result<PlanView, ClientError> {
-        self.send(
-            Method::POST,
-            &format!("/api/v1/applications/{}/plan", path_segment(id)),
-            Some(request),
-            &[],
-        )
-        .await
-    }
-    pub async fn reconcile(
-        &self,
-        id: &str,
-        expected_generation: u64,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.send(
-            Method::POST,
-            &format!("/api/v1/applications/{}/reconcile", path_segment(id)),
-            Some(&ExpectedGeneration {
-                expected_generation,
-            }),
-            &[],
-        )
-        .await
-    }
-    pub async fn application_status(&self, id: &str) -> Result<ApplicationStatusView, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("/api/v1/applications/{}/status", path_segment(id)),
-            None,
-            &[],
-        )
-        .await
-    }
-    pub async fn operation(&self, id: &str) -> Result<OperationView, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("/api/v1/operations/{}", path_segment(id)),
-            None,
-            &[],
-        )
-        .await
-    }
-
-    pub async fn openapi(&self) -> Result<serde_json::Value, ClientError> {
-        let response = self
-            .raw_request::<()>(Method::GET, "/api/v1/openapi.json", None, &[])
-            .await?;
-        if !response.status().is_success() {
-            return Err(decode_api_error(response).await);
-        }
-        serde_json::from_slice(
-            &response
-                .into_body()
-                .collect()
-                .await
-                .map_err(|_| ClientError::Transport)?
-                .to_bytes(),
-        )
-        .map_err(|_| ClientError::Decode)
-    }
-
-    pub async fn create_application_toml(
-        &self,
-        manifest: &str,
-        idempotency_key: &str,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.send_text(
-            Method::POST,
-            "/api/v1/applications",
-            manifest,
-            &[
-                ("content-type", "application/toml"),
-                ("idempotency-key", idempotency_key),
-            ],
-        )
-        .await
-    }
-
-    pub async fn replace_application_toml(
-        &self,
-        id: &str,
-        manifest: &str,
-        expected_generation: u64,
-    ) -> Result<AcceptedOperation, ClientError> {
-        let generation = expected_generation.to_string();
-        self.send_text(
-            Method::PUT,
-            &format!("/api/v1/applications/{}", path_segment(id)),
-            manifest,
-            &[
-                ("content-type", "application/toml"),
-                ("x-expected-generation", &generation),
-            ],
-        )
-        .await
-    }
-
-    pub async fn plan_create_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
-        self.send_text(
-            Method::POST,
-            "/api/v1/applications/plan",
-            manifest,
-            &[("content-type", "application/toml")],
-        )
-        .await
-    }
-
-    pub async fn plan_replace_toml(
-        &self,
-        id: &str,
-        manifest: &str,
-        expected_generation: u64,
-    ) -> Result<PlanView, ClientError> {
-        let generation = expected_generation.to_string();
-        self.send_text(
-            Method::POST,
-            &format!("/api/v1/applications/{}/plan", path_segment(id)),
-            manifest,
-            &[
-                ("content-type", "application/toml"),
-                ("x-expected-generation", &generation),
-            ],
-        )
-        .await
-    }
-
-    /// Watches operation progress. Dropping the receiver cancels socket reading and closes the connection.
-    #[must_use]
-    pub fn watch_operation(
-        &self,
-        id: &str,
-        last_event_id: Option<&str>,
-    ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
-        self.watch_events(
-            format!("/api/v1/operations/{}/events", path_segment(id)),
-            last_event_id,
-        )
-    }
-
     fn watch_events(
         &self,
         path: String,
@@ -651,18 +296,6 @@ impl Client {
             }
         });
         rx
-    }
-
-    #[must_use]
-    pub fn watch_application(
-        &self,
-        id: &str,
-        last_event_id: Option<&str>,
-    ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
-        self.watch_events(
-            format!("/api/v1/applications/{}/events", path_segment(id)),
-            last_event_id,
-        )
     }
 }
 
