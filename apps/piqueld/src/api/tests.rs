@@ -658,6 +658,29 @@ async fn transport_failures_are_structured_and_safe() {
         !String::from_utf8_lossy(&bad_type.into_body().collect().await.unwrap().to_bytes())
             .contains("secret fixture")
     );
+    let oversized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/applications/plan")
+                .header(header::CONTENT_TYPE, JSON)
+                .body(Body::from(vec![b'a'; 2_097_153]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let request_id = oversized
+        .headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let oversized = json_body(oversized).await;
+    assert_eq!(oversized["code"], "request_body_too_large");
+    assert_eq!(oversized["request_id"], request_id);
     let malformed_query = app
         .clone()
         .oneshot(

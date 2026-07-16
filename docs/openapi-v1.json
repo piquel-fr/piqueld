@@ -2507,6 +2507,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
           "415": {
             "content": {
               "application/json": {
@@ -2606,6 +2616,16 @@
             "description": "Structured, sanitized error"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
             "content": {
               "application/json": {
                 "schema": {
@@ -2716,6 +2736,16 @@
             "description": "Structured, sanitized error"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
             "content": {
               "application/json": {
                 "schema": {
@@ -2913,6 +2943,16 @@
             "description": "Structured, sanitized error"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
             "content": {
               "application/json": {
                 "schema": {
@@ -3143,6 +3183,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
           "415": {
             "content": {
               "application/json": {
@@ -3254,6 +3304,16 @@
             "description": "Structured, sanitized error"
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
             "content": {
               "application/json": {
                 "schema": {

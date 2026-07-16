@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use axum::{
     body::Bytes,
-    extract::{Path, Query, State, rejection::QueryRejection},
+    extract::{
+        Path, Query, State,
+        rejection::{BytesRejection, QueryRejection},
+    },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response, Sse, sse::KeepAlive},
 };
@@ -124,6 +127,7 @@ pub(super) async fn get(
         (status = 202, description = "Success", body = Envelope<AcceptedOperation>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
+        (status = 413, response = inline(ApiErrorResponse)),
         (status = 415, response = inline(ApiErrorResponse)),
         (status = 422, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
@@ -134,8 +138,9 @@ pub(super) async fn get(
 pub(super) async fn create(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
+    let body = request_body(body)?;
     let key = header_text(&headers, "idempotency-key").ok_or_else(|| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -230,6 +235,7 @@ pub(super) async fn create(
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
+        (status = 413, response = inline(ApiErrorResponse)),
         (status = 415, response = inline(ApiErrorResponse)),
         (status = 422, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
@@ -241,8 +247,9 @@ pub(super) async fn replace(
     State(state): State<ApiState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
+    let body = request_body(body)?;
     let id = ApplicationId::parse(&id)?;
     let (validated, expected) = parse_update(&headers, &body)?;
     let current = state.store.get(&id).await?;
@@ -292,6 +299,7 @@ pub(super) async fn replace(
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
+        (status = 413, response = inline(ApiErrorResponse)),
         (status = 415, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
         (status = 502, response = inline(ApiErrorResponse)),
@@ -302,8 +310,9 @@ pub(super) async fn delete(
     State(state): State<ApiState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
+    let body = request_body(body)?;
     require_json(&headers)?;
     let request: DeleteApplicationRequest = decode_json(&body)?;
     valid_expected_generation(request.expected_generation)?;
@@ -360,6 +369,7 @@ pub(super) async fn delete(
         (status = 200, description = "Success", body = Envelope<PlanView>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
+        (status = 413, response = inline(ApiErrorResponse)),
         (status = 415, response = inline(ApiErrorResponse)),
         (status = 422, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
@@ -369,8 +379,9 @@ pub(super) async fn delete(
 pub(super) async fn plan_create(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let body = request_body(body)?;
     let validated = parse_manifest(&headers, &body, RequestShape::PlanCreate)?;
     let hash = Sha256::digest(validated.name().as_bytes());
     let id = ApplicationId::parse(format!("preview-{}", hex(&hash[..8])))
@@ -406,6 +417,7 @@ pub(super) async fn plan_create(
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
+        (status = 413, response = inline(ApiErrorResponse)),
         (status = 415, response = inline(ApiErrorResponse)),
         (status = 422, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
@@ -417,8 +429,9 @@ pub(super) async fn plan_replace(
     State(state): State<ApiState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let body = request_body(body)?;
     let id = ApplicationId::parse(&id)?;
     let (validated, expected) = parse_update(&headers, &body)?;
     let current = state.store.get(&id).await?;
@@ -569,6 +582,7 @@ async fn reject_name_collision(
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
+        (status = 413, response = inline(ApiErrorResponse)),
         (status = 415, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
         (status = 502, response = inline(ApiErrorResponse)),
@@ -579,8 +593,9 @@ pub(super) async fn reconcile(
     State(state): State<ApiState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
+    let body = request_body(body)?;
     require_json(&headers)?;
     let request: ExpectedGeneration = decode_json(&body)?;
     valid_expected_generation(request.expected_generation)?;
@@ -638,6 +653,24 @@ fn require_runtime_execution(state: &ApiState) -> Result<(), ApiError> {
     } else {
         Err(BoundaryError::Unavailable.into())
     }
+}
+
+fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes, ApiError> {
+    body.map_err(|rejection| {
+        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "request_body_too_large",
+                "request body exceeds the maximum allowed size",
+            )
+        } else {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "request_body_unreadable",
+                "request body could not be read",
+            )
+        }
+    })
 }
 
 #[utoipa::path(
