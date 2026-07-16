@@ -1,3 +1,9 @@
+# Runs all validation commands
+validate: format lint check test doc-test
+
+# Runs all code generation
+gen: generate-openapi
+
 format:
     @cargo fmt --all
 
@@ -16,5 +22,3 @@ test:
 
 doc-test:
     @cargo test --doc --workspace
-
-validate: format lint check test doc-test
