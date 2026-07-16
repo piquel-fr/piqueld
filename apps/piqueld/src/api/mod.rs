@@ -29,8 +29,7 @@ use tower_http::{
 };
 
 use crate::store::{
-    ApplicationState, ApplicationStatus, Operation, OperationKind, OperationStep, SqliteStore,
-    StepState, StoreError, StoredApplication, WorkState,
+    ApplicationStatus, Operation, OperationStep, SqliteStore, StoreError, StoredApplication,
 };
 
 mod applications;
@@ -573,7 +572,7 @@ fn application_view(v: StoredApplication) -> ApplicationView {
 fn status_view(v: ApplicationStatus) -> ApplicationStatusView {
     ApplicationStatusView {
         application_id: v.application_id.to_string(),
-        state: application_state_name(v.state).into(),
+        state: v.state.as_str().into(),
         observed_generation: v.observed_generation,
         message: v.message,
         updated_at_ms: v.updated_at_ms,
@@ -584,8 +583,8 @@ fn operation_view(v: Operation, steps: Vec<OperationStep>) -> OperationView {
         id: v.id,
         application_id: v.application_id.to_string(),
         generation: v.generation,
-        kind: operation_kind_name(v.kind).into(),
-        state: state_name(v.state).into(),
+        kind: v.kind.as_str().into(),
+        state: v.state.as_str().into(),
         error_code: v.error_code,
         error_message: v.error_message,
         created_at_ms: v.created_at_ms,
@@ -598,46 +597,13 @@ fn operation_view(v: Operation, steps: Vec<OperationStep>) -> OperationView {
                 id: s.id,
                 position: s.position,
                 kind: s.kind,
-                state: step_state_name(s.state).into(),
+                state: s.state.as_str().into(),
                 attempt: s.attempt,
                 error_code: s.error_code,
                 error_message: s.error_message,
                 updated_at_ms: s.updated_at_ms,
             })
             .collect(),
-    }
-}
-fn application_state_name(v: ApplicationState) -> &'static str {
-    match v {
-        ApplicationState::Pending => "pending",
-        ApplicationState::Resolving => "resolving",
-        ApplicationState::Building => "building",
-        ApplicationState::Deploying => "deploying",
-        ApplicationState::Ready => "ready",
-        ApplicationState::Degraded => "degraded",
-        ApplicationState::Deleting => "deleting",
-        ApplicationState::Failed => "failed",
-    }
-}
-fn state_name(v: WorkState) -> &'static str {
-    match v {
-        WorkState::Pending => "pending",
-        WorkState::Running => "running",
-        WorkState::Recovery => "recovery",
-        WorkState::Succeeded => "succeeded",
-        WorkState::Failed => "failed",
-        WorkState::Cancelled => "cancelled",
-    }
-}
-fn step_state_name(v: StepState) -> &'static str {
-    match v {
-        StepState::Pending => "pending",
-        StepState::Running => "running",
-        StepState::Recovery => "recovery",
-        StepState::Succeeded => "succeeded",
-        StepState::Failed => "failed",
-        StepState::Cancelled => "cancelled",
-        StepState::Skipped => "skipped",
     }
 }
 
@@ -654,7 +620,7 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt;
 
-    use crate::store::{ApplicationRepository, OperationRepository};
+    use crate::store::{ApplicationRepository, OperationRepository, StepState, WorkState};
 
     struct FakeRuntime {
         instance: InstanceId,

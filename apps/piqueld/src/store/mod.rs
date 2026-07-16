@@ -123,7 +123,8 @@ pub enum ApplicationState {
     Failed,
 }
 impl ApplicationState {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Resolving => "resolving",
@@ -194,7 +195,8 @@ pub enum OperationKind {
     Deploy,
 }
 impl OperationKind {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Create => "create",
             Self::Replace => "replace",
@@ -229,7 +231,8 @@ pub enum WorkState {
     Cancelled,
 }
 impl WorkState {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Running => "running",
@@ -283,7 +286,8 @@ pub enum StepState {
     Skipped,
 }
 impl StepState {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Running => "running",
