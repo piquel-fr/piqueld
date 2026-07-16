@@ -20,7 +20,6 @@ use http::{Method, Request, StatusCode, header};
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     path::{Path, PathBuf},
@@ -33,18 +32,18 @@ use utoipa::ToSchema;
 
 pub const API_PREFIX: &str = "/api/v1";
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Envelope<T> {
     pub data: T,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Page<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct ErrorBody {
     pub code: String,
     pub message: String,
@@ -53,7 +52,7 @@ pub struct ErrorBody {
     pub request_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SseEvent {
     pub id: Option<String>,
     pub event: Option<String>,

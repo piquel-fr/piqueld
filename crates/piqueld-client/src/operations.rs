@@ -1,11 +1,10 @@
 use http::Method;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{Client, ClientError, SseEvent, path_segment};
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct OperationStepView {
     pub id: String,
     pub position: u32,
@@ -17,11 +16,10 @@ pub struct OperationStepView {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct OperationView {
     pub id: String,
     pub application_id: String,
-    #[schemars(range(min = 1))]
     #[schema(minimum = 1)]
     pub generation: u64,
     pub kind: String,

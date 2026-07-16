@@ -1,35 +1,15 @@
-use axum::response::IntoResponse;
+use axum::{Extension, response::IntoResponse};
 use http::header;
 use piqueld_client::{
-    AcceptedOperation, ApplicationStatusView, ApplicationView, CreateApplicationRequest,
-    DeleteApplicationRequest, Envelope, ErrorBody, ExpectedGeneration, OperationView, Page,
-    PlanApplicationRequest, PlanView, ReplaceApplicationRequest, SystemCapabilities, SystemStatus,
+    AcceptedOperation, ApplicationStatusView, ApplicationView, Envelope, ErrorBody, OperationView,
+    Page, PlanView, SystemCapabilities, SystemStatus,
 };
-use schemars::{JsonSchema, schema_for};
-use serde_json::{Value, json};
+use serde_json::Value;
+use std::sync::Arc;
 use utoipa::{OpenApi, ToResponse, ToSchema};
-
-use super::{applications, operations, system};
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(
-        system::status,
-        system::capabilities,
-        openapi,
-        applications::list,
-        applications::create,
-        applications::plan_create,
-        applications::get,
-        applications::replace,
-        applications::delete,
-        applications::plan_replace,
-        applications::reconcile,
-        applications::status,
-        applications::events,
-        operations::get,
-        operations::events,
-    ),
     info(
         title = "piqueld API",
         version = "v1",
@@ -39,11 +19,12 @@ use super::{applications, operations, system};
     servers(
         (url = "http://127.0.0.1:7845", description = "Default loopback TCP endpoint; clients may also use the configured Unix socket.")
     ),
+    components(schemas(ErrorBody)),
 )]
 struct ApiDoc;
 
-trait SchemaSource {
-    type Source: JsonSchema;
+pub(super) fn base_document() -> utoipa::openapi::OpenApi {
+    ApiDoc::openapi()
 }
 
 #[allow(dead_code)]
@@ -56,10 +37,6 @@ macro_rules! envelope_schema {
         #[allow(dead_code)]
         #[derive(ToSchema)]
         pub(super) struct $name(Envelope<$body>);
-
-        impl SchemaSource for $name {
-            type Source = Envelope<$body>;
-        }
     };
 }
 
@@ -81,102 +58,27 @@ envelope_schema!(OperationEnvelope, OperationView);
         (status = 200, description = "OpenAPI 3.1 document", body = Object, content_type = "application/vnd.oai.openapi+json")
     )
 )]
-pub(super) async fn openapi() -> impl IntoResponse {
+pub(super) async fn openapi(
+    Extension(document): Extension<Arc<utoipa::openapi::OpenApi>>,
+) -> impl IntoResponse {
     (
         [(
             header::CONTENT_TYPE,
             "application/vnd.oai.openapi+json;version=3.1",
         )],
-        openapi_document().to_string(),
+        serde_json::to_string(document.as_ref()).expect("OpenAPI serialization cannot fail"),
     )
 }
 
 /// Generates the `OpenAPI` contract from Utoipa endpoint metadata.
 ///
-/// Core domain schemas are bridged from Schemars as JSON objects so the domain
-/// crate does not need to depend on the HTTP-facing Utoipa crate.
-///
 /// # Panics
 ///
-/// Panics if Utoipa produces an `OpenAPI` value with an invalid root or components
-/// shape, or if an in-memory schema cannot be serialized.
+/// Panics if Utoipa's generated document cannot be serialized.
 #[must_use]
 pub fn openapi_document() -> Value {
-    let mut document =
-        serde_json::to_value(ApiDoc::openapi()).expect("OpenAPI serialization cannot fail");
-    let components = document
-        .as_object_mut()
-        .expect("OpenAPI document must be an object")
-        .entry("components")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .expect("OpenAPI components must be an object");
-    let schemas = components
-        .entry("schemas")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .expect("OpenAPI schemas must be an object");
-    // Schemars remains authoritative for schema bodies while Utoipa provides
-    // compile-time-safe component names in endpoint annotations.
-    schemas.clear();
-    add_schema::<ErrorBody>(schemas);
-    add_schema_as::<SystemStatusEnvelope>(schemas);
-    add_schema_as::<SystemCapabilitiesEnvelope>(schemas);
-    add_schema_as::<ApplicationPageEnvelope>(schemas);
-    add_schema_as::<ApplicationEnvelope>(schemas);
-    add_schema::<CreateApplicationRequest>(schemas);
-    add_schema::<ReplaceApplicationRequest>(schemas);
-    add_schema::<PlanApplicationRequest>(schemas);
-    add_schema::<piqueld_client::ReplacePlanRequest>(schemas);
-    add_schema::<DeleteApplicationRequest>(schemas);
-    add_schema::<ExpectedGeneration>(schemas);
-    add_schema_as::<AcceptedOperationEnvelope>(schemas);
-    add_schema_as::<PlanEnvelope>(schemas);
-    add_schema_as::<ApplicationStatusEnvelope>(schemas);
-    add_schema_as::<OperationEnvelope>(schemas);
-    document
-}
-
-fn add_schema<T: JsonSchema + ToSchema>(schemas: &mut serde_json::Map<String, Value>) {
-    add_schema_named::<T>(schemas, T::name().as_ref());
-}
-
-fn add_schema_as<Name: SchemaSource + ToSchema>(schemas: &mut serde_json::Map<String, Value>) {
-    add_schema_named::<Name::Source>(schemas, Name::name().as_ref());
-}
-
-fn add_schema_named<T: JsonSchema>(schemas: &mut serde_json::Map<String, Value>, name: &str) {
-    let root = schema_for!(T);
-    let mut schema = serde_json::to_value(root.schema).expect("schema serialization cannot fail");
-    rewrite_schema_refs(&mut schema);
-    schemas.insert(name.into(), schema);
-    for (definition_name, definition) in root.definitions {
-        let mut definition =
-            serde_json::to_value(definition).expect("schema serialization cannot fail");
-        rewrite_schema_refs(&mut definition);
-        schemas.entry(definition_name).or_insert(definition);
-    }
-}
-
-fn rewrite_schema_refs(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            if let Some(Value::String(reference)) = map.get_mut("$ref")
-                && let Some(name) = reference.strip_prefix("#/definitions/")
-            {
-                *reference = format!("#/components/schemas/{name}");
-            }
-            for value in map.values_mut() {
-                rewrite_schema_refs(value);
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                rewrite_schema_refs(value);
-            }
-        }
-        _ => {}
-    }
+    serde_json::to_value(super::documented_router().into_openapi())
+        .expect("OpenAPI serialization cannot fail")
 }
 
 #[cfg(test)]

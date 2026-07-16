@@ -1,11 +1,6 @@
 //! Stable application identity and deterministic Docker-safe names.
 #![allow(missing_docs)]
 
-use schemars::{
-    JsonSchema,
-    r#gen::SchemaGenerator,
-    schema::{InstanceType, Schema, SchemaObject, StringValidation},
-};
 use serde::{Deserialize, Deserializer, Serialize, de};
 use sha2::{Digest, Sha256};
 use std::{fmt, str::FromStr};
@@ -21,25 +16,6 @@ pub struct ApplicationIdError;
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct ApplicationId(String);
-
-impl JsonSchema for ApplicationId {
-    fn schema_name() -> String {
-        "ApplicationId".into()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            string: Some(Box::new(StringValidation {
-                max_length: Some(64),
-                min_length: Some(8),
-                pattern: Some("^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$".into()),
-            })),
-            ..SchemaObject::default()
-        }
-        .into()
-    }
-}
 
 impl ApplicationId {
     /// Parses a storage-assigned identifier.

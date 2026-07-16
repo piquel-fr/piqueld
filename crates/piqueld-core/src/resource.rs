@@ -9,11 +9,6 @@ use crate::{
     },
     router_name,
 };
-use schemars::{
-    JsonSchema,
-    r#gen::SchemaGenerator,
-    schema::{InstanceType, Schema, SchemaObject, StringValidation},
-};
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -75,24 +70,6 @@ impl<'de> Deserialize<'de> for InstanceId {
         Self::parse(value).map_err(de::Error::custom)
     }
 }
-impl JsonSchema for InstanceId {
-    fn schema_name() -> String {
-        "InstanceId".into()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            string: Some(Box::new(StringValidation {
-                min_length: Some(1),
-                max_length: Some(64),
-                pattern: Some("^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$".into()),
-            })),
-            ..SchemaObject::default()
-        }
-        .into()
-    }
-}
 impl fmt::Display for InstanceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -141,24 +118,6 @@ impl<'de> Deserialize<'de> for Sha256Digest {
         Self::parse(value).map_err(de::Error::custom)
     }
 }
-impl JsonSchema for Sha256Digest {
-    fn schema_name() -> String {
-        "Sha256Digest".into()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            string: Some(Box::new(StringValidation {
-                min_length: Some(71),
-                max_length: Some(71),
-                pattern: Some("^sha256:[0-9a-f]{64}$".into()),
-            })),
-            ..SchemaObject::default()
-        }
-        .into()
-    }
-}
 impl fmt::Display for Sha256Digest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -172,7 +131,7 @@ impl FromStr for Sha256Digest {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResolvedSource {
     Image {
@@ -203,7 +162,7 @@ impl ResolvedSource {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretGeneration {
     pub logical_name: String,
@@ -211,14 +170,14 @@ pub struct SecretGeneration {
     pub swarm_name: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolutionSet {
     pub sources: BTreeMap<String, ResolvedSource>,
     pub secrets: BTreeMap<String, SecretGeneration>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResolutionRequirement {
     ResolveImage {
@@ -278,7 +237,7 @@ pub fn preview_resolution(
     requirements
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ownership {
     pub instance_id: InstanceId,
@@ -302,21 +261,21 @@ impl Ownership {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredNetwork {
     pub name: String,
     pub ingress: bool,
     pub labels: BTreeMap<String, String>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredVolume {
     pub logical_name: String,
     pub name: String,
     pub labels: BTreeMap<String, String>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredSecret {
     pub logical_name: String,
@@ -324,7 +283,7 @@ pub struct DesiredSecret {
     pub name: String,
     pub labels: BTreeMap<String, String>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredSecretMount {
     pub logical_name: String,
@@ -332,14 +291,14 @@ pub struct DesiredSecretMount {
     pub target: String,
     pub mode: String,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredMount {
     pub volume_name: String,
     pub target: String,
     pub read_only: bool,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredService {
     pub logical_name: String,
@@ -359,7 +318,7 @@ pub struct DesiredService {
     pub labels: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredApplication {
     pub id: ApplicationId,
@@ -373,7 +332,7 @@ pub struct DesiredApplication {
 }
 pub type ResolvedApplication = DesiredApplication;
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompileError {
     pub code: String,
@@ -773,7 +732,7 @@ fn compile_traefik_labels(
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     New,
@@ -790,14 +749,14 @@ pub enum TaskState {
     #[default]
     Unknown,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedTask {
     pub state: TaskState,
     pub healthy: Option<bool>,
     pub desired_running: bool,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Convergence {
     Converged,
@@ -806,7 +765,7 @@ pub enum Convergence {
     Failed,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedNetwork {
     pub name: String,
@@ -833,20 +792,20 @@ impl ObservedNetwork {
         }
     }
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedVolume {
     pub name: String,
     pub labels: BTreeMap<String, String>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedSecret {
     pub name: String,
     pub labels: BTreeMap<String, String>,
     pub in_use: bool,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedService {
     pub name: String,
@@ -939,7 +898,7 @@ fn owned_label_subset(
             .all(|(k, v)| desired.get(k) == Some(v))
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedApplication {
     pub networks: Vec<ObservedNetwork>,

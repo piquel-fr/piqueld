@@ -2,11 +2,6 @@
 #![allow(missing_docs)]
 
 use crate::ApplicationId;
-use schemars::{
-    JsonSchema,
-    r#gen::SchemaGenerator,
-    schema::{InstanceType, RootSchema, Schema, SchemaObject},
-};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -21,53 +16,34 @@ pub const APPLICATION_API_VERSION: &str = "piqueld.dev/v1alpha1";
 pub const APPLICATION_KIND: &str = "Application";
 
 /// Strict public application request and export shape.
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationManifest {
-    #[schemars(schema_with = "api_version_schema")]
     pub api_version: String,
-    #[schemars(schema_with = "application_kind_schema")]
     pub kind: String,
     pub metadata: MetadataInput,
     pub spec: ApplicationSpecInput,
 }
-impl ApplicationManifest {
-    /// JSON Schema snapshot source for canonical application responses.
-    pub fn schema() -> RootSchema {
-        schemars::schema_for!(Self)
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MetadataInput {
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub name: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ApplicationSpecInput {
-    #[schemars(length(min = 1))]
     pub services: Vec<ServiceInput>,
     pub volumes: Vec<VolumeInput>,
     pub routes: Vec<RouteInput>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceInput {
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub name: String,
     pub source: SourceInput,
     #[serde(default = "default_replicas")]
-    #[schemars(range(min = 1, max = 100))]
     pub replicas: u16,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
@@ -90,7 +66,7 @@ fn default_replicas() -> u16 {
 }
 
 /// Exactly one supported service source. The tag makes image/Git exhaustive.
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum SourceInput {
     Image {
@@ -116,36 +92,24 @@ fn default_dockerfile() -> String {
     "Dockerfile".into()
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VolumeInput {
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub name: String,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MountInput {
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub volume: String,
     pub target: String,
     #[serde(default)]
     pub read_only: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretReferenceInput {
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub source: String,
     pub target: Option<String>,
     #[serde(default = "default_secret_mode")]
@@ -155,42 +119,31 @@ fn default_secret_mode() -> String {
     "0400".into()
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteInput {
-    #[schemars(length(min = 1, max = 253))]
     pub host: String,
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub service: String,
-    #[schemars(range(min = 1))]
     pub port: u16,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum HealthCheckInput {
     Http {
-        #[schemars(range(min = 1))]
         port: u16,
         #[serde(default = "default_health_path")]
         path: String,
         #[serde(default = "default_interval")]
-        #[schemars(range(min = 1))]
         interval_seconds: u32,
         #[serde(default = "default_timeout")]
-        #[schemars(range(min = 1))]
         timeout_seconds: u32,
     },
     Command {
         command: Vec<String>,
         #[serde(default = "default_interval")]
-        #[schemars(range(min = 1))]
         interval_seconds: u32,
         #[serde(default = "default_timeout")]
-        #[schemars(range(min = 1))]
         timeout_seconds: u32,
     },
 }
@@ -204,17 +157,15 @@ fn default_timeout() -> u32 {
     3
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimitsInput {
-    #[schemars(range(min = 1))]
     pub cpu_millis: Option<u32>,
-    #[schemars(range(min = 1))]
     pub memory_bytes: Option<u64>,
 }
 
 /// A field-level, safe validation error.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ValidationError {
     pub code: String,
@@ -223,7 +174,7 @@ pub struct ValidationError {
 }
 
 /// All independently discoverable manifest errors, in stable path order.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct ValidationErrors(pub Vec<ValidationError>);
 
@@ -242,54 +193,35 @@ pub struct ValidatedApplication {
 }
 
 /// Canonical desired application plus persistence-assigned identity.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NormalizedApplication {
     pub id: ApplicationId,
-    #[schemars(schema_with = "api_version_schema")]
     pub api_version: String,
-    #[schemars(schema_with = "application_kind_schema")]
     pub kind: String,
     pub metadata: Metadata,
     pub spec: ApplicationSpec,
 }
 
-impl NormalizedApplication {
-    /// JSON Schema snapshot source for canonical application responses.
-    pub fn schema() -> RootSchema {
-        schemars::schema_for!(Self)
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub name: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationSpec {
-    #[schemars(length(min = 1))]
     pub services: Vec<Service>,
     pub volumes: Vec<Volume>,
     pub routes: Vec<Route>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Service {
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub name: String,
     pub source: Source,
-    #[schemars(range(min = 1, max = 100))]
     pub replicas: u16,
     pub environment: BTreeMap<String, String>,
     pub command: Vec<String>,
@@ -301,7 +233,7 @@ pub struct Service {
     pub resources: Option<ResourceLimits>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Source {
     Image {
@@ -315,77 +247,52 @@ pub enum Source {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Volume {
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub name: String,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mount {
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub volume: String,
     pub target: String,
     pub read_only: bool,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretReference {
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub source: String,
     pub target: String,
     pub mode: String,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
-    #[schemars(length(min = 1, max = 253))]
     pub host: String,
-    #[schemars(
-        length(min = 1, max = 63),
-        regex(pattern = "^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$")
-    )]
     pub service: String,
-    #[schemars(range(min = 1))]
     pub port: u16,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum HealthCheck {
     Http {
-        #[schemars(range(min = 1))]
         port: u16,
         path: String,
-        #[schemars(range(min = 1))]
         interval_seconds: u32,
-        #[schemars(range(min = 1))]
         timeout_seconds: u32,
     },
     Command {
         command: Vec<String>,
-        #[schemars(range(min = 1))]
         interval_seconds: u32,
-        #[schemars(range(min = 1))]
         timeout_seconds: u32,
     },
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimits {
-    #[schemars(range(min = 1))]
     pub cpu_millis: Option<u32>,
-    #[schemars(range(min = 1))]
     pub memory_bytes: Option<u64>,
 }
 
@@ -1141,23 +1048,6 @@ impl NormalizedApplication {
             },
         }
     }
-}
-
-fn api_version_schema(_generator: &mut SchemaGenerator) -> Schema {
-    constant_string_schema(APPLICATION_API_VERSION)
-}
-
-fn application_kind_schema(_generator: &mut SchemaGenerator) -> Schema {
-    constant_string_schema(APPLICATION_KIND)
-}
-
-fn constant_string_schema(value: &str) -> Schema {
-    SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        enum_values: Some(vec![serde_json::Value::String(value.into())]),
-        ..SchemaObject::default()
-    }
-    .into()
 }
 
 fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {

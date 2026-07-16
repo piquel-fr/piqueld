@@ -3,13 +3,12 @@
 
 use async_trait::async_trait;
 use axum::{
-    Router,
+    Extension, Router,
     body::Body,
     extract::Request,
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response, sse::Event},
-    routing::{get, post},
 };
 use futures_util::Stream;
 use piqueld_client::{
@@ -28,6 +27,7 @@ use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::store::{SqliteStore, StoreError, StoredApplication};
 
@@ -273,46 +273,38 @@ impl IntoResponse for ApiError {
 /// Builds the complete Plan 05 router. No later-plan endpoints are published.
 pub fn router(state: ApiState) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
-    Router::new()
-        .route("/api/v1/system/status", get(system::status))
-        .route("/api/v1/system/capabilities", get(system::capabilities))
-        .route("/api/v1/openapi.json", get(openapi::openapi))
-        .route(
-            "/api/v1/applications",
-            get(applications::list).post(applications::create),
-        )
-        .route("/api/v1/applications/plan", post(applications::plan_create))
-        .route(
-            "/api/v1/applications/{id}",
-            get(applications::get)
-                .put(applications::replace)
-                .delete(applications::delete),
-        )
-        .route(
-            "/api/v1/applications/{id}/plan",
-            post(applications::plan_replace),
-        )
-        .route(
-            "/api/v1/applications/{id}/reconcile",
-            post(applications::reconcile),
-        )
-        .route(
-            "/api/v1/applications/{id}/status",
-            get(applications::status),
-        )
-        .route(
-            "/api/v1/applications/{id}/events",
-            get(applications::events),
-        )
-        .route("/api/v1/operations/{id}", get(operations::get))
-        .route("/api/v1/operations/{id}/events", get(operations::events))
+    let (router, openapi) = documented_router().split_for_parts();
+    router
         .method_not_allowed_fallback(method_not_allowed)
         .fallback(fallback)
         .with_state(state)
+        .layer(Extension(Arc::new(openapi)))
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
         .layer(middleware::from_fn(bind_error_request_id))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
+}
+
+// Public endpoints must be registered through `routes!` here so Axum and the
+// generated OpenAPI document receive the same method and path at the same time.
+fn documented_router() -> OpenApiRouter<ApiState> {
+    OpenApiRouter::with_openapi(openapi::base_document())
+        .routes(routes!(system::status))
+        .routes(routes!(system::capabilities))
+        .routes(routes!(openapi::openapi))
+        .routes(routes!(applications::list, applications::create))
+        .routes(routes!(applications::plan_create))
+        .routes(routes!(
+            applications::get,
+            applications::replace,
+            applications::delete
+        ))
+        .routes(routes!(applications::plan_replace))
+        .routes(routes!(applications::reconcile))
+        .routes(routes!(applications::status))
+        .routes(routes!(applications::events))
+        .routes(routes!(operations::get))
+        .routes(routes!(operations::events))
 }
 
 async fn bind_error_request_id(request: Request, next: Next) -> Response {
@@ -1215,6 +1207,23 @@ mod tests {
         let snapshot: Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(openapi::openapi_document(), snapshot);
+
+        let (_temp, _store, app) = fixture(Arc::new(UnavailableRuntime)).await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/openapi.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/vnd.oai.openapi+json;version=3.1"
+        );
+        assert_eq!(json_body(response).await, snapshot);
+
         assert!(snapshot["paths"].get("/api/v1/secrets").is_none());
         assert!(
             snapshot["paths"]
