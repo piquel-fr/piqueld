@@ -658,6 +658,27 @@ async fn transport_failures_are_structured_and_safe() {
         !String::from_utf8_lossy(&bad_type.into_body().collect().await.unwrap().to_bytes())
             .contains("secret fixture")
     );
+    let malformed_query = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/applications?limit=invalid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(malformed_query.status(), StatusCode::BAD_REQUEST);
+    let request_id = malformed_query
+        .headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let malformed_query = json_body(malformed_query).await;
+    assert_eq!(malformed_query["code"], "pagination_invalid");
+    assert_eq!(malformed_query["request_id"], request_id);
     let unknown = app
         .oneshot(
             Request::builder()

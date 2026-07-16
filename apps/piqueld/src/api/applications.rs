@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::{
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{Path, Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response, Sse, sse::KeepAlive},
 };
@@ -53,8 +53,15 @@ pub(super) struct ListQuery {
 )]
 pub(super) async fn list(
     State(state): State<ApiState>,
-    Query(query): Query<ListQuery>,
+    query: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let Query(query) = query.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "pagination_invalid",
+            "pagination parameters are invalid",
+        )
+    })?;
     let limit = query.limit.unwrap_or(DEFAULT_PAGE_SIZE);
     let page = state
         .store
