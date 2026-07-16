@@ -35,41 +35,51 @@ async fn main() -> Result<()> {
         .context("failed to recover interrupted operations")?;
 
     let state = ApiState::new(Arc::clone(&store), Arc::new(UnavailableRuntime));
+
     let tcp = TcpListener::bind(config.server.http_listen)
         .await
         .context("failed to bind HTTP API")?;
-    if let Some(parent) = config.server.unix_socket.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .context("failed to create Unix socket directory")?;
-    }
-    match tokio::fs::symlink_metadata(&config.server.unix_socket).await {
-        Ok(metadata) if metadata.file_type().is_socket() => {
-            tokio::fs::remove_file(&config.server.unix_socket)
+    let unix = {
+        if let Some(parent) = config.server.unix_socket.parent() {
+            tokio::fs::create_dir_all(parent)
                 .await
-                .context("failed to replace stale Unix socket")?;
+                .context("failed to create Unix socket directory")?;
         }
-        Ok(_) => anyhow::bail!("refusing to replace non-socket Unix API path"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("failed to inspect Unix API path"),
-    }
-    let unix = UnixListener::bind(&config.server.unix_socket).context("failed to bind Unix API")?;
+        match tokio::fs::symlink_metadata(&config.server.unix_socket).await {
+            Ok(metadata) if metadata.file_type().is_socket() => {
+                tokio::fs::remove_file(&config.server.unix_socket)
+                    .await
+                    .context("failed to replace stale Unix socket")?;
+            }
+            Ok(_) => anyhow::bail!("refusing to replace non-socket Unix API path"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("failed to inspect Unix API path"),
+        }
+        UnixListener::bind(&config.server.unix_socket).context("failed to bind Unix API")?
+    };
 
     let cancellation = CancellationToken::new();
     let signal_task = tokio::spawn(piqueld::cancel_on_shutdown_signal(cancellation.clone()));
-    let tcp_cancel = cancellation.child_token();
-    let tcp_state = state.clone();
-    let tcp_api = tokio::spawn(async move {
-        axum::serve(tcp, piqueld::api::router(tcp_state))
-            .with_graceful_shutdown(async move { tcp_cancel.cancelled().await })
-            .await
-    });
-    let unix_cancel = cancellation.child_token();
-    let unix_api = tokio::spawn(async move {
-        axum::serve(unix, piqueld::api::router(state))
-            .with_graceful_shutdown(async move { unix_cancel.cancelled().await })
-            .await
-    });
+
+    let tcp_api = {
+        let tcp_cancel = cancellation.child_token();
+        let tcp_state = state.clone();
+        tokio::spawn(async move {
+            axum::serve(tcp, piqueld::api::router(tcp_state))
+                .with_graceful_shutdown(async move { tcp_cancel.cancelled().await })
+                .await
+        })
+    };
+
+    let unix_api = {
+        let unix_cancel = cancellation.child_token();
+        tokio::spawn(async move {
+            axum::serve(unix, piqueld::api::router(state))
+                .with_graceful_shutdown(async move { unix_cancel.cancelled().await })
+                .await
+        })
+    };
+
     piqueld::run_until_cancelled(cancellation).await?;
     signal_task.await.context("shutdown task failed")??;
     tcp_api
