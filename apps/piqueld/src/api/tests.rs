@@ -71,6 +71,33 @@ impl RuntimeBoundary for FakeRuntime {
     }
 }
 
+struct ExecutionUnavailableRuntime {
+    inner: FakeRuntime,
+}
+
+#[async_trait]
+impl RuntimeBoundary for ExecutionUnavailableRuntime {
+    fn capabilities(&self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            source_resolution: true,
+            runtime_observation: true,
+            runtime_execution: false,
+            reason: Some("runtime execution is unavailable".into()),
+        }
+    }
+
+    async fn prepare(
+        &self,
+        app: &NormalizedApplication,
+    ) -> Result<PreparedApplication, BoundaryError> {
+        self.inner.prepare(app).await
+    }
+
+    async fn observe(&self, app: &StoredApplication) -> Result<ObservedApplication, BoundaryError> {
+        self.inner.observe(app).await
+    }
+}
+
 struct PreviewOnlyRuntime;
 #[async_trait]
 impl RuntimeBoundary for PreviewOnlyRuntime {
@@ -221,6 +248,83 @@ async fn create_is_accepted_idempotent_and_queryable() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn mutations_require_runtime_execution_before_persisting_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteStore::open(temp.path().join("unavailable.db"))
+            .await
+            .unwrap(),
+    );
+    let instance = InstanceId::parse(store.instance_id().to_owned()).unwrap();
+    let unavailable = router(ApiState::new(
+        Arc::clone(&store),
+        Arc::new(ExecutionUnavailableRuntime {
+            inner: FakeRuntime { instance },
+        }),
+    ));
+    let create = unavailable
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/applications")
+                .header(header::CONTENT_TYPE, JSON)
+                .header("idempotency-key", "execution-unavailable")
+                .body(Body::from(json!({"manifest":manifest()}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json_body(create).await["code"], "runtime_unavailable");
+    assert!(store.list(None, 50).await.unwrap().items.is_empty());
+
+    let (_temp, store, available) = fake_fixture().await;
+    let created = json_body(
+        available
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/applications")
+                    .header(header::CONTENT_TYPE, JSON)
+                    .header("idempotency-key", "execution-gated-mutations")
+                    .body(Body::from(json!({"manifest":manifest()}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    let id = ApplicationId::parse(created["data"]["application_id"].as_str().unwrap()).unwrap();
+    let instance = InstanceId::parse(store.instance_id().to_owned()).unwrap();
+    let unavailable = router(ApiState::new(
+        Arc::clone(&store),
+        Arc::new(ExecutionUnavailableRuntime {
+            inner: FakeRuntime { instance },
+        }),
+    ));
+
+    for (method, body) in [
+        (
+            Method::PUT,
+            json!({"expected_generation":1,"manifest":manifest()}),
+        ),
+        (Method::DELETE, json!({"expected_generation":1})),
+    ] {
+        let response = unavailable
+            .clone()
+            .oneshot(request(method, &format!("/api/v1/applications/{id}"), body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(json_body(response).await["code"], "runtime_unavailable");
+    }
+    let stored = store.get(&id).await.unwrap();
+    assert_eq!(stored.generation, 1);
+    assert!(!stored.delete_intent);
 }
 
 #[tokio::test]

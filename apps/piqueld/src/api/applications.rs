@@ -163,6 +163,7 @@ pub(super) async fn create(
             generation: mutation.generation,
         }));
     }
+    require_runtime_execution(&state)?;
     reject_name_collision(&state, &app, None).await?;
     let prepared = state.runtime.prepare(&app).await?;
     let plan = plan(
@@ -239,6 +240,7 @@ pub(super) async fn replace(
     let (validated, expected) = parse_update(&headers, &body)?;
     let current = state.store.get(&id).await?;
     generation(expected, current.generation)?;
+    require_runtime_execution(&state)?;
     let app = validated.normalize(id.clone());
     reject_name_collision(&state, &app, Some(&id)).await?;
     let prepared = state.runtime.prepare(&app).await?;
@@ -301,6 +303,7 @@ pub(super) async fn delete(
     let id = ApplicationId::parse(&id)?;
     let current = state.store.get(&id).await?;
     generation(request.expected_generation, current.generation)?;
+    require_runtime_execution(&state)?;
     let observed = state.runtime.observe(&current).await?;
     let instance = InstanceId::parse(&state.instance_id).map_err(|_| StoreError::Corrupt)?;
     let plan = plan(
@@ -588,9 +591,7 @@ pub(super) async fn reconcile(
             generation: mutation.generation,
         }));
     }
-    if !state.runtime.capabilities().runtime_execution {
-        return Err(BoundaryError::Unavailable.into());
-    }
+    require_runtime_execution(&state)?;
     let desired = current.resolved.clone().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -622,6 +623,14 @@ pub(super) async fn reconcile(
         application_id: id.to_string(),
         generation: mutation.generation,
     }))
+}
+
+fn require_runtime_execution(state: &ApiState) -> Result<(), ApiError> {
+    if state.runtime.capabilities().runtime_execution {
+        Ok(())
+    } else {
+        Err(BoundaryError::Unavailable.into())
+    }
 }
 
 #[utoipa::path(
