@@ -9,7 +9,7 @@ check:
     @./scripts/check-dependency-boundaries.sh
 
 generate-openapi:
-    @cargo run --package piqueld --example generate_openapi
+    @cargo run --package piqueld --bin generate_openapi
 
 test:
     @cargo nextest run --workspace
