@@ -1,3 +1,7 @@
+# Makes sure everything works & is up to date in the repository
+# Generates all required code & runs validation
+all: gen validate
+
 # Runs all validation commands
 validate: format lint check test doc-test
 
