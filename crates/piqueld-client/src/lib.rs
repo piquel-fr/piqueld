@@ -286,7 +286,7 @@ impl Client {
                 }
             };
             let mut body = response.into_body();
-            let mut buffer = String::new();
+            let mut decoder = SseDecoder::default();
             loop {
                 let frame = tokio::select! {
                     () = tx.closed() => return,
@@ -300,14 +300,15 @@ impl Client {
                     return;
                 };
                 if let Ok(data) = frame.into_data() {
-                    buffer.push_str(&String::from_utf8_lossy(&data));
-                    buffer = buffer.replace("\r\n", "\n");
-                    while let Some(end) = buffer.find("\n\n") {
-                        let block = buffer[..end].to_owned();
-                        buffer.drain(..end + 2);
-                        if let Some(event) = parse_sse(&block)
-                            && tx.send(Ok(event)).await.is_err()
-                        {
+                    let events = match decoder.push(&data) {
+                        Ok(events) => events,
+                        Err(error) => {
+                            let _ = tx.send(Err(error)).await;
+                            return;
+                        }
+                    };
+                    for event in events {
+                        if tx.send(Ok(event)).await.is_err() {
                             return;
                         }
                     }
@@ -376,6 +377,51 @@ fn path_segment(value: &str) -> String {
     encoded
 }
 
+#[derive(Default)]
+struct SseDecoder {
+    buffer: Vec<u8>,
+}
+
+impl SseDecoder {
+    fn push(&mut self, data: &[u8]) -> Result<Vec<SseEvent>, ClientError> {
+        self.buffer.extend_from_slice(data);
+        let mut events = Vec::new();
+        while let Some((end, separator_len)) = sse_block_boundary(&self.buffer) {
+            let block = self.buffer[..end].to_vec();
+            self.buffer.drain(..end + separator_len);
+            let block = std::str::from_utf8(&block).map_err(|_| ClientError::Decode)?;
+            if let Some(event) = parse_sse(block) {
+                events.push(event);
+            }
+        }
+        Ok(events)
+    }
+}
+
+fn sse_block_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
+    let mut position = 0;
+    while position < buffer.len() {
+        let Some(first_len) = sse_line_ending_len(buffer, position) else {
+            position += 1;
+            continue;
+        };
+        let next = position + first_len;
+        if let Some(second_len) = sse_line_ending_len(buffer, next) {
+            return Some((position, first_len + second_len));
+        }
+        position = next;
+    }
+    None
+}
+
+fn sse_line_ending_len(buffer: &[u8], position: usize) -> Option<usize> {
+    match buffer.get(position) {
+        Some(b'\r') if buffer.get(position + 1) == Some(&b'\n') => Some(2),
+        Some(b'\n' | b'\r') => Some(1),
+        _ => None,
+    }
+}
+
 fn parse_sse(block: &str) -> Option<SseEvent> {
     let mut id = None;
     let mut kind = None;
@@ -403,4 +449,28 @@ fn parse_sse(block: &str) -> Option<SseEvent> {
 #[must_use]
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SseDecoder;
+
+    #[test]
+    fn sse_decoder_preserves_utf8_split_across_frames() {
+        let mut decoder = SseDecoder::default();
+        assert!(
+            decoder
+                .push(b"event: operation\ndata: caf\xc3")
+                .unwrap()
+                .is_empty()
+        );
+
+        let events = decoder.push(b"\xa9\n\n").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event.as_deref(), Some("operation"));
+        assert_eq!(events[0].data, "caf\u{e9}");
+
+        let events = decoder.push(b"data: mixed\r\n\n").unwrap();
+        assert_eq!(events[0].data, "mixed");
+    }
 }
