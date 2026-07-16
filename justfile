@@ -8,7 +8,7 @@ format:
     @cargo fmt --all
 
 lint:
-    @cargo clippy --workspace
+    @cargo clippy --workspace --all-targets
 
 check:
     @cargo check --workspace --all-targets

@@ -29,5 +29,5 @@ async fn sqlx_applies_the_complete_plan_four_migration_stack() {
         .fetch_one(&mut connection)
         .await
         .unwrap();
-    assert_eq!(schema_version, SCHEMA_VERSION as i64);
+    assert_eq!(schema_version, SCHEMA_VERSION.cast_signed());
 }

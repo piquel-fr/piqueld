@@ -41,7 +41,7 @@ async fn events(
         (DisconnectGuard(signal), true),
         |(guard, first)| async move {
             if !first {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                tokio::time::sleep(Duration::from_mins(1)).await;
             }
             Some((
                 Ok(Event::default()
