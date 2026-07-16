@@ -26,7 +26,9 @@ use super::{
     idempotent_application_id, last_event_id, ok, openapi::ApiErrorResponse, parse_manifest,
     parse_update, require_json, valid_expected_generation,
 };
-use crate::store::{ApplicationRepository, StatusRepository, StoreError, StoredApplication};
+use crate::store::{
+    ApplicationRepository, DEFAULT_PAGE_SIZE, StatusRepository, StoreError, StoredApplication,
+};
 
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -53,7 +55,7 @@ pub(super) async fn list(
     State(state): State<ApiState>,
     Query(query): Query<ListQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let limit = query.limit.unwrap_or(50);
+    let limit = query.limit.unwrap_or(DEFAULT_PAGE_SIZE);
     let page = state
         .store
         .list(query.cursor.as_deref(), limit)

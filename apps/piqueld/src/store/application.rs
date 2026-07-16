@@ -1,10 +1,9 @@
 //! Application repository implementation.
 
 use super::{
-    ApplicationId, ApplicationRepository, ApplicationRow, MAX_APPLICATION_PAGE_SIZE,
-    MutationResult, NormalizedApplication, OperationKind, ResolvedApplication, SqliteStore,
-    StoreError, StoredApplication, StoredApplicationPage, async_trait, canonical_resolved, now_ms,
-    valid_sha256,
+    ApplicationId, ApplicationRepository, ApplicationRow, MutationResult, NormalizedApplication,
+    OperationKind, ResolvedApplication, SqliteStore, StoreError, StoredApplication,
+    StoredApplicationPage, async_trait, canonical_resolved, now_ms, page_limit, valid_sha256,
 };
 
 #[async_trait]
@@ -449,9 +448,7 @@ impl ApplicationRepository for SqliteStore {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<StoredApplicationPage, StoreError> {
-        if limit == 0 || limit > MAX_APPLICATION_PAGE_SIZE {
-            return Err(StoreError::InvalidInput);
-        }
+        let fetch_limit = page_limit(limit)? + 1;
         let offset = cursor
             .map_or(Ok(0_i64), str::parse::<i64>)
             .map_err(|_| StoreError::InvalidInput)?;
@@ -465,7 +462,6 @@ impl ApplicationRepository for SqliteStore {
         if offset > count {
             return Err(StoreError::InvalidInput);
         }
-        let fetch_limit = i64::try_from(limit + 1).map_err(|_| StoreError::InvalidInput)?;
         let rows = sqlx::query_as!(
             ApplicationRow,
             r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications ORDER BY name,id LIMIT ?1 OFFSET ?2"#,

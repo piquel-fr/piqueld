@@ -341,8 +341,10 @@ pub struct StoredApplicationPage {
     pub next_cursor: Option<String>,
 }
 
-/// Maximum number of applications returned by one repository query.
-pub const MAX_APPLICATION_PAGE_SIZE: usize = 100;
+/// Default number of rows returned by a bounded repository query.
+pub const DEFAULT_PAGE_SIZE: usize = 50;
+/// Maximum number of rows processed by one bounded repository query.
+pub const MAX_PAGE_SIZE: usize = 100;
 
 impl StoredApplication {
     #[must_use]
@@ -537,9 +539,9 @@ pub trait OperationRepository: Send + Sync {
     async fn operations_for_application(
         &self,
         application_id: &ApplicationId,
-        limit: u32,
+        limit: usize,
     ) -> Result<Vec<Operation>, StoreError>;
-    async fn pending_operations(&self, limit: u32) -> Result<Vec<Operation>, StoreError>;
+    async fn pending_operations(&self, limit: usize) -> Result<Vec<Operation>, StoreError>;
     async fn transition_operation(
         &self,
         operation_id: &str,
@@ -558,7 +560,7 @@ pub trait OperationRepository: Send + Sync {
     async fn prune_finished_operations_before(
         &self,
         cutoff_ms: i64,
-        limit: u32,
+        limit: usize,
     ) -> Result<u64, StoreError>;
 }
 /// Status persistence contract.
@@ -599,7 +601,7 @@ pub trait BuildRepository: Send + Sync {
         to: WorkState,
         error: Option<(&str, &str)>,
     ) -> Result<(), StoreError>;
-    async fn prune_finished_before(&self, cutoff_ms: i64, limit: u32) -> Result<u64, StoreError>;
+    async fn prune_finished_before(&self, cutoff_ms: i64, limit: usize) -> Result<u64, StoreError>;
 }
 
 /// Integrated `SQLx` `SQLite` repository implementation.
@@ -899,6 +901,12 @@ fn valid_logical_name(value: &str) -> bool {
 }
 fn valid_bounded_text(value: &str, max_len: usize) -> bool {
     !value.is_empty() && value.len() <= max_len && !value.chars().any(char::is_control)
+}
+fn page_limit(limit: usize) -> Result<i64, StoreError> {
+    if !(1..=MAX_PAGE_SIZE).contains(&limit) {
+        return Err(StoreError::InvalidInput);
+    }
+    i64::try_from(limit).map_err(|_| StoreError::InvalidInput)
 }
 fn valid_sha256(value: &str) -> bool {
     value.len() == 71

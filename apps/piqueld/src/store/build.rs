@@ -2,7 +2,7 @@
 
 use super::{
     ApplicationId, ApplicationRow, Build, BuildRepository, SqliteStore, StoreError, WorkState,
-    async_trait, new_id, now_ms, valid_error,
+    async_trait, new_id, now_ms, page_limit, valid_error,
 };
 
 #[derive(Debug)]
@@ -231,8 +231,8 @@ impl BuildRepository for SqliteStore {
         }
     }
 
-    async fn prune_finished_before(&self, cutoff_ms: i64, limit: u32) -> Result<u64, StoreError> {
-        let limit = i64::from(limit);
+    async fn prune_finished_before(&self, cutoff_ms: i64, limit: usize) -> Result<u64, StoreError> {
+        let limit = page_limit(limit)?;
         sqlx::query!(
             "DELETE FROM builds WHERE id IN (SELECT id FROM builds WHERE finished_at_ms IS NOT NULL AND finished_at_ms < ?1 ORDER BY finished_at_ms LIMIT ?2)",
             cutoff_ms,

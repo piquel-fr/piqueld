@@ -1,6 +1,8 @@
 //! Bounded, cancellation-aware scheduling for durable operations.
 
-use crate::store::{Operation, OperationKind, OperationRepository, StoreError, WorkState};
+use crate::store::{
+    MAX_PAGE_SIZE, Operation, OperationKind, OperationRepository, StoreError, WorkState,
+};
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
@@ -106,7 +108,7 @@ where
             if cancellation.is_cancelled() {
                 return Ok(());
             }
-            let operations = self.repository.pending_operations(256).await?;
+            let operations = self.repository.pending_operations(MAX_PAGE_SIZE).await?;
             if operations.is_empty() {
                 return Ok(());
             }

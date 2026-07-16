@@ -2,7 +2,7 @@
 
 use super::{
     ApplicationId, Operation, OperationKind, OperationRepository, OperationStep, SqliteStore,
-    StepState, StoreError, WorkState, async_trait, now_ms, valid_error,
+    StepState, StoreError, WorkState, async_trait, now_ms, page_limit, valid_error,
 };
 
 #[derive(Debug)]
@@ -149,10 +149,10 @@ impl OperationRepository for SqliteStore {
     async fn operations_for_application(
         &self,
         application_id: &ApplicationId,
-        limit: u32,
+        limit: usize,
     ) -> Result<Vec<Operation>, StoreError> {
         let application_id = application_id.as_str();
-        let limit = i64::from(limit);
+        let limit = page_limit(limit)?;
         let rows = sqlx::query_as!(
             OperationRow,
             r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE application_id=?1 ORDER BY generation DESC,created_at_ms DESC,id DESC LIMIT ?2"#,
@@ -165,11 +165,11 @@ impl OperationRepository for SqliteStore {
         rows.into_iter().map(Operation::parse_row).collect()
     }
 
-    async fn pending_operations(&self, limit: u32) -> Result<Vec<Operation>, StoreError> {
+    async fn pending_operations(&self, limit: usize) -> Result<Vec<Operation>, StoreError> {
         // Only expose the oldest queued generation for each application. This
         // makes ordering durable rather than depending on task scheduling or
         // mutex acquisition order in one process.
-        let limit = i64::from(limit);
+        let limit = page_limit(limit)?;
         let rows = sqlx::query_as!(
             OperationRow,
             r#"SELECT o.id AS "id!",o.application_id AS "application_id!",o.generation AS "generation!",o.kind AS "kind!",o.state AS "state!",o.error_code,o.error_message,o.created_at_ms AS "created_at_ms!",o.updated_at_ms AS "updated_at_ms!",o.started_at_ms,o.finished_at_ms FROM operations o WHERE o.state IN ('pending','recovery') AND NOT EXISTS (SELECT 1 FROM operations older WHERE older.application_id=o.application_id AND older.state IN ('pending','recovery','running') AND (older.generation < o.generation OR (older.generation=o.generation AND (older.created_at_ms < o.created_at_ms OR (older.created_at_ms=o.created_at_ms AND older.id < o.id))))) ORDER BY o.created_at_ms,o.id LIMIT ?1"#,
@@ -382,9 +382,9 @@ impl OperationRepository for SqliteStore {
     async fn prune_finished_operations_before(
         &self,
         cutoff_ms: i64,
-        limit: u32,
+        limit: usize,
     ) -> Result<u64, StoreError> {
-        let limit = i64::from(limit);
+        let limit = page_limit(limit)?;
         sqlx::query!(
             "DELETE FROM operations WHERE id IN (SELECT id FROM operations WHERE finished_at_ms IS NOT NULL AND finished_at_ms < ?1 AND NOT EXISTS (SELECT 1 FROM application_create_idempotency i WHERE i.operation_id=operations.id) ORDER BY finished_at_ms,id LIMIT ?2)",
             cutoff_ms,
