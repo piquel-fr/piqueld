@@ -2,12 +2,14 @@
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::State,
-    response::{Sse, sse::Event},
+    response::{Response, Sse, sse::Event},
     routing::get,
 };
+use bytes::Bytes;
 use futures_util::stream;
-use piqueld_client::{Client, Envelope, SystemStatus};
+use piqueld_client::{Client, ClientError, Envelope, SystemStatus};
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tempfile::TempDir;
 use tokio::net::{TcpListener, UnixListener};
@@ -23,6 +25,15 @@ async fn status() -> Json<Envelope<SystemStatus>> {
 }
 fn app() -> Router {
     Router::new().route("/api/v1/system/status", get(status))
+}
+
+async fn stalled_status() -> Response {
+    Response::builder()
+        .header("content-type", "application/json")
+        .body(Body::from_stream(stream::pending::<
+            Result<Bytes, Infallible>,
+        >()))
+        .unwrap()
 }
 
 struct DisconnectGuard(Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>);
@@ -77,6 +88,25 @@ async fn typed_client_uses_unix_socket() {
     let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
     let response = Client::unix(&path).system_status().await.unwrap();
     assert_eq!(response.status, "running");
+    server.abort();
+}
+
+#[tokio::test]
+async fn request_timeout_includes_response_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = Router::new().route("/api/v1/system/status", get(stalled_status));
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        Client::tcp(&format!("http://{address}/"))
+            .unwrap()
+            .with_timeout(Duration::from_millis(50))
+            .system_status(),
+    )
+    .await
+    .expect("client request did not honor its configured timeout");
+    assert!(matches!(result, Err(ClientError::Transport)));
     server.abort();
 }
 

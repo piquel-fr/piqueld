@@ -22,6 +22,7 @@ use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -133,6 +134,15 @@ impl Client {
         self
     }
 
+    async fn with_request_timeout<T>(
+        &self,
+        future: impl Future<Output = Result<T, ClientError>>,
+    ) -> Result<T, ClientError> {
+        tokio::time::timeout(self.timeout, future)
+            .await
+            .map_err(|_| ClientError::Transport)?
+    }
+
     async fn raw_request<B: Serialize>(
         &self,
         method: Method,
@@ -223,10 +233,13 @@ impl Client {
         body: &str,
         headers: &[(&str, &str)],
     ) -> Result<T, ClientError> {
-        let response = self
-            .raw_bytes(method, path, body.as_bytes().to_vec(), headers)
-            .await?;
-        decode_envelope(response).await
+        self.with_request_timeout(async {
+            let response = self
+                .raw_bytes(method, path, body.as_bytes().to_vec(), headers)
+                .await?;
+            decode_envelope(response).await
+        })
+        .await
     }
 
     async fn send<T: DeserializeOwned, B: Serialize>(
@@ -236,7 +249,10 @@ impl Client {
         body: Option<&B>,
         headers: &[(&str, &str)],
     ) -> Result<T, ClientError> {
-        decode_envelope(self.raw_request(method, path, body, headers).await?).await
+        self.with_request_timeout(async {
+            decode_envelope(self.raw_request(method, path, body, headers).await?).await
+        })
+        .await
     }
 
     fn watch_events(
@@ -258,7 +274,10 @@ impl Client {
             {
                 Ok(response) if response.status().is_success() => response,
                 Ok(response) => {
-                    let _ = tx.send(Err(decode_api_error(response).await)).await;
+                    let error = tokio::time::timeout(client.timeout, decode_api_error(response))
+                        .await
+                        .unwrap_or(ClientError::Transport);
+                    let _ = tx.send(Err(error)).await;
                     return;
                 }
                 Err(error) => {
