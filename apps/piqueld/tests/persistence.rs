@@ -155,6 +155,43 @@ async fn bounded_store_queries_share_page_limits() {
 }
 
 #[tokio::test]
+async fn application_pagination_uses_an_immutable_keyset() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("state.db"))
+        .await
+        .unwrap();
+    let second = application("application-page-b", "beta", None);
+    let fourth = application("application-page-d", "delta", None);
+    for app in [&second, &fourth] {
+        store
+            .create(app, Some(&resolved(app, store.instance_id())), &[])
+            .await
+            .unwrap();
+    }
+
+    let first_page = store.list(None, 1).await.unwrap();
+    assert_eq!(first_page.items[0].application.id, second.id);
+    let cursor = first_page.next_cursor.unwrap();
+
+    // Inserting ahead of the cursor used to shift the offset and repeat `second`.
+    let first = application("application-page-a", "alpha", None);
+    store
+        .create(&first, Some(&resolved(&first, store.instance_id())), &[])
+        .await
+        .unwrap();
+
+    let second_page = store.list(Some(&cursor), 1).await.unwrap();
+    assert_eq!(second_page.items[0].application.id, fourth.id);
+    assert!(second_page.next_cursor.is_none());
+    for cursor in ["", "1", "v2:application-page-b", "v1:invalid"] {
+        assert_eq!(
+            store.list(Some(cursor), 1).await.unwrap_err(),
+            StoreError::InvalidInput
+        );
+    }
+}
+
+#[tokio::test]
 async fn missing_secret_rejects_the_whole_create_without_partial_rows() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.db");

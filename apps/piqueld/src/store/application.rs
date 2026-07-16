@@ -451,27 +451,33 @@ impl ApplicationRepository for SqliteStore {
         limit: usize,
     ) -> Result<Page<StoredApplication>, StoreError> {
         let fetch_limit = page_limit(limit)? + 1;
-        let offset = cursor
-            .map_or(Ok(0_i64), str::parse::<i64>)
-            .map_err(|_| StoreError::InvalidInput)?;
-        if offset < 0 {
-            return Err(StoreError::InvalidInput);
-        }
-        let count = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!" FROM applications"#)
-            .fetch_one(&self.pool)
+        let after = cursor
+            .map(|cursor| {
+                cursor
+                    .strip_prefix("v1:")
+                    .ok_or(StoreError::InvalidInput)
+                    .and_then(|id| ApplicationId::parse(id).map_err(|_| StoreError::InvalidInput))
+            })
+            .transpose()?;
+        let rows = if let Some(after) = after {
+            let after = after.as_str();
+            sqlx::query_as!(
+                ApplicationRow,
+                r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE id > ?1 ORDER BY id LIMIT ?2"#,
+                after,
+                fetch_limit
+            )
+            .fetch_all(&self.pool)
             .await
-            .map_err(|_| StoreError::Database)?;
-        if offset > count {
-            return Err(StoreError::InvalidInput);
+        } else {
+            sqlx::query_as!(
+                ApplicationRow,
+                r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications ORDER BY id LIMIT ?1"#,
+                fetch_limit
+            )
+            .fetch_all(&self.pool)
+            .await
         }
-        let rows = sqlx::query_as!(
-            ApplicationRow,
-            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications ORDER BY name,id LIMIT ?1 OFFSET ?2"#,
-            fetch_limit,
-            offset
-        )
-        .fetch_all(&self.pool)
-        .await
         .map_err(|_| StoreError::Database)?;
         let mut items = rows
             .into_iter()
@@ -479,7 +485,16 @@ impl ApplicationRepository for SqliteStore {
             .collect::<Result<Vec<_>, _>>()?;
         let has_more = items.len() > limit;
         items.truncate(limit);
-        let next_cursor = has_more.then(|| (offset + items.len() as i64).to_string());
+        let next_cursor = has_more.then(|| {
+            format!(
+                "v1:{}",
+                items
+                    .last()
+                    .expect("a non-empty bounded page has a cursor")
+                    .application
+                    .id
+            )
+        });
         Ok(Page { items, next_cursor })
     }
 }
