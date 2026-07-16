@@ -1,10 +1,6 @@
 //! Versioned HTTP/JSON API and streaming event boundary.
 #![allow(missing_docs)]
 
-mod applications;
-mod operations;
-mod system;
-
 use async_trait::async_trait;
 use axum::{
     Router,
@@ -23,7 +19,6 @@ use piqueld_client::{
 use piqueld_core::{
     ApplicationId, NormalizedApplication, ObservedApplication, resource::ResolvedApplication,
 };
-use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -38,7 +33,12 @@ use crate::store::{
     StepState, StoreError, StoredApplication, WorkState,
 };
 
+mod applications;
 mod openapi;
+mod operations;
+mod system;
+
+pub use openapi::openapi_document;
 
 const JSON: &str = "application/json";
 const TOML: &str = "application/toml";
@@ -617,16 +617,6 @@ fn application_state_name(v: ApplicationState) -> &'static str {
         ApplicationState::Degraded => "degraded",
         ApplicationState::Deleting => "deleting",
         ApplicationState::Failed => "failed",
-    }
-}
-fn operation_kind_name(v: OperationKind) -> &'static str {
-    match v {
-        OperationKind::Create => "create",
-        OperationKind::Replace => "replace",
-        OperationKind::Delete => "delete",
-        OperationKind::Reconcile => "reconcile",
-        OperationKind::Build => "build",
-        OperationKind::Deploy => "deploy",
     }
 }
 fn state_name(v: WorkState) -> &'static str {
@@ -1314,7 +1304,7 @@ mod tests {
         }
         let snapshot: Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        assert_eq!(openapi_document(), snapshot);
+        assert_eq!(openapi::openapi_document(), snapshot);
         assert!(snapshot["paths"].get("/api/v1/secrets").is_none());
         assert!(
             snapshot["paths"]
