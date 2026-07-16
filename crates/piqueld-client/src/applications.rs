@@ -3,13 +3,16 @@ use piqueld_core::manifest::ApplicationManifest;
 use piqueld_core::{NormalizedApplication, Plan};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::{Client, ClientError, Page, SseEvent, path_segment};
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 pub struct ApplicationView {
+    #[schema(value_type = Object)]
     pub application: NormalizedApplication,
     #[schemars(range(min = 1))]
+    #[schema(minimum = 1)]
     pub generation: u64,
     pub spec_hash: String,
     pub delete_intent: bool,
@@ -17,69 +20,81 @@ pub struct ApplicationView {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateApplicationRequest {
+    #[schema(value_type = Object)]
     pub manifest: ApplicationManifest,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReplaceApplicationRequest {
     #[schemars(range(min = 1))]
+    #[schema(minimum = 1)]
     pub expected_generation: u64,
+    #[schema(value_type = Object)]
     pub manifest: ApplicationManifest,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanApplicationRequest {
+    #[schema(value_type = Object)]
     pub manifest: ApplicationManifest,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReplacePlanRequest {
     #[schemars(range(min = 1))]
+    #[schema(minimum = 1)]
     pub expected_generation: u64,
+    #[schema(value_type = Object)]
     pub manifest: ApplicationManifest,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExpectedGeneration {
     #[schemars(range(min = 1))]
+    #[schema(minimum = 1)]
     pub expected_generation: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeleteApplicationRequest {
     #[schemars(range(min = 1))]
+    #[schema(minimum = 1)]
     pub expected_generation: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 pub struct AcceptedOperation {
     pub operation_id: String,
     pub application_id: String,
     #[schemars(range(min = 1))]
+    #[schema(minimum = 1)]
     pub generation: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 pub struct PlanView {
     pub application_id: String,
     #[schemars(range(min = 1))]
+    #[schema(minimum = 1)]
     pub proposed_generation: u64,
+    #[schema(value_type = Object)]
     pub plan: Plan,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 pub struct ApplicationStatusView {
     pub application_id: String,
     pub state: String,
     #[schemars(range(min = 1))]
+    #[schema(minimum = 1)]
     pub observed_generation: Option<u64>,
     pub message: Option<String>,
     pub updated_at_ms: i64,

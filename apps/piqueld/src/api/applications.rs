@@ -11,7 +11,8 @@ use axum::{
 };
 use futures_util::stream;
 use piqueld_client::{
-    AcceptedOperation, DeleteApplicationRequest, ExpectedGeneration, Page, PlanView,
+    AcceptedOperation, CreateApplicationRequest, DeleteApplicationRequest, ExpectedGeneration,
+    Page, PlanApplicationRequest, PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
 };
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, PlanAction, PlanRequest,
@@ -25,19 +26,38 @@ use sha2::{Digest, Sha256};
 use super::{
     ApiError, ApiState, BoundaryError, EventStream, MAX_PAGE, RequestShape, accepted,
     current_state_event_id, decode_json, generation, header_text, hex, idempotency_key_hash,
-    idempotent_application_id, last_event_id, ok, parse_manifest, parse_update, require_json,
-    valid_expected_generation,
+    idempotent_application_id, last_event_id, ok,
+    openapi::{
+        AcceptedOperationEnvelope, ApiErrorResponse, ApplicationEnvelope, ApplicationPageEnvelope,
+        ApplicationStatusEnvelope, PlanEnvelope,
+    },
+    parse_manifest, parse_update, require_json, valid_expected_generation,
 };
 use crate::store::{
     ApplicationRepository, SqliteStore, StatusRepository, StoreError, StoredApplication,
 };
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(super) struct ListQuery {
     cursor: Option<String>,
+    #[param(minimum = 1, maximum = 100, default = 50)]
     limit: Option<usize>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/applications",
+    operation_id = "listApplications",
+    summary = "List applications",
+    params(ListQuery),
+    responses(
+        (status = 200, description = "Success", body = ApplicationPageEnvelope),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
 pub(super) async fn list(
     State(state): State<ApiState>,
     Query(query): Query<ListQuery>,
@@ -79,6 +99,20 @@ pub(super) async fn list(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/applications/{id}",
+    operation_id = "getApplication",
+    summary = "Get an application",
+    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    responses(
+        (status = 200, description = "Success", body = ApplicationEnvelope),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
 pub(super) async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -87,6 +121,30 @@ pub(super) async fn get(
     Ok(ok(state.store.get(&id).await?.view()))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/applications",
+    operation_id = "createApplication",
+    summary = "Create an application",
+    params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 128)),
+    request_body(
+        content(
+            (CreateApplicationRequest = "application/json"),
+            (String = "application/toml"),
+            (String = "text/toml")
+        )
+    ),
+    responses(
+        (status = 202, description = "Success", body = AcceptedOperationEnvelope),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 409, response = inline(ApiErrorResponse)),
+        (status = 415, response = inline(ApiErrorResponse)),
+        (status = 422, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 502, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
 pub(super) async fn create(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -164,6 +222,34 @@ pub(super) async fn create(
     }))
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/applications/{id}",
+    operation_id = "replaceApplication",
+    summary = "Replace an application",
+    params(
+        ("id" = String, Path, min_length = 8, max_length = 64),
+        ("X-Expected-Generation" = Option<u64>, Header, nullable = false, format = "uint64", minimum = 1, description = "Required for application/toml replacement and replacement planning."),
+    ),
+    request_body(
+        content(
+            (ReplaceApplicationRequest = "application/json"),
+            (String = "application/toml"),
+            (String = "text/toml")
+        )
+    ),
+    responses(
+        (status = 202, description = "Success", body = AcceptedOperationEnvelope),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 409, response = inline(ApiErrorResponse)),
+        (status = 415, response = inline(ApiErrorResponse)),
+        (status = 422, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 502, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
 pub(super) async fn replace(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -206,6 +292,24 @@ pub(super) async fn replace(
     }))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/applications/{id}",
+    operation_id = "deleteApplication",
+    summary = "Request application deletion",
+    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    request_body = DeleteApplicationRequest,
+    responses(
+        (status = 202, description = "Success", body = AcceptedOperationEnvelope),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 409, response = inline(ApiErrorResponse)),
+        (status = 415, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 502, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
 pub(super) async fn delete(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -251,6 +355,28 @@ pub(super) async fn delete(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/applications/plan",
+    operation_id = "planApplicationCreate",
+    summary = "Preview application creation",
+    request_body(
+        content(
+            (PlanApplicationRequest = "application/json"),
+            (String = "application/toml"),
+            (String = "text/toml")
+        )
+    ),
+    responses(
+        (status = 200, description = "Success", body = PlanEnvelope),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 409, response = inline(ApiErrorResponse)),
+        (status = 415, response = inline(ApiErrorResponse)),
+        (status = 422, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
 pub(super) async fn plan_create(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -270,6 +396,34 @@ pub(super) async fn plan_create(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/applications/{id}/plan",
+    operation_id = "planApplicationReplace",
+    summary = "Preview application replacement",
+    params(
+        ("id" = String, Path, min_length = 8, max_length = 64),
+        ("X-Expected-Generation" = Option<u64>, Header, nullable = false, format = "uint64", minimum = 1, description = "Required for application/toml replacement and replacement planning."),
+    ),
+    request_body(
+        content(
+            (ReplacePlanRequest = "application/json"),
+            (String = "application/toml"),
+            (String = "text/toml")
+        )
+    ),
+    responses(
+        (status = 200, description = "Success", body = PlanEnvelope),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 409, response = inline(ApiErrorResponse)),
+        (status = 415, response = inline(ApiErrorResponse)),
+        (status = 422, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 502, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
 pub(super) async fn plan_replace(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -412,6 +566,24 @@ async fn reject_name_collision(
     Ok(())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/applications/{id}/reconcile",
+    operation_id = "reconcileApplication",
+    summary = "Request application reconciliation",
+    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    request_body = ExpectedGeneration,
+    responses(
+        (status = 202, description = "Success", body = AcceptedOperationEnvelope),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 409, response = inline(ApiErrorResponse)),
+        (status = 415, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 502, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
 pub(super) async fn reconcile(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -471,6 +643,20 @@ pub(super) async fn reconcile(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/applications/{id}/status",
+    operation_id = "applicationStatus",
+    summary = "Get application status",
+    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    responses(
+        (status = 200, description = "Success", body = ApplicationStatusEnvelope),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
 pub(super) async fn status(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -479,6 +665,24 @@ pub(super) async fn status(
     Ok(ok(state.store.status(&id).await?.view()))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/applications/{id}/events",
+    operation_id = "watchApplication",
+    summary = "Watch application status events",
+    params(
+        ("id" = String, Path, min_length = 8, max_length = 64),
+        ("Last-Event-ID" = Option<String>, Header, nullable = false, description = "Last durable/current-state event ID received by the client."),
+    ),
+    responses(
+        (status = 200, description = "Server-Sent Events with durable/current-state IDs and bounded replay reset events.", body = String, content_type = "text/event-stream"),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    ),
+    extensions(("x-sse-keepalive-seconds" = json!(15)))
+)]
 pub(super) async fn events(
     State(state): State<ApiState>,
     Path(id): Path<String>,

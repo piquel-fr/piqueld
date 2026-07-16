@@ -2309,7 +2309,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "List applications"
+        "summary": "List applications",
+        "tags": [
+          "applications"
+        ]
       },
       "post": {
         "operationId": "createApplication",
@@ -2427,7 +2430,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Create an application"
+        "summary": "Create an application",
+        "tags": [
+          "applications"
+        ]
       }
     },
     "/api/v1/applications/plan": {
@@ -2525,7 +2531,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Preview application creation"
+        "summary": "Preview application creation",
+        "tags": [
+          "applications"
+        ]
       }
     },
     "/api/v1/applications/{id}": {
@@ -2635,7 +2644,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Request application deletion"
+        "summary": "Request application deletion",
+        "tags": [
+          "applications"
+        ]
       },
       "get": {
         "operationId": "getApplication",
@@ -2703,7 +2715,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get an application"
+        "summary": "Get an application",
+        "tags": [
+          "applications"
+        ]
       },
       "put": {
         "operationId": "replaceApplication",
@@ -2842,7 +2857,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Replace an application"
+        "summary": "Replace an application",
+        "tags": [
+          "applications"
+        ]
       }
     },
     "/api/v1/applications/{id}/events": {
@@ -2922,6 +2940,9 @@
           }
         },
         "summary": "Watch application status events",
+        "tags": [
+          "applications"
+        ],
         "x-sse-keepalive-seconds": 15
       }
     },
@@ -3063,7 +3084,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Preview application replacement"
+        "summary": "Preview application replacement",
+        "tags": [
+          "applications"
+        ]
       }
     },
     "/api/v1/applications/{id}/reconcile": {
@@ -3173,7 +3197,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Request application reconciliation"
+        "summary": "Request application reconciliation",
+        "tags": [
+          "applications"
+        ]
       }
     },
     "/api/v1/applications/{id}/status": {
@@ -3243,7 +3270,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get application status"
+        "summary": "Get application status",
+        "tags": [
+          "applications"
+        ]
       }
     },
     "/api/v1/openapi.json": {
@@ -3261,7 +3291,8 @@
             "description": "OpenAPI 3.1 document"
           }
         },
-        "summary": "Get the OpenAPI document"
+        "summary": "Get the OpenAPI document",
+        "tags": []
       }
     },
     "/api/v1/operations/{id}": {
@@ -3321,7 +3352,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get an operation"
+        "summary": "Get an operation",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/api/v1/operations/{id}/events": {
@@ -3391,6 +3425,9 @@
           }
         },
         "summary": "Watch operation events",
+        "tags": [
+          "operations"
+        ],
         "x-sse-keepalive-seconds": 15,
         "x-sse-terminal-closes": true
       }
@@ -3420,7 +3457,10 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get daemon capabilities"
+        "summary": "Get daemon capabilities",
+        "tags": [
+          "system"
+        ]
       }
     },
     "/api/v1/system/status": {
@@ -3458,11 +3498,13 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Get daemon status"
+        "summary": "Get daemon status",
+        "tags": [
+          "system"
+        ]
       }
     }
   },
-  "security": [],
   "servers": [
     {
       "description": "Default loopback TCP endpoint; clients may also use the configured Unix socket.",

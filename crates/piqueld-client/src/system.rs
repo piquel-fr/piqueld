@@ -1,17 +1,18 @@
 use http::Method;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::{Client, ClientError};
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 pub struct SystemStatus {
     pub status: String,
     pub api_version: String,
     pub instance_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 pub struct SystemCapabilities {
     pub persistence: bool,
     pub source_resolution: bool,

@@ -1,5 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
+use super::{
+    ApiError, ApiState, EventStream, current_state_event_id, last_event_id, ok,
+    openapi::{ApiErrorResponse, OperationEnvelope},
+};
+use crate::store::{OperationRepository, SqliteStore, WorkState};
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
@@ -10,9 +15,19 @@ use axum::{
 };
 use futures_util::stream;
 
-use super::{ApiError, ApiState, EventStream, current_state_event_id, last_event_id, ok};
-use crate::store::{OperationRepository, SqliteStore, WorkState};
-
+#[utoipa::path(
+    get,
+    path = "/api/v1/operations/{id}",
+    operation_id = "getOperation",
+    summary = "Get an operation",
+    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    responses(
+        (status = 200, description = "Success", body = OperationEnvelope),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
 pub(super) async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -21,6 +36,26 @@ pub(super) async fn get(
     Ok(ok(operation.view(steps)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/operations/{id}/events",
+    operation_id = "watchOperation",
+    summary = "Watch operation events",
+    params(
+        ("id" = String, Path, min_length = 8, max_length = 64),
+        ("Last-Event-ID" = Option<String>, Header, nullable = false, description = "Last durable/current-state event ID received by the client."),
+    ),
+    responses(
+        (status = 200, description = "Server-Sent Events with durable/current-state IDs and bounded replay reset events.", body = String, content_type = "text/event-stream"),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    ),
+    extensions(
+        ("x-sse-terminal-closes" = json!(true)),
+        ("x-sse-keepalive-seconds" = json!(15))
+    )
+)]
 pub(super) async fn events(
     State(state): State<ApiState>,
     Path(id): Path<String>,

@@ -29,21 +29,22 @@ use std::{
 use thiserror::Error;
 use tokio::net::{TcpStream, UnixStream};
 use url::Url;
+use utoipa::ToSchema;
 
 pub const API_PREFIX: &str = "/api/v1";
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 pub struct Envelope<T> {
     pub data: T,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 pub struct Page<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, ToSchema)]
 pub struct ErrorBody {
     pub code: String,
     pub message: String,

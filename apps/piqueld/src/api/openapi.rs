@@ -6,71 +6,81 @@ use piqueld_client::{
     PlanApplicationRequest, PlanView, ReplaceApplicationRequest, SystemCapabilities, SystemStatus,
 };
 use schemars::{JsonSchema, schema_for};
-use serde::Serialize;
 use serde_json::{Value, json};
+use utoipa::{OpenApi, ToResponse, ToSchema};
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[allow(clippy::enum_variant_names)]
-enum ApiOperation {
-    SystemStatus,
-    SystemCapabilities,
-    OpenApiDocument,
-    ListApplications,
-    CreateApplication,
-    PlanApplicationCreate,
-    GetApplication,
-    ReplaceApplication,
-    DeleteApplication,
-    PlanApplicationReplace,
-    ReconcileApplication,
-    ApplicationStatus,
-    WatchApplication,
-    GetOperation,
-    WatchOperation,
+use super::{applications, operations, system};
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        system::status,
+        system::capabilities,
+        openapi,
+        applications::list,
+        applications::create,
+        applications::plan_create,
+        applications::get,
+        applications::replace,
+        applications::delete,
+        applications::plan_replace,
+        applications::reconcile,
+        applications::status,
+        applications::events,
+        operations::get,
+        operations::events,
+    ),
+    info(
+        title = "piqueld API",
+        version = "v1",
+        description = "Plan 05 control-plane API. Mutation responses identify durable operations; named volumes are retained on deletion.",
+        license(name = "MIT", identifier = "MIT")
+    ),
+    servers(
+        (url = "http://127.0.0.1:7845", description = "Default loopback TCP endpoint; clients may also use the configured Unix socket.")
+    ),
+)]
+struct ApiDoc;
+
+trait SchemaSource {
+    type Source: JsonSchema;
 }
 
-impl ApiOperation {
-    #[cfg(test)]
-    const ALL: [Self; 15] = [
-        Self::SystemStatus,
-        Self::SystemCapabilities,
-        Self::OpenApiDocument,
-        Self::ListApplications,
-        Self::CreateApplication,
-        Self::PlanApplicationCreate,
-        Self::GetApplication,
-        Self::ReplaceApplication,
-        Self::DeleteApplication,
-        Self::PlanApplicationReplace,
-        Self::ReconcileApplication,
-        Self::ApplicationStatus,
-        Self::WatchApplication,
-        Self::GetOperation,
-        Self::WatchOperation,
-    ];
+#[allow(dead_code)]
+#[derive(ToResponse)]
+#[response(description = "Structured, sanitized error")]
+pub(super) struct ApiErrorResponse(ErrorBody);
 
-    const fn summary(self) -> &'static str {
-        match self {
-            Self::SystemStatus => "Get daemon status",
-            Self::SystemCapabilities => "Get daemon capabilities",
-            Self::OpenApiDocument => "Get the OpenAPI document",
-            Self::ListApplications => "List applications",
-            Self::CreateApplication => "Create an application",
-            Self::PlanApplicationCreate => "Preview application creation",
-            Self::GetApplication => "Get an application",
-            Self::ReplaceApplication => "Replace an application",
-            Self::DeleteApplication => "Request application deletion",
-            Self::PlanApplicationReplace => "Preview application replacement",
-            Self::ReconcileApplication => "Request application reconciliation",
-            Self::ApplicationStatus => "Get application status",
-            Self::WatchApplication => "Watch application status events",
-            Self::GetOperation => "Get an operation",
-            Self::WatchOperation => "Watch operation events",
+macro_rules! envelope_schema {
+    ($name:ident, $body:ty) => {
+        #[allow(dead_code)]
+        #[derive(ToSchema)]
+        pub(super) struct $name(Envelope<$body>);
+
+        impl SchemaSource for $name {
+            type Source = Envelope<$body>;
         }
-    }
+    };
 }
 
+envelope_schema!(SystemStatusEnvelope, SystemStatus);
+envelope_schema!(SystemCapabilitiesEnvelope, SystemCapabilities);
+envelope_schema!(ApplicationPageEnvelope, Page<ApplicationView>);
+envelope_schema!(ApplicationEnvelope, ApplicationView);
+envelope_schema!(AcceptedOperationEnvelope, AcceptedOperation);
+envelope_schema!(PlanEnvelope, PlanView);
+envelope_schema!(ApplicationStatusEnvelope, ApplicationStatusView);
+envelope_schema!(OperationEnvelope, OperationView);
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/openapi.json",
+    operation_id = "openApiDocument",
+    summary = "Get the OpenAPI document",
+    responses(
+        (status = 200, description = "OpenAPI 3.1 document", body = Object, content_type = "application/vnd.oai.openapi+json")
+    )
+)]
 pub(super) async fn openapi() -> impl IntoResponse {
     (
         [(
@@ -81,211 +91,61 @@ pub(super) async fn openapi() -> impl IntoResponse {
     )
 }
 
-/// Generated `OpenAPI` contract. Core domain schemas are linked as explicit JSON objects to avoid coupling core to Utoipa.
+/// Generates the `OpenAPI` contract from Utoipa endpoint metadata.
+///
+/// Core domain schemas are bridged from Schemars as JSON objects so the domain
+/// crate does not need to depend on the HTTP-facing Utoipa crate.
+///
+/// # Panics
+///
+/// Panics if Utoipa produces an `OpenAPI` value with an invalid root or components
+/// shape, or if an in-memory schema cannot be serialized.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn openapi_document() -> Value {
-    let mut schemas = serde_json::Map::new();
-    add_schema::<ErrorBody>(&mut schemas, "ErrorBody");
-    add_schema::<Envelope<SystemStatus>>(&mut schemas, "SystemStatusEnvelope");
-    add_schema::<Envelope<SystemCapabilities>>(&mut schemas, "SystemCapabilitiesEnvelope");
-    add_schema::<Envelope<Page<ApplicationView>>>(&mut schemas, "ApplicationPageEnvelope");
-    add_schema::<Envelope<ApplicationView>>(&mut schemas, "ApplicationEnvelope");
-    add_schema::<CreateApplicationRequest>(&mut schemas, "CreateApplicationRequest");
-    add_schema::<ReplaceApplicationRequest>(&mut schemas, "ReplaceApplicationRequest");
-    add_schema::<PlanApplicationRequest>(&mut schemas, "PlanApplicationRequest");
-    add_schema::<piqueld_client::ReplacePlanRequest>(&mut schemas, "ReplacePlanRequest");
-    add_schema::<DeleteApplicationRequest>(&mut schemas, "DeleteApplicationRequest");
-    add_schema::<ExpectedGeneration>(&mut schemas, "ExpectedGeneration");
-    add_schema::<Envelope<AcceptedOperation>>(&mut schemas, "AcceptedOperationEnvelope");
-    add_schema::<Envelope<PlanView>>(&mut schemas, "PlanEnvelope");
-    add_schema::<Envelope<ApplicationStatusView>>(&mut schemas, "ApplicationStatusEnvelope");
-    add_schema::<Envelope<OperationView>>(&mut schemas, "OperationEnvelope");
-
-    let id = json!({"name":"id","in":"path","required":true,"schema":{"type":"string","minLength":8,"maxLength":64}});
-    let last_event_id = json!({"name":"Last-Event-ID","in":"header","required":false,"schema":{"type":"string"},"description":"Last durable/current-state event ID received by the client."});
-    let expected_generation = json!({"name":"X-Expected-Generation","in":"header","required":false,"schema":{"type":"integer","format":"uint64","minimum":1},"description":"Required for application/toml replacement and replacement planning."});
-    let json_toml = |schema: &str| {
-        json!({
-            "required":true,
-            "content":{
-                "application/json":{"schema":{"$ref":format!("#/components/schemas/{schema}")}},
-                "application/toml":{"schema":{"type":"string"}},
-                "text/toml":{"schema":{"type":"string"}}
-            }
-        })
-    };
-    let json_body = |schema: &str| json!({"required":true,"content":{"application/json":{"schema":{"$ref":format!("#/components/schemas/{schema}")}}}});
-    let response = |description: &str, schema: &str| json!({"description":description,"content":{"application/json":{"schema":{"$ref":format!("#/components/schemas/{schema}")}}}});
-    let errors = |statuses: &[&str]| {
-        let mut map = serde_json::Map::new();
-        for status in statuses {
-            map.insert(
-                (*status).into(),
-                response("Structured, sanitized error", "ErrorBody"),
-            );
-        }
-        map
-    };
-    let operation =
-        |operation: ApiOperation, success_status: &str, success_schema: &str, statuses: &[&str]| {
-            let mut responses = errors(statuses);
-            responses.insert(success_status.into(), response("Success", success_schema));
-            json!({"operationId":operation,"summary":operation.summary(),"responses":responses})
-        };
-    let mut paths = serde_json::Map::new();
-    paths.insert(
-        "/api/v1/system/status".into(),
-        json!({"get":operation(ApiOperation::SystemStatus,"200","SystemStatusEnvelope", &["500","503"])}),
-    );
-    paths.insert(
-        "/api/v1/system/capabilities".into(),
-        json!({"get":operation(ApiOperation::SystemCapabilities,"200","SystemCapabilitiesEnvelope", &["500"])}),
-    );
-    let openapi = ApiOperation::OpenApiDocument;
-    paths.insert("/api/v1/openapi.json".into(), json!({"get":{"operationId":openapi,"summary":openapi.summary(),"responses":{"200":{"description":"OpenAPI 3.1 document","content":{"application/vnd.oai.openapi+json":{"schema":{"type":"object"}}}}}}}));
-
-    let mut list = operation(
-        ApiOperation::ListApplications,
-        "200",
-        "ApplicationPageEnvelope",
-        &["400", "500", "503"],
-    );
-    list["parameters"] = json!([
-        {"name":"cursor","in":"query","required":false,"schema":{"type":"string"}},
-        {"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}
-    ]);
-    let mut create = operation(
-        ApiOperation::CreateApplication,
-        "202",
-        "AcceptedOperationEnvelope",
-        &["400", "409", "415", "422", "500", "502", "503"],
-    );
-    create["parameters"] = json!([{"name":"Idempotency-Key","in":"header","required":true,"schema":{"type":"string","minLength":1,"maxLength":128}}]);
-    create["requestBody"] = json_toml("CreateApplicationRequest");
-    paths.insert(
-        "/api/v1/applications".into(),
-        json!({"get":list,"post":create}),
-    );
-
-    let mut create_plan = operation(
-        ApiOperation::PlanApplicationCreate,
-        "200",
-        "PlanEnvelope",
-        &["400", "409", "415", "422", "500", "503"],
-    );
-    create_plan["requestBody"] = json_toml("PlanApplicationRequest");
-    paths.insert(
-        "/api/v1/applications/plan".into(),
-        json!({"post":create_plan}),
-    );
-
-    let mut get_app = operation(
-        ApiOperation::GetApplication,
-        "200",
-        "ApplicationEnvelope",
-        &["400", "404", "500", "503"],
-    );
-    get_app["parameters"] = json!([id.clone()]);
-    let mut replace = operation(
-        ApiOperation::ReplaceApplication,
-        "202",
-        "AcceptedOperationEnvelope",
-        &["400", "404", "409", "415", "422", "500", "502", "503"],
-    );
-    replace["parameters"] = json!([id.clone(), expected_generation.clone()]);
-    replace["requestBody"] = json_toml("ReplaceApplicationRequest");
-    let mut delete = operation(
-        ApiOperation::DeleteApplication,
-        "202",
-        "AcceptedOperationEnvelope",
-        &["400", "404", "409", "415", "500", "502", "503"],
-    );
-    delete["parameters"] = json!([id.clone()]);
-    delete["requestBody"] = json_body("DeleteApplicationRequest");
-    paths.insert(
-        "/api/v1/applications/{id}".into(),
-        json!({"get":get_app,"put":replace,"delete":delete}),
-    );
-
-    let mut replace_plan = operation(
-        ApiOperation::PlanApplicationReplace,
-        "200",
-        "PlanEnvelope",
-        &["400", "404", "409", "415", "422", "500", "502", "503"],
-    );
-    replace_plan["parameters"] = json!([id.clone(), expected_generation]);
-    replace_plan["requestBody"] = json_toml("ReplacePlanRequest");
-    paths.insert(
-        "/api/v1/applications/{id}/plan".into(),
-        json!({"post":replace_plan}),
-    );
-
-    let mut reconcile = operation(
-        ApiOperation::ReconcileApplication,
-        "202",
-        "AcceptedOperationEnvelope",
-        &["400", "404", "409", "415", "500", "502", "503"],
-    );
-    reconcile["parameters"] = json!([id.clone()]);
-    reconcile["requestBody"] = json_body("ExpectedGeneration");
-    paths.insert(
-        "/api/v1/applications/{id}/reconcile".into(),
-        json!({"post":reconcile}),
-    );
-
-    let mut status = operation(
-        ApiOperation::ApplicationStatus,
-        "200",
-        "ApplicationStatusEnvelope",
-        &["400", "404", "500", "503"],
-    );
-    status["parameters"] = json!([id.clone()]);
-    paths.insert(
-        "/api/v1/applications/{id}/status".into(),
-        json!({"get":status}),
-    );
-
-    let event_response = json!({"description":"Server-Sent Events with durable/current-state IDs and bounded replay reset events.","content":{"text/event-stream":{"schema":{"type":"string"}}}});
-    let watch_application = ApiOperation::WatchApplication;
-    let mut app_events = json!({"operationId":watch_application,"summary":watch_application.summary(),"parameters":[id.clone(),last_event_id.clone()],"responses":{"200":event_response.clone(),"400":response("Structured, sanitized error","ErrorBody"),"404":response("Structured, sanitized error","ErrorBody"),"500":response("Structured, sanitized error","ErrorBody"),"503":response("Structured, sanitized error","ErrorBody")}});
-    app_events["x-sse-keepalive-seconds"] = json!(15);
-    paths.insert(
-        "/api/v1/applications/{id}/events".into(),
-        json!({"get":app_events}),
-    );
-
-    let mut get_operation = operation(
-        ApiOperation::GetOperation,
-        "200",
-        "OperationEnvelope",
-        &["404", "500", "503"],
-    );
-    get_operation["parameters"] = json!([id.clone()]);
-    paths.insert(
-        "/api/v1/operations/{id}".into(),
-        json!({"get":get_operation}),
-    );
-    let watch_operation = ApiOperation::WatchOperation;
-    let mut operation_events = json!({"operationId":watch_operation,"summary":watch_operation.summary(),"parameters":[id,last_event_id],"responses":{"200":event_response,"404":response("Structured, sanitized error","ErrorBody"),"500":response("Structured, sanitized error","ErrorBody"),"503":response("Structured, sanitized error","ErrorBody")}});
-    operation_events["x-sse-terminal-closes"] = json!(true);
-    operation_events["x-sse-keepalive-seconds"] = json!(15);
-    paths.insert(
-        "/api/v1/operations/{id}/events".into(),
-        json!({"get":operation_events}),
-    );
-
-    json!({
-        "openapi":"3.1.0",
-        "info":{"title":"piqueld API","version":"v1","description":"Plan 05 control-plane API. Mutation responses identify durable operations; named volumes are retained on deletion.","license":{"name":"MIT","identifier":"MIT"}},
-        "servers":[{"url":"http://127.0.0.1:7845","description":"Default loopback TCP endpoint; clients may also use the configured Unix socket."}],
-        "security":[],
-        "paths":paths,
-        "components":{"schemas":schemas}
-    })
+    let mut document =
+        serde_json::to_value(ApiDoc::openapi()).expect("OpenAPI serialization cannot fail");
+    let components = document
+        .as_object_mut()
+        .expect("OpenAPI document must be an object")
+        .entry("components")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("OpenAPI components must be an object");
+    let schemas = components
+        .entry("schemas")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("OpenAPI schemas must be an object");
+    // Schemars remains authoritative for schema bodies while Utoipa provides
+    // compile-time-safe component names in endpoint annotations.
+    schemas.clear();
+    add_schema::<ErrorBody>(schemas);
+    add_schema_as::<SystemStatusEnvelope>(schemas);
+    add_schema_as::<SystemCapabilitiesEnvelope>(schemas);
+    add_schema_as::<ApplicationPageEnvelope>(schemas);
+    add_schema_as::<ApplicationEnvelope>(schemas);
+    add_schema::<CreateApplicationRequest>(schemas);
+    add_schema::<ReplaceApplicationRequest>(schemas);
+    add_schema::<PlanApplicationRequest>(schemas);
+    add_schema::<piqueld_client::ReplacePlanRequest>(schemas);
+    add_schema::<DeleteApplicationRequest>(schemas);
+    add_schema::<ExpectedGeneration>(schemas);
+    add_schema_as::<AcceptedOperationEnvelope>(schemas);
+    add_schema_as::<PlanEnvelope>(schemas);
+    add_schema_as::<ApplicationStatusEnvelope>(schemas);
+    add_schema_as::<OperationEnvelope>(schemas);
+    document
 }
 
-fn add_schema<T: JsonSchema>(schemas: &mut serde_json::Map<String, Value>, name: &str) {
+fn add_schema<T: JsonSchema + ToSchema>(schemas: &mut serde_json::Map<String, Value>) {
+    add_schema_named::<T>(schemas, T::name().as_ref());
+}
+
+fn add_schema_as<Name: SchemaSource + ToSchema>(schemas: &mut serde_json::Map<String, Value>) {
+    add_schema_named::<Name::Source>(schemas, Name::name().as_ref());
+}
+
+fn add_schema_named<T: JsonSchema>(schemas: &mut serde_json::Map<String, Value>, name: &str) {
     let root = schema_for!(T);
     let mut schema = serde_json::to_value(root.schema).expect("schema serialization cannot fail");
     rewrite_schema_refs(&mut schema);
@@ -323,10 +183,28 @@ fn rewrite_schema_refs(value: &mut Value) {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{ApiOperation, openapi_document};
+    use super::openapi_document;
+
+    const OPERATION_IDS: [&str; 15] = [
+        "systemStatus",
+        "systemCapabilities",
+        "openApiDocument",
+        "listApplications",
+        "createApplication",
+        "planApplicationCreate",
+        "getApplication",
+        "replaceApplication",
+        "deleteApplication",
+        "planApplicationReplace",
+        "reconcileApplication",
+        "applicationStatus",
+        "watchApplication",
+        "getOperation",
+        "watchOperation",
+    ];
 
     #[test]
-    fn every_openapi_operation_uses_the_closed_enum() {
+    fn every_openapi_operation_uses_a_registered_id() {
         let document = openapi_document();
         let actual = document["paths"]
             .as_object()
@@ -335,18 +213,12 @@ mod tests {
             .flat_map(|path| path.as_object().unwrap().values())
             .map(|operation| operation["operationId"].as_str().unwrap().to_owned())
             .collect::<BTreeSet<_>>();
-        let expected = ApiOperation::ALL
+        let expected = OPERATION_IDS
             .into_iter()
-            .map(|operation| {
-                serde_json::to_value(operation)
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .to_owned()
-            })
+            .map(str::to_owned)
             .collect::<BTreeSet<_>>();
 
         assert_eq!(actual, expected);
-        assert_eq!(actual.len(), ApiOperation::ALL.len());
+        assert_eq!(actual.len(), OPERATION_IDS.len());
     }
 }
