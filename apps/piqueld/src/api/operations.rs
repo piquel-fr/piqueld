@@ -17,11 +17,8 @@ pub(super) async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(ok(state
-        .store
-        .operation(&id)
-        .await?
-        .view(state.store.operation_steps(&id).await?)))
+    let (operation, steps) = state.store.operation_with_steps(&id).await?;
+    Ok(ok(operation.view(steps)))
 }
 
 pub(super) async fn events(
@@ -49,18 +46,24 @@ fn event_stream(store: Arc<SqliteStore>, id: String, last: Option<String>) -> Ev
             }
             loop {
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                let Ok(operation) = store.operation(&id).await else {
-                    return None;
+                let (operation, steps) = match store.operation_with_steps(&id).await {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        tracing::warn!(operation_id = %id, %error, "operation event stream store read failed");
+                        return None;
+                    }
                 };
                 let terminal = matches!(
                     operation.state,
                     WorkState::Succeeded | WorkState::Failed | WorkState::Cancelled
                 );
-                let Ok(steps) = store.operation_steps(&id).await else {
-                    return None;
+                let data = match serde_json::to_string(&operation.view(steps)) {
+                    Ok(data) => data,
+                    Err(error) => {
+                        tracing::error!(operation_id = %id, %error, "operation event stream serialization failed");
+                        return None;
+                    }
                 };
-                let data =
-                    serde_json::to_string(&operation.view(steps)).unwrap_or_else(|_| "{}".into());
                 let event_id = current_state_event_id("operation", &data);
                 if last.as_deref() == Some(event_id.as_str()) {
                     if terminal {

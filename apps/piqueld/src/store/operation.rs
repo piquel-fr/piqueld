@@ -84,6 +84,39 @@ impl OperationStep {
     }
 }
 
+impl SqliteStore {
+    /// Reads an operation and its steps from one consistent database snapshot.
+    pub(crate) async fn operation_with_steps(
+        &self,
+        operation_id: &str,
+    ) -> Result<(Operation, Vec<OperationStep>), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(|_| StoreError::Database)?;
+        let operation = sqlx::query_as!(
+            OperationRow,
+            r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE id=?1"#,
+            operation_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StoreError::Database)?
+        .ok_or(StoreError::NotFound)
+        .and_then(Operation::parse_row)?;
+        let steps = sqlx::query_as!(
+            OperationStepRow,
+            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",kind AS "kind!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
+            operation_id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| StoreError::Database)?
+        .into_iter()
+        .map(OperationStep::parse_step_row)
+        .collect::<Result<Vec<_>, _>>()?;
+        tx.commit().await.map_err(|_| StoreError::Database)?;
+        Ok((operation, steps))
+    }
+}
+
 #[async_trait]
 impl OperationRepository for SqliteStore {
     async fn operation(&self, operation_id: &str) -> Result<Operation, StoreError> {
