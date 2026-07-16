@@ -426,16 +426,15 @@ fn parse_sse(block: &str) -> Option<SseEvent> {
     let mut id = None;
     let mut kind = None;
     let mut data = Vec::new();
-    for line in block.lines() {
-        if line.starts_with(':') {
-            continue;
-        }
-        if let Some(value) = line.strip_prefix("id:") {
-            id = Some(value.trim_start().to_owned());
-        } else if let Some(value) = line.strip_prefix("event:") {
-            kind = Some(value.trim_start().to_owned());
-        } else if let Some(value) = line.strip_prefix("data:") {
-            data.push(value.trim_start());
+    for line in block.split(['\r', '\n']) {
+        let (field, value) = line.split_once(':').map_or((line, ""), |(field, value)| {
+            (field, value.strip_prefix(' ').unwrap_or(value))
+        });
+        match field {
+            "id" if !value.contains('\0') => id = Some(value.to_owned()),
+            "event" => kind = Some(value.to_owned()),
+            "data" => data.push(value),
+            _ => {}
         }
     }
     (!data.is_empty()).then(|| SseEvent {
@@ -472,5 +471,21 @@ mod tests {
 
         let events = decoder.push(b"data: mixed\r\n\n").unwrap();
         assert_eq!(events[0].data, "mixed");
+    }
+
+    #[test]
+    fn sse_decoder_supports_all_line_endings_and_preserves_data_space() {
+        let mut decoder = SseDecoder::default();
+        let events = decoder
+            .push(b"id: current:one\revent: operation\rdata:  {\"state\":\"ready\"}\r\r")
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id.as_deref(), Some("current:one"));
+        assert_eq!(events[0].event.as_deref(), Some("operation"));
+        assert_eq!(events[0].data, " {\"state\":\"ready\"}");
+
+        let events = decoder.push(b"data\n\n").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "");
     }
 }
