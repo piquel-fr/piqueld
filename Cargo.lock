@@ -932,6 +932,7 @@ dependencies = [
  "thiserror",
  "toml",
  "url",
+ "utoipa",
 ]
 
 [[package]]

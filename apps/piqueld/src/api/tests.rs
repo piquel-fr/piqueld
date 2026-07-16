@@ -810,6 +810,18 @@ async fn openapi_snapshot_lists_exact_plan_five_surface() {
         }
     }
     assert!(snapshot["components"]["schemas"].as_object().unwrap().len() > 20);
+    assert_eq!(
+        snapshot["components"]["schemas"]["CreateApplicationRequest"]["properties"]["manifest"]["$ref"],
+        "#/components/schemas/ApplicationManifest"
+    );
+    assert_eq!(
+        snapshot["components"]["schemas"]["ApplicationView"]["properties"]["application"]["$ref"],
+        "#/components/schemas/NormalizedApplication"
+    );
+    assert_eq!(
+        snapshot["components"]["schemas"]["PlanView"]["properties"]["plan"]["$ref"],
+        "#/components/schemas/Plan"
+    );
     assert_refs_resolve(
         &snapshot,
         snapshot["components"]["schemas"].as_object().unwrap(),

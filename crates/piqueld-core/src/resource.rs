@@ -16,6 +16,7 @@ use std::{
     str::FromStr,
 };
 use thiserror::Error;
+use utoipa::ToSchema;
 
 pub const MANAGED_LABEL: &str = "io.piqueld.managed";
 pub const INSTANCE_LABEL: &str = "io.piqueld.instance";
@@ -27,7 +28,7 @@ pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
 #[error("instance IDs must be 1-64 lowercase ASCII letters, digits, or internal hyphens")]
 pub struct InstanceIdError;
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(transparent)]
 pub struct InstanceId(String);
 
@@ -86,7 +87,7 @@ impl FromStr for InstanceId {
 #[error("SHA-256 digests must use the sha256:<64 lowercase hexadecimal digits> format")]
 pub struct Sha256DigestError;
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(transparent)]
 pub struct Sha256Digest(String);
 
@@ -131,7 +132,7 @@ impl FromStr for Sha256Digest {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResolvedSource {
     Image {
@@ -162,7 +163,7 @@ impl ResolvedSource {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretGeneration {
     pub logical_name: String,
@@ -170,14 +171,14 @@ pub struct SecretGeneration {
     pub swarm_name: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResolutionSet {
     pub sources: BTreeMap<String, ResolvedSource>,
     pub secrets: BTreeMap<String, SecretGeneration>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResolutionRequirement {
     ResolveImage {
@@ -237,7 +238,7 @@ pub fn preview_resolution(
     requirements
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ownership {
     pub instance_id: InstanceId,
@@ -261,21 +262,21 @@ impl Ownership {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredNetwork {
     pub name: String,
     pub ingress: bool,
     pub labels: BTreeMap<String, String>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredVolume {
     pub logical_name: String,
     pub name: String,
     pub labels: BTreeMap<String, String>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredSecret {
     pub logical_name: String,
@@ -283,7 +284,7 @@ pub struct DesiredSecret {
     pub name: String,
     pub labels: BTreeMap<String, String>,
 }
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredSecretMount {
     pub logical_name: String,
@@ -291,14 +292,14 @@ pub struct DesiredSecretMount {
     pub target: String,
     pub mode: String,
 }
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredMount {
     pub volume_name: String,
     pub target: String,
     pub read_only: bool,
 }
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredService {
     pub logical_name: String,
@@ -318,7 +319,7 @@ pub struct DesiredService {
     pub labels: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredApplication {
     pub id: ApplicationId,

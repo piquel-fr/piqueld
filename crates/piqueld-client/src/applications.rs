@@ -8,7 +8,6 @@ use crate::{Client, ClientError, Page, SseEvent, path_segment};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct ApplicationView {
-    #[schema(value_type = Object)]
     pub application: NormalizedApplication,
     #[schema(minimum = 1)]
     pub generation: u64,
@@ -21,7 +20,6 @@ pub struct ApplicationView {
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateApplicationRequest {
-    #[schema(value_type = Object)]
     pub manifest: ApplicationManifest,
 }
 
@@ -30,14 +28,12 @@ pub struct CreateApplicationRequest {
 pub struct ReplaceApplicationRequest {
     #[schema(minimum = 1)]
     pub expected_generation: u64,
-    #[schema(value_type = Object)]
     pub manifest: ApplicationManifest,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanApplicationRequest {
-    #[schema(value_type = Object)]
     pub manifest: ApplicationManifest,
 }
 
@@ -46,7 +42,6 @@ pub struct PlanApplicationRequest {
 pub struct ReplacePlanRequest {
     #[schema(minimum = 1)]
     pub expected_generation: u64,
-    #[schema(value_type = Object)]
     pub manifest: ApplicationManifest,
 }
 
@@ -77,7 +72,6 @@ pub struct PlanView {
     pub application_id: String,
     #[schema(minimum = 1)]
     pub proposed_generation: u64,
-    #[schema(value_type = Object)]
     pub plan: Plan,
 }
 

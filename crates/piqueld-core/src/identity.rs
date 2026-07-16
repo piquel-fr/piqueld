@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use sha2::{Digest, Sha256};
 use std::{fmt, str::FromStr};
 use thiserror::Error;
+use utoipa::ToSchema;
 
 /// An error returned when an application identifier violates its storage invariant.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -13,7 +14,7 @@ pub struct ApplicationIdError;
 
 /// Stable internal application identity. It is assigned by persistence and is not
 /// derived from editable application metadata.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(transparent)]
 pub struct ApplicationId(String);
 

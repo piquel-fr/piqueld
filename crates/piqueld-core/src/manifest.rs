@@ -9,6 +9,7 @@ use std::{
     fmt,
 };
 use url::Url;
+use utoipa::ToSchema;
 
 /// Only application API version accepted by this prototype.
 pub const APPLICATION_API_VERSION: &str = "piqueld.dev/v1alpha1";
@@ -16,7 +17,7 @@ pub const APPLICATION_API_VERSION: &str = "piqueld.dev/v1alpha1";
 pub const APPLICATION_KIND: &str = "Application";
 
 /// Strict public application request and export shape.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationManifest {
     pub api_version: String,
@@ -24,13 +25,13 @@ pub struct ApplicationManifest {
     pub metadata: MetadataInput,
     pub spec: ApplicationSpecInput,
 }
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MetadataInput {
     pub name: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ApplicationSpecInput {
     pub services: Vec<ServiceInput>,
@@ -38,7 +39,7 @@ pub struct ApplicationSpecInput {
     pub routes: Vec<RouteInput>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceInput {
     pub name: String,
@@ -66,7 +67,7 @@ fn default_replicas() -> u16 {
 }
 
 /// Exactly one supported service source. The tag makes image/Git exhaustive.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum SourceInput {
     Image {
@@ -92,13 +93,13 @@ fn default_dockerfile() -> String {
     "Dockerfile".into()
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VolumeInput {
     pub name: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MountInput {
     pub volume: String,
@@ -107,7 +108,7 @@ pub struct MountInput {
     pub read_only: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretReferenceInput {
     pub source: String,
@@ -119,7 +120,7 @@ fn default_secret_mode() -> String {
     "0400".into()
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RouteInput {
     pub host: String,
@@ -127,7 +128,7 @@ pub struct RouteInput {
     pub port: u16,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum HealthCheckInput {
     Http {
@@ -157,7 +158,7 @@ fn default_timeout() -> u32 {
     3
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimitsInput {
     pub cpu_millis: Option<u32>,
@@ -165,7 +166,7 @@ pub struct ResourceLimitsInput {
 }
 
 /// A field-level, safe validation error.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidationError {
     pub code: String,
@@ -174,7 +175,7 @@ pub struct ValidationError {
 }
 
 /// All independently discoverable manifest errors, in stable path order.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(transparent)]
 pub struct ValidationErrors(pub Vec<ValidationError>);
 
@@ -193,7 +194,7 @@ pub struct ValidatedApplication {
 }
 
 /// Canonical desired application plus persistence-assigned identity.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NormalizedApplication {
     pub id: ApplicationId,
@@ -203,13 +204,13 @@ pub struct NormalizedApplication {
     pub spec: ApplicationSpec,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
     pub name: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationSpec {
     pub services: Vec<Service>,
@@ -217,7 +218,7 @@ pub struct ApplicationSpec {
     pub routes: Vec<Route>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Service {
     pub name: String,
@@ -233,7 +234,7 @@ pub struct Service {
     pub resources: Option<ResourceLimits>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Source {
     Image {
@@ -247,26 +248,26 @@ pub enum Source {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Volume {
     pub name: String,
 }
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Mount {
     pub volume: String,
     pub target: String,
     pub read_only: bool,
 }
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretReference {
     pub source: String,
     pub target: String,
     pub mode: String,
 }
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
     pub host: String,
@@ -274,7 +275,7 @@ pub struct Route {
     pub port: u16,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum HealthCheck {
     Http {
@@ -289,7 +290,7 @@ pub enum HealthCheck {
         timeout_seconds: u32,
     },
 }
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimits {
     pub cpu_millis: Option<u32>,
