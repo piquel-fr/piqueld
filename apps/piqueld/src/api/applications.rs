@@ -215,13 +215,6 @@ pub(super) async fn delete(
     require_json(&headers)?;
     let request: DeleteApplicationRequest = decode_json(&body)?;
     valid_expected_generation(request.expected_generation)?;
-    if request.force {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "force_delete_unsupported",
-            "force deletion is not supported; named volumes are always retained",
-        ));
-    }
     let id = ApplicationId::parse(&id)?;
     let current = state.store.get(&id).await?;
     generation(request.expected_generation, current.generation)?;

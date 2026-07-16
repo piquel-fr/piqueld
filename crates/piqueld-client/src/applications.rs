@@ -57,8 +57,6 @@ pub struct ExpectedGeneration {
 pub struct DeleteApplicationRequest {
     #[schemars(range(min = 1))]
     pub expected_generation: u64,
-    #[serde(default)]
-    pub force: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]

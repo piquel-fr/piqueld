@@ -1129,7 +1129,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validation_not_found_force_and_malformed_json_are_structured() {
+    async fn validation_not_found_unknown_fields_and_malformed_json_are_structured() {
         let (_temp, _store, app) = fake_fixture().await;
         let invalid = app
             .clone()
@@ -1181,7 +1181,7 @@ mod tests {
                         .method(Method::POST)
                         .uri("/api/v1/applications")
                         .header(header::CONTENT_TYPE, JSON)
-                        .header("idempotency-key", "force-delete")
+                        .header("idempotency-key", "unknown-field-delete")
                         .body(Body::from(json!({"manifest":manifest()}).to_string()))
                         .unwrap(),
                 )
@@ -1190,7 +1190,7 @@ mod tests {
         )
         .await;
         let id = created["data"]["application_id"].as_str().unwrap();
-        let force = app
+        let unknown_field = app
             .oneshot(request(
                 Method::DELETE,
                 &format!("/api/v1/applications/{id}"),
@@ -1198,8 +1198,8 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(force.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(force).await["code"], "force_delete_unsupported");
+        assert_eq!(unknown_field.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(unknown_field).await["code"], "json_malformed");
     }
 
     #[tokio::test]

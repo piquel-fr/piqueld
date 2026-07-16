@@ -96,14 +96,6 @@ pub fn openapi_document() -> Value {
     add_schema::<PlanApplicationRequest>(&mut schemas, "PlanApplicationRequest");
     add_schema::<piqueld_client::ReplacePlanRequest>(&mut schemas, "ReplacePlanRequest");
     add_schema::<DeleteApplicationRequest>(&mut schemas, "DeleteApplicationRequest");
-    if let Some(force) = schemas
-        .get_mut("DeleteApplicationRequest")
-        .and_then(|schema| schema.pointer_mut("/properties/force"))
-    {
-        force["enum"] = json!([false]);
-        force["description"] =
-            json!("Must be false. Force deletion is unsupported and named volumes are retained.");
-    }
     add_schema::<ExpectedGeneration>(&mut schemas, "ExpectedGeneration");
     add_schema::<Envelope<AcceptedOperation>>(&mut schemas, "AcceptedOperationEnvelope");
     add_schema::<Envelope<PlanView>>(&mut schemas, "PlanEnvelope");

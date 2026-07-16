@@ -233,7 +233,6 @@ image = "ghcr.io/example/notes:1"
             &created.application_id,
             &DeleteApplicationRequest {
                 expected_generation: 3,
-                force: false,
             },
         )
         .await

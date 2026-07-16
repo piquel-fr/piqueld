@@ -714,14 +714,6 @@
             "format": "uint64",
             "minimum": 1.0,
             "type": "integer"
-          },
-          "force": {
-            "default": false,
-            "description": "Must be false. Force deletion is unsupported and named volumes are retained.",
-            "enum": [
-              false
-            ],
-            "type": "boolean"
           }
         },
         "required": [
