@@ -1,15 +1,11 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{
-        IntoResponse, Response, Sse,
-        sse::{Event, KeepAlive},
-    },
+    response::{IntoResponse, Response, Sse, sse::KeepAlive},
 };
-use futures_util::stream;
 use piqueld_client::{
     AcceptedOperation, ApplicationStatusView, ApplicationView, CreateApplicationRequest,
     DeleteApplicationRequest, Envelope, ExpectedGeneration, Page, PlanApplicationRequest, PlanView,
@@ -25,14 +21,12 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::{
-    ApiError, ApiState, BoundaryError, EventStream, RequestShape, accepted, current_state_event_id,
-    decode_json, generation, header_text, hex, idempotency_key_hash, idempotent_application_id,
-    last_event_id, ok, openapi::ApiErrorResponse, parse_manifest, parse_update, require_json,
-    valid_expected_generation,
+    ApiError, ApiState, BoundaryError, RequestShape, StateEventSnapshot, accepted,
+    current_state_stream, decode_json, generation, header_text, hex, idempotency_key_hash,
+    idempotent_application_id, last_event_id, ok, openapi::ApiErrorResponse, parse_manifest,
+    parse_update, require_json, valid_expected_generation,
 };
-use crate::store::{
-    ApplicationRepository, SqliteStore, StatusRepository, StoreError, StoredApplication,
-};
+use crate::store::{ApplicationRepository, StatusRepository, StoreError, StoredApplication};
 
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -676,44 +670,36 @@ pub(super) async fn events(
     let id = ApplicationId::parse(&id)?;
     state.store.status(&id).await?;
     let last = last_event_id(&headers);
-    Ok(Sse::new(event_stream(state.store, id, last))
+    let store = state.store;
+    Ok(Sse::new(current_state_stream("application", last, move || {
+        let store = store.clone();
+        let id = id.clone();
+        async move {
+            let status = match store.status(&id).await {
+                Ok(status) => status,
+                Err(error) => {
+                    tracing::warn!(application_id = %id, %error, "application event stream store read failed");
+                    return None;
+                }
+            };
+            let data = match serde_json::to_string(&status.view()) {
+                Ok(data) => data,
+                Err(error) => {
+                    tracing::error!(application_id = %id, %error, "application event stream serialization failed");
+                    return None;
+                }
+            };
+            Some(StateEventSnapshot {
+                data,
+                event: "application",
+                terminal: false,
+            })
+        }
+    }))
         .keep_alive(
             KeepAlive::new()
                 .interval(Duration::from_secs(15))
                 .text("keepalive"),
         )
         .into_response())
-}
-
-fn event_stream(store: Arc<SqliteStore>, id: ApplicationId, last: Option<String>) -> EventStream {
-    Box::pin(stream::unfold(
-        (store, id, last, true),
-        |(store, id, last, reconnect)| async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                let Ok(status) = store.status(&id).await else {
-                    return None;
-                };
-                let data = serde_json::to_string(&status.view()).unwrap_or_else(|_| "{}".into());
-                let event_id = current_state_event_id("application", &data);
-                if last.as_deref() == Some(event_id.as_str()) {
-                    continue;
-                }
-                if reconnect && last.is_some() {
-                    let reset = Event::default()
-                        .id(format!("reset:{event_id}"))
-                        .event("replay_reset")
-                        .data("{\"reason\":\"bounded_replay_exhausted\"}");
-                    return Some((Ok(reset), (store, id, None, false)));
-                }
-                return Some((
-                    Ok(Event::default()
-                        .id(event_id.clone())
-                        .event("application")
-                        .data(data)),
-                    (store, id, Some(event_id), false),
-                ));
-            }
-        },
-    ))
 }

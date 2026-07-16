@@ -10,7 +10,7 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response, sse::Event},
 };
-use futures_util::Stream;
+use futures_util::{Stream, stream};
 use piqueld_client::{
     AcceptedOperation, CreateApplicationRequest, Envelope, ErrorBody, PlanApplicationRequest,
     ReplaceApplicationRequest,
@@ -22,7 +22,7 @@ use piqueld_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{convert::Infallible, pin::Pin, sync::Arc};
+use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc, time::Duration};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
@@ -344,6 +344,50 @@ async fn bind_error_request_id(request: Request, next: Next) -> Response {
 }
 
 type EventStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
+
+struct StateEventSnapshot {
+    data: String,
+    event: &'static str,
+    terminal: bool,
+}
+
+fn current_state_stream<F, Fut>(kind: &'static str, last: Option<String>, fetch: F) -> EventStream
+where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: Future<Output = Option<StateEventSnapshot>> + Send,
+{
+    Box::pin(stream::unfold(
+        (fetch, last, false, true),
+        move |(fetch, last, done, reconnect)| async move {
+            if done {
+                return None;
+            }
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let snapshot = fetch().await?;
+                let event_id = current_state_event_id(kind, &snapshot.data);
+                if last.as_deref() == Some(event_id.as_str()) {
+                    if snapshot.terminal {
+                        return None;
+                    }
+                    continue;
+                }
+                if reconnect && last.is_some() {
+                    let reset = Event::default()
+                        .id(format!("reset:{event_id}"))
+                        .event("replay_reset")
+                        .data("{\"reason\":\"bounded_replay_exhausted\"}");
+                    return Some((Ok(reset), (fetch, None, false, false)));
+                }
+                let event = Event::default()
+                    .id(event_id.clone())
+                    .event(snapshot.event)
+                    .data(snapshot.data);
+                return Some((Ok(event), (fetch, Some(event_id), snapshot.terminal, false)));
+            }
+        },
+    ))
+}
 
 async fn fallback(method: Method) -> ApiError {
     let _ = method;

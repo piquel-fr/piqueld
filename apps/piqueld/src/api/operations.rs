@@ -1,19 +1,15 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use super::{
-    ApiError, ApiState, EventStream, current_state_event_id, last_event_id, ok,
+    ApiError, ApiState, StateEventSnapshot, current_state_stream, last_event_id, ok,
     openapi::ApiErrorResponse,
 };
-use crate::store::{OperationRepository, SqliteStore, WorkState};
+use crate::store::{OperationRepository, WorkState};
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
-    response::{
-        IntoResponse, Response, Sse,
-        sse::{Event, KeepAlive},
-    },
+    response::{IntoResponse, Response, Sse, sse::KeepAlive},
 };
-use futures_util::stream;
 use piqueld_client::{Envelope, OperationView};
 
 #[utoipa::path(
@@ -64,62 +60,40 @@ pub(super) async fn events(
 ) -> Result<Response, ApiError> {
     state.store.operation(&id).await?;
     let last = last_event_id(&headers);
-    Ok(Sse::new(event_stream(state.store, id, last))
+    let store = state.store;
+    Ok(Sse::new(current_state_stream("operation", last, move || {
+        let store = store.clone();
+        let id = id.clone();
+        async move {
+            let (operation, steps) = match store.operation_with_steps(&id).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    tracing::warn!(operation_id = %id, %error, "operation event stream store read failed");
+                    return None;
+                }
+            };
+            let terminal = matches!(
+                operation.state,
+                WorkState::Succeeded | WorkState::Failed | WorkState::Cancelled
+            );
+            let data = match serde_json::to_string(&operation.view(steps)) {
+                Ok(data) => data,
+                Err(error) => {
+                    tracing::error!(operation_id = %id, %error, "operation event stream serialization failed");
+                    return None;
+                }
+            };
+            Some(StateEventSnapshot {
+                data,
+                event: if terminal { "terminal" } else { "operation" },
+                terminal,
+            })
+        }
+    }))
         .keep_alive(
             KeepAlive::new()
                 .interval(Duration::from_secs(15))
                 .text("keepalive"),
         )
         .into_response())
-}
-
-fn event_stream(store: Arc<SqliteStore>, id: String, last: Option<String>) -> EventStream {
-    Box::pin(stream::unfold(
-        (store, id, last, false, true),
-        |(store, id, last, done, reconnect)| async move {
-            if done {
-                return None;
-            }
-            loop {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                let (operation, steps) = match store.operation_with_steps(&id).await {
-                    Ok(snapshot) => snapshot,
-                    Err(error) => {
-                        tracing::warn!(operation_id = %id, %error, "operation event stream store read failed");
-                        return None;
-                    }
-                };
-                let terminal = matches!(
-                    operation.state,
-                    WorkState::Succeeded | WorkState::Failed | WorkState::Cancelled
-                );
-                let data = match serde_json::to_string(&operation.view(steps)) {
-                    Ok(data) => data,
-                    Err(error) => {
-                        tracing::error!(operation_id = %id, %error, "operation event stream serialization failed");
-                        return None;
-                    }
-                };
-                let event_id = current_state_event_id("operation", &data);
-                if last.as_deref() == Some(event_id.as_str()) {
-                    if terminal {
-                        return None;
-                    }
-                    continue;
-                }
-                if reconnect && last.is_some() {
-                    let reset = Event::default()
-                        .id(format!("reset:{event_id}"))
-                        .event("replay_reset")
-                        .data("{\"reason\":\"bounded_replay_exhausted\"}");
-                    return Some((Ok(reset), (store, id, None, false, false)));
-                }
-                let event = Event::default()
-                    .id(event_id.clone())
-                    .event(if terminal { "terminal" } else { "operation" })
-                    .data(data);
-                return Some((Ok(event), (store, id, Some(event_id), terminal, false)));
-            }
-        },
-    ))
 }
