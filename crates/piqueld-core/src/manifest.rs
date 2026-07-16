@@ -31,6 +31,12 @@ pub struct ApplicationManifest {
     pub metadata: MetadataInput,
     pub spec: ApplicationSpecInput,
 }
+impl ApplicationManifest {
+    /// JSON Schema snapshot source for canonical application responses.
+    pub fn schema() -> RootSchema {
+        schemars::schema_for!(Self)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -246,6 +252,13 @@ pub struct NormalizedApplication {
     pub kind: String,
     pub metadata: Metadata,
     pub spec: ApplicationSpec,
+}
+
+impl NormalizedApplication {
+    /// JSON Schema snapshot source for canonical application responses.
+    pub fn schema() -> RootSchema {
+        schemars::schema_for!(Self)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1128,17 +1141,6 @@ impl NormalizedApplication {
             },
         }
     }
-}
-
-/// JSON Schema snapshot source for strict application requests.
-#[must_use]
-pub fn application_manifest_schema() -> RootSchema {
-    schemars::schema_for!(ApplicationManifest)
-}
-/// JSON Schema snapshot source for canonical application responses.
-#[must_use]
-pub fn normalized_application_schema() -> RootSchema {
-    schemars::schema_for!(NormalizedApplication)
 }
 
 fn api_version_schema(_generator: &mut SchemaGenerator) -> Schema {

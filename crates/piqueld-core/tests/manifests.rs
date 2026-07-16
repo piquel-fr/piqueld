@@ -1,9 +1,11 @@
 //! Manifest contract, fixture, property, and schema snapshot tests.
 
-use piqueld_core::manifest::{application_manifest_schema, normalized_application_schema};
+use piqueld_core::manifest::{
+    ApplicationManifest, application_manifest_schema, normalized_application_schema,
+};
 use piqueld_core::{
-    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationId, ResourceKind, docker_resource_name,
-    parse_json, parse_toml, router_name,
+    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationId, NormalizedApplication, ResourceKind,
+    docker_resource_name, parse_json, parse_toml, router_name,
 };
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
@@ -579,8 +581,8 @@ mode = "{mode}"
 
 #[test]
 fn schema_snapshots_are_stable() {
-    let request = serde_json::to_string_pretty(&application_manifest_schema()).unwrap();
-    let response = serde_json::to_string_pretty(&normalized_application_schema()).unwrap();
+    let request = serde_json::to_string_pretty(&ApplicationManifest::schema()).unwrap();
+    let response = serde_json::to_string_pretty(&NormalizedApplication::schema()).unwrap();
     assert_eq!(
         format!("{:x}", Sha256::digest(&request)),
         include_str!("snapshots/application-manifest.schema.sha256").trim()
