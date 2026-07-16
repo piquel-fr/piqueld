@@ -1,12 +1,9 @@
 use axum::{Extension, response::IntoResponse};
 use http::header;
-use piqueld_client::{
-    AcceptedOperation, ApplicationStatusView, ApplicationView, Envelope, ErrorBody, OperationView,
-    Page, PlanView, SystemCapabilities, SystemStatus,
-};
+use piqueld_client::ErrorBody;
 use serde_json::Value;
 use std::sync::Arc;
-use utoipa::{OpenApi, ToResponse, ToSchema};
+use utoipa::{OpenApi, ToResponse};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -31,23 +28,6 @@ pub(super) fn base_document() -> utoipa::openapi::OpenApi {
 #[derive(ToResponse)]
 #[response(description = "Structured, sanitized error")]
 pub(super) struct ApiErrorResponse(ErrorBody);
-
-macro_rules! envelope_schema {
-    ($name:ident, $body:ty) => {
-        #[allow(dead_code)]
-        #[derive(ToSchema)]
-        pub(super) struct $name(Envelope<$body>);
-    };
-}
-
-envelope_schema!(SystemStatusEnvelope, SystemStatus);
-envelope_schema!(SystemCapabilitiesEnvelope, SystemCapabilities);
-envelope_schema!(ApplicationPageEnvelope, Page<ApplicationView>);
-envelope_schema!(ApplicationEnvelope, ApplicationView);
-envelope_schema!(AcceptedOperationEnvelope, AcceptedOperation);
-envelope_schema!(PlanEnvelope, PlanView);
-envelope_schema!(ApplicationStatusEnvelope, ApplicationStatusView);
-envelope_schema!(OperationEnvelope, OperationView);
 
 #[utoipa::path(
     get,

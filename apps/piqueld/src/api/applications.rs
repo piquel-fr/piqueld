@@ -11,8 +11,9 @@ use axum::{
 };
 use futures_util::stream;
 use piqueld_client::{
-    AcceptedOperation, CreateApplicationRequest, DeleteApplicationRequest, ExpectedGeneration,
-    Page, PlanApplicationRequest, PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
+    AcceptedOperation, ApplicationStatusView, ApplicationView, CreateApplicationRequest,
+    DeleteApplicationRequest, Envelope, ExpectedGeneration, Page, PlanApplicationRequest, PlanView,
+    ReplaceApplicationRequest, ReplacePlanRequest,
 };
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, PlanAction, PlanRequest,
@@ -26,12 +27,8 @@ use sha2::{Digest, Sha256};
 use super::{
     ApiError, ApiState, BoundaryError, EventStream, MAX_PAGE, RequestShape, accepted,
     current_state_event_id, decode_json, generation, header_text, hex, idempotency_key_hash,
-    idempotent_application_id, last_event_id, ok,
-    openapi::{
-        AcceptedOperationEnvelope, ApiErrorResponse, ApplicationEnvelope, ApplicationPageEnvelope,
-        ApplicationStatusEnvelope, PlanEnvelope,
-    },
-    parse_manifest, parse_update, require_json, valid_expected_generation,
+    idempotent_application_id, last_event_id, ok, openapi::ApiErrorResponse, parse_manifest,
+    parse_update, require_json, valid_expected_generation,
 };
 use crate::store::{
     ApplicationRepository, SqliteStore, StatusRepository, StoreError, StoredApplication,
@@ -52,7 +49,7 @@ pub(super) struct ListQuery {
     summary = "List applications",
     params(ListQuery),
     responses(
-        (status = 200, description = "Success", body = ApplicationPageEnvelope),
+        (status = 200, description = "Success", body = Envelope<Page<ApplicationView>>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
         (status = 503, response = inline(ApiErrorResponse)),
@@ -106,7 +103,7 @@ pub(super) async fn list(
     summary = "Get an application",
     params(("id" = String, Path, min_length = 8, max_length = 64)),
     responses(
-        (status = 200, description = "Success", body = ApplicationEnvelope),
+        (status = 200, description = "Success", body = Envelope<ApplicationView>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
@@ -135,7 +132,7 @@ pub(super) async fn get(
         )
     ),
     responses(
-        (status = 202, description = "Success", body = AcceptedOperationEnvelope),
+        (status = 202, description = "Success", body = Envelope<AcceptedOperation>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
         (status = 415, response = inline(ApiErrorResponse)),
@@ -239,7 +236,7 @@ pub(super) async fn create(
         )
     ),
     responses(
-        (status = 202, description = "Success", body = AcceptedOperationEnvelope),
+        (status = 202, description = "Success", body = Envelope<AcceptedOperation>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
@@ -300,7 +297,7 @@ pub(super) async fn replace(
     params(("id" = String, Path, min_length = 8, max_length = 64)),
     request_body = DeleteApplicationRequest,
     responses(
-        (status = 202, description = "Success", body = AcceptedOperationEnvelope),
+        (status = 202, description = "Success", body = Envelope<AcceptedOperation>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
@@ -368,7 +365,7 @@ pub(super) async fn delete(
         )
     ),
     responses(
-        (status = 200, description = "Success", body = PlanEnvelope),
+        (status = 200, description = "Success", body = Envelope<PlanView>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
         (status = 415, response = inline(ApiErrorResponse)),
@@ -413,7 +410,7 @@ pub(super) async fn plan_create(
         )
     ),
     responses(
-        (status = 200, description = "Success", body = PlanEnvelope),
+        (status = 200, description = "Success", body = Envelope<PlanView>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
@@ -574,7 +571,7 @@ async fn reject_name_collision(
     params(("id" = String, Path, min_length = 8, max_length = 64)),
     request_body = ExpectedGeneration,
     responses(
-        (status = 202, description = "Success", body = AcceptedOperationEnvelope),
+        (status = 202, description = "Success", body = Envelope<AcceptedOperation>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
@@ -650,7 +647,7 @@ pub(super) async fn reconcile(
     summary = "Get application status",
     params(("id" = String, Path, min_length = 8, max_length = 64)),
     responses(
-        (status = 200, description = "Success", body = ApplicationStatusEnvelope),
+        (status = 200, description = "Success", body = Envelope<ApplicationStatusView>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),

@@ -1,10 +1,7 @@
 use axum::{extract::State, response::IntoResponse};
-use piqueld_client::{SystemCapabilities, SystemStatus};
+use piqueld_client::{Envelope, SystemCapabilities, SystemStatus};
 
-use super::{
-    ApiState, ok,
-    openapi::{ApiErrorResponse, SystemCapabilitiesEnvelope, SystemStatusEnvelope},
-};
+use super::{ApiState, ok, openapi::ApiErrorResponse};
 
 #[utoipa::path(
     get,
@@ -12,7 +9,7 @@ use super::{
     operation_id = "systemStatus",
     summary = "Get daemon status",
     responses(
-        (status = 200, description = "Success", body = SystemStatusEnvelope),
+        (status = 200, description = "Success", body = Envelope<SystemStatus>),
         (status = 500, response = inline(ApiErrorResponse)),
         (status = 503, response = inline(ApiErrorResponse)),
     )
@@ -31,7 +28,7 @@ pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
     operation_id = "systemCapabilities",
     summary = "Get daemon capabilities",
     responses(
-        (status = 200, description = "Success", body = SystemCapabilitiesEnvelope),
+        (status = 200, description = "Success", body = Envelope<SystemCapabilities>),
         (status = 500, response = inline(ApiErrorResponse)),
     )
 )]

@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use super::{
     ApiError, ApiState, EventStream, current_state_event_id, last_event_id, ok,
-    openapi::{ApiErrorResponse, OperationEnvelope},
+    openapi::ApiErrorResponse,
 };
 use crate::store::{OperationRepository, SqliteStore, WorkState};
 use axum::{
@@ -14,6 +14,7 @@ use axum::{
     },
 };
 use futures_util::stream;
+use piqueld_client::{Envelope, OperationView};
 
 #[utoipa::path(
     get,
@@ -22,7 +23,7 @@ use futures_util::stream;
     summary = "Get an operation",
     params(("id" = String, Path, min_length = 8, max_length = 64)),
     responses(
-        (status = 200, description = "Success", body = OperationEnvelope),
+        (status = 200, description = "Success", body = Envelope<OperationView>),
         (status = 404, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
         (status = 503, response = inline(ApiErrorResponse)),

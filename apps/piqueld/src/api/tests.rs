@@ -650,7 +650,11 @@ async fn openapi_snapshot_lists_exact_plan_five_surface() {
         return;
     }
     let snapshot: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(openapi::openapi_document(), snapshot);
+    assert_eq!(
+        openapi::openapi_document(),
+        snapshot,
+        "saved snapshot does not match OpenAPI spec"
+    );
 
     let (_temp, _store, app) = fixture(Arc::new(UnavailableRuntime)).await;
     let response = app
