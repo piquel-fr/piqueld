@@ -11,7 +11,7 @@ mod operation;
 mod status;
 
 use async_trait::async_trait;
-use piqueld_client::{ApplicationStatusView, ApplicationView, OperationStepView, OperationView};
+use piqueld_client::{ApplicationStatusView, ApplicationView, OperationStepView, OperationView, Page};
 use piqueld_core::{
     ApplicationId, ErrorCode, NormalizedApplication, PublicError, ResolutionSet,
     compile_application,
@@ -334,13 +334,6 @@ pub struct StoredApplication {
     pub updated_at_ms: i64,
 }
 
-/// A bounded page of revalidated applications.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StoredApplicationPage {
-    pub items: Vec<StoredApplication>,
-    pub next_cursor: Option<String>,
-}
-
 /// Default number of rows returned by a bounded repository query.
 pub const DEFAULT_PAGE_SIZE: usize = 50;
 /// Maximum number of rows processed by one bounded repository query.
@@ -529,7 +522,7 @@ pub trait ApplicationRepository: Send + Sync {
         &self,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<StoredApplicationPage, StoreError>;
+    ) -> Result<Page<StoredApplication>, StoreError>;
 }
 /// Operation journal persistence contract.
 #[async_trait]

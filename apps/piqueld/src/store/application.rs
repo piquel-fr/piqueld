@@ -1,9 +1,11 @@
 //! Application repository implementation.
 
+use piqueld_client::Page;
+
 use super::{
     ApplicationId, ApplicationRepository, ApplicationRow, MutationResult, NormalizedApplication,
-    OperationKind, ResolvedApplication, SqliteStore, StoreError, StoredApplication,
-    StoredApplicationPage, async_trait, canonical_resolved, now_ms, page_limit, valid_sha256,
+    OperationKind, ResolvedApplication, SqliteStore, StoreError, StoredApplication, async_trait,
+    canonical_resolved, now_ms, page_limit, valid_sha256,
 };
 
 #[async_trait]
@@ -447,7 +449,7 @@ impl ApplicationRepository for SqliteStore {
         &self,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<StoredApplicationPage, StoreError> {
+    ) -> Result<Page<StoredApplication>, StoreError> {
         let fetch_limit = page_limit(limit)? + 1;
         let offset = cursor
             .map_or(Ok(0_i64), str::parse::<i64>)
@@ -478,6 +480,6 @@ impl ApplicationRepository for SqliteStore {
         let has_more = items.len() > limit;
         items.truncate(limit);
         let next_cursor = has_more.then(|| (offset + items.len() as i64).to_string());
-        Ok(StoredApplicationPage { items, next_cursor })
+        Ok(Page { items, next_cursor })
     }
 }
