@@ -13,11 +13,12 @@ use axum::{
 };
 use futures_util::Stream;
 use piqueld_client::{
-    AcceptedOperation, ApplicationStatusView, ApplicationView, CreateApplicationRequest, Envelope,
-    ErrorBody, OperationStepView, OperationView, PlanApplicationRequest, ReplaceApplicationRequest,
+    AcceptedOperation, CreateApplicationRequest, Envelope, ErrorBody, PlanApplicationRequest,
+    ReplaceApplicationRequest,
 };
 use piqueld_core::{
-    ApplicationId, NormalizedApplication, ObservedApplication, resource::ResolvedApplication,
+    ApplicationId, ApplicationIdError, NormalizedApplication, ObservedApplication,
+    resource::ResolvedApplication,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -28,9 +29,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::store::{
-    ApplicationStatus, Operation, OperationStep, SqliteStore, StoreError, StoredApplication,
-};
+use crate::store::{SqliteStore, StoreError, StoredApplication};
 
 mod applications;
 mod openapi;
@@ -220,6 +219,40 @@ impl From<BoundaryError> for ApiError {
     }
 }
 
+impl From<ApplicationIdError> for ApiError {
+    fn from(_: ApplicationIdError) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "application_id_invalid",
+            "application ID is invalid",
+        )
+    }
+}
+
+impl From<piqueld_core::ValidationErrors> for ApiError {
+    fn from(errors: piqueld_core::ValidationErrors) -> Self {
+        if errors
+            .0
+            .iter()
+            .all(|error| error.code == "manifest_decode_failed")
+        {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "toml_malformed",
+                "request TOML is malformed or does not match the application schema",
+            )
+        } else {
+            let piqueld_core::ValidationErrors(errors) = errors;
+            Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "manifest_validation_failed",
+                "application manifest failed validation",
+            )
+            .details(json!({"errors": errors}))
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = ErrorBody {
@@ -341,15 +374,6 @@ fn ok<T: Serialize>(data: T) -> impl IntoResponse {
 fn accepted(data: AcceptedOperation) -> Response {
     (StatusCode::ACCEPTED, axum::Json(Envelope { data })).into_response()
 }
-fn application_id(value: &str) -> Result<ApplicationId, ApiError> {
-    ApplicationId::parse(value).map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "application_id_invalid",
-            "application ID is invalid",
-        )
-    })
-}
 fn generation(expected: u64, actual: u64) -> Result<(), ApiError> {
     if expected == actual {
         Ok(())
@@ -420,7 +444,7 @@ fn parse_manifest(
                     "application manifest is invalid",
                 )
             })?;
-            piqueld_core::parse_json(&encoded).map_err(validation_error)
+            Ok(piqueld_core::parse_json(&encoded)?)
         }
         Some(value)
             if value.eq_ignore_ascii_case(TOML) || value.eq_ignore_ascii_case("text/toml") =>
@@ -433,7 +457,7 @@ fn parse_manifest(
                         "request TOML is malformed",
                     )
                 })
-                .and_then(|v| piqueld_core::parse_toml(v).map_err(toml_manifest_error))
+                .and_then(|v| Ok(piqueld_core::parse_toml(v)?))
         }
         _ => Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -459,7 +483,7 @@ fn parse_update(
                 )
             })?;
             Ok((
-                piqueld_core::parse_json(&encoded).map_err(validation_error)?,
+                piqueld_core::parse_json(&encoded)?,
                 request.expected_generation,
             ))
         }
@@ -490,10 +514,7 @@ fn parse_update(
                     "request TOML is malformed",
                 )
             })?;
-            Ok((
-                piqueld_core::parse_toml(text).map_err(toml_manifest_error)?,
-                expected,
-            ))
+            Ok((piqueld_core::parse_toml(text)?, expected))
         }
         _ => Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -503,37 +524,6 @@ fn parse_update(
     }
 }
 
-fn validation_error(errors: piqueld_core::ValidationErrors) -> ApiError {
-    let piqueld_core::ValidationErrors(errors) = errors;
-    ApiError::new(
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "manifest_validation_failed",
-        "application manifest failed validation",
-    )
-    .details(json!({"errors": errors}))
-}
-fn toml_manifest_error(errors: piqueld_core::ValidationErrors) -> ApiError {
-    if errors
-        .0
-        .iter()
-        .all(|error| error.code == "manifest_decode_failed")
-    {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "toml_malformed",
-            "request TOML is malformed or does not match the application schema",
-        )
-    } else {
-        validation_error(errors)
-    }
-}
-fn operation_step(action: &piqueld_core::PlanAction) -> String {
-    let mut value = format!("{action}");
-    if value.len() > 64 {
-        value.truncate(64);
-    }
-    value
-}
 fn idempotent_application_id(key: &str) -> ApplicationId {
     let digest = Sha256::digest(format!("piqueld-create/v1\0{key}").as_bytes());
     ApplicationId::parse(format!("app-{}", hex(&digest[..16])))
@@ -557,54 +547,6 @@ fn hex(bytes: &[u8]) -> String {
 }
 fn last_event_id(headers: &HeaderMap) -> Option<String> {
     header_text(headers, "last-event-id").map(str::to_owned)
-}
-
-fn application_view(v: StoredApplication) -> ApplicationView {
-    ApplicationView {
-        application: v.application,
-        generation: v.generation,
-        spec_hash: v.spec_hash,
-        delete_intent: v.delete_intent,
-        created_at_ms: v.created_at_ms,
-        updated_at_ms: v.updated_at_ms,
-    }
-}
-fn status_view(v: ApplicationStatus) -> ApplicationStatusView {
-    ApplicationStatusView {
-        application_id: v.application_id.to_string(),
-        state: v.state.as_str().into(),
-        observed_generation: v.observed_generation,
-        message: v.message,
-        updated_at_ms: v.updated_at_ms,
-    }
-}
-fn operation_view(v: Operation, steps: Vec<OperationStep>) -> OperationView {
-    OperationView {
-        id: v.id,
-        application_id: v.application_id.to_string(),
-        generation: v.generation,
-        kind: v.kind.as_str().into(),
-        state: v.state.as_str().into(),
-        error_code: v.error_code,
-        error_message: v.error_message,
-        created_at_ms: v.created_at_ms,
-        updated_at_ms: v.updated_at_ms,
-        started_at_ms: v.started_at_ms,
-        finished_at_ms: v.finished_at_ms,
-        steps: steps
-            .into_iter()
-            .map(|s| OperationStepView {
-                id: s.id,
-                position: s.position,
-                kind: s.kind,
-                state: s.state.as_str().into(),
-                attempt: s.attempt,
-                error_code: s.error_code,
-                error_message: s.error_message,
-                updated_at_ms: s.updated_at_ms,
-            })
-            .collect(),
-    }
 }
 
 #[cfg(test)]
@@ -1008,17 +950,19 @@ mod tests {
             .unwrap();
         let operation = store.operation(operation_id).await.unwrap();
         let steps = store.operation_steps(operation_id).await.unwrap();
-        let before =
-            serde_json::to_string(&operation_view(operation.clone(), steps.clone())).unwrap();
+        let before = serde_json::to_string(&operation.clone().view(steps.clone())).unwrap();
         let before_id = current_state_event_id("operation", &before);
         store
             .transition_step(&steps[0].id, StepState::Pending, StepState::Running, None)
             .await
             .unwrap();
-        let after = serde_json::to_string(&operation_view(
-            store.operation(operation_id).await.unwrap(),
-            store.operation_steps(operation_id).await.unwrap(),
-        ))
+        let after = serde_json::to_string(
+            &store
+                .operation(operation_id)
+                .await
+                .unwrap()
+                .view(store.operation_steps(operation_id).await.unwrap()),
+        )
         .unwrap();
         assert_eq!(store.operation(operation_id).await.unwrap(), operation);
         assert_ne!(current_state_event_id("operation", &after), before_id);
@@ -1512,7 +1456,7 @@ image = "ghcr.io/example/notes:1"
             .unwrap(),
         )
         .await;
-        let id = application_id(created["data"]["application_id"].as_str().unwrap()).unwrap();
+        let id = ApplicationId::parse(created["data"]["application_id"].as_str().unwrap()).unwrap();
         let durable = store
             .request_reconcile(&id, 1, &["already durable".into()])
             .await

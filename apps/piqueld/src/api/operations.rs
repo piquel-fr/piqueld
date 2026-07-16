@@ -10,19 +10,18 @@ use axum::{
 };
 use futures_util::stream;
 
-use super::{
-    ApiError, ApiState, EventStream, current_state_event_id, last_event_id, ok, operation_view,
-};
+use super::{ApiError, ApiState, EventStream, current_state_event_id, last_event_id, ok};
 use crate::store::{OperationRepository, SqliteStore, WorkState};
 
 pub(super) async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(ok(operation_view(
-        state.store.operation(&id).await?,
-        state.store.operation_steps(&id).await?,
-    )))
+    Ok(ok(state
+        .store
+        .operation(&id)
+        .await?
+        .view(state.store.operation_steps(&id).await?)))
 }
 
 pub(super) async fn events(
@@ -60,8 +59,8 @@ fn event_stream(store: Arc<SqliteStore>, id: String, last: Option<String>) -> Ev
                 let Ok(steps) = store.operation_steps(&id).await else {
                     return None;
                 };
-                let data = serde_json::to_string(&operation_view(operation, steps))
-                    .unwrap_or_else(|_| "{}".into());
+                let data =
+                    serde_json::to_string(&operation.view(steps)).unwrap_or_else(|_| "{}".into());
                 let event_id = current_state_event_id("operation", &data);
                 if last.as_deref() == Some(event_id.as_str()) {
                     if terminal {

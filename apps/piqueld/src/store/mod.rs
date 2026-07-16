@@ -11,6 +11,7 @@ mod operation;
 mod status;
 
 use async_trait::async_trait;
+use piqueld_client::{ApplicationStatusView, ApplicationView, OperationStepView, OperationView};
 use piqueld_core::{
     ApplicationId, ErrorCode, NormalizedApplication, PublicError, ResolutionSet,
     compile_application,
@@ -332,6 +333,20 @@ pub struct StoredApplication {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
+impl StoredApplication {
+    #[must_use]
+    pub fn view(self) -> ApplicationView {
+        ApplicationView {
+            application: self.application,
+            generation: self.generation,
+            spec_hash: self.spec_hash,
+            delete_intent: self.delete_intent,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+        }
+    }
+}
+
 /// Application status row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationStatus {
@@ -341,6 +356,19 @@ pub struct ApplicationStatus {
     pub message: Option<String>,
     pub updated_at_ms: i64,
 }
+impl ApplicationStatus {
+    #[must_use]
+    pub fn view(self) -> ApplicationStatusView {
+        ApplicationStatusView {
+            application_id: self.application_id.to_string(),
+            state: self.state.as_str().into(),
+            observed_generation: self.observed_generation,
+            message: self.message,
+            updated_at_ms: self.updated_at_ms,
+        }
+    }
+}
+
 /// Durable operation row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Operation {
@@ -356,6 +384,38 @@ pub struct Operation {
     pub started_at_ms: Option<i64>,
     pub finished_at_ms: Option<i64>,
 }
+impl Operation {
+    #[must_use]
+    pub fn view(self, steps: Vec<OperationStep>) -> OperationView {
+        OperationView {
+            id: self.id,
+            application_id: self.application_id.to_string(),
+            generation: self.generation,
+            kind: self.kind.as_str().into(),
+            state: self.state.as_str().into(),
+            error_code: self.error_code,
+            error_message: self.error_message,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+            started_at_ms: self.started_at_ms,
+            finished_at_ms: self.finished_at_ms,
+            steps: steps
+                .into_iter()
+                .map(|s| OperationStepView {
+                    id: s.id,
+                    position: s.position,
+                    kind: s.kind,
+                    state: s.state.as_str().into(),
+                    attempt: s.attempt,
+                    error_code: s.error_code,
+                    error_message: s.error_message,
+                    updated_at_ms: s.updated_at_ms,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Durable operation step row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationStep {
@@ -372,6 +432,7 @@ pub struct OperationStep {
     pub started_at_ms: Option<i64>,
     pub finished_at_ms: Option<i64>,
 }
+
 /// Durable build row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Build {

@@ -217,6 +217,15 @@ impl PlanAction {
             false,
         )
     }
+
+    #[must_use]
+    pub fn operation_step(&self) -> String {
+        let mut value = format!("{self}");
+        if value.len() > 64 {
+            value.truncate(64);
+        }
+        value
+    }
 }
 impl fmt::Display for PlanAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

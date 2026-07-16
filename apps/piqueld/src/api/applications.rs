@@ -14,7 +14,7 @@ use piqueld_client::{
     AcceptedOperation, DeleteApplicationRequest, ExpectedGeneration, Page, PlanView,
 };
 use piqueld_core::{
-    ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, PlanRequest,
+    ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, PlanAction, PlanRequest,
     ResolutionSet, compile_application, plan, preview_resolution,
     resource::{ResolvedApplication, ResolvedSource, SecretGeneration},
 };
@@ -24,9 +24,9 @@ use sha2::{Digest, Sha256};
 
 use super::{
     ApiError, ApiState, BoundaryError, EventStream, MAX_PAGE, RequestShape, accepted,
-    application_id, application_view, current_state_event_id, decode_json, generation, header_text,
-    hex, idempotency_key_hash, idempotent_application_id, last_event_id, ok, operation_step,
-    parse_manifest, parse_update, require_json, status_view, valid_expected_generation,
+    current_state_event_id, decode_json, generation, header_text, hex, idempotency_key_hash,
+    idempotent_application_id, last_event_id, ok, parse_manifest, parse_update, require_json,
+    valid_expected_generation,
 };
 use crate::store::{
     ApplicationRepository, SqliteStore, StatusRepository, StoreError, StoredApplication,
@@ -74,7 +74,7 @@ pub(super) async fn list(
     values.truncate(limit);
     let next_cursor = has_more.then(|| (offset + values.len()).to_string());
     Ok(ok(Page {
-        items: values.into_iter().map(application_view).collect(),
+        items: values.into_iter().map(StoredApplication::view).collect(),
         next_cursor,
     }))
 }
@@ -83,8 +83,8 @@ pub(super) async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let id = application_id(&id)?;
-    Ok(ok(application_view(state.store.get(&id).await?)))
+    let id = ApplicationId::parse(&id)?;
+    Ok(ok(state.store.get(&id).await?.view()))
 }
 
 pub(super) async fn create(
@@ -142,7 +142,11 @@ pub(super) async fn create(
         )
         .details(json!({"diagnostics": plan.diagnostics})));
     }
-    let steps = plan.actions.iter().map(operation_step).collect::<Vec<_>>();
+    let steps = plan
+        .actions
+        .iter()
+        .map(PlanAction::operation_step)
+        .collect::<Vec<_>>();
     let mutation = state
         .store
         .create_idempotent(
@@ -166,7 +170,7 @@ pub(super) async fn replace(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let id = application_id(&id)?;
+    let id = ApplicationId::parse(&id)?;
     let (validated, expected) = parse_update(&headers, &body)?;
     let current = state.store.get(&id).await?;
     generation(expected, current.generation)?;
@@ -186,7 +190,11 @@ pub(super) async fn replace(
             "runtime plan contains blocking conflicts",
         ));
     }
-    let steps = plan.actions.iter().map(operation_step).collect::<Vec<_>>();
+    let steps = plan
+        .actions
+        .iter()
+        .map(PlanAction::operation_step)
+        .collect::<Vec<_>>();
     let mutation = state
         .store
         .replace(&app, Some(&prepared.resolved), expected, &steps)
@@ -214,7 +222,7 @@ pub(super) async fn delete(
             "force deletion is not supported; named volumes are always retained",
         ));
     }
-    let id = application_id(&id)?;
+    let id = ApplicationId::parse(&id)?;
     let current = state.store.get(&id).await?;
     generation(request.expected_generation, current.generation)?;
     let observed = state.runtime.observe(&current).await?;
@@ -234,7 +242,11 @@ pub(super) async fn delete(
         )
         .details(json!({"diagnostics": plan.diagnostics})));
     }
-    let steps = plan.actions.iter().map(operation_step).collect::<Vec<_>>();
+    let steps = plan
+        .actions
+        .iter()
+        .map(PlanAction::operation_step)
+        .collect::<Vec<_>>();
     let mutation = state
         .store
         .request_delete(&id, request.expected_generation, &steps)
@@ -271,7 +283,7 @@ pub(super) async fn plan_replace(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
-    let id = application_id(&id)?;
+    let id = ApplicationId::parse(&id)?;
     let (validated, expected) = parse_update(&headers, &body)?;
     let current = state.store.get(&id).await?;
     generation(expected, current.generation)?;
@@ -416,7 +428,7 @@ pub(super) async fn reconcile(
     require_json(&headers)?;
     let request: ExpectedGeneration = decode_json(&body)?;
     valid_expected_generation(request.expected_generation)?;
-    let id = application_id(&id)?;
+    let id = ApplicationId::parse(&id)?;
     let current = state.store.get(&id).await?;
     generation(request.expected_generation, current.generation)?;
     if let Some(mutation) = state
@@ -450,7 +462,11 @@ pub(super) async fn reconcile(
         )
         .details(json!({"diagnostics": plan.diagnostics})));
     }
-    let steps = plan.actions.iter().map(operation_step).collect::<Vec<_>>();
+    let steps = plan
+        .actions
+        .iter()
+        .map(PlanAction::operation_step)
+        .collect::<Vec<_>>();
     let mutation = state
         .store
         .request_reconcile(&id, request.expected_generation, &steps)
@@ -466,8 +482,8 @@ pub(super) async fn status(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let id = application_id(&id)?;
-    Ok(ok(status_view(state.store.status(&id).await?)))
+    let id = ApplicationId::parse(&id)?;
+    Ok(ok(state.store.status(&id).await?.view()))
 }
 
 pub(super) async fn events(
@@ -475,7 +491,7 @@ pub(super) async fn events(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let id = application_id(&id)?;
+    let id = ApplicationId::parse(&id)?;
     state.store.status(&id).await?;
     let last = last_event_id(&headers);
     Ok(Sse::new(event_stream(state.store, id, last))
@@ -496,8 +512,7 @@ fn event_stream(store: Arc<SqliteStore>, id: ApplicationId, last: Option<String>
                 let Ok(status) = store.status(&id).await else {
                     return None;
                 };
-                let data =
-                    serde_json::to_string(&status_view(status)).unwrap_or_else(|_| "{}".into());
+                let data = serde_json::to_string(&status.view()).unwrap_or_else(|_| "{}".into());
                 let event_id = current_state_event_id("application", &data);
                 if last.as_deref() == Some(event_id.as_str()) {
                     continue;
