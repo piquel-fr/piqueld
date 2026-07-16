@@ -6,7 +6,70 @@ use piqueld_client::{
     PlanApplicationRequest, PlanView, ReplaceApplicationRequest, SystemCapabilities, SystemStatus,
 };
 use schemars::{JsonSchema, schema_for};
+use serde::Serialize;
 use serde_json::{Value, json};
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::enum_variant_names)]
+enum ApiOperation {
+    SystemStatus,
+    SystemCapabilities,
+    OpenApiDocument,
+    ListApplications,
+    CreateApplication,
+    PlanApplicationCreate,
+    GetApplication,
+    ReplaceApplication,
+    DeleteApplication,
+    PlanApplicationReplace,
+    ReconcileApplication,
+    ApplicationStatus,
+    WatchApplication,
+    GetOperation,
+    WatchOperation,
+}
+
+impl ApiOperation {
+    #[cfg(test)]
+    const ALL: [Self; 15] = [
+        Self::SystemStatus,
+        Self::SystemCapabilities,
+        Self::OpenApiDocument,
+        Self::ListApplications,
+        Self::CreateApplication,
+        Self::PlanApplicationCreate,
+        Self::GetApplication,
+        Self::ReplaceApplication,
+        Self::DeleteApplication,
+        Self::PlanApplicationReplace,
+        Self::ReconcileApplication,
+        Self::ApplicationStatus,
+        Self::WatchApplication,
+        Self::GetOperation,
+        Self::WatchOperation,
+    ];
+
+    const fn summary(self) -> &'static str {
+        match self {
+            Self::SystemStatus => "Get daemon status",
+            Self::SystemCapabilities => "Get daemon capabilities",
+            Self::OpenApiDocument => "Get the OpenAPI document",
+            Self::ListApplications => "List applications",
+            Self::CreateApplication => "Create an application",
+            Self::PlanApplicationCreate => "Preview application creation",
+            Self::GetApplication => "Get an application",
+            Self::ReplaceApplication => "Replace an application",
+            Self::DeleteApplication => "Request application deletion",
+            Self::PlanApplicationReplace => "Preview application replacement",
+            Self::ReconcileApplication => "Request application reconciliation",
+            Self::ApplicationStatus => "Get application status",
+            Self::WatchApplication => "Watch application status events",
+            Self::GetOperation => "Get an operation",
+            Self::WatchOperation => "Watch operation events",
+        }
+    }
+}
 
 pub(super) async fn openapi() -> impl IntoResponse {
     (
@@ -72,27 +135,26 @@ pub fn openapi_document() -> Value {
         }
         map
     };
-    let operation = |operation_id: &str,
-                     success_status: &str,
-                     success_schema: &str,
-                     statuses: &[&str]| {
-        let mut responses = errors(statuses);
-        responses.insert(success_status.into(), response("Success", success_schema));
-        json!({"operationId":operation_id,"summary":operation_summary(operation_id),"responses":responses})
-    };
+    let operation =
+        |operation: ApiOperation, success_status: &str, success_schema: &str, statuses: &[&str]| {
+            let mut responses = errors(statuses);
+            responses.insert(success_status.into(), response("Success", success_schema));
+            json!({"operationId":operation,"summary":operation.summary(),"responses":responses})
+        };
     let mut paths = serde_json::Map::new();
     paths.insert(
         "/api/v1/system/status".into(),
-        json!({"get":operation("systemStatus","200","SystemStatusEnvelope", &["500","503"])}),
+        json!({"get":operation(ApiOperation::SystemStatus,"200","SystemStatusEnvelope", &["500","503"])}),
     );
     paths.insert(
         "/api/v1/system/capabilities".into(),
-        json!({"get":operation("systemCapabilities","200","SystemCapabilitiesEnvelope", &["500"])}),
+        json!({"get":operation(ApiOperation::SystemCapabilities,"200","SystemCapabilitiesEnvelope", &["500"])}),
     );
-    paths.insert("/api/v1/openapi.json".into(), json!({"get":{"operationId":"openApiDocument","summary":operation_summary("openApiDocument"),"responses":{"200":{"description":"OpenAPI 3.1 document","content":{"application/vnd.oai.openapi+json":{"schema":{"type":"object"}}}}}}}));
+    let openapi = ApiOperation::OpenApiDocument;
+    paths.insert("/api/v1/openapi.json".into(), json!({"get":{"operationId":openapi,"summary":openapi.summary(),"responses":{"200":{"description":"OpenAPI 3.1 document","content":{"application/vnd.oai.openapi+json":{"schema":{"type":"object"}}}}}}}));
 
     let mut list = operation(
-        "listApplications",
+        ApiOperation::ListApplications,
         "200",
         "ApplicationPageEnvelope",
         &["400", "500", "503"],
@@ -102,7 +164,7 @@ pub fn openapi_document() -> Value {
         {"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}
     ]);
     let mut create = operation(
-        "createApplication",
+        ApiOperation::CreateApplication,
         "202",
         "AcceptedOperationEnvelope",
         &["400", "409", "415", "422", "500", "502", "503"],
@@ -115,7 +177,7 @@ pub fn openapi_document() -> Value {
     );
 
     let mut create_plan = operation(
-        "planApplicationCreate",
+        ApiOperation::PlanApplicationCreate,
         "200",
         "PlanEnvelope",
         &["400", "409", "415", "422", "500", "503"],
@@ -127,14 +189,14 @@ pub fn openapi_document() -> Value {
     );
 
     let mut get_app = operation(
-        "getApplication",
+        ApiOperation::GetApplication,
         "200",
         "ApplicationEnvelope",
         &["400", "404", "500", "503"],
     );
     get_app["parameters"] = json!([id.clone()]);
     let mut replace = operation(
-        "replaceApplication",
+        ApiOperation::ReplaceApplication,
         "202",
         "AcceptedOperationEnvelope",
         &["400", "404", "409", "415", "422", "500", "502", "503"],
@@ -142,7 +204,7 @@ pub fn openapi_document() -> Value {
     replace["parameters"] = json!([id.clone(), expected_generation.clone()]);
     replace["requestBody"] = json_toml("ReplaceApplicationRequest");
     let mut delete = operation(
-        "deleteApplication",
+        ApiOperation::DeleteApplication,
         "202",
         "AcceptedOperationEnvelope",
         &["400", "404", "409", "415", "500", "502", "503"],
@@ -155,7 +217,7 @@ pub fn openapi_document() -> Value {
     );
 
     let mut replace_plan = operation(
-        "planApplicationReplace",
+        ApiOperation::PlanApplicationReplace,
         "200",
         "PlanEnvelope",
         &["400", "404", "409", "415", "422", "500", "502", "503"],
@@ -168,7 +230,7 @@ pub fn openapi_document() -> Value {
     );
 
     let mut reconcile = operation(
-        "reconcileApplication",
+        ApiOperation::ReconcileApplication,
         "202",
         "AcceptedOperationEnvelope",
         &["400", "404", "409", "415", "500", "502", "503"],
@@ -181,7 +243,7 @@ pub fn openapi_document() -> Value {
     );
 
     let mut status = operation(
-        "applicationStatus",
+        ApiOperation::ApplicationStatus,
         "200",
         "ApplicationStatusEnvelope",
         &["400", "404", "500", "503"],
@@ -193,7 +255,8 @@ pub fn openapi_document() -> Value {
     );
 
     let event_response = json!({"description":"Server-Sent Events with durable/current-state IDs and bounded replay reset events.","content":{"text/event-stream":{"schema":{"type":"string"}}}});
-    let mut app_events = json!({"operationId":"watchApplication","summary":operation_summary("watchApplication"),"parameters":[id.clone(),last_event_id.clone()],"responses":{"200":event_response.clone(),"400":response("Structured, sanitized error","ErrorBody"),"404":response("Structured, sanitized error","ErrorBody"),"500":response("Structured, sanitized error","ErrorBody"),"503":response("Structured, sanitized error","ErrorBody")}});
+    let watch_application = ApiOperation::WatchApplication;
+    let mut app_events = json!({"operationId":watch_application,"summary":watch_application.summary(),"parameters":[id.clone(),last_event_id.clone()],"responses":{"200":event_response.clone(),"400":response("Structured, sanitized error","ErrorBody"),"404":response("Structured, sanitized error","ErrorBody"),"500":response("Structured, sanitized error","ErrorBody"),"503":response("Structured, sanitized error","ErrorBody")}});
     app_events["x-sse-keepalive-seconds"] = json!(15);
     paths.insert(
         "/api/v1/applications/{id}/events".into(),
@@ -201,7 +264,7 @@ pub fn openapi_document() -> Value {
     );
 
     let mut get_operation = operation(
-        "getOperation",
+        ApiOperation::GetOperation,
         "200",
         "OperationEnvelope",
         &["404", "500", "503"],
@@ -211,7 +274,8 @@ pub fn openapi_document() -> Value {
         "/api/v1/operations/{id}".into(),
         json!({"get":get_operation}),
     );
-    let mut operation_events = json!({"operationId":"watchOperation","summary":operation_summary("watchOperation"),"parameters":[id,last_event_id],"responses":{"200":event_response,"404":response("Structured, sanitized error","ErrorBody"),"500":response("Structured, sanitized error","ErrorBody"),"503":response("Structured, sanitized error","ErrorBody")}});
+    let watch_operation = ApiOperation::WatchOperation;
+    let mut operation_events = json!({"operationId":watch_operation,"summary":watch_operation.summary(),"parameters":[id,last_event_id],"responses":{"200":event_response,"404":response("Structured, sanitized error","ErrorBody"),"500":response("Structured, sanitized error","ErrorBody"),"503":response("Structured, sanitized error","ErrorBody")}});
     operation_events["x-sse-terminal-closes"] = json!(true);
     operation_events["x-sse-keepalive-seconds"] = json!(15);
     paths.insert(
@@ -263,23 +327,34 @@ fn rewrite_schema_refs(value: &mut Value) {
     }
 }
 
-fn operation_summary(operation_id: &str) -> &'static str {
-    match operation_id {
-        "systemStatus" => "Get daemon status",
-        "systemCapabilities" => "Get daemon capabilities",
-        "openApiDocument" => "Get the OpenAPI document",
-        "listApplications" => "List applications",
-        "createApplication" => "Create an application",
-        "planApplicationCreate" => "Preview application creation",
-        "getApplication" => "Get an application",
-        "replaceApplication" => "Replace an application",
-        "deleteApplication" => "Request application deletion",
-        "planApplicationReplace" => "Preview application replacement",
-        "reconcileApplication" => "Request application reconciliation",
-        "applicationStatus" => "Get application status",
-        "watchApplication" => "Watch application status events",
-        "getOperation" => "Get an operation",
-        "watchOperation" => "Watch operation events",
-        _ => "piqueld API operation",
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::{ApiOperation, openapi_document};
+
+    #[test]
+    fn every_openapi_operation_uses_the_closed_enum() {
+        let document = openapi_document();
+        let actual = document["paths"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|path| path.as_object().unwrap().values())
+            .map(|operation| operation["operationId"].as_str().unwrap().to_owned())
+            .collect::<BTreeSet<_>>();
+        let expected = ApiOperation::ALL
+            .into_iter()
+            .map(|operation| {
+                serde_json::to_value(operation)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), ApiOperation::ALL.len());
     }
 }
