@@ -8,6 +8,9 @@ check:
     @cargo check --workspace --all-targets
     @./scripts/check-dependency-boundaries.sh
 
+generate-openapi:
+    @cargo run --package piqueld --example generate_openapi
+
 test:
     @cargo nextest run --workspace
 
