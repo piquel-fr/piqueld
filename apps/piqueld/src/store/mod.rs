@@ -11,7 +11,9 @@ mod operation;
 mod status;
 
 use async_trait::async_trait;
-use piqueld_client::{ApplicationStatusView, ApplicationView, OperationStepView, OperationView, Page};
+use piqueld_client::{
+    ApplicationStatusView, ApplicationView, OperationStepView, OperationView, Page,
+};
 use piqueld_core::{
     ApplicationId, ErrorCode, NormalizedApplication, PublicError, ResolutionSet,
     compile_application,
