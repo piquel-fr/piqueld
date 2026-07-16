@@ -80,7 +80,7 @@ async fn fresh_migration_instance_and_roundtrip_are_stable() {
     assert_eq!(stored.spec_hash, app.spec_hash());
     assert_eq!(stored.resolved.unwrap(), resolved);
     assert!(stored.created_at_ms <= stored.updated_at_ms);
-    assert_eq!(store.list().await.unwrap().len(), 1);
+    assert_eq!(store.list(None, 50).await.unwrap().items.len(), 1);
     assert_eq!(
         store.operations_for_application(&app.id, 10).await.unwrap()[0].id,
         mutation.operation_id

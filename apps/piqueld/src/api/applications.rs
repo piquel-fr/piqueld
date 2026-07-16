@@ -25,10 +25,10 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::{
-    ApiError, ApiState, BoundaryError, EventStream, MAX_PAGE, RequestShape, accepted,
-    current_state_event_id, decode_json, generation, header_text, hex, idempotency_key_hash,
-    idempotent_application_id, last_event_id, ok, openapi::ApiErrorResponse, parse_manifest,
-    parse_update, require_json, valid_expected_generation,
+    ApiError, ApiState, BoundaryError, EventStream, RequestShape, accepted, current_state_event_id,
+    decode_json, generation, header_text, hex, idempotency_key_hash, idempotent_application_id,
+    last_event_id, ok, openapi::ApiErrorResponse, parse_manifest, parse_update, require_json,
+    valid_expected_generation,
 };
 use crate::store::{
     ApplicationRepository, SqliteStore, StatusRepository, StoreError, StoredApplication,
@@ -60,39 +60,25 @@ pub(super) async fn list(
     Query(query): Query<ListQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let limit = query.limit.unwrap_or(50);
-    if limit == 0 || limit > MAX_PAGE {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "pagination_invalid",
-            "limit must be between 1 and 100",
-        ));
-    }
-    let values = state.store.list().await?;
-    let offset = query
-        .cursor
-        .as_deref()
-        .map_or(Ok(0), str::parse::<usize>)
-        .map_err(|_| {
-            ApiError::new(
+    let page = state
+        .store
+        .list(query.cursor.as_deref(), limit)
+        .await
+        .map_err(|error| match error {
+            StoreError::InvalidInput => ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "pagination_invalid",
-                "cursor is invalid",
-            )
+                "pagination parameters are invalid",
+            ),
+            error => error.into(),
         })?;
-    if offset > values.len() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "pagination_invalid",
-            "cursor is invalid",
-        ));
-    }
-    let mut values = values.into_iter().skip(offset).collect::<Vec<_>>();
-    let has_more = values.len() > limit;
-    values.truncate(limit);
-    let next_cursor = has_more.then(|| (offset + values.len()).to_string());
     Ok(ok(Page {
-        items: values.into_iter().map(StoredApplication::view).collect(),
-        next_cursor,
+        items: page
+            .items
+            .into_iter()
+            .map(StoredApplication::view)
+            .collect(),
+        next_cursor: page.next_cursor,
     }))
 }
 
@@ -550,10 +536,12 @@ async fn reject_name_collision(
     app: &NormalizedApplication,
     own_id: Option<&ApplicationId>,
 ) -> Result<(), ApiError> {
-    if state.store.list().await?.iter().any(|stored| {
-        stored.application.metadata.name == app.metadata.name
-            && own_id != Some(&stored.application.id)
-    }) {
+    if state
+        .store
+        .find_by_name(&app.metadata.name)
+        .await?
+        .is_some_and(|stored| own_id != Some(&stored.application.id))
+    {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "application_name_collision",

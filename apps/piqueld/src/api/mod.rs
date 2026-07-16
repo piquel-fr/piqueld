@@ -43,8 +43,6 @@ pub use openapi::openapi_document;
 
 const JSON: &str = "application/json";
 const TOML: &str = "application/toml";
-const MAX_PAGE: usize = 100;
-
 #[derive(Clone, Debug)]
 pub struct RuntimeCapabilities {
     pub source_resolution: bool,

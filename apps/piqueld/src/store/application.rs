@@ -1,9 +1,10 @@
 //! Application repository implementation.
 
 use super::{
-    ApplicationId, ApplicationRepository, ApplicationRow, MutationResult, NormalizedApplication,
-    OperationKind, ResolvedApplication, SqliteStore, StoreError, StoredApplication, async_trait,
-    canonical_resolved, now_ms, valid_sha256,
+    ApplicationId, ApplicationRepository, ApplicationRow, MAX_APPLICATION_PAGE_SIZE,
+    MutationResult, NormalizedApplication, OperationKind, ResolvedApplication, SqliteStore,
+    StoreError, StoredApplication, StoredApplicationPage, async_trait, canonical_resolved, now_ms,
+    valid_sha256,
 };
 
 #[async_trait]
@@ -431,16 +432,56 @@ impl ApplicationRepository for SqliteStore {
         Ok(stored)
     }
 
-    async fn list(&self) -> Result<Vec<StoredApplication>, StoreError> {
+    async fn find_by_name(&self, name: &str) -> Result<Option<StoredApplication>, StoreError> {
+        let row = sqlx::query_as!(
+            ApplicationRow,
+            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE name=?1"#,
+            name
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| StoreError::Database)?;
+        row.map(|row| row.decode(&self.instance_id)).transpose()
+    }
+
+    async fn list(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<StoredApplicationPage, StoreError> {
+        if limit == 0 || limit > MAX_APPLICATION_PAGE_SIZE {
+            return Err(StoreError::InvalidInput);
+        }
+        let offset = cursor
+            .map_or(Ok(0_i64), str::parse::<i64>)
+            .map_err(|_| StoreError::InvalidInput)?;
+        if offset < 0 {
+            return Err(StoreError::InvalidInput);
+        }
+        let count = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!" FROM applications"#)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| StoreError::Database)?;
+        if offset > count {
+            return Err(StoreError::InvalidInput);
+        }
+        let fetch_limit = i64::try_from(limit + 1).map_err(|_| StoreError::InvalidInput)?;
         let rows = sqlx::query_as!(
             ApplicationRow,
-            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications ORDER BY name,id"#
+            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications ORDER BY name,id LIMIT ?1 OFFSET ?2"#,
+            fetch_limit,
+            offset
         )
         .fetch_all(&self.pool)
         .await
         .map_err(|_| StoreError::Database)?;
-        rows.into_iter()
+        let mut items = rows
+            .into_iter()
             .map(|row| row.decode(&self.instance_id))
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        let has_more = items.len() > limit;
+        items.truncate(limit);
+        let next_cursor = has_more.then(|| (offset + items.len() as i64).to_string());
+        Ok(StoredApplicationPage { items, next_cursor })
     }
 }

@@ -333,6 +333,17 @@ pub struct StoredApplication {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
+
+/// A bounded page of revalidated applications.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredApplicationPage {
+    pub items: Vec<StoredApplication>,
+    pub next_cursor: Option<String>,
+}
+
+/// Maximum number of applications returned by one repository query.
+pub const MAX_APPLICATION_PAGE_SIZE: usize = 100;
+
 impl StoredApplication {
     #[must_use]
     pub fn view(self) -> ApplicationView {
@@ -511,7 +522,12 @@ pub trait ApplicationRepository: Send + Sync {
         expected_generation: u64,
     ) -> Result<Option<MutationResult>, StoreError>;
     async fn get(&self, id: &ApplicationId) -> Result<StoredApplication, StoreError>;
-    async fn list(&self) -> Result<Vec<StoredApplication>, StoreError>;
+    async fn find_by_name(&self, name: &str) -> Result<Option<StoredApplication>, StoreError>;
+    async fn list(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<StoredApplicationPage, StoreError>;
 }
 /// Operation journal persistence contract.
 #[async_trait]
