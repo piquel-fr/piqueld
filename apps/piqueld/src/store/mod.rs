@@ -455,24 +455,24 @@ pub trait ApplicationRepository: Send + Sync {
 /// Operation journal persistence contract.
 #[async_trait]
 pub trait OperationRepository: Send + Sync {
-    async fn operation(&self, id: &str) -> Result<Operation, StoreError>;
-    async fn operation_steps(&self, id: &str) -> Result<Vec<OperationStep>, StoreError>;
+    async fn operation(&self, operation_id: &str) -> Result<Operation, StoreError>;
+    async fn operation_steps(&self, operation_id: &str) -> Result<Vec<OperationStep>, StoreError>;
     async fn operations_for_application(
         &self,
-        id: &ApplicationId,
+        application_id: &ApplicationId,
         limit: u32,
     ) -> Result<Vec<Operation>, StoreError>;
     async fn pending_operations(&self, limit: u32) -> Result<Vec<Operation>, StoreError>;
     async fn transition_operation(
         &self,
-        id: &str,
+        operation_id: &str,
         from: WorkState,
         to: WorkState,
         error: Option<(&str, &str)>,
     ) -> Result<(), StoreError>;
     async fn transition_step(
         &self,
-        id: &str,
+        step_id: &str,
         from: StepState,
         to: StepState,
         error: Option<(&str, &str)>,
