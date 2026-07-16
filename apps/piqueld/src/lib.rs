@@ -1,6 +1,6 @@
 //! Daemon bootstrap and internal module boundaries.
 
-mod api;
+pub mod api;
 mod auth;
 mod build;
 pub mod config;

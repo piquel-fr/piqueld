@@ -5,14 +5,14 @@ use crate::resource::{
     Convergence, DesiredApplication, DesiredNetwork, DesiredSecret, DesiredService, DesiredVolume,
     InstanceId, ObservedApplication, OwnershipState, ResolutionRequirement,
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
 };
+use utoipa::ToSchema;
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PlanRequest {
     Reconcile {
@@ -30,9 +30,7 @@ pub enum PlanRequest {
     },
 }
 
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionRisk {
     None,
@@ -41,7 +39,7 @@ pub enum ActionRisk {
     Destructive,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionReason {
     Missing,
@@ -54,7 +52,7 @@ pub enum ActionReason {
     VolumeRetentionPolicy,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionKind {
     ResolveImage {
@@ -156,7 +154,7 @@ impl fmt::Display for ActionKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanAction {
     pub sequence: u32,
@@ -217,6 +215,15 @@ impl PlanAction {
             false,
         )
     }
+
+    #[must_use]
+    pub fn operation_step(&self) -> String {
+        let mut value = format!("{self}");
+        if value.len() > 64 {
+            value.truncate(64);
+        }
+        value
+    }
 }
 impl fmt::Display for PlanAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -224,14 +231,14 @@ impl fmt::Display for PlanAction {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticSeverity {
     Info,
     Warning,
     Error,
 }
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanDiagnostic {
     pub code: String,
@@ -241,7 +248,7 @@ pub struct PlanDiagnostic {
     pub blocking: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanSummary {
     pub action_count: usize,
@@ -251,7 +258,7 @@ pub struct PlanSummary {
     pub by_action: BTreeMap<String, usize>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub actions: Vec<PlanAction>,

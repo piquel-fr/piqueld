@@ -11,6 +11,9 @@ mod operation;
 mod status;
 
 use async_trait::async_trait;
+use piqueld_client::{
+    ApplicationStatusView, ApplicationView, OperationStepView, OperationView, Page,
+};
 use piqueld_core::{
     ApplicationId, ErrorCode, NormalizedApplication, PublicError, ResolutionSet,
     compile_application,
@@ -55,6 +58,9 @@ pub enum StoreError {
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,
+    /// An idempotency key was previously bound to different normalized intent.
+    #[error("idempotency key was reused for a different request")]
+    IdempotencyConflict,
     /// An optimistic write used a stale generation.
     #[error("application generation conflict")]
     GenerationConflict { expected: u64, actual: u64 },
@@ -79,6 +85,10 @@ impl StoreError {
         let (code, message) = match self {
             Self::NotFound => ("not_found", "resource was not found"),
             Self::AlreadyExists => ("already_exists", "resource already exists"),
+            Self::IdempotencyConflict => (
+                "idempotency_key_reused",
+                "idempotency key was reused for a different request",
+            ),
             Self::GenerationConflict { .. } => {
                 ("generation_conflict", "application generation is stale")
             }
@@ -116,7 +126,8 @@ pub enum ApplicationState {
     Failed,
 }
 impl ApplicationState {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Resolving => "resolving",
@@ -187,7 +198,8 @@ pub enum OperationKind {
     Deploy,
 }
 impl OperationKind {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Create => "create",
             Self::Replace => "replace",
@@ -222,7 +234,8 @@ pub enum WorkState {
     Cancelled,
 }
 impl WorkState {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Running => "running",
@@ -276,7 +289,8 @@ pub enum StepState {
     Skipped,
 }
 impl StepState {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Running => "running",
@@ -321,6 +335,26 @@ pub struct StoredApplication {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
+
+/// Default number of rows returned by a bounded repository query.
+pub const DEFAULT_PAGE_SIZE: usize = 50;
+/// Maximum number of rows processed by one bounded repository query.
+pub const MAX_PAGE_SIZE: usize = 100;
+
+impl StoredApplication {
+    #[must_use]
+    pub fn view(self) -> ApplicationView {
+        ApplicationView {
+            application: self.application,
+            generation: self.generation,
+            spec_hash: self.spec_hash,
+            delete_intent: self.delete_intent,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+        }
+    }
+}
+
 /// Application status row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationStatus {
@@ -330,6 +364,19 @@ pub struct ApplicationStatus {
     pub message: Option<String>,
     pub updated_at_ms: i64,
 }
+impl ApplicationStatus {
+    #[must_use]
+    pub fn view(self) -> ApplicationStatusView {
+        ApplicationStatusView {
+            application_id: self.application_id.to_string(),
+            state: self.state.as_str().into(),
+            observed_generation: self.observed_generation,
+            message: self.message,
+            updated_at_ms: self.updated_at_ms,
+        }
+    }
+}
+
 /// Durable operation row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Operation {
@@ -345,6 +392,38 @@ pub struct Operation {
     pub started_at_ms: Option<i64>,
     pub finished_at_ms: Option<i64>,
 }
+impl Operation {
+    #[must_use]
+    pub fn view(self, steps: Vec<OperationStep>) -> OperationView {
+        OperationView {
+            id: self.id,
+            application_id: self.application_id.to_string(),
+            generation: self.generation,
+            kind: self.kind.as_str().into(),
+            state: self.state.as_str().into(),
+            error_code: self.error_code,
+            error_message: self.error_message,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+            started_at_ms: self.started_at_ms,
+            finished_at_ms: self.finished_at_ms,
+            steps: steps
+                .into_iter()
+                .map(|s| OperationStepView {
+                    id: s.id,
+                    position: s.position,
+                    kind: s.kind,
+                    state: s.state.as_str().into(),
+                    attempt: s.attempt,
+                    error_code: s.error_code,
+                    error_message: s.error_message,
+                    updated_at_ms: s.updated_at_ms,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Durable operation step row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationStep {
@@ -361,6 +440,7 @@ pub struct OperationStep {
     pub started_at_ms: Option<i64>,
     pub finished_at_ms: Option<i64>,
 }
+
 /// Durable build row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Build {
@@ -395,6 +475,23 @@ pub trait ApplicationRepository: Send + Sync {
         resolved: Option<&ResolvedApplication>,
         steps: &[String],
     ) -> Result<MutationResult, StoreError>;
+    /// Atomically creates an application or returns the original create result
+    /// for a durable idempotency-key binding.
+    async fn create_idempotent(
+        &self,
+        app: &NormalizedApplication,
+        resolved: Option<&ResolvedApplication>,
+        steps: &[String],
+        key_hash: &str,
+        request_hash: &str,
+    ) -> Result<MutationResult, StoreError>;
+    /// Looks up an existing create key without invoking runtime preparation.
+    async fn create_idempotency(
+        &self,
+        app_id: &ApplicationId,
+        key_hash: &str,
+        request_hash: &str,
+    ) -> Result<Option<MutationResult>, StoreError>;
     async fn replace(
         &self,
         app: &NormalizedApplication,
@@ -408,30 +505,48 @@ pub trait ApplicationRepository: Send + Sync {
         expected_generation: u64,
         steps: &[String],
     ) -> Result<MutationResult, StoreError>;
+    /// Atomically creates, or returns, durable reconcile work for a generation.
+    async fn request_reconcile(
+        &self,
+        id: &ApplicationId,
+        expected_generation: u64,
+        steps: &[String],
+    ) -> Result<MutationResult, StoreError>;
+    /// Returns already-durable active reconcile work for a generation.
+    async fn active_reconcile(
+        &self,
+        id: &ApplicationId,
+        expected_generation: u64,
+    ) -> Result<Option<MutationResult>, StoreError>;
     async fn get(&self, id: &ApplicationId) -> Result<StoredApplication, StoreError>;
-    async fn list(&self) -> Result<Vec<StoredApplication>, StoreError>;
+    async fn find_by_name(&self, name: &str) -> Result<Option<StoredApplication>, StoreError>;
+    async fn list(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page<StoredApplication>, StoreError>;
 }
 /// Operation journal persistence contract.
 #[async_trait]
 pub trait OperationRepository: Send + Sync {
-    async fn operation(&self, id: &str) -> Result<Operation, StoreError>;
-    async fn operation_steps(&self, id: &str) -> Result<Vec<OperationStep>, StoreError>;
+    async fn operation(&self, operation_id: &str) -> Result<Operation, StoreError>;
+    async fn operation_steps(&self, operation_id: &str) -> Result<Vec<OperationStep>, StoreError>;
     async fn operations_for_application(
         &self,
-        id: &ApplicationId,
-        limit: u32,
+        application_id: &ApplicationId,
+        limit: usize,
     ) -> Result<Vec<Operation>, StoreError>;
-    async fn pending_operations(&self, limit: u32) -> Result<Vec<Operation>, StoreError>;
+    async fn pending_operations(&self, limit: usize) -> Result<Vec<Operation>, StoreError>;
     async fn transition_operation(
         &self,
-        id: &str,
+        operation_id: &str,
         from: WorkState,
         to: WorkState,
         error: Option<(&str, &str)>,
     ) -> Result<(), StoreError>;
     async fn transition_step(
         &self,
-        id: &str,
+        step_id: &str,
         from: StepState,
         to: StepState,
         error: Option<(&str, &str)>,
@@ -440,7 +555,7 @@ pub trait OperationRepository: Send + Sync {
     async fn prune_finished_operations_before(
         &self,
         cutoff_ms: i64,
-        limit: u32,
+        limit: usize,
     ) -> Result<u64, StoreError>;
 }
 /// Status persistence contract.
@@ -481,7 +596,7 @@ pub trait BuildRepository: Send + Sync {
         to: WorkState,
         error: Option<(&str, &str)>,
     ) -> Result<(), StoreError>;
-    async fn prune_finished_before(&self, cutoff_ms: i64, limit: u32) -> Result<u64, StoreError>;
+    async fn prune_finished_before(&self, cutoff_ms: i64, limit: usize) -> Result<u64, StoreError>;
 }
 
 /// Integrated `SQLx` `SQLite` repository implementation.
@@ -781,6 +896,17 @@ fn valid_logical_name(value: &str) -> bool {
 }
 fn valid_bounded_text(value: &str, max_len: usize) -> bool {
     !value.is_empty() && value.len() <= max_len && !value.chars().any(char::is_control)
+}
+fn page_limit(limit: usize) -> Result<i64, StoreError> {
+    if !(1..=MAX_PAGE_SIZE).contains(&limit) {
+        return Err(StoreError::InvalidInput);
+    }
+    i64::try_from(limit).map_err(|_| StoreError::InvalidInput)
+}
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 fn valid_error(error: Option<(&str, &str)>) -> bool {
     error.is_none_or(|(code, message)| {

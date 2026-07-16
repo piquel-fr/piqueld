@@ -1,8 +1,8 @@
 #![allow(missing_docs)]
 
 use piqueld::store::{
-    ApplicationRepository, ApplicationState, BuildRepository, OperationRepository, SqliteStore,
-    StatusRepository, StepState, StoreError, WorkState,
+    ApplicationRepository, ApplicationState, BuildRepository, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
+    OperationRepository, SqliteStore, StatusRepository, StepState, StoreError, WorkState,
 };
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ResolutionSet, compile_application,
@@ -80,7 +80,7 @@ async fn fresh_migration_instance_and_roundtrip_are_stable() {
     assert_eq!(stored.spec_hash, app.spec_hash());
     assert_eq!(stored.resolved.unwrap(), resolved);
     assert!(stored.created_at_ms <= stored.updated_at_ms);
-    assert_eq!(store.list().await.unwrap().len(), 1);
+    assert_eq!(store.list(None, 50).await.unwrap().items.len(), 1);
     assert_eq!(
         store.operations_for_application(&app.id, 10).await.unwrap()[0].id,
         mutation.operation_id
@@ -90,6 +90,105 @@ async fn fresh_migration_instance_and_roundtrip_are_stable() {
         SqliteStore::open(path).await.unwrap().instance_id(),
         first_instance
     );
+}
+
+#[tokio::test]
+async fn bounded_store_queries_share_page_limits() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("state.db"))
+        .await
+        .unwrap();
+    let id = ApplicationId::parse("application-page-limits").unwrap();
+
+    assert!(store.list(None, DEFAULT_PAGE_SIZE).await.is_ok());
+    assert!(
+        store
+            .operations_for_application(&id, MAX_PAGE_SIZE)
+            .await
+            .is_ok()
+    );
+    assert!(store.pending_operations(MAX_PAGE_SIZE).await.is_ok());
+    assert!(
+        store
+            .prune_finished_operations_before(i64::MAX, MAX_PAGE_SIZE)
+            .await
+            .is_ok()
+    );
+    assert!(
+        store
+            .prune_finished_before(i64::MAX, MAX_PAGE_SIZE)
+            .await
+            .is_ok()
+    );
+
+    for invalid in [0, MAX_PAGE_SIZE + 1] {
+        assert_eq!(
+            store.list(None, invalid).await.unwrap_err(),
+            StoreError::InvalidInput
+        );
+        assert_eq!(
+            store
+                .operations_for_application(&id, invalid)
+                .await
+                .unwrap_err(),
+            StoreError::InvalidInput
+        );
+        assert_eq!(
+            store.pending_operations(invalid).await.unwrap_err(),
+            StoreError::InvalidInput
+        );
+        assert_eq!(
+            store
+                .prune_finished_operations_before(i64::MAX, invalid)
+                .await
+                .unwrap_err(),
+            StoreError::InvalidInput
+        );
+        assert_eq!(
+            store
+                .prune_finished_before(i64::MAX, invalid)
+                .await
+                .unwrap_err(),
+            StoreError::InvalidInput
+        );
+    }
+}
+
+#[tokio::test]
+async fn application_pagination_uses_an_immutable_keyset() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("state.db"))
+        .await
+        .unwrap();
+    let second = application("application-page-b", "beta", None);
+    let fourth = application("application-page-d", "delta", None);
+    for app in [&second, &fourth] {
+        store
+            .create(app, Some(&resolved(app, store.instance_id())), &[])
+            .await
+            .unwrap();
+    }
+
+    let first_page = store.list(None, 1).await.unwrap();
+    assert_eq!(first_page.items[0].application.id, second.id);
+    let cursor = first_page.next_cursor.unwrap();
+
+    // Inserting ahead of the cursor used to shift the offset and repeat `second`.
+    let first = application("application-page-a", "alpha", None);
+    store
+        .create(&first, Some(&resolved(&first, store.instance_id())), &[])
+        .await
+        .unwrap();
+
+    let second_page = store.list(Some(&cursor), 1).await.unwrap();
+    assert_eq!(second_page.items[0].application.id, fourth.id);
+    assert!(second_page.next_cursor.is_none());
+    for cursor in ["", "1", "v2:application-page-b", "v1:invalid"] {
+        assert_eq!(
+            store.list(Some(cursor), 1).await.unwrap_err(),
+            StoreError::InvalidInput
+        );
+    }
 }
 
 #[tokio::test]

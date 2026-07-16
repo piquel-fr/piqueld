@@ -2,7 +2,7 @@
 
 use super::{
     ApplicationId, Operation, OperationKind, OperationRepository, OperationStep, SqliteStore,
-    StepState, StoreError, WorkState, async_trait, now_ms, valid_error,
+    StepState, StoreError, WorkState, async_trait, now_ms, page_limit, valid_error,
 };
 
 #[derive(Debug)]
@@ -84,13 +84,46 @@ impl OperationStep {
     }
 }
 
+impl SqliteStore {
+    /// Reads an operation and its steps from one consistent database snapshot.
+    pub(crate) async fn operation_with_steps(
+        &self,
+        operation_id: &str,
+    ) -> Result<(Operation, Vec<OperationStep>), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(|_| StoreError::Database)?;
+        let operation = sqlx::query_as!(
+            OperationRow,
+            r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE id=?1"#,
+            operation_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| StoreError::Database)?
+        .ok_or(StoreError::NotFound)
+        .and_then(Operation::parse_row)?;
+        let steps = sqlx::query_as!(
+            OperationStepRow,
+            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",kind AS "kind!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
+            operation_id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| StoreError::Database)?
+        .into_iter()
+        .map(OperationStep::parse_step_row)
+        .collect::<Result<Vec<_>, _>>()?;
+        tx.commit().await.map_err(|_| StoreError::Database)?;
+        Ok((operation, steps))
+    }
+}
+
 #[async_trait]
 impl OperationRepository for SqliteStore {
-    async fn operation(&self, id: &str) -> Result<Operation, StoreError> {
+    async fn operation(&self, operation_id: &str) -> Result<Operation, StoreError> {
         let row = sqlx::query_as!(
             OperationRow,
             r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE id=?1"#,
-            id
+            operation_id
         )
         .fetch_optional(&self.pool)
         .await
@@ -99,11 +132,11 @@ impl OperationRepository for SqliteStore {
         Operation::parse_row(row)
     }
 
-    async fn operation_steps(&self, id: &str) -> Result<Vec<OperationStep>, StoreError> {
+    async fn operation_steps(&self, operation_id: &str) -> Result<Vec<OperationStep>, StoreError> {
         let rows = sqlx::query_as!(
             OperationStepRow,
             r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",kind AS "kind!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
-            id
+            operation_id
         )
         .fetch_all(&self.pool)
         .await
@@ -115,15 +148,15 @@ impl OperationRepository for SqliteStore {
 
     async fn operations_for_application(
         &self,
-        id: &ApplicationId,
-        limit: u32,
+        application_id: &ApplicationId,
+        limit: usize,
     ) -> Result<Vec<Operation>, StoreError> {
-        let id_value = id.as_str();
-        let limit = i64::from(limit);
+        let application_id = application_id.as_str();
+        let limit = page_limit(limit)?;
         let rows = sqlx::query_as!(
             OperationRow,
             r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE application_id=?1 ORDER BY generation DESC,created_at_ms DESC,id DESC LIMIT ?2"#,
-            id_value,
+            application_id,
             limit
         )
         .fetch_all(&self.pool)
@@ -132,11 +165,11 @@ impl OperationRepository for SqliteStore {
         rows.into_iter().map(Operation::parse_row).collect()
     }
 
-    async fn pending_operations(&self, limit: u32) -> Result<Vec<Operation>, StoreError> {
+    async fn pending_operations(&self, limit: usize) -> Result<Vec<Operation>, StoreError> {
         // Only expose the oldest queued generation for each application. This
         // makes ordering durable rather than depending on task scheduling or
         // mutex acquisition order in one process.
-        let limit = i64::from(limit);
+        let limit = page_limit(limit)?;
         let rows = sqlx::query_as!(
             OperationRow,
             r#"SELECT o.id AS "id!",o.application_id AS "application_id!",o.generation AS "generation!",o.kind AS "kind!",o.state AS "state!",o.error_code,o.error_message,o.created_at_ms AS "created_at_ms!",o.updated_at_ms AS "updated_at_ms!",o.started_at_ms,o.finished_at_ms FROM operations o WHERE o.state IN ('pending','recovery') AND NOT EXISTS (SELECT 1 FROM operations older WHERE older.application_id=o.application_id AND older.state IN ('pending','recovery','running') AND (older.generation < o.generation OR (older.generation=o.generation AND (older.created_at_ms < o.created_at_ms OR (older.created_at_ms=o.created_at_ms AND older.id < o.id))))) ORDER BY o.created_at_ms,o.id LIMIT ?1"#,
@@ -151,7 +184,7 @@ impl OperationRepository for SqliteStore {
     #[allow(clippy::too_many_lines)]
     async fn transition_operation(
         &self,
-        id: &str,
+        operation_id: &str,
         from: WorkState,
         to: WorkState,
         error: Option<(&str, &str)>,
@@ -177,19 +210,19 @@ impl OperationRepository for SqliteStore {
             let changed = sqlx::query!(
                 "UPDATE operations SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE id=?2 AND state='running'",
                 now,
-                id
+                operation_id
             )
             .execute(&mut *tx)
             .await
             .map_err(|_| StoreError::Database)?
             .rows_affected();
             if changed != 1 {
-                return Err(Self::transition_miss(&mut tx, "operations", id).await?);
+                return Err(Self::transition_miss(&mut tx, "operations", operation_id).await?);
             }
             sqlx::query!(
                 "UPDATE operation_steps SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE operation_id=?2 AND state='running'",
                 now,
-                id
+                operation_id
             )
             .execute(&mut *tx)
             .await
@@ -197,7 +230,7 @@ impl OperationRepository for SqliteStore {
             sqlx::query!(
                 "UPDATE builds SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE operation_id=?2 AND state='running'",
                 now,
-                id
+                operation_id
             )
             .execute(&mut *tx)
             .await
@@ -211,7 +244,7 @@ impl OperationRepository for SqliteStore {
             sqlx::query!(
                 "UPDATE operation_steps SET state='cancelled',error_code=NULL,error_message=NULL,updated_at_ms=?1,finished_at_ms=?1 WHERE operation_id=?2 AND state IN ('pending','running','recovery')",
                 now,
-                id
+                operation_id
             )
             .execute(&mut *tx)
             .await
@@ -219,7 +252,7 @@ impl OperationRepository for SqliteStore {
             sqlx::query!(
                 "UPDATE builds SET state='cancelled',error_code=NULL,error_message=NULL,updated_at_ms=?1,finished_at_ms=?1 WHERE operation_id=?2 AND state IN ('pending','running','recovery')",
                 now,
-                id
+                operation_id
             )
             .execute(&mut *tx)
             .await
@@ -231,7 +264,7 @@ impl OperationRepository for SqliteStore {
                 error_message,
                 now,
                 started,
-                id,
+                operation_id,
                 from_state
             )
             .execute(&mut *tx)
@@ -239,7 +272,7 @@ impl OperationRepository for SqliteStore {
             .map_err(|_| StoreError::Database)?
             .rows_affected();
             if changed != 1 {
-                return Err(Self::transition_miss(&mut tx, "operations", id).await?);
+                return Err(Self::transition_miss(&mut tx, "operations", operation_id).await?);
             }
             tx.commit().await.map_err(|_| StoreError::Database)?;
             return Ok(());
@@ -254,7 +287,7 @@ impl OperationRepository for SqliteStore {
             now,
             started,
             finished,
-            id,
+            operation_id,
             from_state
         )
         .execute(&mut *connection)
@@ -264,13 +297,13 @@ impl OperationRepository for SqliteStore {
         if changed == 1 {
             Ok(())
         } else {
-            Err(Self::transition_miss(&mut connection, "operations", id).await?)
+            Err(Self::transition_miss(&mut connection, "operations", operation_id).await?)
         }
     }
 
     async fn transition_step(
         &self,
-        id: &str,
+        step_id: &str,
         from: StepState,
         to: StepState,
         error: Option<(&str, &str)>,
@@ -301,7 +334,7 @@ impl OperationRepository for SqliteStore {
             started,
             finished,
             attempt,
-            id,
+            step_id,
             from_state
         )
         .execute(&mut *connection)
@@ -311,7 +344,7 @@ impl OperationRepository for SqliteStore {
         if changed == 1 {
             Ok(())
         } else {
-            Err(Self::transition_miss(&mut connection, "operation_steps", id).await?)
+            Err(Self::transition_miss(&mut connection, "operation_steps", step_id).await?)
         }
     }
 
@@ -349,11 +382,11 @@ impl OperationRepository for SqliteStore {
     async fn prune_finished_operations_before(
         &self,
         cutoff_ms: i64,
-        limit: u32,
+        limit: usize,
     ) -> Result<u64, StoreError> {
-        let limit = i64::from(limit);
+        let limit = page_limit(limit)?;
         sqlx::query!(
-            "DELETE FROM operations WHERE id IN (SELECT id FROM operations WHERE finished_at_ms IS NOT NULL AND finished_at_ms < ?1 ORDER BY finished_at_ms,id LIMIT ?2)",
+            "DELETE FROM operations WHERE id IN (SELECT id FROM operations WHERE finished_at_ms IS NOT NULL AND finished_at_ms < ?1 AND NOT EXISTS (SELECT 1 FROM application_create_idempotency i WHERE i.operation_id=operations.id) ORDER BY finished_at_ms,id LIMIT ?2)",
             cutoff_ms,
             limit
         )

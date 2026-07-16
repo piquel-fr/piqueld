@@ -2,7 +2,7 @@
 
 use super::{
     ApplicationId, ApplicationRow, Build, BuildRepository, SqliteStore, StoreError, WorkState,
-    async_trait, new_id, now_ms, valid_error,
+    async_trait, new_id, now_ms, page_limit, valid_error,
 };
 
 #[derive(Debug)]
@@ -23,24 +23,26 @@ struct BuildRow {
     finished_at_ms: Option<i64>,
 }
 
-fn parse_build_row(row: BuildRow) -> Result<Build, StoreError> {
-    Ok(Build {
-        id: row.id,
-        operation_id: row.operation_id,
-        application_id: ApplicationId::parse(row.application_id)
-            .map_err(|_| StoreError::Corrupt)?,
-        service_name: row.service_name,
-        state: WorkState::parse(&row.state)?,
-        source_commit: row.source_commit,
-        image_reference: row.image_reference,
-        image_digest: row.image_digest,
-        error_code: row.error_code,
-        error_message: row.error_message,
-        created_at_ms: row.created_at_ms,
-        updated_at_ms: row.updated_at_ms,
-        started_at_ms: row.started_at_ms,
-        finished_at_ms: row.finished_at_ms,
-    })
+impl Build {
+    fn parse_row(row: BuildRow) -> Result<Self, StoreError> {
+        Ok(Self {
+            id: row.id,
+            operation_id: row.operation_id,
+            application_id: ApplicationId::parse(row.application_id)
+                .map_err(|_| StoreError::Corrupt)?,
+            service_name: row.service_name,
+            state: WorkState::parse(&row.state)?,
+            source_commit: row.source_commit,
+            image_reference: row.image_reference,
+            image_digest: row.image_digest,
+            error_code: row.error_code,
+            error_message: row.error_message,
+            created_at_ms: row.created_at_ms,
+            updated_at_ms: row.updated_at_ms,
+            started_at_ms: row.started_at_ms,
+            finished_at_ms: row.finished_at_ms,
+        })
+    }
 }
 
 #[async_trait]
@@ -132,7 +134,7 @@ impl BuildRepository for SqliteStore {
         .await
         .map_err(|_| StoreError::Database)?
         .ok_or(StoreError::NotFound)?;
-        parse_build_row(row)
+        Build::parse_row(row)
     }
 
     async fn builds_for_operation(&self, operation_id: &str) -> Result<Vec<Build>, StoreError> {
@@ -144,7 +146,7 @@ impl BuildRepository for SqliteStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|_| StoreError::Database)?;
-        rows.into_iter().map(parse_build_row).collect()
+        rows.into_iter().map(Build::parse_row).collect()
     }
 
     async fn record_build_output(
@@ -229,8 +231,8 @@ impl BuildRepository for SqliteStore {
         }
     }
 
-    async fn prune_finished_before(&self, cutoff_ms: i64, limit: u32) -> Result<u64, StoreError> {
-        let limit = i64::from(limit);
+    async fn prune_finished_before(&self, cutoff_ms: i64, limit: usize) -> Result<u64, StoreError> {
+        let limit = page_limit(limit)?;
         sqlx::query!(
             "DELETE FROM builds WHERE id IN (SELECT id FROM builds WHERE finished_at_ms IS NOT NULL AND finished_at_ms < ?1 ORDER BY finished_at_ms LIMIT ?2)",
             cutoff_ms,

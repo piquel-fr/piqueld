@@ -1,12 +1,9 @@
-//! Manifest contract, fixture, property, and schema snapshot tests.
+//! Manifest contract, fixture, and property tests.
 
-use piqueld_core::manifest::{application_manifest_schema, normalized_application_schema};
 use piqueld_core::{
-    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationId, ResourceKind, docker_resource_name,
-    parse_json, parse_toml, router_name,
+    ApplicationId, ResourceKind, docker_resource_name, parse_json, parse_toml, router_name,
 };
 use proptest::prelude::*;
-use sha2::{Digest, Sha256};
 
 const ID: &str = "01jz8r7b4w-test";
 fn id() -> ApplicationId {
@@ -575,41 +572,6 @@ mode = "{mode}"
         );
         assert!(parse_toml(&input).is_ok(), "mode {mode} should be accepted");
     }
-}
-
-#[test]
-fn schema_snapshots_are_stable() {
-    let request = serde_json::to_string_pretty(&application_manifest_schema()).unwrap();
-    let response = serde_json::to_string_pretty(&normalized_application_schema()).unwrap();
-    assert_eq!(
-        format!("{:x}", Sha256::digest(&request)),
-        include_str!("snapshots/application-manifest.schema.sha256").trim()
-    );
-    assert_eq!(
-        format!("{:x}", Sha256::digest(&response)),
-        include_str!("snapshots/normalized-application.schema.sha256").trim()
-    );
-    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let id_schema = &response["definitions"]["ApplicationId"];
-    assert_eq!(id_schema["minLength"], 8);
-    assert_eq!(id_schema["maxLength"], 64);
-    assert_eq!(id_schema["pattern"], "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$");
-    let request: serde_json::Value = serde_json::from_str(&request).unwrap();
-    let replicas = &request["definitions"]["ServiceInput"]["properties"]["replicas"];
-    assert_eq!(replicas["minimum"].as_f64(), Some(1.0));
-    assert_eq!(replicas["maximum"].as_f64(), Some(100.0));
-    let name = &request["definitions"]["MetadataInput"]["properties"]["name"];
-    assert_eq!(name["minLength"], 1);
-    assert_eq!(name["maxLength"], 63);
-    assert_eq!(
-        request["properties"]["api_version"]["enum"][0],
-        APPLICATION_API_VERSION
-    );
-    assert_eq!(request["properties"]["kind"]["enum"][0], APPLICATION_KIND);
-    assert_eq!(
-        request["definitions"]["ApplicationSpecInput"]["properties"]["services"]["minItems"],
-        1
-    );
 }
 
 #[test]
