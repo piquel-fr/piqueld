@@ -5,7 +5,7 @@ the semantic rebuild of PRs #7–#14. It records the exact pre-rewrite GitHub
 state, the corrected local stack, preserved review context, moved behavior,
 validation, and publication status.
 
-Inventory date: 2026-08-19 (Europe/Paris)
+Inventory date: 2026-08-20 (Europe/Paris)
 
 Repository: `piquel-fr/piqueld`
 
@@ -25,26 +25,39 @@ future increments on top of it; no Plan 06D is required for basic usability.
 | Plan 06 | `plan/06-docker-reconciliation` | `586b3abcf9b0df6f615ff2e3e335a83f6bb7e5e6` |
 | PR #19 / Plan 06A | `plan/06a-simplification` | `d422de79a5cc30b1e7d367af348d5cb248864ca6` |
 | PR #20 / Plan 06B | `plan/06b-cli` | `3488b68aab91bfa7c5d492182d52c4bd08fff425` |
-| PR #21 / Plan 06C | `plan/06c-basic-web-ui` | `6652b1eed3449d0f7300fd9e15a41b7b38186050` |
-| PR #7 | `plan/07-secret-lifecycle` | `653feba0a96c3119d35b4a653c608c71a44b187f` |
-| PR #8 | `plan/08-build-and-registry` | `7a253057775fb2e5ac375ab591e7282e4a515f96` |
-| PR #9 | `plan/09-traefik-status-and-logs` | `406fe739e1277e08ef792c07bbda94344fe9e724` |
-| PR #10 | `plan/10-import-export` | `cdbb35bd9d1f4678d2e4fb03c80f392a7fedf60d` |
-| PR #11 | `plan/11-cli` | `48bd4d0a5ad8944663780da261f2fe8e126330ca` |
-| PR #12 | `plan/12-web-ui` | `ae1e97a1ba58b3632b811123cb32358d1242b964` |
-| PR #13 | `plan/13-nixos-security-and-operations` | `b37478da71610745166cc425c2251a49509c0832` |
-| PR #14 | `plan/14-qualification-ci-and-docs` | `ce4447c1e93f2b56c29310313bc554f82dc2eb59` |
+| PR #21 / Plan 06C | `plan/06c-basic-web-ui` | `1a8e53be5982233cc9164dc4953bf9c2d9ddc8f1` |
+| PR #7 | `plan/07-secret-lifecycle` | `c283f88dcbd4bfe4c01c8a830589741699a3b74d` |
+| PR #8 | `plan/08-build-and-registry` | `9ec678ea019a8beb2dc640bb4e833c56b330aea4` |
+| PR #9 | `plan/09-traefik-status-and-logs` | `20a9fbe451c159a44f785c35304a02dc40afb70d` |
+| PR #10 | `plan/10-import-export` | `f06ee4ce334cbe1a3a7c85393aba3a63b283be79` |
+| PR #11 | `plan/11-cli` | `62024c6c3bec8910e72ddc2c4c7cff4fd31a47be` |
+| PR #12 | `plan/12-web-ui` | `95f1bdca9a3ac6877778196e1276c2a27f438121` |
+| PR #13 | `plan/13-nixos-security-and-operations` | `8618511d44673edf6ae10f8035adf391d6c11f21` |
+| PR #14 implementation before this ledger update | `plan/14-qualification-ci-and-docs` | `b520049` |
 
-The Plan 06C head is independently qualified before the future stack was
-rebuilt. The final #14 head additionally contains the NixOS module correction
-that stopped emitting the removed `data_dir` field and the authenticated
-future-stack quickstart clarification.
+The Plan 06C head is independently qualified before the future stack. The
+NixOS module correction now lives in its owning Plan 13 increment. Plan 14
+contains cumulative qualification and documentation, not feature fixes.
 
 ## Preserved backup refs
 
 The original-stack refs were retained. A new dated stabilization generation
 was created before rewriting remote branches, with `pre` refs for every old PR
 head and `corrected` refs for every rebuilt head.
+
+### Review-correction generation `20260819-2330`
+
+```text
+refs/backup/review-corrections/20260819-2330/plan-06c-basic-web-ui -> 6652b1eed3449d0f7300fd9e15a41b7b38186050
+refs/backup/review-corrections/20260819-2330/pr-07-secret-lifecycle -> 653feba0a96c3119d35b4a653c608c71a44b187f
+refs/backup/review-corrections/20260819-2330/pr-08-build-and-registry -> 7a253057775fb2e5ac375ab591e7282e4a515f96
+refs/backup/review-corrections/20260819-2330/pr-09-traefik-status-and-logs -> 406fe739e1277e08ef792c07bbda94344fe9e724
+refs/backup/review-corrections/20260819-2330/pr-10-import-export -> cdbb35bd9d1f4678d2e4fb03c80f392a7fedf60d
+refs/backup/review-corrections/20260819-2330/pr-11-cli -> 48bd4d0a5ad8944663780da261f2fe8e126330ca
+refs/backup/review-corrections/20260819-2330/pr-12-web-ui -> ae1e97a1ba58b3632b811123cb32358d1242b964
+refs/backup/review-corrections/20260819-2330/pr-13-nixos-security-and-operations -> b37478da71610745166cc425c2251a49509c0832
+refs/backup/review-corrections/20260819-2330/pr-14-qualification-ci-and-docs -> abe80cc7576ff607ec0136cac93bceaf7f125309
+```
 
 ### Original stack
 
@@ -166,6 +179,8 @@ successful jobs: Rust/contracts `96098087000`, production WASM/browser
   accessibility, and no browser persistence or telemetry.
 - Detects repeated pagination cursors and visibly marks results incomplete when
   the 20-page bound truncates them.
+- Uses a request generation when loading application details, so a late A
+  response cannot replace the currently selected B detail.
 - The normal package installs only `piqueld`, `piquelctl`, the example config,
   and fingerprinted UI assets. `generate_openapi` and the native UI placeholder
   are excluded.
@@ -204,9 +219,10 @@ successful jobs: Rust/contracts `96098087000`, production WASM/browser
 
 ### PR #11
 
-- Added only the advanced grouped CLI layer: profiles/authentication, stable
-  automation output and exit categories, watch/follow, and accepted Plan 11
-  behavior.
+- Extends the established flat CLI with profiles/authentication, one stable
+  `--json` envelope, one exit-code mapping, and `--watch`/`--follow` options.
+- Removed the duplicate grouped application/state tree and the split
+  legacy/advanced output behavior; every operation has one command form.
 - Secret, build, log, and transfer implementations remain owned by #7–#10;
   no duplicate command or DTO trees were introduced.
 
@@ -216,26 +232,37 @@ successful jobs: Rust/contracts `96098087000`, production WASM/browser
   conflict recovery, operation/build/runtime views, write-only secret controls,
   state transfer, and accessible responsive states without replacing the Plan
   06C DTO/state architecture.
+- Retired Plan 06C's read-only browser smoke at this boundary because its
+  deliberate assertion that mutation controls are absent is no longer valid.
 
 ### PR #13
 
 - Preserved security policy, fail-closed TCP authentication, listener limits,
   health/readiness/metrics, NixOS credentials and hardening, split packaging,
   recovery policy, and operational documentation.
-- The NixOS module was corrected on #14 to stop emitting the removed
-  `data_dir` field; this is a compatibility fix to the inherited #13 module,
-  not a new feature layer.
+- Corrected the NixOS module here to stop emitting the removed top-level
+  `data_dir` field and added a focused check over the generated TOML. The valid
+  `[registry].data_dir` remains supported.
 
 ### PR #14
 
 - Contains qualification, CI, release packaging, fixtures, acceptance
   scenarios, and final documentation only.
+- Retains the cumulative NixOS VM that proves the corrected Plan 13 module can
+  start the packaged daemon; the module fix itself is not owned here.
 - The Docker retry/inspection/health-wire behavior is inherited from #19;
   BuildKit session behavior from #8; secret logical-name matching and lifecycle
   behavior from #7. The old #14 fix commits were intentionally not reintroduced
   as first implementations here.
 
 ## Range-diff record
+
+The tables in this section record the original semantic rebuild. The later
+review-correction restack is intentionally smaller: Plan 06C adds the detail
+request race fix and exact browser qualification; Plans 07–10 are ancestry-only
+rebases; Plan 11 removes duplicate CLI forms; Plan 12 retires the obsolete
+read-only smoke; Plan 13 owns the NixOS fix/check; and Plan 14 retains only
+cumulative qualification plus aligned operator docs.
 
 Each comparison was run with:
 
@@ -269,6 +296,10 @@ The exact Plan 06C head was gated before rebuilding #7:
 - `just ui-check` passed.
 - Strict WASM Clippy passed with
   `cargo clippy --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui -- -D warnings`.
+- The exact production bundle passed the Chromium desktop (1280×800) and
+  narrow (390×844) smoke. It covered empty/populated states, rapid A→B detail
+  selection, keyboard focus, stale-data retention, disconnect/recovery,
+  responsive overflow, and the absence of mutation controls.
 - The isolated Docker lifecycle passed health checks, repeated idempotent
   reconcile, update, drift repair, recovery, ownership refusal, deletion, and
   retained-volume assertions.
@@ -280,10 +311,26 @@ The exact Plan 06C head was gated before rebuilding #7:
   and static dashboard route smoke passed on the Plan 06C package.
 - The essential Unix/TCP `piquelctl` workflow and the documented quickstart
   were exercised.
-- T3 preview status/open reported no automation-capable host. API/static smoke
-  passed, but no local interactive desktop or narrow browser claim is made.
 
-## Final cumulative validation
+## Review-correction validation
+
+- Plan 06C: `just`, `just ui-check`, strict WASM Clippy, release UI build,
+  and the desktop/narrow Chromium matrix passed.
+- Plan 11: `just` passed after the command/output consolidation; the Unix and
+  TCP black-box suites exercise the single stable JSON contract.
+- Plan 12: `just` passed after retiring the obsolete read-only smoke.
+- Plan 13: `just`, the focused `module-config` Nix derivation, and
+  `just nix-check` passed. The generated TOML contains no removed top-level
+  `data_dir` and retains the valid registry key.
+- Plan 14: `just`, strict WASM Clippy, the exact locked production Trunk build,
+  Plan 14's Chromium smoke, the Docker feature compile, and the isolated
+  Docker lifecycle passed. The lifecycle completed in 72.54 seconds.
+- The final cumulative Nix retry was stopped at the user's request because the
+  package/VM build was taking too long. It had completed evaluation without an
+  error; no success is claimed for that interrupted run. The completed Plan 13
+  Nix check and the post-publication Plan 14 CI remain the relevant evidence.
+
+## Previous cumulative validation
 
 Passed on the corrected #14 checkout:
 
@@ -324,7 +371,11 @@ its application were inventoried by label and left untouched. The lower Plan
 evidence; the final remote CI is the authoritative future-stack package/VM
 gate.
 
-## Publication status
+## Previous publication status
+
+This section records the publication before the `20260819-2330` review
+corrections. It is retained as history and is superseded by the corrected-head
+table at the start of this document and the final handoff for this restack.
 
 The eleven branches were published bottom-up with
 `--force-with-lease=<ref>:<captured-old-head>`. Every lease matched; no lease
