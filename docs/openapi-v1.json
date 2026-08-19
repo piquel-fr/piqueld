@@ -569,6 +569,7 @@
         "description": "Canonical resource specification.",
         "properties": {
           "routes": {
+            "default": [],
             "description": "Canonical HTTP routes.",
             "items": {
               "$ref": "#/components/schemas/Route"
@@ -576,6 +577,7 @@
             "type": "array"
           },
           "services": {
+            "default": [],
             "description": "Canonical services.",
             "items": {
               "$ref": "#/components/schemas/Service"
@@ -583,6 +585,7 @@
             "type": "array"
           },
           "volumes": {
+            "default": [],
             "description": "Canonical named volumes.",
             "items": {
               "$ref": "#/components/schemas/Volume"
@@ -590,11 +593,6 @@
             "type": "array"
           }
         },
-        "required": [
-          "services",
-          "volumes",
-          "routes"
-        ],
         "type": "object"
       },
       "ApplicationSpecInput": {
@@ -2112,6 +2110,55 @@
         ],
         "type": "object"
       },
+      "Envelope_SystemCapabilities": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Capabilities exposed by the running daemon.",
+            "properties": {
+              "persistence": {
+                "description": "Whether durable persistence is available.",
+                "type": "boolean"
+              },
+              "reason": {
+                "description": "Optional operator-facing limitation reason.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "runtime_execution": {
+                "description": "Whether runtime mutations can be executed.",
+                "type": "boolean"
+              },
+              "runtime_observation": {
+                "description": "Whether runtime state can be observed.",
+                "type": "boolean"
+              },
+              "secret_management": {
+                "description": "Whether logical-secret management is configured.",
+                "type": "boolean"
+              },
+              "source_resolution": {
+                "description": "Whether mutable application sources can be resolved.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "persistence",
+              "source_resolution",
+              "runtime_observation",
+              "runtime_execution",
+              "secret_management"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_SystemStatus": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -3478,7 +3525,6 @@
           "environment",
           "command",
           "arguments",
-          "ports",
           "mounts",
           "secrets"
         ],
@@ -3794,6 +3840,46 @@
           "applications_imported",
           "secrets_imported",
           "dependencies"
+        ],
+        "type": "object"
+      },
+      "SystemCapabilities": {
+        "description": "Capabilities exposed by the running daemon.",
+        "properties": {
+          "persistence": {
+            "description": "Whether durable persistence is available.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Optional operator-facing limitation reason.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtime_execution": {
+            "description": "Whether runtime mutations can be executed.",
+            "type": "boolean"
+          },
+          "runtime_observation": {
+            "description": "Whether runtime state can be observed.",
+            "type": "boolean"
+          },
+          "secret_management": {
+            "description": "Whether logical-secret management is configured.",
+            "type": "boolean"
+          },
+          "source_resolution": {
+            "description": "Whether mutable application sources can be resolved.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "persistence",
+          "source_resolution",
+          "runtime_observation",
+          "runtime_execution",
+          "secret_management"
         ],
         "type": "object"
       },
@@ -5433,6 +5519,64 @@
         "summary": "List builds for an operation"
       }
     },
+    "/api/v1/operations/{id}/events": {
+      "get": {
+        "operationId": "watchOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Server-Sent Events"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Watch operation events"
+      }
+    },
     "/api/v1/secrets": {
       "get": {
         "operationId": "listSecrets",
@@ -6078,6 +6222,34 @@
           }
         },
         "summary": "Create a short-lived confirmation bound to archive bytes"
+      }
+    },
+    "/api/v1/system/capabilities": {
+      "get": {
+        "operationId": "systemCapabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SystemCapabilities"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get daemon capabilities"
       }
     },
     "/api/v1/system/status": {

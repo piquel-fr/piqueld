@@ -3163,12 +3163,15 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "piqueld-client",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
+ "toml",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -3238,6 +3241,7 @@ dependencies = [
  "url",
  "utoipa",
  "web-sys",
+ "zeroize",
 ]
 
 [[package]]

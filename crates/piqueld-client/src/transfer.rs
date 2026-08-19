@@ -98,17 +98,10 @@ impl Client {
                 &[],
             )
             .await?;
-        let status = response.status();
-        let bytes = http_body_util::BodyExt::collect(response.into_body())
-            .await
-            .map_err(ClientError::transport)?
-            .to_bytes();
-        if !status.is_success() {
-            return Err(ClientError::Api {
-                status,
-                error: super::error_body(&bytes),
-            });
+        if !response.status().is_success() {
+            return Err(self.decode_error(response).await);
         }
+        let bytes = self.collect_body(response.into_body()).await?;
         if bytes.len() > MAX_STATE_ARCHIVE_BYTES {
             return Err(ClientError::Decode);
         }
@@ -157,7 +150,7 @@ impl Client {
                 ],
             )
             .await?;
-        super::decode_envelope(response).await
+        self.decode(response).await
     }
 
     /// Downloads one canonical application manifest.
@@ -177,16 +170,10 @@ impl Client {
             .raw_request::<()>(Method::GET, &path, None, &[("accept", "application/toml")])
             .await?;
         let status = response.status();
-        let bytes = http_body_util::BodyExt::collect(response.into_body())
-            .await
-            .map_err(ClientError::transport)?
-            .to_bytes();
         if !status.is_success() {
-            return Err(ClientError::Api {
-                status,
-                error: super::error_body(&bytes),
-            });
+            return Err(self.decode_error(response).await);
         }
+        let bytes = self.collect_body(response.into_body()).await?;
         if bytes.len() > 4 * 1024 * 1024 {
             return Err(ClientError::Decode);
         }

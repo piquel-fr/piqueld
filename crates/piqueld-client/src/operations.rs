@@ -69,4 +69,21 @@ impl Client {
         )
         .await
     }
+
+    /// Watches one operation through the shared resumable SSE cursor model.
+    ///
+    /// The caller owns reconnection and passes the last received event ID when
+    /// opening the next stream.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn watch_operation(
+        &self,
+        id: &str,
+        last_event_id: Option<&str>,
+    ) -> tokio::sync::mpsc::Receiver<Result<crate::SseEvent, ClientError>> {
+        self.watch_events(
+            format!("/api/v1/operations/{}/events", path_segment(id)),
+            last_event_id,
+        )
+    }
 }

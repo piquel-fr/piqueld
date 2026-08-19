@@ -508,6 +508,7 @@ fn build_router(state: ApiState, serve_ui: bool) -> Router {
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .routes(routes!(system::status))
+        .routes(routes!(system::capabilities))
         .routes(routes!(system::health))
         .routes(routes!(openapi::openapi))
         .routes(routes!(applications::list, applications::create))
@@ -532,6 +533,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
             transfer::export_application
         ))
         .routes(routes!(operations::get))
+        .routes(routes!(operations::events))
         .routes(routes!(builds::get))
         .routes(routes!(builds::operation_builds))
         .routes(routes!(builds::logs))
