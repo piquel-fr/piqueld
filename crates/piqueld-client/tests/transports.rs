@@ -11,6 +11,7 @@ async fn status() -> Json<Envelope<SystemStatus>> {
         data: SystemStatus {
             status: "running".into(),
             api_version: "v1".into(),
+            daemon_version: "0.1.0".into(),
             instance_id: "instance-test".into(),
         },
     })

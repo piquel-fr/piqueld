@@ -378,6 +378,7 @@ fn status_works_over_tcp_and_unix_with_clean_json() {
             Reply::json(json!({
                 "status": "running",
                 "api_version": "v1",
+                "daemon_version": "0.1.0",
                 "instance_id": "instance-test"
             }))
         });

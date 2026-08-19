@@ -1,0 +1,17 @@
+# Minimal non-root development configuration.
+# The daemon creates the /tmp/piqueld-dev parent directories as needed.
+
+[server]
+unix_socket = "/tmp/piqueld-dev/piqueld.sock"
+http_listen = "127.0.0.1:7845"
+
+[database]
+path = "/tmp/piqueld-dev/piqueld.db"
+
+[docker]
+socket = "/var/run/docker.sock"
+auto_initialize_swarm = true
+
+[reconciliation]
+scan_interval_seconds = 60
+max_parallel_operations = 4

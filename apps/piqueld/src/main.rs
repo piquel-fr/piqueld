@@ -1,8 +1,9 @@
 //! Process entry point for the piqueld daemon.
 
 use anyhow::{Context, Result};
+use clap::Parser;
 use piqueld::api::ApiState;
-use piqueld::config::DaemonConfig;
+use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::operations::OperationScheduler;
 use piqueld::reconcile::{DockerRuntime, ReconcileHandler, run_coordinator};
@@ -16,23 +17,24 @@ use std::{
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 
+const DEFAULT_CONFIG_PATH: &str = "/etc/piqueld/config.toml";
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "piqueld",
+    version,
+    about = "Run the piqueld single-node Docker control plane"
+)]
+struct Args {
+    /// Read daemon configuration from this TOML file.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    if std::env::args_os().any(|argument| argument == "--version") {
-        println!("piqueld {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-
-    let config = {
-        let config_path = std::env::var_os("PIQUELD_CONFIG")
-            .map_or_else(|| PathBuf::from("/etc/piqueld/config.toml"), PathBuf::from);
-        DaemonConfig::load(&config_path).with_context(|| {
-            format!(
-                "failed to load configuration from {}",
-                config_path.display()
-            )
-        })?
-    };
+    let args = Args::parse();
+    let config = load_config(args.config.as_deref())?;
     piqueld::config::init_tracing().context("failed to initialize tracing")?;
 
     let store = Arc::new(
@@ -130,6 +132,35 @@ async fn main() -> Result<()> {
         .context("reconciliation controller failed")?
         .context("reconciliation controller stopped unexpectedly")?;
     Ok(())
+}
+
+fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> {
+    if let Some(path) = explicit_path {
+        return DaemonConfig::load(path).with_context(|| {
+            format!(
+                "failed to load explicitly supplied configuration from {}",
+                path.display()
+            )
+        });
+    }
+
+    let default_path = PathBuf::from(DEFAULT_CONFIG_PATH);
+    match DaemonConfig::load(&default_path) {
+        Ok(config) => Ok(config),
+        Err(ConfigError::Read(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "{} is absent; using validated built-in defaults. Developers can select the shipped example with --config config/piqueld.example.toml",
+                default_path.display()
+            );
+            DaemonConfig::validated_default().context("validated built-in defaults are invalid")
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to load default configuration from {}",
+                default_path.display()
+            )
+        }),
+    }
 }
 
 async fn spawn_tcp_api(

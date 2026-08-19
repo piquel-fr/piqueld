@@ -20,6 +20,8 @@ The supported manifest and runtime model are documented in:
 - [`docs/application-manifest.md`](docs/application-manifest.md)
 - [`docs/api.md`](docs/api.md)
 - [`docs/piquelctl.md`](docs/piquelctl.md)
+- [`docs/configuration.md`](docs/configuration.md)
+- [`docs/quickstart.md`](docs/quickstart.md)
 - [`docs/resource-planning.md`](docs/resource-planning.md)
 - [`docs/docker-reconciliation.md`](docs/docker-reconciliation.md)
 - [`docs/migrations.md`](docs/migrations.md)
@@ -59,6 +61,7 @@ just docker-test
 The reproducible Nix package and checks can be evaluated explicitly with
 `just nix-check`.
 
-The daemon reads `/etc/piqueld/config.toml` by default; `PIQUELD_CONFIG` selects
+The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
 another host configuration. Configuration only covers local paths, listeners,
-SQLite, Docker, and reconciliation limits.
+SQLite, Docker, and reconciliation limits. The complete non-root development
+example is [`config/piqueld.example.toml`](config/piqueld.example.toml).

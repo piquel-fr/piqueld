@@ -287,8 +287,8 @@ async fn status(cli: &Cli, client: &Client) -> Result<()> {
         emit_json(&status)?;
     } else {
         println!(
-            "daemon {} (API {}, instance {})",
-            status.status, status.api_version, status.instance_id
+            "daemon {} (version {}, API {}, instance {})",
+            status.status, status.daemon_version, status.api_version, status.instance_id
         );
         println!("transport: {}", transport_description(cli));
     }
