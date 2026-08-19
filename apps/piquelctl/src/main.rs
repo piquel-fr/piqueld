@@ -1205,7 +1205,9 @@ async fn build(cli: &Cli, client: &Client, command: &BuildCommand) -> Result<()>
         }
         BuildCommand::Operation { operation_id } => {
             let builds = client.operation_builds(operation_id).await?;
-            if cli.json {
+            if cli.structured_json() {
+                emit_json_envelope("build_operation", &builds)
+            } else if cli.json {
                 emit_json(&builds)
             } else if builds.items.is_empty() {
                 println!("No builds for operation {operation_id}.");
@@ -1232,7 +1234,9 @@ async fn logs(cli: &Cli, client: &Client, args: &LogsArgs) -> Result<()> {
             },
         )
         .await?;
-    if cli.json {
+    if cli.structured_json() {
+        emit_json_envelope("logs", &json!({"items": records}))
+    } else if cli.json {
         emit_json(&json!({"items": records}))
     } else if records.is_empty() {
         println!("No logs for {}.", application.application.metadata.name);
@@ -1253,7 +1257,9 @@ fn render_log_text(record: &ContainerLogView) {
 }
 
 fn render_build(cli: &Cli, build: &BuildView) -> Result<()> {
-    if cli.json {
+    if cli.structured_json() {
+        emit_json_envelope("build_show", build)
+    } else if cli.json {
         emit_json(build)
     } else {
         render_build_text(build);
@@ -1277,7 +1283,9 @@ fn render_build_text(build: &BuildView) {
 
 async fn list_secrets(cli: &Cli, client: &Client) -> Result<()> {
     let secrets = all_secrets(client).await?;
-    if cli.json {
+    if cli.structured_json() {
+        emit_json_envelope("secret_list", &json!({"items": secrets}))?;
+    } else if cli.json {
         emit_json(&json!({"items": secrets}))?;
     } else if secrets.is_empty() {
         println!("No logical secrets.");
@@ -1486,7 +1494,9 @@ async fn set_secret(cli: &Cli, client: &Client, args: &SecretSetArgs) -> Result<
             client.create_secret_file(&args.name, path).await?
         }
     };
-    if cli.json {
+    if cli.structured_json() {
+        emit_json_envelope("secret_set", &metadata)?;
+    } else if cli.json {
         emit_json(&metadata)?;
     } else {
         println!(
@@ -1515,12 +1525,18 @@ async fn delete_secret(cli: &Cli, client: &Client, args: &SecretDeleteArgs) -> R
             ),
         ));
     }
-    confirm(
+    confirm_with_mode(
+        cli,
         args.yes,
         &format!("Delete logical secret {:?}? [y/N] ", metadata.name),
     )?;
     client.delete_secret(&metadata.name).await?;
-    if cli.json {
+    if cli.structured_json() {
+        emit_json_envelope(
+            "secret_delete",
+            &json!({"deleted": true, "name": metadata.name}),
+        )?;
+    } else if cli.json {
         emit_json(&json!({"deleted": true, "name": metadata.name}))?;
     } else {
         println!("secret {} deleted", metadata.name);
@@ -2266,10 +2282,6 @@ fn blocked_plan_error(plan: &PlanView) -> CliError {
 
 fn reason_text(reason: &impl fmt::Debug) -> String {
     format!("{reason:?}")
-}
-
-fn confirm(yes: bool, prompt: &str) -> Result<()> {
-    confirm_inner(false, yes, prompt)
 }
 
 fn confirm_with_mode(cli: &Cli, yes: bool, prompt: &str) -> Result<()> {

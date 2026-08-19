@@ -63,7 +63,7 @@ fn replies() -> Vec<Reply> {
     vec![
         Reply::json(
             "GET /api/v1/system/status ",
-            r#"{"status":"ok","api_version":"v1","instance_id":"test-instance"}"#,
+            r#"{"status":"ok","api_version":"v1","daemon_version":"0.1.0","instance_id":"test-instance"}"#,
         ),
         Reply::json(
             "GET /api/v1/system/capabilities ",
@@ -114,6 +114,7 @@ fn replies() -> Vec<Reply> {
             body_canary: None,
         },
         secret,
+        Reply::json("GET /api/v1/secrets/database ", metadata),
         Reply {
             request: "DELETE /api/v1/secrets/database ",
             status: "204 No Content",
