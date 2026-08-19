@@ -125,19 +125,21 @@ fn App() -> impl IntoView {
                 <button class:active=move || screen.get() == Screen::State on:click=move |_| screen.set(Screen::State)>"State"</button>
             </nav>
         </header>
-        <main id="dashboard-content" tabindex="-1">
+        <div id="dashboard-content" tabindex="-1">
             {move || match screen.get() {
                 Screen::Applications => view! { <Dashboard on_new=open_new on_manage=open_editor/> }.into_view(),
                 Screen::Editor => view! { <ApplicationEditor application_id=editor_id.get() on_done=close_editor/> }.into_view(),
                 Screen::Secrets => view! { <Secrets/> }.into_view(),
                 Screen::State => view! { <StateTransfer/> }.into_view(),
             }}
-        </main>
+        </div>
         <footer class="site-footer">"piqueld · API v1"</footer>
     }
 }
 
 #[component]
+// Keep the dashboard markup and its refresh state together so the user-facing
+// control-plane flow remains easy to audit.
 #[allow(clippy::too_many_lines)]
 fn Dashboard(on_new: Callback<()>, on_manage: Callback<String>) -> impl IntoView {
     let signals = DashboardSignals {
@@ -201,9 +203,9 @@ fn dashboard_view(
         {dashboard_header(signals, Rc::clone(refresh), on_new)}
 
         <main id="dashboard-main" tabindex="-1">
-            <section class="notice notice-info" aria-labelledby="read-only-title">
-                <h2 id="read-only-title">"Read-only view"</h2>
-                <p>"This dashboard shows daemon and application state. Use "<code>"piquelctl"</code>" for plan, apply, reconcile, and delete operations."</p>
+            <section class="notice notice-info" aria-labelledby="dashboard-mode-title">
+                <h2 id="dashboard-mode-title">"Control-plane overview"</h2>
+                <p>"Inspect desired and observed state, then manage applications from this dashboard. Mutations require a reviewed plan before they are applied."</p>
             </section>
 
             {system_summary(signals)}
@@ -216,7 +218,6 @@ fn dashboard_view(
                 <ApplicationDetail signals=signals on_manage=on_manage/>
             </div>
         </main>
-        <footer class="site-footer">"piqueld · loopback dashboard · API v1"</footer>
     }
     .into_view()
 }
@@ -382,6 +383,8 @@ fn ApplicationDetail(signals: DashboardSignals, on_manage: Callback<String>) -> 
     .into_view()
 }
 
+// Keep the full detail renderer together so desired/observed state and its
+// actions stay visible in one audited view.
 #[allow(clippy::too_many_lines)]
 fn detail_view(
     detail: &ApplicationDetailView,
@@ -757,6 +760,8 @@ fn short_id(value: &str) -> String {
     value.chars().take(12).collect()
 }
 
+// This explicit field mapping is the boundary between server DTOs and the
+// editable manifest, so keeping it together makes omissions easier to spot.
 #[allow(clippy::too_many_lines)]
 fn manifest_from_normalized(application: &NormalizedApplication) -> ApplicationManifest {
     ApplicationManifest {
@@ -1125,6 +1130,8 @@ fn ErrorNotice(notice: RwSignal<Notice>) -> impl IntoView {
 }
 
 #[component]
+// Leptos component props are owned for the component lifetime; the structured
+// editor intentionally keeps its validation and mutation flow together.
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 fn ApplicationEditor(application_id: Option<String>, on_done: Callback<()>) -> impl IntoView {
     let editing = application_id.is_some();
@@ -1639,6 +1646,8 @@ fn append_log_records(buffer: &mut LogBuffer, records: &[ContainerLogView]) {
 }
 
 #[component]
+// The operation screen combines bounded event buffering, reconnection, and
+// accessible progress output in one small state machine.
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 fn OperationProgress(operation_id: String) -> impl IntoView {
     let events = create_rw_signal({
@@ -1774,6 +1783,8 @@ fn OperationProgress(operation_id: String) -> impl IntoView {
 }
 
 #[component]
+// Build output owns its bounded log controls and polling fallback so the
+// displayed lifecycle cannot drift from the transport state.
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 fn BuildOutput(build_view: BuildView) -> impl IntoView {
     let logs = create_rw_signal({
@@ -1836,6 +1847,8 @@ fn BuildOutput(build_view: BuildView) -> impl IntoView {
 }
 
 #[component]
+// Runtime status and logs share one bounded reconnect/polling lifecycle in the
+// observability panel.
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 fn ApplicationObservability(application_id: String) -> impl IntoView {
     let status = create_rw_signal(None::<ApplicationStatusView>);
@@ -2049,6 +2062,8 @@ fn load_secrets(
 }
 
 #[component]
+// Secret entry, zeroization, and result messaging are kept together so the
+// write-only boundary is straightforward to audit.
 #[allow(clippy::too_many_lines)]
 fn Secrets() -> impl IntoView {
     let secrets = create_rw_signal(Vec::<SecretMetadata>::new());
