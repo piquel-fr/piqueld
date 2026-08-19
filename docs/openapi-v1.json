@@ -1524,6 +1524,28 @@
         ],
         "type": "object"
       },
+      "Envelope_HealthStatus": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Process liveness response.",
+            "properties": {
+              "status": {
+                "description": "Stable liveness marker.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_OperationView": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -1970,6 +1992,55 @@
               "application_id",
               "proposed_generation",
               "plan"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_ReadinessStatus": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Dependency readiness response.",
+            "properties": {
+              "database": {
+                "description": "Whether the control-plane database responded to a bounded probe.",
+                "type": "boolean"
+              },
+              "docker": {
+                "description": "Whether Docker is reachable.",
+                "type": "boolean"
+              },
+              "infrastructure": {
+                "description": "Whether required registry and ingress infrastructure is ready.",
+                "type": "boolean"
+              },
+              "ready": {
+                "description": "Whether every required dependency is ready.",
+                "type": "boolean"
+              },
+              "reason": {
+                "description": "Sanitized reason when readiness is false.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "swarm_manager": {
+                "description": "Whether Docker is an active single-node Swarm manager.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ready",
+              "database",
+              "docker",
+              "swarm_manager",
+              "infrastructure"
             ],
             "type": "object"
           }
@@ -2454,9 +2525,11 @@
           }
         ]
       },
-      "HealthResponse": {
+      "HealthStatus": {
+        "description": "Process liveness response.",
         "properties": {
           "status": {
+            "description": "Stable liveness marker.",
             "type": "string"
           }
         },
@@ -3079,6 +3152,46 @@
         },
         "required": [
           "archive_digest"
+        ],
+        "type": "object"
+      },
+      "ReadinessStatus": {
+        "description": "Dependency readiness response.",
+        "properties": {
+          "database": {
+            "description": "Whether the control-plane database responded to a bounded probe.",
+            "type": "boolean"
+          },
+          "docker": {
+            "description": "Whether Docker is reachable.",
+            "type": "boolean"
+          },
+          "infrastructure": {
+            "description": "Whether required registry and ingress infrastructure is ready.",
+            "type": "boolean"
+          },
+          "ready": {
+            "description": "Whether every required dependency is ready.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Sanitized reason when readiness is false.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "swarm_manager": {
+            "description": "Whether Docker is an active single-node Swarm manager.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ready",
+          "database",
+          "docker",
+          "swarm_manager",
+          "infrastructure"
         ],
         "type": "object"
       },
@@ -6352,6 +6465,106 @@
         "summary": "Get daemon capabilities"
       }
     },
+    "/api/v1/system/health": {
+      "get": {
+        "operationId": "systemHealth",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_HealthStatus"
+                }
+              }
+            },
+            "description": "The process event loop is serving requests"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Check process liveness"
+      }
+    },
+    "/api/v1/system/metrics": {
+      "get": {
+        "operationId": "systemMetrics",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {}
+            },
+            "description": "Prometheus text metrics"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get optional low-cardinality metrics"
+      }
+    },
+    "/api/v1/system/readiness": {
+      "get": {
+        "operationId": "systemReadiness",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_ReadinessStatus"
+                }
+              }
+            },
+            "description": "All required dependencies are ready"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_ReadinessStatus"
+                }
+              }
+            },
+            "description": "One or more dependencies are unavailable"
+          }
+        },
+        "summary": "Check required dependencies"
+      }
+    },
     "/api/v1/system/status": {
       "get": {
         "operationId": "systemStatus",
@@ -6398,7 +6611,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HealthResponse"
+                  "$ref": "#/components/schemas/HealthStatus"
                 }
               }
             },

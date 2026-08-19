@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT 1 AS \"value!: i64\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "value!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "74961f6b4aa7143011c69aeae7d2651e1baea6b140b751efd88bb32412083bea"
+}

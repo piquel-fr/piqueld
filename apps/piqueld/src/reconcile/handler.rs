@@ -5,6 +5,7 @@ use super::{
     OperationKind, Plan, PlanRequest, ReconcileHandler, StepState, StoredApplication,
 };
 use async_trait::async_trait;
+use tracing::Instrument;
 
 #[async_trait]
 impl<D: DockerApi> OperationHandler for ReconcileHandler<D> {
@@ -13,7 +14,16 @@ impl<D: DockerApi> OperationHandler for ReconcileHandler<D> {
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
-        let result = self.execute_operation(operation, cancellation).await;
+        let result = self
+            .execute_operation(operation, cancellation)
+            .instrument(tracing::info_span!(
+                "durable_operation",
+                operation_id = %operation.id,
+                application_id = %operation.application_id,
+                generation = operation.generation,
+                operation_kind = ?operation.kind,
+            ))
+            .await;
         if let Err(error) = result
             && !matches!(
                 error,

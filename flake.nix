@@ -13,13 +13,22 @@
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
     {
+      nixosModules.default =
+        { lib, pkgs, ... }:
+        {
+          imports = [ (import ./nix/module.nix) ];
+          services.piqueld.package = lib.mkDefault self.packages.${pkgs.system}.piqueld;
+          services.piqueld.cliPackage = lib.mkDefault self.packages.${pkgs.system}.piquelctl;
+          services.piqueld.uiPackage = lib.mkDefault self.packages.${pkgs.system}.piqueld-ui;
+        };
+
       packages = forAllSystems (
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
           rustTarget = pkgs.stdenv.hostPlatform.rust.rustcTarget;
         in
-        {
+        rec {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "piqueld";
             version = "0.1.0";
@@ -63,6 +72,19 @@
             '';
             doCheck = true;
           };
+          release = default;
+          piqueld = pkgs.runCommand "piqueld-daemon-0.1.0" { } ''
+            mkdir -p "$out/bin"
+            cp ${release}/bin/piqueld "$out/bin/piqueld"
+          '';
+          piquelctl = pkgs.runCommand "piquelctl-0.1.0" { } ''
+            mkdir -p "$out/bin"
+            cp ${release}/bin/piquelctl "$out/bin/piquelctl"
+          '';
+          piqueld-ui = pkgs.runCommand "piqueld-ui-0.1.0" { } ''
+            mkdir -p "$out/share/piqueld"
+            cp -R ${release}/share/piqueld/ui "$out/share/piqueld/ui"
+          '';
         }
       );
 

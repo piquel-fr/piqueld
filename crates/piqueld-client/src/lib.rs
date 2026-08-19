@@ -27,7 +27,7 @@ pub use operations::{OperationStepView, OperationView};
 pub use piqueld_core::manifest::Source;
 pub use piqueld_core::{ValidatedApplication, ValidationErrors};
 pub use secrets::{ListSecretsOptions, SecretMetadata, SecretReferenceView};
-pub use system::{SystemCapabilities, SystemStatus};
+pub use system::{HealthStatus, ReadinessStatus, SystemCapabilities, SystemStatus};
 pub use transfer::{
     ImportDependencyReport, MAX_STATE_ARCHIVE_BYTES, PrepareStateImportRequest, StateExportMode,
     StateImportConfirmation, StateImportResult,

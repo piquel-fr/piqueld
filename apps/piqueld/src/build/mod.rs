@@ -714,6 +714,11 @@ pub struct BuildService<C, B> {
 
 #[async_trait]
 pub trait SourceBuilder: Send + Sync {
+    /// Checks the configured registry without publishing or mutating an image.
+    async fn registry_ready(&self) -> Result<(), BuildError> {
+        Ok(())
+    }
+
     async fn build_source(
         &self,
         application: &str,
@@ -863,6 +868,10 @@ impl<C: GitCredentialProvider + 'static, B: BuildKit> BuildService<C, B> {
 impl<C: GitCredentialProvider + 'static, B: BuildKit + 'static> SourceBuilder
     for BuildService<C, B>
 {
+    async fn registry_ready(&self) -> Result<(), BuildError> {
+        self.registry.ready().await
+    }
+
     async fn build_source(
         &self,
         application: &str,

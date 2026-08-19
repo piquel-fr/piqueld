@@ -3,7 +3,7 @@ use super::{
     PreparedApplication, ResolutionSet, ResolvedSource, RuntimeBoundary, RuntimeLogQuery, Source,
     StoredApplication, compile_application,
 };
-use crate::api::PreparedBuild;
+use crate::api::{PreparedBuild, RuntimeReadiness};
 use crate::build::SourceBuilder;
 use crate::proxy::{InfrastructureState, IngressApi, IngressSpec};
 use crate::secrets::{SecretError, SecretService};
@@ -65,6 +65,43 @@ impl<D> DockerRuntime<D> {
 impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
     fn trigger_reconciliation(&self) {
         self.wake.notify_one();
+    }
+
+    async fn readiness(&self) -> RuntimeReadiness {
+        let swarm = self.docker.ensure_swarm(false).await;
+        let (docker, swarm_manager) = match swarm {
+            Ok(_) => (true, true),
+            Err(_) => (false, false),
+        };
+        if !docker {
+            return RuntimeReadiness {
+                docker,
+                swarm_manager,
+                infrastructure: false,
+                reason: Some("Docker Engine or Swarm manager is unavailable".into()),
+            };
+        }
+        let ingress_ready = match &self.ingress {
+            Some((controller, spec)) => {
+                matches!(
+                    controller.status(spec).await,
+                    Ok(InfrastructureState::Ready)
+                )
+            }
+            None => true,
+        };
+        let registry_ready = match &self.source_builder {
+            Some(builder) => builder.registry_ready().await.is_ok(),
+            None => true,
+        };
+        let infrastructure = ingress_ready && registry_ready;
+        RuntimeReadiness {
+            docker,
+            swarm_manager,
+            infrastructure,
+            reason: (!infrastructure)
+                .then_some("required registry or ingress infrastructure is not ready".into()),
+        }
     }
 
     async fn prepare(

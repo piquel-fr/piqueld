@@ -1,15 +1,15 @@
 # piqueld
 
 `piqueld` is a small Rust control plane for one Docker Engine running a
-single-node Swarm. Plan 06C supports one honest workflow: submit an application
-manifest that names prebuilt container images, resolve those images to digests,
-and reconcile the resulting private network, named volumes, and replicated
-services.
+single-node Swarm. The usable product stack accepts application manifests,
+resolves images or Git sources into verified artifacts, manages encrypted
+logical secrets, and reconciles private networks, named volumes, routes, and
+replicated services.
 
 The daemon stores normalized intent, resolved runtime state, application status,
 and durable operations in SQLite. It exposes a versioned HTTP API over a
-loopback TCP listener and a Unix socket. Clients poll application and operation
-resources; there is no event-stream endpoint.
+loopback TCP listener and a Unix socket, an authenticated browser dashboard,
+resumable operation/runtime streams, and bounded polling fallbacks.
 
 The configured database path is the only state location. On a clean install the
 daemon creates missing parent directories without changing existing directory
@@ -28,12 +28,13 @@ The supported manifest and runtime model are documented in:
 - [`docs/ingress.md`](docs/ingress.md)
 - [`docs/migrations.md`](docs/migrations.md)
 - [`docs/state-archive-v1.md`](docs/state-archive-v1.md)
+- [`docs/operations.md`](docs/operations.md)
 
-| Supported in Plan 06C | Deferred until later plans |
+| Supported product behavior | Deliberate boundary |
 | --- | --- |
-| Prebuilt images, replicas, environment, command/args, health checks, resource limits, named volumes, and mounts | Git sources, builds, registry management, credentials, and secrets |
-| Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, and the essential `piquelctl` workflow | Published ports, routes, Traefik, logs, state transfer, authentication, and remote or multi-node operation |
-| Unix-socket and loopback-TCP API transports, plus a read-only Leptos/WASM dashboard on the TCP listener | Mutating web controls, secrets, streams, and the advanced Plan 12 web UI |
+| Prebuilt/Git sources, digest verification, builds, encrypted logical secrets, routes, logs, state transfer, durable operations, and the full CLI/dashboard workflows | One host, one Docker Engine, one Swarm manager, and no multi-node orchestration |
+| Unix-socket access, loopback bearer authentication, tightly constrained trusted-proxy identity mode, health/readiness, low-cardinality metrics, and bounded requests | No automatic firewall openings, public registry/API exposure, account system, or time-series database |
+| NixOS daemon/CLI/UI packages with external systemd credentials and hardened service defaults | NixOS VM/Docker qualification is an owning release check, not a host-Docker prerequisite |
 
 ## Development
 
@@ -66,7 +67,8 @@ The reproducible Nix package and checks can be evaluated explicitly with
 
 The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
 another host configuration. Configuration only covers local paths, listeners,
-SQLite, Docker, and reconciliation limits. The complete non-root development
-example is [`config/piqueld.example.toml`](config/piqueld.example.toml).
-See [`docs/web-ui.md`](docs/web-ui.md) for development and release dashboard
-asset commands.
+SQLite, Docker, reconciliation limits, security policy, external credentials,
+metrics, and the production dashboard asset directory. The complete non-root
+development example is [`config/piqueld.example.toml`](config/piqueld.example.toml).
+See [`docs/web-ui.md`](docs/web-ui.md) for development and release asset
+commands.

@@ -9,7 +9,8 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use piqueld::api::{
-    ApiState, BoundaryError, PreparedApplication, RuntimeBoundary, api_router, router,
+    ApiState, BoundaryError, PreparedApplication, RuntimeBoundary, RuntimeReadiness, api_router,
+    router,
 };
 use piqueld::store::{SqliteStore, StoredApplication};
 use piqueld::transfer::ARCHIVE_CONTENT_TYPE;
@@ -32,10 +33,20 @@ use tower::ServiceExt;
 
 struct FakeRuntime {
     instance: InstanceId,
+    ready: bool,
 }
 
 #[async_trait]
 impl RuntimeBoundary for FakeRuntime {
+    async fn readiness(&self) -> RuntimeReadiness {
+        RuntimeReadiness {
+            docker: self.ready,
+            swarm_manager: self.ready,
+            infrastructure: self.ready,
+            reason: (!self.ready).then_some("fixture dependency unavailable".into()),
+        }
+    }
+
     async fn prepare(
         &self,
         application: &NormalizedApplication,
@@ -98,13 +109,17 @@ fn manifest() -> ApplicationManifest {
 }
 
 async fn state(temp: &TempDir) -> ApiState {
+    state_with_ready(temp, false).await
+}
+
+async fn state_with_ready(temp: &TempDir, ready: bool) -> ApiState {
     let store = Arc::new(
         SqliteStore::open(temp.path().join("state.db"))
             .await
             .expect("fresh database opens"),
     );
     let instance = InstanceId::parse(store.instance_id().to_owned()).expect("valid instance ID");
-    ApiState::new(&store, Arc::new(FakeRuntime { instance }))
+    ApiState::new(&store, Arc::new(FakeRuntime { instance, ready }))
 }
 
 #[tokio::test]
@@ -124,6 +139,41 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
     reconcile_and_delete(&client, &created, replaced.generation).await;
 
     server.abort();
+}
+
+#[tokio::test]
+async fn readiness_and_metrics_are_authenticated_typed_boundaries() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let application = router(state_with_ready(&temp, true).await.with_metrics(true));
+
+    let health = application
+        .clone()
+        .oneshot(request("/api/v1/system/health"))
+        .await
+        .expect("versioned health request succeeds");
+    assert_eq!(health.status(), StatusCode::OK);
+    let health = health.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&health).contains("alive"));
+
+    let readiness = application
+        .clone()
+        .oneshot(request("/api/v1/system/readiness"))
+        .await
+        .expect("readiness request succeeds");
+    assert_eq!(readiness.status(), StatusCode::OK);
+    let readiness = readiness.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&readiness).contains("\"ready\":true"));
+
+    let metrics = application
+        .oneshot(request("/api/v1/system/metrics"))
+        .await
+        .expect("metrics request succeeds");
+    assert_eq!(metrics.status(), StatusCode::OK);
+    let metrics = metrics.into_body().collect().await.unwrap().to_bytes();
+    let metrics = String::from_utf8_lossy(&metrics);
+    assert!(metrics.contains("piqueld_up 1"));
+    assert!(metrics.contains("piqueld_ready 1"));
+    assert!(!metrics.contains("application_id"));
 }
 
 async fn assert_create_plan(client: &Client, manifest: &ApplicationManifest) {

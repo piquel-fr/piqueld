@@ -15,7 +15,7 @@ use piqueld_client::{
 };
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, Plan, PlanAction,
-    PlanRequest, ResolutionSet, compile_application, preview_resolution,
+    PlanRequest, ResolutionSet, compile_application, plan, preview_resolution,
     resource::{
         Convergence, ObservedService, ResolvedApplication, ResolvedSource, TaskDiagnostic,
         TaskState,

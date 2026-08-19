@@ -27,6 +27,10 @@ pub struct DaemonConfig {
     pub reconciliation: ReconciliationConfig,
     /// References to credentials kept outside the database and configuration.
     pub credentials: CredentialsConfig,
+    /// Administrative transport authentication and request bounds.
+    pub security: SecurityConfig,
+    /// Process-local observability switches.
+    pub observability: ObservabilityConfig,
 }
 
 impl DaemonConfig {
@@ -110,6 +114,9 @@ impl DaemonConfig {
         if let Some(reference) = &self.credentials.git_token {
             reference.validate()?;
         }
+        if let Some(reference) = &self.credentials.bearer_token {
+            reference.validate()?;
+        }
         if self.server.http_listen.port() == 0 {
             return Err(ConfigError::Invalid(
                 "server.http_listen port must be greater than zero".into(),
@@ -128,6 +135,7 @@ impl DaemonConfig {
                 "reconciliation interval and concurrency limit must be greater than zero".into(),
             ));
         }
+        self.security.validate()?;
         Ok(())
     }
 }
@@ -287,6 +295,92 @@ pub struct CredentialsConfig {
     pub encryption_key: Option<CredentialReference>,
     /// Optional protected HTTPS Git bearer-token reference.
     pub git_token: Option<CredentialReference>,
+    /// Optional static administrative bearer-token reference.
+    pub bearer_token: Option<CredentialReference>,
+}
+
+/// Fail-closed TCP authentication and bounded request processing.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecurityConfig {
+    /// Trust proxy-supplied Tailscale identity only after an explicit assertion.
+    pub trusted_loopback_proxy: bool,
+    /// Accept the sanitized `Tailscale-User-Login` identity header.
+    pub trust_tailscale_headers: bool,
+    /// Exact browser origins allowed to make credentialed requests.
+    pub allowed_origins: Vec<String>,
+    /// Maximum decoded request body size.
+    pub max_body_bytes: usize,
+    /// Maximum aggregate request-header bytes.
+    pub max_header_bytes: usize,
+    /// Maximum request-header fields.
+    pub max_headers: usize,
+    /// Wall-clock request deadline.
+    pub request_timeout_seconds: u64,
+    /// Maximum requests executing concurrently across both listeners.
+    pub max_concurrent_requests: usize,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            trusted_loopback_proxy: false,
+            trust_tailscale_headers: false,
+            allowed_origins: Vec::new(),
+            max_body_bytes: 16 * 1024 * 1024,
+            max_header_bytes: 32 * 1024,
+            max_headers: 64,
+            request_timeout_seconds: 120,
+            max_concurrent_requests: 64,
+        }
+    }
+}
+
+impl SecurityConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.trust_tailscale_headers && !self.trusted_loopback_proxy {
+            return Err(ConfigError::Invalid(
+                "security.trust_tailscale_headers requires trusted_loopback_proxy".into(),
+            ));
+        }
+        if self.max_body_bytes == 0
+            || self.max_header_bytes == 0
+            || self.max_headers == 0
+            || self.request_timeout_seconds == 0
+            || self.max_concurrent_requests == 0
+        {
+            return Err(ConfigError::Invalid(
+                "security request limits must be greater than zero".into(),
+            ));
+        }
+        for origin in &self.allowed_origins {
+            let parsed = url::Url::parse(origin).map_err(|_| {
+                ConfigError::Invalid("security.allowed_origins contains an invalid origin".into())
+            })?;
+            if !matches!(parsed.scheme(), "http" | "https")
+                || parsed.host_str().is_none()
+                || parsed.path() != "/"
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.origin().ascii_serialization() != *origin
+            {
+                return Err(ConfigError::Invalid(
+                    "security.allowed_origins must contain exact HTTP origins".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Process-local metrics configuration. No time-series data is persisted.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ObservabilityConfig {
+    /// Publish the low-cardinality Prometheus endpoint.
+    pub metrics: bool,
 }
 
 /// A credential source that contains a reference, never inline secret material.
