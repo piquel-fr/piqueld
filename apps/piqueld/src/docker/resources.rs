@@ -194,13 +194,20 @@ impl BollardDocker {
             })
             .collect::<BTreeMap<_, _>>();
         for service in &mut services {
-            for mount in &mut service.secrets {
-                if let Some(logical) = logical_by_name.get(&mount.swarm_name) {
-                    mount.logical_name.clone_from(logical);
-                }
-            }
+            Self::apply_secret_logical_names(service, &logical_by_name);
         }
         Ok(services)
+    }
+
+    fn apply_secret_logical_names(
+        service: &mut super::ObservedService,
+        logical_by_name: &BTreeMap<String, String>,
+    ) {
+        for mount in &mut service.secrets {
+            if let Some(logical) = logical_by_name.get(&mount.swarm_name) {
+                mount.logical_name.clone_from(logical);
+            }
+        }
     }
 }
 
@@ -556,7 +563,13 @@ impl DockerApi for BollardDocker {
                     *target = name.clone();
                 }
             }
-            if observed.matches(desired) {
+            let logical_by_name = desired
+                .secrets
+                .iter()
+                .map(|secret| (secret.swarm_name.clone(), secret.logical_name.clone()))
+                .collect::<BTreeMap<_, _>>();
+            Self::apply_secret_logical_names(&mut observed, &logical_by_name);
+            if observed.semantically_matches(desired) {
                 return Ok(());
             }
             let version = existing

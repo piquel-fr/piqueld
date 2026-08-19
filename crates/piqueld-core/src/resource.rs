@@ -1005,6 +1005,12 @@ pub struct ObservedService {
 }
 
 impl ObservedService {
+    /// Returns whether all desired service fields and owned runtime settings match.
+    #[must_use]
+    pub fn semantically_matches(&self, desired: &DesiredService) -> bool {
+        self.matches(desired)
+    }
+
     /// Returns whether all desired service fields match.
     #[must_use]
     pub fn matches(&self, desired: &DesiredService) -> bool {
