@@ -204,11 +204,28 @@ impl Client {
         id: &str,
         request: &ReplaceApplicationRequest,
     ) -> Result<AcceptedOperation, ClientError> {
+        self.replace_application_with_key(id, request, None).await
+    }
+
+    /// Replaces an application and optionally binds the mutation to an
+    /// idempotency key for safe transport retries.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn replace_application_with_key(
+        &self,
+        id: &str,
+        request: &ReplaceApplicationRequest,
+        idempotency_key: Option<&str>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        let headers = idempotency_key
+            .map(|key| vec![("idempotency-key", key)])
+            .unwrap_or_default();
         self.send(
             Method::PUT,
             &format!("/api/v1/applications/{}", path_segment(id)),
             Some(request),
-            &[],
+            &headers,
         )
         .await
     }
@@ -222,11 +239,28 @@ impl Client {
         id: &str,
         request: &DeleteApplicationRequest,
     ) -> Result<AcceptedOperation, ClientError> {
+        self.delete_application_with_key(id, request, None).await
+    }
+
+    /// Marks an application for deletion and optionally binds the mutation to
+    /// an idempotency key for safe transport retries.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn delete_application_with_key(
+        &self,
+        id: &str,
+        request: &DeleteApplicationRequest,
+        idempotency_key: Option<&str>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        let headers = idempotency_key
+            .map(|key| vec![("idempotency-key", key)])
+            .unwrap_or_default();
         self.send(
             Method::DELETE,
             &format!("/api/v1/applications/{}", path_segment(id)),
             Some(request),
-            &[],
+            &headers,
         )
         .await
     }
@@ -331,15 +365,35 @@ impl Client {
         manifest: &str,
         expected_generation: u64,
     ) -> Result<AcceptedOperation, ClientError> {
+        self.replace_application_toml_with_key(id, manifest, expected_generation, None)
+            .await
+    }
+
+    /// Replaces an application from TOML and optionally binds the mutation to
+    /// an idempotency key for safe transport retries.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn replace_application_toml_with_key(
+        &self,
+        id: &str,
+        manifest: &str,
+        expected_generation: u64,
+        idempotency_key: Option<&str>,
+    ) -> Result<AcceptedOperation, ClientError> {
         let generation = expected_generation.to_string();
+        let mut headers = vec![
+            ("content-type", "application/toml"),
+            ("x-expected-generation", generation.as_str()),
+        ];
+        if let Some(key) = idempotency_key {
+            headers.push(("idempotency-key", key));
+        }
         self.send_text(
             Method::PUT,
             &format!("/api/v1/applications/{}", path_segment(id)),
             manifest,
-            &[
-                ("content-type", "application/toml"),
-                ("x-expected-generation", &generation),
-            ],
+            &headers,
         )
         .await
     }

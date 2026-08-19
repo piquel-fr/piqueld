@@ -21,7 +21,7 @@ impl Client {
                     .into_body()
                     .collect()
                     .await
-                    .map_err(|_| ClientError::Transport)?
+                    .map_err(ClientError::transport)?
                     .to_bytes(),
             )
             .map_err(|_| ClientError::Decode)

@@ -8,6 +8,16 @@ use super::{
 };
 use uuid::Uuid;
 
+struct IdempotencyBinding<'a> {
+    key_hash: &'a str,
+    request_hash: &'a str,
+    application_id: &'a str,
+    operation_id: &'a str,
+    generation: i64,
+    kind: OperationKind,
+    created_at_ms: i64,
+}
+
 impl SqliteStore {
     /// Creates an application, its initial status row, and a durable operation.
     ///
@@ -80,14 +90,17 @@ impl SqliteStore {
         }
         let mut tx = self.begin_immediate().await?;
         let existing = sqlx::query!(
-            r#"SELECT request_hash AS "request_hash!",application_id AS "application_id!",operation_id AS "operation_id!",generation AS "generation!" FROM application_create_idempotency WHERE key_hash=?1"#,
+            r#"SELECT request_hash AS "request_hash!",application_id AS "application_id!",operation_id AS "operation_id!",generation AS "generation!",kind AS "kind!" FROM mutation_idempotency WHERE key_hash=?1"#,
             key_hash
         )
         .fetch_optional(&mut *tx)
         .await
         .map_err(StoreError::database)?;
         if let Some(row) = existing {
-            if row.request_hash != request_hash || row.application_id != app.id.as_str() {
+            if row.request_hash != request_hash
+                || row.application_id != app.id.as_str()
+                || row.kind != OperationKind::Create.as_str()
+            {
                 return Err(StoreError::IdempotencyConflict);
             }
             let generation = u64::try_from(row.generation).map_err(StoreError::corrupt)?;
@@ -134,7 +147,7 @@ impl SqliteStore {
         let operation_id =
             Self::insert_operation(&mut tx, &app.id, 1, OperationKind::Create, steps, now).await?;
         sqlx::query!(
-            "INSERT INTO application_create_idempotency(key_hash,request_hash,application_id,operation_id,generation,created_at_ms) VALUES(?1,?2,?3,?4,1,?5)",
+            "INSERT INTO mutation_idempotency(key_hash,request_hash,application_id,operation_id,generation,kind,created_at_ms) VALUES(?1,?2,?3,?4,1,'create',?5)",
             key_hash,
             request_hash,
             app_id,
@@ -167,7 +180,7 @@ impl SqliteStore {
             return Err(StoreError::InvalidInput);
         }
         let row = sqlx::query!(
-            r#"SELECT request_hash AS "request_hash!",application_id AS "application_id!",operation_id AS "operation_id!",generation AS "generation!" FROM application_create_idempotency WHERE key_hash=?1"#,
+            r#"SELECT request_hash AS "request_hash!",application_id AS "application_id!",operation_id AS "operation_id!",generation AS "generation!",kind AS "kind!" FROM mutation_idempotency WHERE key_hash=?1"#,
             key_hash
         )
         .fetch_optional(&self.pool)
@@ -176,7 +189,10 @@ impl SqliteStore {
         let Some(row) = row else {
             return Ok(None);
         };
-        if row.request_hash != request_hash || row.application_id != app_id.as_str() {
+        if row.request_hash != request_hash
+            || row.application_id != app_id.as_str()
+            || row.kind != OperationKind::Create.as_str()
+        {
             return Err(StoreError::IdempotencyConflict);
         }
         let generation = u64::try_from(row.generation).map_err(StoreError::corrupt)?;
@@ -185,6 +201,44 @@ impl SqliteStore {
         }
         Ok(Some(MutationResult {
             generation,
+            operation_id: row.operation_id,
+        }))
+    }
+
+    /// Looks up an idempotency binding for any application mutation.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when hashes or the requested operation kind are
+    /// invalid, the key was bound to different intent, or the database cannot
+    /// be read.
+    pub async fn mutation_idempotency(
+        &self,
+        app_id: &ApplicationId,
+        key_hash: &str,
+        request_hash: &str,
+        kind: OperationKind,
+    ) -> Result<Option<MutationResult>, StoreError> {
+        if !valid_sha256(key_hash) || !valid_sha256(request_hash) {
+            return Err(StoreError::InvalidInput);
+        }
+        let row = sqlx::query!(
+            r#"SELECT request_hash AS "request_hash!",application_id AS "application_id!",operation_id AS "operation_id!",generation AS "generation!",kind AS "kind!" FROM mutation_idempotency WHERE key_hash=?1"#,
+            key_hash
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        if row.request_hash != request_hash
+            || row.application_id != app_id.as_str()
+            || row.kind != kind.as_str()
+        {
+            return Err(StoreError::IdempotencyConflict);
+        }
+        Ok(Some(MutationResult {
+            generation: u64::try_from(row.generation).map_err(StoreError::corrupt)?,
             operation_id: row.operation_id,
         }))
     }
@@ -202,66 +256,71 @@ impl SqliteStore {
         expected_generation: u64,
         steps: &[String],
     ) -> Result<MutationResult, StoreError> {
+        self.replace_with_key(app, resolved, expected_generation, steps, None)
+            .await
+    }
+
+    /// Replaces an application generation and binds the mutation to an
+    /// idempotency key when one is supplied.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] for stale generations, invalid state, idempotency
+    /// conflicts, corrupt persisted data, or a failed transaction.
+    pub async fn replace_idempotent(
+        &self,
+        app: &NormalizedApplication,
+        resolved: &ResolvedApplication,
+        expected_generation: u64,
+        steps: &[String],
+        key_hash: &str,
+        request_hash: &str,
+    ) -> Result<MutationResult, StoreError> {
+        self.replace_with_key(
+            app,
+            resolved,
+            expected_generation,
+            steps,
+            Some((key_hash, request_hash)),
+        )
+        .await
+    }
+
+    async fn replace_with_key(
+        &self,
+        app: &NormalizedApplication,
+        resolved: &ResolvedApplication,
+        expected_generation: u64,
+        steps: &[String],
+        idempotency: Option<(&str, &str)>,
+    ) -> Result<MutationResult, StoreError> {
+        if let Some((key_hash, request_hash)) = idempotency
+            && (!valid_sha256(key_hash) || !valid_sha256(request_hash))
+        {
+            return Err(StoreError::InvalidInput);
+        }
         let mut tx = self.begin_immediate().await?;
+        if let Some((key_hash, request_hash)) = idempotency
+            && let Some(mutation) = Self::find_idempotency(
+                &mut tx,
+                key_hash,
+                request_hash,
+                app.id.as_str(),
+                OperationKind::Replace,
+            )
+            .await?
+        {
+            tx.commit().await.map_err(StoreError::database)?;
+            return Ok(mutation);
+        }
         let generation = expected_generation
             .checked_add(1)
             .ok_or(StoreError::Corrupt)?;
-        let desired = app.canonical_json().map_err(StoreError::corrupt)?;
-        let resolved = canonical_resolved(app, resolved, &self.instance_id)?;
-        let hash = app.spec_hash();
         let now = now_ms();
         let app_id = app.id.as_str();
-        let app_name = app.metadata.name.as_str();
         let new_generation = generation_i64(generation)?;
-        let expected_generation_db = generation_i64(expected_generation)?;
-        let changed = sqlx::query!(
-            "UPDATE OR IGNORE applications SET name=?1,generation=?2,desired_json=?3,resolved_json=?4,spec_hash=?5,updated_at_ms=?6 WHERE id=?7 AND generation=?8 AND delete_intent=0",
-            app_name,
-            new_generation,
-            desired,
-            resolved,
-            hash,
-            now,
-            app_id,
-            expected_generation_db
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if changed != 1 {
-            let row = sqlx::query!(
-                "SELECT generation,delete_intent FROM applications WHERE id=?1",
-                app_id
-            )
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(StoreError::database)?
-            .ok_or(StoreError::NotFound)?;
-            let actual = u64::try_from(row.generation).map_err(StoreError::corrupt)?;
-            return if actual == expected_generation && row.delete_intent == 1 {
-                Err(StoreError::IllegalTransition)
-            } else if actual == expected_generation {
-                Err(StoreError::AlreadyExists)
-            } else {
-                Err(StoreError::GenerationConflict {
-                    expected: expected_generation,
-                    actual,
-                })
-            };
-        }
-        let status_changed = sqlx::query!(
-            "UPDATE application_status SET state='pending',observed_generation=NULL,message=NULL,updated_at_ms=?1 WHERE application_id=?2",
-            now,
-            app_id
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if status_changed != 1 {
-            return Err(StoreError::Corrupt);
-        }
+        self.replace_application_row(&mut tx, app, resolved, expected_generation, generation, now)
+            .await?;
+        Self::set_application_status(&mut tx, app_id, "pending", now).await?;
         let operation_id = Self::insert_operation(
             &mut tx,
             &app.id,
@@ -271,6 +330,21 @@ impl SqliteStore {
             now,
         )
         .await?;
+        if let Some((key_hash, request_hash)) = idempotency {
+            Self::bind_idempotency(
+                &mut tx,
+                IdempotencyBinding {
+                    key_hash,
+                    request_hash,
+                    application_id: app_id,
+                    operation_id: &operation_id,
+                    generation: new_generation,
+                    kind: OperationKind::Replace,
+                    created_at_ms: now,
+                },
+            )
+            .await?;
+        }
         tx.commit().await.map_err(StoreError::database)?;
         Ok(MutationResult {
             generation,
@@ -394,7 +468,59 @@ impl SqliteStore {
         expected_generation: u64,
         steps: &[String],
     ) -> Result<MutationResult, StoreError> {
+        self.request_delete_with_key(id, expected_generation, steps, None)
+            .await
+    }
+
+    /// Marks an application for deletion and binds the mutation to an
+    /// idempotency key when one is supplied.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] for stale generations, illegal lifecycle state,
+    /// idempotency conflicts, or a failed durable write.
+    pub async fn request_delete_idempotent(
+        &self,
+        id: &ApplicationId,
+        expected_generation: u64,
+        steps: &[String],
+        key_hash: &str,
+        request_hash: &str,
+    ) -> Result<MutationResult, StoreError> {
+        self.request_delete_with_key(
+            id,
+            expected_generation,
+            steps,
+            Some((key_hash, request_hash)),
+        )
+        .await
+    }
+
+    async fn request_delete_with_key(
+        &self,
+        id: &ApplicationId,
+        expected_generation: u64,
+        steps: &[String],
+        idempotency: Option<(&str, &str)>,
+    ) -> Result<MutationResult, StoreError> {
+        if let Some((key_hash, request_hash)) = idempotency
+            && (!valid_sha256(key_hash) || !valid_sha256(request_hash))
+        {
+            return Err(StoreError::InvalidInput);
+        }
         let mut tx = self.begin_immediate().await?;
+        if let Some((key_hash, request_hash)) = idempotency
+            && let Some(mutation) = Self::find_idempotency(
+                &mut tx,
+                key_hash,
+                request_hash,
+                id.as_str(),
+                OperationKind::Delete,
+            )
+            .await?
+        {
+            tx.commit().await.map_err(StoreError::database)?;
+            return Ok(mutation);
+        }
         let now = now_ms();
         let id_value = id.as_str();
         let expected_generation_i64 = generation_i64(expected_generation)?;
@@ -433,6 +559,21 @@ impl SqliteStore {
                 }
                 _ => return Err(StoreError::IllegalTransition),
             };
+            if let Some((key_hash, request_hash)) = idempotency {
+                Self::bind_idempotency(
+                    &mut tx,
+                    IdempotencyBinding {
+                        key_hash,
+                        request_hash,
+                        application_id: id_value,
+                        operation_id: &result.operation_id,
+                        generation: expected_generation_i64,
+                        kind: OperationKind::Delete,
+                        created_at_ms: now,
+                    },
+                )
+                .await?;
+            }
             tx.commit().await.map_err(StoreError::database)?;
             return Ok(result);
         }
@@ -440,51 +581,33 @@ impl SqliteStore {
             .checked_add(1)
             .ok_or(StoreError::Corrupt)?;
         let generation_i64 = generation_i64(generation)?;
-        let changed = sqlx::query!(
-            "UPDATE applications SET generation=?1,delete_intent=1,updated_at_ms=?2 WHERE id=?3 AND generation=?4 AND delete_intent=0",
+        Self::mark_application_deleting(
+            &mut tx,
+            id_value,
+            expected_generation,
             generation_i64,
             now,
-            id_value,
-            expected_generation_i64
         )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if changed != 1 {
-            let row = sqlx::query!(
-                "SELECT generation,delete_intent FROM applications WHERE id=?1",
-                id_value
-            )
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(StoreError::database)?
-            .ok_or(StoreError::NotFound)?;
-            let actual = u64::try_from(row.generation).map_err(StoreError::corrupt)?;
-            return if actual == expected_generation && row.delete_intent == 1 {
-                Err(StoreError::IllegalTransition)
-            } else {
-                Err(StoreError::GenerationConflict {
-                    expected: expected_generation,
-                    actual,
-                })
-            };
-        }
-        let status_changed = sqlx::query!(
-            "UPDATE application_status SET state='deleting',observed_generation=NULL,message=NULL,updated_at_ms=?1 WHERE application_id=?2",
-            now,
-            id_value
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if status_changed != 1 {
-            return Err(StoreError::Corrupt);
-        }
+        .await?;
+        Self::set_application_status(&mut tx, id_value, "deleting", now).await?;
         let operation_id =
             Self::insert_operation(&mut tx, id, generation, OperationKind::Delete, steps, now)
                 .await?;
+        if let Some((key_hash, request_hash)) = idempotency {
+            Self::bind_idempotency(
+                &mut tx,
+                IdempotencyBinding {
+                    key_hash,
+                    request_hash,
+                    application_id: id_value,
+                    operation_id: &operation_id,
+                    generation: generation_i64,
+                    kind: OperationKind::Delete,
+                    created_at_ms: now,
+                },
+            )
+            .await?;
+        }
         tx.commit().await.map_err(StoreError::database)?;
         Ok(MutationResult {
             generation,
@@ -670,6 +793,176 @@ impl SqliteStore {
 }
 
 impl SqliteStore {
+    async fn mark_application_deleting(
+        tx: &mut Transaction<'_, Sqlite>,
+        application_id: &str,
+        expected_generation: u64,
+        generation: i64,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let expected_generation_db = generation_i64(expected_generation)?;
+        let changed = sqlx::query!(
+            "UPDATE applications SET generation=?1,delete_intent=1,updated_at_ms=?2 WHERE id=?3 AND generation=?4 AND delete_intent=0",
+            generation,
+            now,
+            application_id,
+            expected_generation_db
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if changed == 1 {
+            return Ok(());
+        }
+        let row = sqlx::query!(
+            "SELECT generation,delete_intent FROM applications WHERE id=?1",
+            application_id
+        )
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+        .ok_or(StoreError::NotFound)?;
+        let actual = u64::try_from(row.generation).map_err(StoreError::corrupt)?;
+        if actual == expected_generation && row.delete_intent == 1 {
+            Err(StoreError::IllegalTransition)
+        } else {
+            Err(StoreError::GenerationConflict {
+                expected: expected_generation,
+                actual,
+            })
+        }
+    }
+
+    async fn set_application_status(
+        tx: &mut Transaction<'_, Sqlite>,
+        application_id: &str,
+        state: &str,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let changed = sqlx::query!(
+            "UPDATE application_status SET state=?1,observed_generation=NULL,message=NULL,updated_at_ms=?2 WHERE application_id=?3",
+            state,
+            now,
+            application_id
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::Corrupt)
+        }
+    }
+
+    async fn replace_application_row(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        app: &NormalizedApplication,
+        resolved: &ResolvedApplication,
+        expected_generation: u64,
+        generation: u64,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let desired = app.canonical_json().map_err(StoreError::corrupt)?;
+        let resolved = canonical_resolved(app, resolved, &self.instance_id)?;
+        let app_name = app.metadata.name.as_str();
+        let new_generation = generation_i64(generation)?;
+        let spec_hash = app.spec_hash();
+        let application_id = app.id.as_str();
+        let expected_generation_db = generation_i64(expected_generation)?;
+        let changed = sqlx::query!(
+            "UPDATE OR IGNORE applications SET name=?1,generation=?2,desired_json=?3,resolved_json=?4,spec_hash=?5,updated_at_ms=?6 WHERE id=?7 AND generation=?8 AND delete_intent=0",
+            app_name,
+            new_generation,
+            desired,
+            resolved,
+            spec_hash,
+            now,
+            application_id,
+            expected_generation_db
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if changed == 1 {
+            return Ok(());
+        }
+        let row = sqlx::query!(
+            "SELECT generation,delete_intent FROM applications WHERE id=?1",
+            application_id
+        )
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+        .ok_or(StoreError::NotFound)?;
+        let actual = u64::try_from(row.generation).map_err(StoreError::corrupt)?;
+        if actual != expected_generation {
+            return Err(StoreError::GenerationConflict {
+                expected: expected_generation,
+                actual,
+            });
+        }
+        if row.delete_intent == 1 {
+            Err(StoreError::IllegalTransition)
+        } else {
+            Err(StoreError::AlreadyExists)
+        }
+    }
+
+    async fn find_idempotency(
+        tx: &mut Transaction<'_, Sqlite>,
+        key_hash: &str,
+        request_hash: &str,
+        application_id: &str,
+        kind: OperationKind,
+    ) -> Result<Option<MutationResult>, StoreError> {
+        let row = sqlx::query!(
+            r#"SELECT request_hash AS "request_hash!",application_id AS "application_id!",operation_id AS "operation_id!",generation AS "generation!",kind AS "kind!" FROM mutation_idempotency WHERE key_hash=?1"#,
+            key_hash
+        )
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        if row.request_hash != request_hash
+            || row.application_id != application_id
+            || row.kind != kind.as_str()
+        {
+            return Err(StoreError::IdempotencyConflict);
+        }
+        Ok(Some(MutationResult {
+            generation: u64::try_from(row.generation).map_err(StoreError::corrupt)?,
+            operation_id: row.operation_id,
+        }))
+    }
+
+    async fn bind_idempotency(
+        tx: &mut Transaction<'_, Sqlite>,
+        binding: IdempotencyBinding<'_>,
+    ) -> Result<(), StoreError> {
+        let kind = binding.kind.as_str();
+        sqlx::query!(
+            "INSERT INTO mutation_idempotency(key_hash,request_hash,application_id,operation_id,generation,kind,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            binding.key_hash,
+            binding.request_hash,
+            binding.application_id,
+            binding.operation_id,
+            binding.generation,
+            kind,
+            binding.created_at_ms,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
+    }
+
     async fn reset_failed_delete(
         tx: &mut Transaction<'_, Sqlite>,
         id: &ApplicationId,

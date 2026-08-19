@@ -23,11 +23,12 @@ Supported resources and actions are:
 - `GET /applications/{id}/status`
 - `GET /operations/{id}`
 
-Creation requires an `Idempotency-Key`; only its SHA-256 digest and the
-normalized request hash are stored. Replacement, deletion, and explicit
-reconciliation use optimistic generation checks. Mutation endpoints return a
-durable operation identity with HTTP 202. Polling `GET /operations/{id}` exposes
-safe operation and step diagnostics.
+Creation requires an `Idempotency-Key`; replacement and deletion accept one as
+well. Only the key's SHA-256 digest and the normalized request hash are stored;
+repeating a matching mutation replays the original operation identity. All
+mutations use optimistic generation checks and return a durable operation
+identity with HTTP 202. Polling `GET /operations/{id}` exposes safe operation
+and step diagnostics.
 
 Create, replace, and plan accept structured JSON or a complete TOML manifest with
 `Content-Type: application/toml` (also `text/toml`). TOML replacement carries
@@ -36,6 +37,6 @@ image resolution requirements when the runtime cannot yet produce a concrete
 desired plan.
 
 The public client contracts live in `piqueld-client`; persistence uses internal
-store rows and converts them to these DTOs at the API boundary. Authentication,
-CLI commands, UI behavior, and additional transports are outside this product
-slice.
+store rows and converts them to these DTOs at the API boundary. The essential
+CLI workflow is documented in [`docs/piquelctl.md`](piquelctl.md). Authentication,
+UI behavior, and additional transports are outside this product slice.
