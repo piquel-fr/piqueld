@@ -92,6 +92,22 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          moduleConfig =
+            (nixpkgs.lib.nixosSystem {
+              inherit system;
+              modules = [
+                (import ./nix/module.nix)
+                {
+                  services.piqueld = {
+                    enable = true;
+                    package = pkgs.emptyDirectory;
+                    cliPackage = pkgs.emptyDirectory;
+                    uiPackage = pkgs.emptyDirectory;
+                  };
+                  system.stateVersion = "26.05";
+                }
+              ];
+            }).config.environment.etc."piqueld/config.toml".source;
         in
         {
           package = self.packages.${system}.default;
@@ -135,6 +151,18 @@
                 fi
                 touch "$out"
               '';
+          module-config = pkgs.runCommand "piqueld-module-config" { } ''
+            if awk '
+              /^\[/ { in_section = 1 }
+              !in_section && /^data_dir[[:space:]]*=/ { found = 1 }
+              END { exit !found }
+            ' ${moduleConfig}; then
+              echo "NixOS module emitted the removed top-level data_dir option" >&2
+              exit 1
+            fi
+            grep -q '^path = "/var/lib/piqueld/piqueld.db"' ${moduleConfig}
+            touch "$out"
+          '';
         }
       );
 
