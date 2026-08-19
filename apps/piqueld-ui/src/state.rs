@@ -1,4 +1,4 @@
-//! Small, transport-independent state helpers for the read-only dashboard.
+//! Small, transport-independent state helpers for the operator dashboard.
 
 use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpecInput, MetadataInput, ServiceInput, SourceInput,
