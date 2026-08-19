@@ -210,7 +210,7 @@ ported. The feature/fix commits map as follows:
 | 11 | `rebuild/11-cli` | `6916091076de717d21860713d54d44701b63c90a` (`feat(cli): rebuild advanced operator workflow on product stack`) |
 | 12 | `rebuild/12-web-ui` | `0e71c2d` (`fix(web): clarify dashboard structure and actions`; feature base `ae45d9e3d4c7c5f704cf3978a77182639ceffad9`) |
 | 13 | `rebuild/13-nixos-security-and-operations` | `8322df1965be3382cd86b95bc5612f34bfe85d96` (`feat(ops): rebuild security and NixOS operations`; ledger top `bd91ead879094f59f75ddcae04941c41fb2b26db`) |
-| 14 | `rebuild/14-qualification-ci-and-docs` | `d411aeb` (`fix(docker): retry transient service update races`; qualification base `deb09b3`) |
+| 14 | `rebuild/14-qualification-ci-and-docs` | `36dcbcef7ca351b2b3d078b6850bbf5dc1447be9` (`docs(rebase): record rebuilt qualification ledger`; code head `d411aeb`, qualification base `deb09b3`) |
 
 ## Local #10 validation at ledger checkpoint
 
@@ -302,14 +302,20 @@ does not restore the old binary or dashboard trees.
 
 ## Local #14 validation at ledger checkpoint
 
-Passed on `d411aeb` (qualification implementation `deb09b3`):
+Passed on `36dcbcef7ca351b2b3d078b6850bbf5dc1447be9` (qualification implementation `deb09b3`, Docker compatibility fix `d411aeb`):
 
 - `cargo fmt --all`, `cargo check -p piqueld --test docker_integration --features docker-integration`, and `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - focused Docker engine regression test for exact transient update errors
-- full `just`, including workspace tests, doc-tests, cargo-deny, OpenAPI, and dependency boundaries
+- full elevated `just`, including workspace tests, doc-tests, cargo-deny, OpenAPI, and dependency boundaries; the non-elevated attempt was blocked only by the sandbox's TCP listener permission
+- `cargo nextest run --workspace`: 91/91 passed
+- `cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui` and strict WASM Clippy
 - `just nix-check`: all six x86_64 flake checks passed, including the NixOS VM
   qualification with a deterministic local Traefik stub; the check omitted
   incompatible `aarch64-linux`
+- `nix build .#release --no-update-lock-file` and two clean `package-release.sh`
+  runs produced byte-identical tarballs, metadata, and checksums; the final
+  x86_64 archive SHA-256 was
+  `15dfde301711cd6f7ddcf37d8631afa8d92bbccf60dd5e5add7984cfd2d29281`
 - feature-gated Docker qualification compiles, but ignored disposable-engine
   execution was not run against the active host Docker daemon
 - the current stack's typed Bollard 0.19.4 health-check serialization was
@@ -329,7 +335,8 @@ Compared with the old feature range
 `3f01d57de6be6c3b1ab8ef682b9edc1631b7e14f..b129bafd102cf2fb461ed776f3808f110a451b5e`,
 the five substantive old commits (`22bbb1a`, `5d38829`, `a2990f8`, `38cf58d`,
 `a1d0f36`) were intentionally consolidated into `deb09b3` plus the focused
-compatibility fix `d411aeb`. Old merge-only commits were not ported. The
+compatibility fix `d411aeb` (the rebuilt increment range is
+`bd91ead879094f59f75ddcae04941c41fb2b26db..d411aeb`). Old merge-only commits were not ported. The
 qualification behavior is retained through current feature-gated Docker tests,
 NixOS VM checks, release/CI scripts, fixtures, documentation, and the final
 typed Docker retry. The raw Hyper service transport, obsolete BuildKit session
@@ -337,3 +344,19 @@ field, and offline-cache deletion are deliberate architecture-specific
 deviations recorded in the capability table above.
 
 The local rebuild is complete; remote PR branches have not yet been rewritten.
+
+## Final range-diff summary
+
+The range-diffs were run against each old feature increment and the actual new
+feature increment, excluding inherited ledger commits:
+
+| PR | Old substantive commits | Rebuilt feature commits | Result |
+|---:|---:|---:|---|
+| 7 | 8 | 1 | Consolidated secret lifecycle and all lookup/recovery/barrier/pruning/pagination fixes on the current schema/API |
+| 8 | 2 | 1 | The first old build commit partially matched with a large semantic rewrite; the durable follow-up was folded into the current one-owner build service |
+| 9 | 2 | 1 | Consolidated ingress, runtime status, logs, and one shared cursor/reconnection model |
+| 10 | 2 | 1 | Consolidated transfer archive, transaction, confirmation, dependency, API/client, CLI, and test behavior |
+| 11 | 2 | 1 | Consolidated advanced CLI behavior while extending Plan 06B rather than restoring the old CLI tree |
+| 12 | 2 | 2 | Feature plus focused dashboard-structure cleanup; both are based on the rebuilt #11 branch |
+| 13 | 2 | 1 | Consolidated security, operations, packaging, recovery, and documentation on the rebuilt UI/client stack |
+| 14 | 5 | 2 | Qualification/docs implementation plus exact typed Docker update retry; old merge-only commits omitted |
