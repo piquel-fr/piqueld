@@ -583,6 +583,14 @@ impl SqliteStore {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
+        sqlx::query!(
+            "UPDATE builds SET state='pending',error_code=NULL,error_message=NULL,source_commit=NULL,image_reference=NULL,image_digest=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE operation_id=?2 AND state='cancelled'",
+            now,
+            operation.id
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
         Self::insert_operation_steps(tx, &operation.id, steps, now).await?;
         let status_changed = sqlx::query!(
             "UPDATE application_status SET state='deleting',observed_generation=NULL,message=NULL,updated_at_ms=?1 WHERE application_id=?2",

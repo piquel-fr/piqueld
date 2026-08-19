@@ -18,6 +18,8 @@ use tokio::sync::Mutex;
 struct FakeDocker {
     failures: AtomicU32,
     calls: AtomicU32,
+    observation_failures: AtomicU32,
+    observation_calls: AtomicU32,
     observed: Mutex<ObservedApplication>,
 }
 impl FakeDocker {
@@ -25,6 +27,8 @@ impl FakeDocker {
         Self {
             failures: AtomicU32::new(failures),
             calls: AtomicU32::new(0),
+            observation_failures: AtomicU32::new(0),
+            observation_calls: AtomicU32::new(0),
             observed: Mutex::new(ObservedApplication::default()),
         }
     }
@@ -56,6 +60,16 @@ impl DockerApi for FakeDocker {
         ))
     }
     async fn observe(&self, _: &ApplicationId) -> Result<ObservedApplication, DockerError> {
+        self.observation_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .observation_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                if v > 0 { Some(v - 1) } else { None }
+            })
+            .is_ok()
+        {
+            return Err(DockerError::Request("fake observation"));
+        }
         Ok(self.observed.lock().await.clone())
     }
     async fn ensure_network(&self, _: &DesiredNetwork) -> Result<(), DockerError> {
@@ -117,6 +131,25 @@ async fn transient_docker_failures_retry_with_a_bound() {
         .unwrap();
     assert_eq!(fake.calls.load(Ordering::SeqCst), 3);
 }
+
+#[tokio::test]
+async fn transient_observations_retry_until_the_convergence_deadline() {
+    let fake = Arc::new(FakeDocker::new(0));
+    fake.observation_failures.store(2, Ordering::SeqCst);
+    let (_temp, handler) = handler(Arc::clone(&fake)).await;
+
+    handler
+        .observe_with_retry(
+            &ApplicationId::parse("app-example").unwrap(),
+            &CancellationToken::new(),
+            tokio::time::Instant::now() + Duration::from_millis(20),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(fake.observation_calls.load(Ordering::SeqCst), 3);
+}
+
 #[tokio::test]
 async fn cancellation_stops_retry_before_another_mutation() {
     let fake = Arc::new(FakeDocker::new(20));

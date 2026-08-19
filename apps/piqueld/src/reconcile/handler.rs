@@ -59,7 +59,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
         }
         self.mark_ready(operation).await?;
         if operation.kind == OperationKind::Delete {
-            return self.finish_delete(operation, &request).await;
+            return self.finish_delete(operation, &request, cancellation).await;
         }
         Ok(())
     }
@@ -167,7 +167,10 @@ impl<D: DockerApi> ReconcileHandler<D> {
         step: &crate::store::OperationStep,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
-        let observed = self.docker.observe(&operation.application_id).await?;
+        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+        let observed = self
+            .observe_with_retry(&operation.application_id, cancellation, deadline)
+            .await?;
         let current = plan(request, &observed);
         if current.is_blocked() {
             return Err(OperationError::OwnershipConflict);
@@ -328,8 +331,12 @@ impl<D: DockerApi> ReconcileHandler<D> {
         &self,
         operation: &Operation,
         request: &PlanRequest,
+        cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
-        let observed = self.docker.observe(&operation.application_id).await?;
+        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+        let observed = self
+            .observe_with_retry(&operation.application_id, cancellation, deadline)
+            .await?;
         let current = plan(request, &observed);
         let error = if current.is_blocked() {
             OperationError::OwnershipConflict

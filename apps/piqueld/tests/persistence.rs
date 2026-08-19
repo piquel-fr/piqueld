@@ -1066,6 +1066,14 @@ async fn failed_delete_can_be_retried_without_replacing_intent() {
         )
         .await
         .unwrap();
+    let build = store
+        .create_build(&deletion.operation_id, &app.id, "web")
+        .await
+        .unwrap();
+    store
+        .transition_build(&build.id, WorkState::Pending, WorkState::Running, None)
+        .await
+        .unwrap();
     store
         .transition_operation(
             &deletion.operation_id,
@@ -1098,6 +1106,10 @@ async fn failed_delete_can_be_retried_without_replacing_intent() {
     assert_eq!(
         store.status(&app.id).await.unwrap().state,
         ApplicationState::Deleting
+    );
+    assert_eq!(
+        store.build(&build.id).await.unwrap().state,
+        WorkState::Pending
     );
     assert_eq!(
         store.replace(&app, None, 2, &[]).await.unwrap_err(),
