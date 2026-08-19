@@ -12,6 +12,8 @@ pub mod operations;
 pub mod secrets;
 /// Control-plane status endpoints.
 pub mod system;
+/// State and application transfer endpoints.
+pub mod transfer;
 
 pub use applications::{
     AcceptedOperation, ApplicationDetailView, ApplicationLogsOptions, ApplicationStatusView,
@@ -26,6 +28,10 @@ pub use piqueld_core::manifest::Source;
 pub use piqueld_core::{ValidatedApplication, ValidationErrors};
 pub use secrets::{ListSecretsOptions, SecretMetadata, SecretReferenceView};
 pub use system::SystemStatus;
+pub use transfer::{
+    ImportDependencyReport, MAX_STATE_ARCHIVE_BYTES, PrepareStateImportRequest, StateExportMode,
+    StateImportConfirmation, StateImportResult,
+};
 
 use http::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

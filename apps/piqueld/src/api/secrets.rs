@@ -149,6 +149,7 @@ pub(super) async fn create_header(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let _maintenance = state.ordinary_lease()?;
     let name = header_text(&headers, "x-secret-name")
         .ok_or_else(|| {
             ApiError::new(
@@ -209,6 +210,7 @@ pub(super) async fn create(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let _maintenance = state.ordinary_lease()?;
     let value = raw(&headers, body)?;
     Ok((
         StatusCode::CREATED,
@@ -241,6 +243,7 @@ pub(super) async fn replace(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let _maintenance = state.ordinary_lease()?;
     let value = raw(&headers, body)?;
     let service = service(&state)?;
     let metadata = view(service.replace(&name, value).await?);
@@ -266,6 +269,7 @@ pub(super) async fn delete(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let _maintenance = state.ordinary_lease()?;
     service(&state)?.delete(&name).await?;
     Ok(StatusCode::NO_CONTENT)
 }

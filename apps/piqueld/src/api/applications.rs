@@ -186,6 +186,7 @@ pub(super) async fn create(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
     let body = request_body(body)?;
+    let _maintenance = state.ordinary_lease()?;
     let key = optional_idempotency_key(&headers)?.ok_or_else(|| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -284,6 +285,7 @@ pub(super) async fn replace(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
     let body = request_body(body)?;
+    let _maintenance = state.ordinary_lease()?;
     let key = optional_idempotency_key(&headers)?;
     let id = ApplicationId::parse(&id)?;
     let (validated, expected) = parse_update(&headers, &body)?;
@@ -385,6 +387,7 @@ pub(super) async fn delete(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
     let body = request_body(body)?;
+    let _maintenance = state.ordinary_lease()?;
     require_json(&headers)?;
     let request: DeleteApplicationRequest = decode_json(&body)?;
     valid_expected_generation(request.expected_generation)?;
@@ -750,6 +753,7 @@ pub(super) async fn reconcile(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
     let body = request_body(body)?;
+    let _maintenance = state.ordinary_lease()?;
     require_json(&headers)?;
     let request: ExpectedGeneration = decode_json(&body)?;
     valid_expected_generation(request.expected_generation)?;
@@ -848,7 +852,7 @@ pub(super) struct LogsQuery {
     #[param(minimum = 1, maximum = 1000, default = 200)]
     tail: Option<u16>,
     /// Maximum approximate response size.
-    #[param(minimum = 1, maximum = 1048576, default = 262144)]
+    #[param(minimum = 1, maximum = 1_048_576, default = 262_144)]
     max_bytes: Option<u32>,
     /// Keep the connection open and emit a new bounded snapshot when it changes.
     #[serde(default)]

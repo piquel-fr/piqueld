@@ -259,10 +259,12 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         application: &StoredApplication,
         options: &ApplicationLogsOptions,
     ) -> Result<Vec<ContainerLogView>, BoundaryError> {
-        let since_seconds = options.since_seconds.unwrap_or(300).min(i64::MAX as u64) as i64;
+        let since_seconds = i64::try_from(options.since_seconds.unwrap_or(300)).unwrap_or(i64::MAX);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs().min(i64::MAX as u64) as i64);
+            .map_or(0, |duration| {
+                i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+            });
         let query = RuntimeLogQuery {
             since_seconds: now.saturating_sub(since_seconds),
             tail: usize::from(options.tail.unwrap_or(200)).clamp(1, 1_000),

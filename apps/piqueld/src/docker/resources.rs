@@ -85,6 +85,78 @@ impl BollardDocker {
         }
         Ok(())
     }
+
+    async fn read_task_logs(
+        &self,
+        service: &str,
+        task_id: &str,
+        container_id: &str,
+        query: &super::RuntimeLogQuery,
+        remaining_bytes: usize,
+    ) -> Result<(Vec<super::RuntimeLogRecord>, usize, bool), DockerError> {
+        let since = i32::try_from(query.since_seconds).unwrap_or(i32::MAX);
+        let tail = query.tail.to_string();
+        let mut logs = self.docker.logs(
+            container_id,
+            Some(
+                super::LogsOptionsBuilder::default()
+                    .stdout(true)
+                    .stderr(true)
+                    .since(since)
+                    .timestamps(true)
+                    .tail(&tail)
+                    .build(),
+            ),
+        );
+        let mut output = Vec::new();
+        let mut used = 0usize;
+        while let Some(item) = logs.next().await {
+            let item = match item {
+                Ok(item) => item,
+                Err(bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => break,
+                Err(error) => return Err(DockerError::request("read container logs", error)),
+            };
+            let stream = match &item {
+                bollard::container::LogOutput::StdOut { .. } => "stdout",
+                bollard::container::LogOutput::StdErr { .. } => "stderr",
+                bollard::container::LogOutput::Console { .. } => "console",
+                bollard::container::LogOutput::StdIn { .. } => "stdin",
+            };
+            let raw = item.to_string();
+            let (timestamp, message) = raw
+                .trim_end_matches(['\r', '\n'])
+                .split_once(' ')
+                .map_or_else(
+                    || (String::new(), raw.trim_end().to_owned()),
+                    |(time, message)| (time.to_owned(), message.to_owned()),
+                );
+            let display_message = strip_ansi_controls(&message);
+            let record_bytes = service.len()
+                + task_id.len()
+                + container_id.len()
+                + timestamp.len()
+                + stream.len()
+                + message.len()
+                + display_message.len()
+                + 128;
+            used = used.saturating_add(record_bytes);
+            if used > remaining_bytes {
+                return Ok((output, used, true));
+            }
+            output.push(super::RuntimeLogRecord {
+                service: service.to_owned(),
+                task_id: task_id.to_owned(),
+                container_id: container_id.to_owned(),
+                timestamp,
+                stream: stream.into(),
+                message,
+                display_message,
+            });
+        }
+        Ok((output, used, false))
+    }
 }
 
 impl BollardDocker {
@@ -726,77 +798,29 @@ impl DockerApi for BollardDocker {
             else {
                 continue;
             };
-            let Some(task_id) = task.id else { continue };
+            let Some(task_id) = task.id.as_deref() else {
+                continue;
+            };
             let Some(container_id) = task
                 .status
                 .as_ref()
                 .and_then(|status| status.container_status.as_ref())
-                .and_then(|status| status.container_id.clone())
+                .and_then(|status| status.container_id.as_deref())
             else {
                 continue;
             };
-            let since = i32::try_from(query.since_seconds).unwrap_or(i32::MAX);
-            let tail = query.tail.to_string();
-            let mut logs = self.docker.logs(
-                &container_id,
-                Some(
-                    super::LogsOptionsBuilder::default()
-                        .stdout(true)
-                        .stderr(true)
-                        .since(since)
-                        .timestamps(true)
-                        .tail(&tail)
-                        .build(),
-                ),
-            );
-            while let Some(item) = logs.next().await {
-                let item = match item {
-                    Ok(item) => item,
-                    Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
-                    }) => break,
-                    Err(error) => return Err(DockerError::request("read container logs", error)),
-                };
-                let stream = match &item {
-                    bollard::container::LogOutput::StdOut { .. } => "stdout",
-                    bollard::container::LogOutput::StdErr { .. } => "stderr",
-                    bollard::container::LogOutput::Console { .. } => "console",
-                    bollard::container::LogOutput::StdIn { .. } => "stdin",
-                };
-                let raw = item.to_string();
-                let (timestamp, message) = raw
-                    .trim_end_matches(['\r', '\n'])
-                    .split_once(' ')
-                    .map_or_else(
-                        || (String::new(), raw.trim_end().to_owned()),
-                        |(time, message)| (time.to_owned(), message.to_owned()),
-                    );
-                let display_message = strip_ansi_controls(&message);
-                used = used.saturating_add(
-                    service.len()
-                        + task_id.len()
-                        + container_id.len()
-                        + timestamp.len()
-                        + stream.len()
-                        + message.len()
-                        + display_message.len()
-                        + 128,
-                );
-                if used > query.max_bytes {
-                    break;
-                }
-                output.push(super::RuntimeLogRecord {
-                    service: service.clone(),
-                    task_id: task_id.clone(),
-                    container_id: container_id.clone(),
-                    timestamp,
-                    stream: stream.into(),
-                    message,
-                    display_message,
-                });
-            }
-            if used > query.max_bytes {
+            let (records, task_bytes, truncated) = self
+                .read_task_logs(
+                    service,
+                    task_id,
+                    container_id,
+                    query,
+                    query.max_bytes.saturating_sub(used),
+                )
+                .await?;
+            used = used.saturating_add(task_bytes);
+            output.extend(records);
+            if truncated {
                 break;
             }
         }

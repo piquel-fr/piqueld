@@ -10,6 +10,7 @@ pub mod reconcile;
 pub mod registry;
 pub mod secrets;
 pub mod store;
+pub mod transfer;
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;

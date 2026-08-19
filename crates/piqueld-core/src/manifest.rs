@@ -1231,81 +1231,7 @@ impl NormalizedApplication {
                 name: self.metadata.name.clone(),
             },
             spec: ApplicationSpecInput {
-                services: self
-                    .spec
-                    .services
-                    .iter()
-                    .map(|service| ServiceInput {
-                        name: service.name.clone(),
-                        source: match &service.source {
-                            Source::Image { image } => SourceInput::Image {
-                                image: image.clone(),
-                            },
-                            Source::Git {
-                                repository,
-                                reference,
-                                context,
-                                dockerfile,
-                            } => SourceInput::Git {
-                                repository: repository.clone(),
-                                reference: reference.clone(),
-                                context: context.clone(),
-                                dockerfile: dockerfile.clone(),
-                            },
-                        },
-                        replicas: service.replicas,
-                        environment: service.environment.clone(),
-                        command: service.command.clone(),
-                        arguments: service.arguments.clone(),
-                        ports: service.ports.clone(),
-                        mounts: service
-                            .mounts
-                            .iter()
-                            .map(|mount| MountInput {
-                                volume: mount.volume.clone(),
-                                target: mount.target.clone(),
-                                read_only: mount.read_only,
-                            })
-                            .collect(),
-                        secrets: service
-                            .secrets
-                            .iter()
-                            .map(|secret| SecretReferenceInput {
-                                source: secret.source.clone(),
-                                target: Some(secret.target.clone()),
-                                mode: secret.mode.clone(),
-                            })
-                            .collect(),
-                        healthcheck: service.healthcheck.as_ref().map(|health| match health {
-                            HealthCheck::Http {
-                                port,
-                                path,
-                                interval_seconds,
-                                timeout_seconds,
-                            } => HealthCheckInput::Http {
-                                port: *port,
-                                path: path.clone(),
-                                interval_seconds: *interval_seconds,
-                                timeout_seconds: *timeout_seconds,
-                            },
-                            HealthCheck::Command {
-                                command,
-                                interval_seconds,
-                                timeout_seconds,
-                            } => HealthCheckInput::Command {
-                                command: command.clone(),
-                                interval_seconds: *interval_seconds,
-                                timeout_seconds: *timeout_seconds,
-                            },
-                        }),
-                        resources: service.resources.as_ref().map(|resources| {
-                            ResourceLimitsInput {
-                                cpu_millis: resources.cpu_millis,
-                                memory_bytes: resources.memory_bytes,
-                            }
-                        }),
-                    })
-                    .collect(),
+                services: self.spec.services.iter().map(Service::to_input).collect(),
                 volumes: self
                     .spec
                     .volumes
@@ -1325,6 +1251,82 @@ impl NormalizedApplication {
                     })
                     .collect(),
             },
+        }
+    }
+}
+
+impl Service {
+    fn to_input(&self) -> ServiceInput {
+        ServiceInput {
+            name: self.name.clone(),
+            source: match &self.source {
+                Source::Image { image } => SourceInput::Image {
+                    image: image.clone(),
+                },
+                Source::Git {
+                    repository,
+                    reference,
+                    context,
+                    dockerfile,
+                } => SourceInput::Git {
+                    repository: repository.clone(),
+                    reference: reference.clone(),
+                    context: context.clone(),
+                    dockerfile: dockerfile.clone(),
+                },
+            },
+            replicas: self.replicas,
+            environment: self.environment.clone(),
+            command: self.command.clone(),
+            arguments: self.arguments.clone(),
+            ports: self.ports.clone(),
+            mounts: self
+                .mounts
+                .iter()
+                .map(|mount| MountInput {
+                    volume: mount.volume.clone(),
+                    target: mount.target.clone(),
+                    read_only: mount.read_only,
+                })
+                .collect(),
+            secrets: self
+                .secrets
+                .iter()
+                .map(|secret| SecretReferenceInput {
+                    source: secret.source.clone(),
+                    target: Some(secret.target.clone()),
+                    mode: secret.mode.clone(),
+                })
+                .collect(),
+            healthcheck: self.healthcheck.as_ref().map(|health| match health {
+                HealthCheck::Http {
+                    port,
+                    path,
+                    interval_seconds,
+                    timeout_seconds,
+                } => HealthCheckInput::Http {
+                    port: *port,
+                    path: path.clone(),
+                    interval_seconds: *interval_seconds,
+                    timeout_seconds: *timeout_seconds,
+                },
+                HealthCheck::Command {
+                    command,
+                    interval_seconds,
+                    timeout_seconds,
+                } => HealthCheckInput::Command {
+                    command: command.clone(),
+                    interval_seconds: *interval_seconds,
+                    timeout_seconds: *timeout_seconds,
+                },
+            }),
+            resources: self
+                .resources
+                .as_ref()
+                .map(|resources| ResourceLimitsInput {
+                    cpu_millis: resources.cpu_millis,
+                    memory_bytes: resources.memory_bytes,
+                }),
         }
     }
 }

@@ -23,7 +23,7 @@ async fn sqlx_applies_the_single_fresh_plan_migration() {
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(table_count, 11);
+    assert_eq!(table_count, 12);
 
     let schema_version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(&mut connection)

@@ -178,6 +178,17 @@ pub(crate) struct EncryptedGeneration {
     swarm_name: String,
 }
 
+/// Authenticated envelope supplied by the state-transfer validator.
+pub(crate) struct ImportEnvelope<'a> {
+    pub(crate) generation: u64,
+    pub(crate) algorithm: &'a str,
+    pub(crate) key_id: &'a str,
+    pub(crate) nonce: &'a [u8],
+    pub(crate) ciphertext: &'a [u8],
+    pub(crate) content_hash: &'a str,
+    pub(crate) swarm_name: &'a str,
+}
+
 impl Drop for EncryptedGeneration {
     fn drop(&mut self) {
         self.ciphertext.zeroize();
@@ -236,6 +247,30 @@ impl SecretService {
             store,
             key: Arc::new(key),
         }
+    }
+
+    /// Returns the non-secret identifier of the loaded master key.
+    pub(crate) fn master_key_id(&self) -> &str {
+        &self.key.key_id
+    }
+
+    /// Authenticates an imported encrypted envelope without retaining plaintext.
+    pub(crate) fn validate_import_envelope(
+        &self,
+        imported: &ImportEnvelope<'_>,
+        logical_name: &str,
+    ) -> Result<(), SecretError> {
+        let envelope = EncryptedGeneration {
+            algorithm: imported.algorithm.to_owned(),
+            key_id: imported.key_id.to_owned(),
+            nonce: imported.nonce.to_vec(),
+            ciphertext: imported.ciphertext.to_vec(),
+            content_hash: imported.content_hash.to_owned(),
+            generation: imported.generation,
+            swarm_name: imported.swarm_name.to_owned(),
+        };
+        let _plaintext = decrypt(&self.key, logical_name, &envelope)?;
+        Ok(())
     }
 
     /// Lists metadata without returning secret values.

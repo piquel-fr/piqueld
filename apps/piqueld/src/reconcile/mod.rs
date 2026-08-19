@@ -146,5 +146,5 @@ mod actions;
 mod coordinator;
 mod handler;
 mod runtime;
-pub use coordinator::run_coordinator;
+pub use coordinator::{CoordinatorOptions, run_coordinator};
 pub use runtime::DockerRuntime;

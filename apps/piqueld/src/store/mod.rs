@@ -8,6 +8,9 @@ mod build;
 mod operation;
 mod secret;
 mod status;
+mod transfer;
+
+pub(crate) use transfer::recompile_imported_application;
 
 pub(crate) use secret::{SecretDeleteResult, SecretMetadataRow, SecretWrite};
 
@@ -27,6 +30,7 @@ use std::{
     error::Error as StdError,
     fs,
     path::{Component, Path, PathBuf},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
@@ -599,6 +603,7 @@ pub struct MutationResult {
 pub struct SqliteStore {
     pool: SqlitePool,
     instance_id: String,
+    maintenance: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl SqliteStore {
@@ -685,7 +690,11 @@ impl SqliteStore {
         if metadata_version != SCHEMA_VERSION {
             return Err(StoreError::SchemaMismatch);
         }
-        Ok(Self { pool, instance_id })
+        Ok(Self {
+            pool,
+            instance_id,
+            maintenance: Arc::new(tokio::sync::RwLock::new(())),
+        })
     }
 
     async fn set_user_version(
@@ -705,6 +714,12 @@ impl SqliteStore {
     #[must_use]
     pub fn instance_id(&self) -> &str {
         &self.instance_id
+    }
+
+    /// Shared gate used to pause ordinary mutations while state is replaced.
+    #[must_use]
+    pub fn maintenance_gate(&self) -> Arc<tokio::sync::RwLock<()>> {
+        Arc::clone(&self.maintenance)
     }
 
     async fn connection(&self) -> Result<PoolConnection<Sqlite>, StoreError> {
@@ -936,7 +951,7 @@ fn valid_sha256(value: &str) -> bool {
         && value.starts_with("sha256:")
         && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
-fn validate_resolved(
+pub(crate) fn validate_resolved(
     app: &NormalizedApplication,
     resolved: &ResolvedApplication,
     instance_id: &str,

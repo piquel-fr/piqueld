@@ -1,15 +1,21 @@
 //! Focused API/client coverage for the polling application lifecycle.
 
 use async_trait::async_trait;
-use axum::{body::Body, http::Request, serve};
+use axum::{
+    Router,
+    body::Body,
+    http::{Method, Request, StatusCode, header},
+    serve,
+};
 use http_body_util::BodyExt;
 use piqueld::api::{
     ApiState, BoundaryError, PreparedApplication, RuntimeBoundary, api_router, router,
 };
 use piqueld::store::{SqliteStore, StoredApplication};
+use piqueld::transfer::ARCHIVE_CONTENT_TYPE;
 use piqueld_client::{
-    AcceptedOperation, Client, CreateApplicationRequest, DeleteApplicationRequest,
-    PlanApplicationRequest, ReplaceApplicationRequest,
+    AcceptedOperation, Client, CreateApplicationRequest, DeleteApplicationRequest, Envelope,
+    PlanApplicationRequest, ReplaceApplicationRequest, StateImportConfirmation, StateImportResult,
 };
 use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
@@ -17,6 +23,7 @@ use piqueld_core::{
     planner::ActionKind,
     resource::ResolvedSource,
 };
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, future::IntoFuture, sync::Arc};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -96,7 +103,7 @@ async fn state(temp: &TempDir) -> ApiState {
             .expect("fresh database opens"),
     );
     let instance = InstanceId::parse(store.instance_id().to_owned()).expect("valid instance ID");
-    ApiState::new(Arc::clone(&store), Arc::new(FakeRuntime { instance }))
+    ApiState::new(&store, Arc::new(FakeRuntime { instance }))
 }
 
 #[tokio::test]
@@ -292,11 +299,158 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     assert!(unix_root.1.contains("endpoint_not_found"));
 }
 
+#[tokio::test]
+async fn state_transfer_is_binary_and_confirmation_is_single_use() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let application = api_router(state(&temp).await);
+
+    let application_id = create_transfer_application(&application).await;
+
+    let exported_application = application
+        .clone()
+        .oneshot(request(&format!(
+            "/api/v1/applications/{application_id}/export"
+        )))
+        .await
+        .expect("application export request succeeds");
+    assert_eq!(exported_application.status(), StatusCode::OK);
+    assert_eq!(
+        exported_application
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/toml")
+    );
+
+    let exported = application
+        .clone()
+        .oneshot(request("/api/v1/state/export"))
+        .await
+        .expect("state export request succeeds");
+    assert_eq!(exported.status(), StatusCode::OK);
+    assert_eq!(
+        exported
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some(ARCHIVE_CONTENT_TYPE)
+    );
+    let archive = exported
+        .into_body()
+        .collect()
+        .await
+        .expect("archive body is readable")
+        .to_bytes();
+    assert!(!archive.is_empty());
+    let archive_digest = format!("sha256:{:x}", Sha256::digest(&archive));
+
+    let confirmation = application
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/state/import/confirm",
+            "application/json",
+            "",
+            "",
+            serde_json::to_vec(&serde_json::json!({"archive_digest": archive_digest}))
+                .expect("confirmation request serializes"),
+        ))
+        .await
+        .expect("confirmation request succeeds");
+    assert_eq!(confirmation.status(), StatusCode::OK);
+    let confirmation_body = confirmation
+        .into_body()
+        .collect()
+        .await
+        .expect("confirmation body is readable")
+        .to_bytes();
+    let confirmation: Envelope<StateImportConfirmation> =
+        serde_json::from_slice(&confirmation_body).expect("confirmation response is typed");
+
+    let imported = application
+        .clone()
+        .oneshot(archive_request(archive.to_vec(), &confirmation.data.token))
+        .await
+        .expect("state import request succeeds");
+    assert_eq!(imported.status(), StatusCode::OK);
+    let imported_body = imported
+        .into_body()
+        .collect()
+        .await
+        .expect("import body is readable")
+        .to_bytes();
+    let imported: Envelope<StateImportResult> =
+        serde_json::from_slice(&imported_body).expect("import response is typed");
+    assert_eq!(imported.data.applications_imported, 1);
+
+    let replay = application
+        .oneshot(archive_request(archive.to_vec(), &confirmation.data.token))
+        .await
+        .expect("replayed import request is handled");
+    assert_eq!(replay.status(), StatusCode::PRECONDITION_FAILED);
+}
+
+async fn create_transfer_application(application: &Router) -> String {
+    let response = application
+        .clone()
+        .oneshot(json_request(
+            Method::POST,
+            "/api/v1/applications",
+            "application/json",
+            "idempotency-key",
+            "transfer-test",
+            serde_json::to_vec(&CreateApplicationRequest {
+                manifest: manifest(),
+            })
+            .expect("create request serializes"),
+        ))
+        .await
+        .expect("application create request succeeds");
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("create body is readable")
+        .to_bytes();
+    let created: Envelope<AcceptedOperation> =
+        serde_json::from_slice(&body).expect("create response is typed");
+    created.data.application_id
+}
+
 fn request(uri: &str) -> Request<Body> {
     Request::builder()
         .uri(uri)
         .body(Body::empty())
         .expect("request is valid")
+}
+
+fn json_request(
+    method: Method,
+    uri: &str,
+    content_type: &str,
+    header_name: &str,
+    header_value: &str,
+    body: Vec<u8>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, content_type);
+    if !header_name.is_empty() {
+        builder = builder.header(header_name, header_value);
+    }
+    builder.body(Body::from(body)).expect("request is valid")
+}
+
+fn archive_request(body: Vec<u8>, confirmation: &str) -> Request<Body> {
+    Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/state/import")
+        .header(header::CONTENT_TYPE, ARCHIVE_CONTENT_TYPE)
+        .header("x-replace-confirmation", confirmation)
+        .body(Body::from(body))
+        .expect("archive request is valid")
 }
 
 async fn response_text(response: axum::response::Response) -> (axum::http::StatusCode, String) {
