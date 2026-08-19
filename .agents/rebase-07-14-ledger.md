@@ -20,9 +20,9 @@ e6df8821d5a63b9b121dec6781602348879ddea2
 Backup ref:
 `refs/backup/rebase-07-14/base/plan-06c-basic-web-ui-20260819-e6df882`
 
-There was no remote tracking ref for `plan/06c-basic-web-ui` at inventory time.
-The rebuild therefore starts from this exact local commit. Publishing a base
-branch is a separate decision and is not implied by rewriting the PR heads.
+The remote `plan/06c-basic-web-ui` ref was verified at this exact commit before
+the rebuild. The rebuild therefore starts from and remains pinned to this
+immutable product-stack base.
 
 ## Old head and ancestry inventory
 
@@ -195,7 +195,7 @@ ported. The feature/fix commits map as follows:
 | NixOS packaging, split daemon/CLI/UI outputs, systemd credentials, service hardening, private registry wiring, and safe path assertions | #13 `3254200`, `6a7d09c` | #13 rebuilt against the Plan 06C binary and immutable UI layout in `nix/module.nix`/`flake.nix`; no abandoned Plan 06 scaffolding or old package tree restored |
 | Security, recovery, backup, deployment, proxy-boundary, readiness, metrics, and operator documentation | #13 `3254200`, `6a7d09c` | #13 updated `README.md`, `docs/api.md`, `docs/web-ui.md`, and added `docs/operations.md` for the rebuilt API, credentials, NixOS unit, private access, and recovery model |
 | Layered qualification CI, reproducible release packaging, fixtures, acceptance runbook, and final operator/developer docs | #14 `22bbb1a`, `5d38829` | #14 rebuilt as `deb09b3`, with current `just`/qualification entry points, pinned CI actions/toolchains, clean release output, Docker fixtures, NixOS VM check, and a 20-criterion runbook |
-| Docker 29 service-update race and default canonicalization fixes | #14 `a2990f8` | #14 rebuilt as `d411aeb`; exact `update out of sequence` retry now refreshes the typed service version, and proxy default canonicalization has a regression test. Bollard 0.19.4 already emits the corrected `Healthcheck` wire key, so the old second raw Hyper transport was intentionally not restored; the old unsupported BuildKit `session` field was likewise not added |
+| Docker 29 service-update race, default canonicalization, BuildKit session, and Swarm healthcheck fixes | #14 `a2990f8` plus disposable qualification findings | #14 rebuilt through `d411aeb`, `b790c0d`, `58cd800`, and `316b5b8`; exact transient update retry, proxy canonicalization, Bollard's supported BuildKit session/provider path, complete typed service inspection, and the narrow `HealthCheck`/`Healthcheck` Unix-socket normalization are retained. The temporary diagnostic commit `cce0018` was removed and is not a capability commit |
 | Nix recovery qualification and restart-oriented checks | #14 `38cf58d` | #14 rebuilt in `deb09b3` through the NixOS VM boot/readiness/credential/package checks and durable operation/build recovery coverage inherited from #7–13; crash-injection during every external operation remains an operator-run qualification item |
 | Removal of the obsolete offline SQLx cache | #14 `a1d0f36` | Deliberately not copied: the rebuilt stack has one checked-in SQLx query-metadata file and `build.rs` as the current compile-time contract; deleting it would break fresh offline builds rather than simplify the product |
 
@@ -210,7 +210,7 @@ ported. The feature/fix commits map as follows:
 | 11 | `rebuild/11-cli` | `6916091076de717d21860713d54d44701b63c90a` (`feat(cli): rebuild advanced operator workflow on product stack`) |
 | 12 | `rebuild/12-web-ui` | `0e71c2d` (`fix(web): clarify dashboard structure and actions`; feature base `ae45d9e3d4c7c5f704cf3978a77182639ceffad9`) |
 | 13 | `rebuild/13-nixos-security-and-operations` | `8322df1965be3382cd86b95bc5612f34bfe85d96` (`feat(ops): rebuild security and NixOS operations`; ledger top `bd91ead879094f59f75ddcae04941c41fb2b26db`) |
-| 14 | `rebuild/14-qualification-ci-and-docs` | `36dcbcef7ca351b2b3d078b6850bbf5dc1447be9` (`docs(rebase): record rebuilt qualification ledger`; code head `d411aeb`, qualification base `deb09b3`) |
+| 14 | `rebuild/14-qualification-ci-and-docs` | `316b5b8` (`fix(docker): preserve Swarm healthchecks across service reconciliation`; qualification base `deb09b3`, final code correction after `d411aeb`, `b790c0d`, and `58cd800`) |
 
 ## Local #10 validation at ledger checkpoint
 
@@ -302,48 +302,47 @@ does not restore the old binary or dashboard trees.
 
 ## Local #14 validation at ledger checkpoint
 
-Passed on `36dcbcef7ca351b2b3d078b6850bbf5dc1447be9` (qualification implementation `deb09b3`, Docker compatibility fix `d411aeb`):
+Passed on the final code head `316b5b8` (qualification implementation `deb09b3`,
+Docker retry/canonicalization `d411aeb`, supported BuildKit session path
+`b790c0d`, complete typed inspection `58cd800`, and final healthcheck wire fix):
 
-- `cargo fmt --all`, `cargo check -p piqueld --test docker_integration --features docker-integration`, and `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- focused Docker engine regression test for exact transient update errors
-- full elevated `just`, including workspace tests, doc-tests, cargo-deny, OpenAPI, and dependency boundaries; the non-elevated attempt was blocked only by the sandbox's TCP listener permission
-- `cargo nextest run --workspace`: 91/91 passed
+- `cargo fmt --all`, `cargo check -p piqueld --test docker_integration --features docker-integration`, and `cargo test -p piqueld --lib` (34/34)
+- focused Docker engine regression tests for exact transient update errors and bidirectional `HealthCheck`/`Healthcheck` wire normalization
+- full elevated `just`, including workspace tests, doc-tests, strict Clippy, cargo-deny, OpenAPI, and dependency boundaries; the non-elevated attempt was blocked only by the sandbox's TCP listener permission
+- `cargo nextest run --workspace`: 91/91 passed before the final wire-only correction; the final `just` rerun passed after it
 - `cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui` and strict WASM Clippy
-- `just nix-check`: all six x86_64 flake checks passed, including the NixOS VM
-  qualification with a deterministic local Traefik stub; the check omitted
-  incompatible `aarch64-linux`
-- `nix build .#release --no-update-lock-file` and two clean `package-release.sh`
-  runs produced byte-identical tarballs, metadata, and checksums; the final
-  x86_64 archive SHA-256 was
-  `15dfde301711cd6f7ddcf37d8631afa8d92bbccf60dd5e5add7984cfd2d29281`
-- feature-gated Docker qualification compiles, but ignored disposable-engine
-  execution was not run against the active host Docker daemon
-- the current stack's typed Bollard 0.19.4 health-check serialization was
-  inspected and verified as `Healthcheck`; no raw compatibility transport was
-  introduced
+- `just nix-check`: all six x86_64 flake checks passed, including the NixOS VM qualification with a deterministic local Traefik stub; the check omitted incompatible `aarch64-linux`
+- `nix build .#release --no-update-lock-file` and two clean `package-release.sh` runs produced byte-identical tarballs, metadata, and checksums; the final x86_64 archive SHA-256 was `15dfde301711cd6f7ddcf37d8631afa8d92bbccf60dd5e5add7984cfd2d29281`
+- feature-gated Docker qualification compiled locally; the final disposable GitHub Docker job passed against Docker Engine 28.0.4 with the loopback registry
+- final remote qualification run `32232166988`: Rust/contract job `96004243537`, Docker job `96004243079`, and NixOS VM job `96004243307` passed; the WASM/Chromium job `96004243468` timed out after 30m22s while installing headless Chromium, before the production bundle or browser smoke steps ran
 
-Still unavailable in this checkout: `trunk` and Chromium are not installed, so
-the production UI/browser smoke job could not run; the T3 preview reported no
-automation host after status/open attempts; and privileged Docker qualification
-was not run. `cargo nextest` is available for the final cumulative pass, but CI
-intentionally uses the repository's authoritative `just`/Cargo test commands
-to avoid a duplicate runner dependency.
+The earlier disposable diagnosis run `32231079482` exposed the exact healthcheck
+field mismatch and was superseded by the final correction. Local browser
+automation remains unavailable: `trunk` and Chromium are not installed and the
+T3 preview reported no automation host after status/open attempts. No local
+privileged Docker daemon was used.
 
 ## #14 range-diff findings
 
 Compared with the old feature range
 `3f01d57de6be6c3b1ab8ef682b9edc1631b7e14f..b129bafd102cf2fb461ed776f3808f110a451b5e`,
 the five substantive old commits (`22bbb1a`, `5d38829`, `a2990f8`, `38cf58d`,
-`a1d0f36`) were intentionally consolidated into `deb09b3` plus the focused
-compatibility fix `d411aeb` (the rebuilt increment range is
-`bd91ead879094f59f75ddcae04941c41fb2b26db..d411aeb`). Old merge-only commits were not ported. The
-qualification behavior is retained through current feature-gated Docker tests,
-NixOS VM checks, release/CI scripts, fixtures, documentation, and the final
-typed Docker retry. The raw Hyper service transport, obsolete BuildKit session
-field, and offline-cache deletion are deliberate architecture-specific
-deviations recorded in the capability table above.
+`a1d0f36`) were semantically rebuilt across the qualification implementation
+`deb09b3`, focused Docker retry/canonicalization `d411aeb`, supported BuildKit
+session correction `b790c0d`, complete service inspection `58cd800`, and final
+healthcheck wire correction `316b5b8` (rebuilt code range
+`bd91ead879094f59f75ddcae04941c41fb2b26db..316b5b8`). The diagnostic-only
+`cce0018` commit is intentionally omitted from the capability count. Old
+merge-only commits were not ported. The qualification behavior is retained
+through current feature-gated Docker tests, NixOS VM checks, release/CI scripts,
+fixtures, documentation, and the typed Docker boundary. The only remaining
+architecture-specific deviation in this area is the offline-cache deletion;
+the service wire normalization is now a deliberate, narrowly scoped transport
+fix rather than a restoration of the old branch tree.
 
-The local rebuild is complete; remote PR branches have not yet been rewritten.
+The local rebuild is complete and PR branches #7–#14 have been rewritten with
+explicit `--force-with-lease` pushes; PR #7's base metadata remains blocked by
+GitHub's stacked-PR restriction.
 
 ## Final range-diff summary
 
@@ -359,4 +358,25 @@ feature increment, excluding inherited ledger commits:
 | 11 | 2 | 1 | Consolidated advanced CLI behavior while extending Plan 06B rather than restoring the old CLI tree |
 | 12 | 2 | 2 | Feature plus focused dashboard-structure cleanup; both are based on the rebuilt #11 branch |
 | 13 | 2 | 1 | Consolidated security, operations, packaging, recovery, and documentation on the rebuilt UI/client stack |
-| 14 | 5 | 2 | Qualification/docs implementation plus exact typed Docker update retry; old merge-only commits omitted |
+| 14 | 5 | 5 | Qualification/docs plus focused Docker retry, BuildKit, complete-inspection, and healthcheck-wire corrections; diagnostic-only commit and old merge-only commits omitted |
+
+## Remote rewrite checkpoint
+
+The implementation pushes were serialized from the bottom of the stack and
+used an exact `--force-with-lease` for every branch. At the final code push,
+the remote heads were:
+
+| PR | Remote branch head after semantic rebuild | Intended base | GitHub-reported base |
+|---:|---|---|---|
+| 7 | `48a298cd75d07b441b8bc5ef3205b1d02bad8a72` | `plan/06c-basic-web-ui` (`e6df8821d5a63b9b121dec6781602348879ddea2`) | `plan/06-docker-reconciliation` (retarget rejected: stacked-PR restriction) |
+| 8 | `032110766ecc489c9776a12bb3a5ba59d1afb57e` | `plan/07-secret-lifecycle` | `plan/07-secret-lifecycle` |
+| 9 | `f79994ba476f99daf8f59d9783d546d32f862ccd` | `plan/08-build-and-registry` | `plan/08-build-and-registry` |
+| 10 | `4f92d0b072a04a081c0b706c5588e59c66633edd` | `plan/09-traefik-status-and-logs` | `plan/09-traefik-status-and-logs` |
+| 11 | `b4faf32263f4d36560521546941f360465192104` | `plan/10-import-export` | `plan/10-import-export` |
+| 12 | `a887c2b0e3b9118bcf4822563141d9caae251205` | `plan/11-cli` | `plan/11-cli` |
+| 13 | `bd91ead879094f59f75ddcae04941c41fb2b26db` | `plan/12-web-ui` | `plan/12-web-ui` |
+| 14 | `316b5b8e1b20959c024b6600697a25b48f9b6287` | `plan/13-nixos-security-and-operations` | `plan/13-nixos-security-and-operations` |
+
+The final ledger-only documentation commit may move #14's branch head without
+changing its implementation. The exact post-ledger head is reported in the
+handoff accompanying this file.
