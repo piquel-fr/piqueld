@@ -49,10 +49,16 @@ sudo install -d /usr/share/piqueld/ui
 sudo cp -R target/piqueld-ui-dist/. /usr/share/piqueld/ui/
 ```
 
-The daemon default is `server.ui_dir = "/usr/share/piqueld/ui"`; deployments
-can select another absolute directory in `[server]`. The Nix package builds the
-same release bundle and installs it under `$out/share/piqueld/ui`; a Nix service
-configuration should point `server.ui_dir` at that store path.
+The default configuration leaves `server.ui_dir` unset. Deployments can select
+another absolute directory in `[server]`; that explicit override always wins.
+The Nix package builds the same release bundle, installs it under its own
+`$out/share/piqueld/ui`, and wraps `piqueld` with that path. Users do not need
+to discover or copy the store path into configuration.
+
+The normal package contains only the operator-facing `piqueld` and `piquelctl`
+binaries, the example configuration, and the dashboard assets. The
+`generate_openapi` helper and the native `piqueld-ui` placeholder are not
+installed.
 
 The TCP router serves existing assets and uses `index.html` only for
 extensionless, non-reserved browser paths. API, health, OpenAPI, and unknown API

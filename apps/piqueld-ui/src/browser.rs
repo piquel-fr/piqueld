@@ -5,7 +5,10 @@ use crate::state::{
     PollController,
 };
 use gloo_timers::future::TimeoutFuture;
-use leptos::*;
+use leptos::{
+    CollectView, IntoView, RwSignal, SignalGet, SignalGetUntracked, SignalSet, View, component,
+    create_rw_signal, ev, mount_to_body, on_cleanup, spawn_local, view, window_event_listener,
+};
 use piqueld_client::{
     ApplicationDetailView, ApplicationStatusView, ApplicationView, Client, ClientError,
     DiagnosticView, ListApplicationsOptions, ObservedServiceView, Page, Source, SystemStatus,
@@ -24,6 +27,7 @@ struct ApplicationRow {
 struct DashboardSnapshot {
     system: SystemStatus,
     applications: Vec<ApplicationRow>,
+    incomplete: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -40,6 +44,7 @@ struct DashboardSignals {
     data_state: RwSignal<DataState>,
     refresh_error: RwSignal<Option<String>>,
     refreshing: RwSignal<bool>,
+    pagination_incomplete: RwSignal<bool>,
     selected_id: RwSignal<Option<String>>,
     detail: RwSignal<Option<ApplicationDetailView>>,
     detail_loading: RwSignal<bool>,
@@ -51,6 +56,9 @@ pub fn mount() {
     mount_to_body(|| view! { <Dashboard/> });
 }
 
+type Refresh = Rc<dyn Fn()>;
+type SelectApplication = Rc<dyn Fn(String)>;
+
 #[component]
 fn Dashboard() -> impl IntoView {
     let signals = DashboardSignals {
@@ -60,6 +68,7 @@ fn Dashboard() -> impl IntoView {
         data_state: create_rw_signal(DataState::Loading),
         refresh_error: create_rw_signal(None),
         refreshing: create_rw_signal(false),
+        pagination_incomplete: create_rw_signal(false),
         selected_id: create_rw_signal(None),
         detail: create_rw_signal(None),
         detail_loading: create_rw_signal(false),
@@ -69,7 +78,7 @@ fn Dashboard() -> impl IntoView {
     let controller = Rc::new(RefCell::new(PollController::new()));
     controller.borrow_mut().set_hidden(document_hidden());
 
-    let refresh = {
+    let refresh: Refresh = {
         let client = client.clone();
         let controller = Rc::clone(&controller);
         Rc::new(move || {
@@ -77,7 +86,7 @@ fn Dashboard() -> impl IntoView {
         })
     };
 
-    let select = {
+    let select: SelectApplication = {
         let client = client.clone();
         Rc::new(move |id: String| {
             signals.selected_id.set(Some(id.clone()));
@@ -97,10 +106,37 @@ fn Dashboard() -> impl IntoView {
     start_refresh(client.clone(), signals, Rc::clone(&controller), true);
     spawn_poll_loop(client, signals, controller);
 
-    let refresh_button = Rc::clone(&refresh);
+    dashboard_view(signals, &refresh, select)
+}
 
+fn dashboard_view(signals: DashboardSignals, refresh: &Refresh, select: SelectApplication) -> View {
     view! {
         <a class="skip-link" href="#dashboard-main">"Skip to main content"</a>
+        {dashboard_header(signals, Rc::clone(refresh))}
+
+        <main id="dashboard-main" tabindex="-1">
+            <section class="notice notice-info" aria-labelledby="read-only-title">
+                <h2 id="read-only-title">"Read-only view"</h2>
+                <p>"This dashboard shows daemon and application state. Use "<code>"piquelctl"</code>" for plan, apply, reconcile, and delete operations."</p>
+            </section>
+
+            {system_summary(signals)}
+            {refresh_error(signals, Rc::clone(refresh))}
+            {stale_notice(signals)}
+
+            <div class="dashboard-grid">
+                {applications_panel(signals, select)}
+
+                <ApplicationDetail signals=signals/>
+            </div>
+        </main>
+        <footer class="site-footer">"piqueld · loopback dashboard · API v1"</footer>
+    }
+    .into_view()
+}
+
+fn dashboard_header(signals: DashboardSignals, refresh: Refresh) -> View {
+    view! {
         <header class="site-header">
             <div>
                 <p class="eyebrow">"PIQUELD CONTROL PLANE"</p>
@@ -115,98 +151,117 @@ fn Dashboard() -> impl IntoView {
                     class="button button-secondary"
                     type="button"
                     disabled=move || signals.refreshing.get()
-                    on:click=move |_| refresh_button()
+                    on:click=move |_| refresh()
                 >
                     {move || if signals.refreshing.get() { "Refreshing…" } else { "Refresh" }}
                 </button>
             </div>
         </header>
-
-        <main id="dashboard-main" tabindex="-1">
-            <section class="notice notice-info" aria-labelledby="read-only-title">
-                <h2 id="read-only-title">"Read-only view"</h2>
-                <p>"This dashboard shows daemon and application state. Use "<code>"piquelctl"</code>" for plan, apply, reconcile, and delete operations."</p>
-            </section>
-
-            {move || signals.system.get().map(|system| view! {
-                <section class="system-summary" aria-labelledby="system-title">
-                    <div>
-                        <p class="eyebrow">"DAEMON"</p>
-                        <h2 id="system-title">"Available"</h2>
-                    </div>
-                    <dl class="summary-list">
-                        <div><dt>"API"</dt><dd>{system.api_version}</dd></div>
-                        <div><dt>"Instance"</dt><dd><code>{short_id(&system.instance_id)}</code></dd></div>
-                    </dl>
-                </section>
-            })}
-
-            {move || signals.refresh_error.get().map(|message| {
-                let retry = Rc::clone(&refresh);
-                view! {
-                    <div class="notice notice-error" role="alert" aria-live="assertive">
-                        <h2>{if signals.connection.get() == ConnectionState::Unreachable { "Daemon unreachable" } else { "Refresh failed" }}</h2>
-                        <p>{message}</p>
-                        <button class="button button-secondary" type="button" on:click=move |_| retry()>{"Try again"}</button>
-                    </div>
-                }
-            })}
-
-            {move || (signals.data_state.get() == DataState::Stale).then(|| view! {
-                <p class="stale-banner" role="status">"Showing the last successful view; the latest refresh failed."</p>
-            })}
-
-            <div class="dashboard-grid">
-                <section class="applications-panel" aria-labelledby="applications-title">
-                    <div class="section-heading">
-                        <div>
-                            <p class="eyebrow">"DESIRED STATE"</p>
-                            <h2 id="applications-title">"Applications"</h2>
-                        </div>
-                        <p class="muted">{move || format!("{} shown", signals.applications.get().len())}</p>
-                    </div>
-                    {move || match signals.data_state.get() {
-                        DataState::Loading => view! { <p class="state-panel" role="status">"Loading applications…"</p> }.into_view(),
-                        DataState::Empty => view! { <div class="state-panel"><h3>"No applications"</h3><p>"The daemon has no desired applications yet. Use piquelctl to create one."</p></div> }.into_view(),
-                        DataState::Ready | DataState::Stale => ().into_view(),
-                    }}
-                    <ul class="application-list" aria-label="Application list">
-                        {move || signals.applications.get().into_iter().map(|row| {
-                            let id = row.application.application.id.to_string();
-                            let id_for_select = id.clone();
-                            let id_for_class = id.clone();
-                            let select_for_row = Rc::clone(&select);
-                            let selected_id = signals.selected_id;
-                            let name = row.application.application.metadata.name.clone();
-                            let health = row_health(&row);
-                            let status_text = row_status_text(&row);
-                            let desired_replicas = desired_replicas(&row.application);
-                            view! {
-                                <li>
-                                    <article class="application-card" class:selected=move || selected_id.get().as_deref() == Some(id_for_class.as_str())>
-                                        <div class="card-topline">
-                                            <span class=format!("health-badge {}", health_class(health))>{health.label()}</span>
-                                            <span class="generation">{format!("Generation {}", row.application.generation)}</span>
-                                        </div>
-                                        <h3>{name}</h3>
-                                        <p class="muted"><code>{short_id(&id)}</code></p>
-                                        <dl class="card-facts">
-                                            <div><dt>"Desired replicas"</dt><dd>{desired_replicas}</dd></div>
-                                            <div><dt>"Observed state"</dt><dd>{status_text}</dd></div>
-                                        </dl>
-                                        <button class="button button-secondary card-action" type="button" aria-pressed=move || selected_id.get().as_deref() == Some(id.as_str()) on:click=move |_| select_for_row(id_for_select.clone())>{"View details"}</button>
-                                    </article>
-                                </li>
-                            }
-                        }).collect_view()}
-                    </ul>
-                </section>
-
-                <ApplicationDetail signals=signals/>
-            </div>
-        </main>
-        <footer class="site-footer">"piqueld · loopback dashboard · API v1"</footer>
     }
+    .into_view()
+}
+
+fn system_summary(signals: DashboardSignals) -> View {
+    view! {
+        {move || signals.system.get().map(|system| view! {
+            <section class="system-summary" aria-labelledby="system-title">
+                <div>
+                    <p class="eyebrow">"DAEMON"</p>
+                    <h2 id="system-title">"Available"</h2>
+                </div>
+                <dl class="summary-list">
+                    <div><dt>"Version"</dt><dd>{system.daemon_version}</dd></div>
+                    <div><dt>"API"</dt><dd>{system.api_version}</dd></div>
+                    <div><dt>"Instance"</dt><dd><code>{short_id(&system.instance_id)}</code></dd></div>
+                </dl>
+            </section>
+        })}
+    }
+    .into_view()
+}
+
+fn refresh_error(signals: DashboardSignals, refresh: Refresh) -> View {
+    view! {
+        {move || signals.refresh_error.get().map(|message| {
+            let retry = Rc::clone(&refresh);
+            view! {
+                <div class="notice notice-error" role="alert" aria-live="assertive">
+                    <h2>{if signals.connection.get() == ConnectionState::Unreachable { "Daemon unreachable" } else { "Refresh failed" }}</h2>
+                    <p>{message}</p>
+                    <button class="button button-secondary" type="button" on:click=move |_| retry()>{"Try again"}</button>
+                </div>
+            }
+        })}
+    }
+    .into_view()
+}
+
+fn stale_notice(signals: DashboardSignals) -> View {
+    view! {
+        {move || (signals.data_state.get() == DataState::Stale).then(|| view! {
+            <p class="stale-banner" role="status">"Showing the last successful view; the latest refresh failed."</p>
+        })}
+    }
+    .into_view()
+}
+
+fn applications_panel(signals: DashboardSignals, select: SelectApplication) -> View {
+    view! {
+        <section class="applications-panel" aria-labelledby="applications-title">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">"DESIRED STATE"</p>
+                    <h2 id="applications-title">"Applications"</h2>
+                </div>
+                <p class="muted">{move || format!("{} shown", signals.applications.get().len())}</p>
+            </div>
+            {move || signals.pagination_incomplete.get().then(|| view! {
+                <p class="stale-banner" role="status">"Application list incomplete: the dashboard stopped at a safe pagination bound or repeated cursor. Use piquelctl for the complete list."</p>
+            })}
+            {move || match signals.data_state.get() {
+                DataState::Loading => view! { <p class="state-panel" role="status">"Loading applications…"</p> }.into_view(),
+                DataState::Empty => view! { <div class="state-panel"><h3>"No applications"</h3><p>"The daemon has no desired applications yet. Use piquelctl to create one."</p></div> }.into_view(),
+                DataState::Ready | DataState::Stale => ().into_view(),
+            }}
+            <ul class="application-list" aria-label="Application list">
+                {move || signals.applications.get().into_iter().map(|row| application_card(&row, signals, Rc::clone(&select))).collect_view()}
+            </ul>
+        </section>
+    }
+    .into_view()
+}
+
+fn application_card(
+    row: &ApplicationRow,
+    signals: DashboardSignals,
+    select: SelectApplication,
+) -> View {
+    let id = row.application.application.id.to_string();
+    let id_for_select = id.clone();
+    let id_for_class = id.clone();
+    let selected_id = signals.selected_id;
+    let name = row.application.application.metadata.name.clone();
+    let health = row_health(row);
+    let status_text = row_status_text(row);
+    let desired_replicas = desired_replicas(&row.application);
+    view! {
+        <li>
+            <article class="application-card" class:selected=move || selected_id.get().as_deref() == Some(id_for_class.as_str())>
+                <div class="card-topline">
+                    <span class=format!("health-badge {}", health_class(health))>{health.label()}</span>
+                    <span class="generation">{format!("Generation {}", row.application.generation)}</span>
+                </div>
+                <h3>{name}</h3>
+                <p class="muted"><code>{short_id(&id)}</code></p>
+                <dl class="card-facts">
+                    <div><dt>"Desired replicas"</dt><dd>{desired_replicas}</dd></div>
+                    <div><dt>"Observed state"</dt><dd>{status_text}</dd></div>
+                </dl>
+                <button class="button button-secondary card-action" type="button" aria-pressed=move || selected_id.get().as_deref() == Some(id.as_str()) on:click=move |_| select(id_for_select.clone())>{"View details"}</button>
+            </article>
+        </li>
+    }
+    .into_view()
 }
 
 #[component]
@@ -227,7 +282,7 @@ fn ApplicationDetail(signals: DashboardSignals) -> impl IntoView {
                 } else if signals.detail_loading.get() && detail.is_none() {
                     view! { <p class="state-panel" role="status">"Loading application detail…"</p> }.into_view()
                 } else if let Some(detail) = detail {
-                    detail_view(detail, signals)
+                    detail_view(&detail, signals)
                 } else {
                     let message = signals.detail_error.get().unwrap_or_else(|| "Application detail is unavailable.".into());
                     view! { <div class="state-panel" role="alert"><h3>"Detail unavailable"</h3><p>{message}</p></div> }.into_view()
@@ -238,7 +293,7 @@ fn ApplicationDetail(signals: DashboardSignals) -> impl IntoView {
     .into_view()
 }
 
-fn detail_view(detail: ApplicationDetailView, signals: DashboardSignals) -> View {
+fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals) -> View {
     let app = detail.application.application.clone();
     let status = detail.status.clone();
     let operation = detail.latest_operation.clone();
@@ -259,7 +314,7 @@ fn detail_view(detail: ApplicationDetailView, signals: DashboardSignals) -> View
             view! {
                 <li class="service-row">
                     <div><strong>{name}</strong><span class="muted">{image}</span></div>
-                    <span class="replica-pill">{format!("{} desired", replicas)}</span>
+                    <span class="replica-pill">{format!("{replicas} desired")}</span>
                 </li>
             }
         })
@@ -374,6 +429,7 @@ fn start_refresh(
                 controller.borrow_mut().record_success();
                 signals.system.set(Some(snapshot.system));
                 signals.applications.set(snapshot.applications);
+                signals.pagination_incomplete.set(snapshot.incomplete);
                 signals.connection.set(ConnectionState::Reachable);
                 signals
                     .data_state
@@ -446,7 +502,10 @@ fn spawn_poll_loop(
 }
 
 async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailure> {
-    let system = client.system_status().await.map_err(load_failure)?;
+    let system = client
+        .system_status()
+        .await
+        .map_err(|error| load_failure(&error))?;
     let mut pagination = PaginationState::new();
     let mut cursor = None;
     let mut applications = Vec::new();
@@ -457,7 +516,7 @@ async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailur
                 limit: Some(PAGE_LIMIT),
             })
             .await
-            .map_err(load_failure)?;
+            .map_err(|error| load_failure(&error))?;
         let next_cursor = page.next_cursor.clone();
         for application in page.items {
             let id = application.application.id.to_string();
@@ -483,13 +542,14 @@ async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailur
     Ok(DashboardSnapshot {
         system,
         applications,
+        incomplete: pagination.incomplete(),
     })
 }
 
-fn load_failure(error: ClientError) -> LoadFailure {
+fn load_failure(error: &ClientError) -> LoadFailure {
     LoadFailure {
-        unreachable: matches!(&error, ClientError::Transport { .. }),
-        message: client_error_message(&error),
+        unreachable: matches!(error, ClientError::Transport { .. }),
+        message: client_error_message(error),
     }
 }
 

@@ -77,8 +77,12 @@ async fn main() -> Result<()> {
         config.reconciliation.max_parallel_operations,
     ));
 
-    let state =
-        ApiState::new(Arc::clone(&store), runtime).with_ui_dir(config.server.ui_dir.clone());
+    let ui_dir = config
+        .server
+        .ui_dir
+        .clone()
+        .unwrap_or_else(piqueld::config::default_ui_dir);
+    let state = ApiState::new(Arc::clone(&store), runtime).with_ui_dir(ui_dir);
 
     // cancellation token for workers
     let cancellation = CancellationToken::new();

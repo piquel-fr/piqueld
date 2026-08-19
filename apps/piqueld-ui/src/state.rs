@@ -1,6 +1,6 @@
 //! Small, transport-independent state helpers for the read-only dashboard.
 
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 /// Maximum number of applications requested per API page.
 pub const PAGE_LIMIT: u16 = 20;
@@ -143,6 +143,8 @@ impl ApplicationHealth {
 pub struct PaginationState {
     pages_loaded: usize,
     next_cursor: Option<String>,
+    seen_cursors: BTreeSet<String>,
+    incomplete: bool,
 }
 
 impl PaginationState {
@@ -163,13 +165,26 @@ impl PaginationState {
     /// Records one response page and its opaque continuation cursor.
     pub fn record_page(&mut self, next_cursor: Option<String>) {
         self.pages_loaded = self.pages_loaded.saturating_add(1);
-        self.next_cursor = next_cursor;
+        let has_next = next_cursor.is_some();
+        self.next_cursor = next_cursor.filter(|cursor| self.seen_cursors.insert(cursor.clone()));
+        if has_next && self.next_cursor.is_none() {
+            self.incomplete = true;
+        }
+        if self.pages_loaded >= MAX_PAGES && self.next_cursor.is_some() {
+            self.incomplete = true;
+        }
     }
 
     /// Returns the number of pages accepted by this refresh.
     #[must_use]
     pub const fn pages_loaded(&self) -> usize {
         self.pages_loaded
+    }
+
+    /// Returns whether pagination stopped before proving that the list ended.
+    #[must_use]
+    pub const fn incomplete(&self) -> bool {
+        self.incomplete
     }
 }
 
@@ -312,6 +327,17 @@ mod tests {
         }
         assert_eq!(pages.pages_loaded(), MAX_PAGES);
         assert_eq!(pages.next_cursor(), None);
+        assert!(pages.incomplete());
+    }
+
+    #[test]
+    fn pagination_stops_on_a_repeated_cursor_and_marks_the_list_incomplete() {
+        let mut pages = PaginationState::new();
+        pages.record_page(Some("same".into()));
+        assert_eq!(pages.next_cursor(), Some("same"));
+        pages.record_page(Some("same".into()));
+        assert_eq!(pages.next_cursor(), None);
+        assert!(pages.incomplete());
     }
 
     #[test]

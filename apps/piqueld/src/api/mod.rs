@@ -28,6 +28,7 @@ use tower_http::{
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
+    config::default_ui_dir,
     docker::DockerError,
     store::{SqliteStore, StoreError, StoredApplication},
 };
@@ -99,7 +100,7 @@ impl ApiState {
             store,
             runtime,
             create_lock: Arc::new(tokio::sync::Mutex::new(())),
-            ui_dir: std::path::PathBuf::from("/usr/share/piqueld/ui"),
+            ui_dir: default_ui_dir(),
         }
     }
 

@@ -17,6 +17,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          rustTarget = pkgs.stdenv.hostPlatform.rust.rustcTarget;
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
@@ -24,10 +25,12 @@
             version = "0.1.0";
             src = pkgs.lib.cleanSource self;
             cargoLock.lockFile = ./Cargo.lock;
+            cargoBuildFlags = [ "--workspace" ];
             nativeBuildInputs = [
               pkgs.binaryen
               pkgs.cmake
               pkgs.lld
+              pkgs.makeWrapper
               pkgs.pkg-config
               pkgs.rustPlatform.bindgenHook
               pkgs.trunk
@@ -46,9 +49,17 @@
                 --public-url / --dist "$TMPDIR/piqueld-ui-dist"
               popd
             '';
-            postInstall = ''
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 target/${rustTarget}/release/piqueld "$out/bin/piqueld"
+              install -Dm755 target/${rustTarget}/release/piquelctl "$out/bin/piquelctl"
+              install -Dm644 config/piqueld.example.toml \
+                "$out/share/piqueld/piqueld.example.toml"
               mkdir -p "$out/share/piqueld/ui"
               cp -R "$TMPDIR/piqueld-ui-dist/." "$out/share/piqueld/ui/"
+              wrapProgram "$out/bin/piqueld" \
+                --set PIQUELD_UI_DIR "$out/share/piqueld/ui"
+              runHook postInstall
             '';
             doCheck = true;
           };
