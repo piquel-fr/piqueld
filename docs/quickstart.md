@@ -7,8 +7,8 @@ the engine can run a single-node Swarm.
 ## Build and start
 
 ```console
-cargo build --release --package piqueld --package piquelctl
-cargo run --package piqueld -- --config config/piqueld.example.toml
+nix build .#default
+./result/bin/piqueld --config ./result/share/piqueld/piqueld.example.toml
 ```
 
 The example keeps the socket and database under a user-owned

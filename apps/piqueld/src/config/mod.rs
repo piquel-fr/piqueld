@@ -28,8 +28,8 @@ impl DaemonConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] if the built-in defaults violate a configuration
-    /// invariant.
+    /// Returns [`ConfigError::Invalid`] if a built-in default violates a
+    /// configuration invariant.
     pub fn validated_default() -> Result<Self, ConfigError> {
         let config = Self::default();
         config.validate()?;
@@ -60,11 +60,14 @@ impl DaemonConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        absolute_directory("server.ui_dir", &self.server.ui_dir)?;
-        absolute_file("docker.socket", &self.docker.socket)?;
+        absolute_directory("server.data_dir", &self.server.data_dir)?;
+        if self.server.data_dir.file_name().is_none() {
             return Err(ConfigError::Invalid(
                 "server.data_dir must name a directory".into(),
             ));
+        }
+        if let Some(ui_dir) = &self.server.ui_dir {
+            absolute_directory("server.ui_dir", ui_dir)?;
         }
         absolute_file("docker.socket", &self.docker.socket)?;
         if let Some(address) = self.server.http_listen {
@@ -127,8 +130,10 @@ pub struct ServerConfig {
     /// Optional loopback HTTP listener. Omitting it disables TCP.
     #[serde(default)]
     pub http_listen: Option<SocketAddr>,
-    /// Production dashboard asset directory.
-    pub ui_dir: PathBuf,
+    /// Optional dashboard asset directory override. When absent, the daemon
+    /// uses the package-provided `PIQUELD_UI_DIR` wrapper value or its local
+    /// default.
+    pub ui_dir: Option<PathBuf>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -154,9 +159,18 @@ impl Default for ServerConfig {
         Self {
             data_dir: PathBuf::from("/var/lib/piqueld"),
             http_listen: Some("127.0.0.1:7845".parse().expect("constant socket address")),
-            ui_dir: PathBuf::from("/usr/share/piqueld/ui"),
+            ui_dir: None,
         }
     }
+}
+
+/// Returns the dashboard asset directory used when configuration does not
+/// specify `server.ui_dir`. The Nix package sets this through a transparent
+/// wrapper, so operators never need to copy a store path into configuration.
+#[must_use]
+pub fn default_ui_dir() -> PathBuf {
+    std::env::var_os("PIQUELD_UI_DIR")
+        .map_or_else(|| PathBuf::from("/usr/share/piqueld/ui"), PathBuf::from)
 }
 
 /// Docker Engine connection and bootstrap policy.

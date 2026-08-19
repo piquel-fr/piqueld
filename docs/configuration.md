@@ -29,6 +29,7 @@ defaults are:
 | `server.http_listen` | `127.0.0.1:7845` (omit to disable TCP) |
 | derived socket path | `<data_dir>/piqueld.sock` |
 | derived database path | `<data_dir>/piqueld.db` |
+| `server.ui_dir` | unset: `/usr/share/piqueld/ui`, or the packaged asset directory |
 | `docker.socket` | `/var/run/docker.sock` |
 | `docker.auto_initialize_swarm` | `true` |
 | `reconciliation.scan_interval_seconds` | `60` |
@@ -38,3 +39,8 @@ defaults are:
 | `retention.finished_operation_days` | `10` (`0` keeps everything; pruning is not yet scheduled by the daemon) |
 
 The data directory is the only persistent daemon state.
+
+`server.ui_dir` is optional. An explicit absolute path always wins. When it is
+omitted, the Nix package's small wrapper supplies its own installed asset
+directory through `PIQUELD_UI_DIR`; an unpackaged binary uses
+`/usr/share/piqueld/ui`.

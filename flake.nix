@@ -18,6 +18,7 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
+          rustTarget = pkgs.stdenv.hostPlatform.rust.rustcTarget;
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
@@ -25,10 +26,12 @@
             inherit version;
             src = pkgs.lib.cleanSource self;
             cargoLock.lockFile = ./Cargo.lock;
+            cargoBuildFlags = [ "--workspace" ];
             nativeBuildInputs = [
               pkgs.binaryen
               pkgs.cmake
               pkgs.lld
+              pkgs.makeWrapper
               pkgs.pkg-config
               pkgs.rustPlatform.bindgenHook
               pkgs.trunk
@@ -47,11 +50,17 @@
                 --public-url / --dist "$TMPDIR/piqueld-ui-dist"
               popd
             '';
-            postInstall = ''
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 target/${rustTarget}/release/piqueld "$out/bin/piqueld"
+              install -Dm755 target/${rustTarget}/release/piquelctl "$out/bin/piquelctl"
+              install -Dm644 config/piqueld.example.toml \
+                "$out/share/piqueld/piqueld.example.toml"
               mkdir -p "$out/share/piqueld/ui"
               cp -R "$TMPDIR/piqueld-ui-dist/." "$out/share/piqueld/ui/"
-              # The placeholder piqueld-ui binary is not part of the product.
-              rm -f "$out/bin/piqueld-ui"
+              wrapProgram "$out/bin/piqueld" \
+                --set PIQUELD_UI_DIR "$out/share/piqueld/ui"
+              runHook postInstall
             '';
             doCheck = true;
           };
