@@ -5,13 +5,13 @@ use axum::{
         rejection::{BytesRejection, QueryRejection},
     },
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Response, Sse, sse::KeepAlive},
 };
 use piqueld_client::{
-    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
-    CreateApplicationRequest, DeleteApplicationRequest, DiagnosticView, Envelope,
-    ExpectedGeneration, ObservedApplicationView, ObservedServiceView, Page, PlanApplicationRequest,
-    PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
+    AcceptedOperation, ApplicationDetailView, ApplicationLogsOptions, ApplicationStatusView,
+    ApplicationView, ContainerLogView, CreateApplicationRequest, DeleteApplicationRequest,
+    DiagnosticView, Envelope, ExpectedGeneration, ObservedApplicationView, ObservedServiceView,
+    Page, PlanApplicationRequest, PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
 };
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, Plan, PlanAction,
@@ -27,13 +27,15 @@ use sha2::{Digest, Sha256};
 
 use super::operations;
 use super::{
-    ApiError, ApiState, BoundaryError, PreparedBuild, RequestShape, accepted, decode_json,
-    generation, hex, idempotency_key_hash, idempotent_application_id, mutation_request_hash, ok,
-    openapi::ApiErrorResponse, optional_idempotency_key, parse_manifest, parse_update,
-    require_json, valid_expected_generation,
+    ApiError, ApiState, BoundaryError, PreparedBuild, RequestShape, StateEventSnapshot, accepted,
+    current_state_stream, decode_json, generation, hex, idempotency_key_hash,
+    idempotent_application_id, last_event_id, mutation_request_hash, ok, openapi::ApiErrorResponse,
+    optional_idempotency_key, parse_manifest, parse_update, require_json,
+    valid_expected_generation,
 };
 use crate::store::{
-    ApplicationStatus, DEFAULT_PAGE_SIZE, OperationKind, StoreError, StoredApplication,
+    ApplicationStatus, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, OperationKind, StoreError,
+    StoredApplication,
 };
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -130,7 +132,12 @@ pub(super) async fn detail(
 ) -> Result<impl IntoResponse, ApiError> {
     let id = ApplicationId::parse(&id)?;
     let stored = state.store.get(&id).await?;
-    let status = status_view(state.store.status(&id).await?);
+    let durable_status = state.store.status(&id).await?;
+    let status = status_view(
+        durable_status,
+        state.runtime.infrastructure_status(&stored).await?,
+        state.runtime.runtime_status(&stored).await?,
+    );
     let observed = state.runtime.observe(&stored).await?;
     let observed_view = observed_view(&stored, &observed);
     let latest_operation = state
@@ -206,7 +213,7 @@ pub(super) async fn create(
             generation: mutation.generation,
         }));
     }
-    reject_name_collision(&state, &app, None).await?;
+    reject_application_conflicts(&state, &app, None).await?;
     let prepared = state.runtime.prepare(&app).await?;
     let plan = Plan::from_request(
         &PlanRequest::Reconcile {
@@ -302,7 +309,7 @@ pub(super) async fn replace(
     }
     let current = state.store.get(&id).await?;
     generation(expected, current.generation)?;
-    reject_name_collision(&state, &app, Some(&id)).await?;
+    reject_application_conflicts(&state, &app, Some(&id)).await?;
     let prepared = state.runtime.prepare(&app).await?;
     let plan = Plan::from_request(
         &PlanRequest::Reconcile {
@@ -484,7 +491,7 @@ pub(super) async fn plan_create(
     let id = ApplicationId::parse(format!("preview-{}", hex(&hash[..8])))
         .map_err(StoreError::corrupt)?;
     let app = validated.normalize(id.clone());
-    reject_name_collision(&state, &app, None).await?;
+    reject_application_conflicts(&state, &app, None).await?;
     let plan = preview_plan(&state, &app, None).await?;
     Ok(ok(PlanView {
         application_id: id.to_string(),
@@ -534,7 +541,7 @@ pub(super) async fn plan_replace(
     let current = state.store.get(&id).await?;
     generation(expected, current.generation)?;
     let app = validated.normalize(id.clone());
-    reject_name_collision(&state, &app, Some(&id)).await?;
+    reject_application_conflicts(&state, &app, Some(&id)).await?;
     let plan = preview_plan(&state, &app, Some(&current)).await?;
     Ok(ok(PlanView {
         application_id: id.to_string(),
@@ -664,7 +671,7 @@ async fn record_prepared_builds(
     Ok(())
 }
 
-async fn reject_name_collision(
+async fn reject_application_conflicts(
     state: &ApiState,
     app: &NormalizedApplication,
     own_id: Option<&ApplicationId>,
@@ -680,6 +687,39 @@ async fn reject_name_collision(
             "application_name_collision",
             "application name already exists",
         ));
+    }
+    let requested_hosts = app
+        .spec
+        .routes
+        .iter()
+        .map(|route| route.host.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if requested_hosts.is_empty() {
+        return Ok(());
+    }
+    let mut cursor = None;
+    loop {
+        let page = state.store.list(cursor.as_deref(), MAX_PAGE_SIZE).await?;
+        for stored in page.items {
+            if own_id == Some(&stored.application.id) {
+                continue;
+            }
+            if stored
+                .application
+                .spec
+                .routes
+                .iter()
+                .any(|route| requested_hosts.contains(route.host.as_str()))
+            {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "route_host_collision",
+                    "a requested route hostname is already owned by another application",
+                ));
+            }
+        }
+        let Some(next) = page.next_cursor else { break };
+        cursor = Some(next);
     }
     Ok(())
 }
@@ -792,7 +832,149 @@ pub(super) async fn status(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let id = ApplicationId::parse(&id)?;
-    Ok(ok(status_view(state.store.status(&id).await?)))
+    let stored = state.store.get(&id).await?;
+    let status = state.store.status(&id).await?;
+    let services = state.runtime.runtime_status(&stored).await?;
+    let infrastructure = state.runtime.infrastructure_status(&stored).await?;
+    Ok(ok(status_view(status, infrastructure, services)))
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(super) struct LogsQuery {
+    /// Include records newer than this many seconds.
+    since_seconds: Option<u64>,
+    /// Maximum records returned.
+    #[param(minimum = 1, maximum = 1000, default = 200)]
+    tail: Option<u16>,
+    /// Maximum approximate response size.
+    #[param(minimum = 1, maximum = 1048576, default = 262144)]
+    max_bytes: Option<u32>,
+    /// Keep the connection open and emit a new bounded snapshot when it changes.
+    #[serde(default)]
+    follow: bool,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/applications/{id}/logs",
+    operation_id = "applicationLogs",
+    summary = "Read bounded application logs",
+    params(("id" = String, Path, min_length = 8, max_length = 64), LogsQuery),
+    responses(
+        (status = 200, description = "Success", body = Envelope<Vec<ContainerLogView>>),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 502, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
+pub(super) async fn logs(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    query: Result<Query<LogsQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Query(query) = query.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "logs_query_invalid",
+            "log query parameters are invalid",
+        )
+    })?;
+    let id = ApplicationId::parse(&id)?;
+    let application = state.store.get(&id).await?;
+    let options = ApplicationLogsOptions {
+        since_seconds: query.since_seconds,
+        tail: query.tail,
+        max_bytes: query.max_bytes,
+    };
+    if !query.follow {
+        return Ok(ok(state
+            .runtime
+            .application_logs(&application, &options)
+            .await?)
+        .into_response());
+    }
+    let runtime = state.runtime.clone();
+    let last = last_event_id(&headers);
+    let stream = current_state_stream("logs", last, move || {
+        let runtime = runtime.clone();
+        let application = application.clone();
+        let options = options.clone();
+        async move {
+            let records = runtime
+                .application_logs(&application, &options)
+                .await
+                .ok()?;
+            Some(StateEventSnapshot {
+                data: serde_json::to_string(&records).ok()?,
+                event: "logs",
+                terminal: false,
+            })
+        }
+    });
+    Ok(Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response())
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/applications/{id}/events",
+    operation_id = "watchApplication",
+    summary = "Watch application status events",
+    params(
+        ("id" = String, Path, min_length = 8, max_length = 64),
+        ("Last-Event-ID" = Option<String>, Header, nullable = false)
+    ),
+    responses(
+        (status = 200, description = "Server-Sent Events", body = String, content_type = "text/event-stream"),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
+pub(super) async fn events(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let id = ApplicationId::parse(&id)?;
+    state.store.status(&id).await?;
+    let store = state.store.clone();
+    let runtime = state.runtime.clone();
+    let last = last_event_id(&headers);
+    let stream = current_state_stream("application", last, move || {
+        let store = store.clone();
+        let runtime = runtime.clone();
+        let id = id.clone();
+        async move {
+            let stored = store.get(&id).await.ok()?;
+            let durable = store.status(&id).await.ok()?;
+            let view = status_view(
+                durable,
+                runtime.infrastructure_status(&stored).await.ok()?,
+                runtime.runtime_status(&stored).await.ok()?,
+            );
+            Some(StateEventSnapshot {
+                data: serde_json::to_string(&view).ok()?,
+                event: "application",
+                terminal: false,
+            })
+        }
+    });
+    Ok(Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response())
 }
 
 fn application_view(stored: StoredApplication) -> ApplicationView {
@@ -806,12 +988,18 @@ fn application_view(stored: StoredApplication) -> ApplicationView {
     }
 }
 
-fn status_view(status: ApplicationStatus) -> ApplicationStatusView {
+fn status_view(
+    status: ApplicationStatus,
+    infrastructure: Option<String>,
+    services: Vec<piqueld_client::ServiceStatusView>,
+) -> ApplicationStatusView {
     ApplicationStatusView {
         application_id: status.application_id.to_string(),
         state: status.state.as_str().into(),
         observed_generation: status.observed_generation,
         message: status.message,
+        infrastructure,
+        services,
         updated_at_ms: status.updated_at_ms,
     }
 }

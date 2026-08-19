@@ -4,7 +4,7 @@ use piqueld_core::{NormalizedApplication, Plan};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{Client, ClientError, OperationView, Page, path_segment};
+use crate::{Client, ClientError, OperationView, Page, SseEvent, path_segment};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Public application state returned by the API.
@@ -116,8 +116,59 @@ pub struct ApplicationStatusView {
     pub observed_generation: Option<u64>,
     /// Optional safe status message.
     pub message: Option<String>,
+    /// Current managed-ingress infrastructure state, when routing is used.
+    #[serde(default)]
+    pub infrastructure: Option<String>,
+    /// Bounded runtime status for each desired service.
+    #[serde(default)]
+    pub services: Vec<ServiceStatusView>,
     /// Last update timestamp in Unix milliseconds.
     pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Runtime status for one application service.
+pub struct ServiceStatusView {
+    /// Logical service name.
+    pub service: String,
+    /// Desired replicas from the normalized application.
+    pub desired_replicas: u16,
+    /// Running replicas currently reported by Docker.
+    pub running_replicas: u16,
+    /// Runtime convergence category.
+    pub state: String,
+    /// Sanitized runtime diagnostic, when one is available.
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Bounds for one application log snapshot.
+pub struct ApplicationLogsOptions {
+    /// Include records newer than this many seconds.
+    pub since_seconds: Option<u64>,
+    /// Maximum number of records.
+    pub tail: Option<u16>,
+    /// Maximum approximate response bytes.
+    pub max_bytes: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// One bounded, sanitized application log record.
+pub struct ContainerLogView {
+    /// Logical service name.
+    pub service: String,
+    /// Swarm task identifier.
+    pub task_id: String,
+    /// Container identifier.
+    pub container_id: String,
+    /// Docker-provided timestamp.
+    pub timestamp: String,
+    /// Output stream name.
+    pub stream: String,
+    /// Original bounded message.
+    pub message: String,
+    /// Terminal-control-free presentation text.
+    pub display_message: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -400,6 +451,70 @@ impl Client {
             &[],
         )
         .await
+    }
+
+    /// Reads a bounded snapshot of application-owned container logs.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn application_logs(
+        &self,
+        id: &str,
+        options: &ApplicationLogsOptions,
+    ) -> Result<Vec<ContainerLogView>, ClientError> {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        if let Some(value) = options.since_seconds {
+            query.append_pair("since_seconds", &value.to_string());
+        }
+        if let Some(value) = options.tail {
+            query.append_pair("tail", &value.to_string());
+        }
+        if let Some(value) = options.max_bytes {
+            query.append_pair("max_bytes", &value.to_string());
+        }
+        let query = query.finish();
+        self.send::<_, ()>(
+            Method::GET,
+            &format!("/api/v1/applications/{}/logs?{query}", path_segment(id)),
+            None,
+            &[],
+        )
+        .await
+    }
+
+    /// Watches durable application status snapshots with a resumable cursor.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn watch_application(
+        &self,
+        id: &str,
+        last_event_id: Option<&str>,
+    ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
+        self.watch_events(
+            format!("/api/v1/applications/{}/events", path_segment(id)),
+            last_event_id,
+        )
+    }
+
+    /// Follows bounded application log snapshots with the same resumable cursor model.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn follow_application_logs(
+        &self,
+        id: &str,
+        options: &ApplicationLogsOptions,
+        last_event_id: Option<&str>,
+    ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
+        let since = options.since_seconds.unwrap_or(300);
+        let tail = options.tail.unwrap_or(200);
+        let max_bytes = options.max_bytes.unwrap_or(262_144);
+        self.watch_events(
+            format!(
+                "/api/v1/applications/{}/logs?follow=true&since_seconds={since}&tail={tail}&max_bytes={max_bytes}",
+                path_segment(id)
+            ),
+            last_event_id,
+        )
     }
 
     /// Creates an application from a TOML manifest.

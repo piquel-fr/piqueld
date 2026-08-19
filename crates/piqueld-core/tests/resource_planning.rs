@@ -64,6 +64,7 @@ fn observed(desired: &piqueld_core::resource::DesiredApplication) -> ObservedApp
                 environment: service.environment.clone(),
                 command: service.command.clone(),
                 arguments: service.arguments.clone(),
+                ports: service.ports.clone(),
                 mounts: service.mounts.clone(),
                 secrets: service.secrets.clone(),
                 healthcheck: service.healthcheck.clone(),

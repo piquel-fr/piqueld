@@ -21,6 +21,8 @@ pub struct DaemonConfig {
     pub docker: DockerConfig,
     /// Local OCI registry endpoint used for built images.
     pub registry: RegistryConfig,
+    /// Managed Traefik ingress controller configuration.
+    pub traefik: TraefikConfig,
     /// Reconciliation scheduling limits.
     pub reconciliation: ReconciliationConfig,
     /// References to credentials kept outside the database and configuration.
@@ -82,6 +84,26 @@ impl DaemonConfig {
             ));
         }
         absolute_directory("registry.data_dir", &self.registry.data_dir)?;
+        if !self
+            .traefik
+            .image
+            .split_once("@sha256:")
+            .is_some_and(|(_, digest)| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+        {
+            return Err(ConfigError::Invalid(
+                "traefik.image must be pinned to a lowercase sha256 digest".into(),
+            ));
+        }
+        if self.traefik.published_port == Some(0) {
+            return Err(ConfigError::Invalid(
+                "traefik.published_port must be greater than zero".into(),
+            ));
+        }
         if let Some(reference) = &self.credentials.encryption_key {
             reference.validate()?;
         }
@@ -205,6 +227,25 @@ pub struct RegistryConfig {
     pub address: SocketAddr,
     /// Persistent directory reserved for registry data.
     pub data_dir: PathBuf,
+}
+
+/// Managed Traefik image and optional host origin publication.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TraefikConfig {
+    /// Digest-pinned Traefik image.
+    pub image: String,
+    /// Optional host port for the HTTP origin; unset keeps exposure internal.
+    pub published_port: Option<u16>,
+}
+
+impl Default for TraefikConfig {
+    fn default() -> Self {
+        Self {
+            image: "traefik:v3.5.0@sha256:4e7175cfe19be83c6b928cae49dde2f2788fb307189a4dc9550b67acf30c11a5".into(),
+            published_port: None,
+        }
+    }
 }
 
 impl Default for RegistryConfig {

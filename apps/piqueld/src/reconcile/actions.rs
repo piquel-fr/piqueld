@@ -15,6 +15,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         match &action.kind {
+            ActionKind::EnsureNetwork { network } if network.ingress => Ok(()),
             ActionKind::EnsureNetwork { network } => {
                 self.retry(cancellation, || self.docker.ensure_network(network))
                     .await

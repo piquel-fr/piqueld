@@ -285,12 +285,14 @@ fn app_view(id: &str, name: &str, generation: u64) -> Value {
                     "environment": {},
                     "command": [],
                     "arguments": [],
+                    "ports": [],
                     "mounts": [],
                     "secrets": [],
                     "healthcheck": null,
                     "resources": null
                 }],
-                "volumes": [{"name": "data"}]
+                "volumes": [{"name": "data"}],
+                "routes": []
             }
         },
         "generation": generation,
@@ -314,6 +316,18 @@ fn secret_metadata(name: &str, references: Vec<Value>) -> Value {
         "created_at_ms": 1,
         "updated_at_ms": 1,
         "references": references,
+    })
+}
+
+fn log_record() -> Value {
+    json!({
+        "service": "web",
+        "task_id": "task-01",
+        "container_id": "container-01",
+        "timestamp": "2026-08-19T12:00:00Z",
+        "stream": "stdout",
+        "message": "hello",
+        "display_message": "hello"
     })
 }
 
@@ -470,6 +484,24 @@ fn secret_delete_refuses_referenced_metadata_before_mutation() {
     assert_eq!(output.status.code(), Some(3));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("still referenced"));
+    let _ = server.finish();
+}
+
+#[test]
+fn logs_command_reads_one_bounded_historical_snapshot() {
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications?limit=100" => {
+            Reply::json(page(vec![app_view("app-notes-01", "notes", 1)], None))
+        }
+        "/api/v1/applications/app-notes-01/logs?tail=200&max_bytes=262144" => {
+            Reply::json(json!([log_record()]))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(&server, &["logs", "notes"]);
+    let value = assert_json_success(&output);
+    assert_eq!(value["items"][0]["display_message"], "hello");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("follow"));
     let _ = server.finish();
 }
 

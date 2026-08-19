@@ -1,16 +1,19 @@
 use super::{
     Arc, BoundaryError, DockerApi, DockerError, InstanceId, NormalizedApplication, Notify,
-    PreparedApplication, ResolutionSet, ResolvedSource, RuntimeBoundary, Source, StoredApplication,
-    compile_application,
+    PreparedApplication, ResolutionSet, ResolvedSource, RuntimeBoundary, RuntimeLogQuery, Source,
+    StoredApplication, compile_application,
 };
 use crate::api::PreparedBuild;
 use crate::build::SourceBuilder;
+use crate::proxy::{InfrastructureState, IngressApi, IngressSpec};
 use crate::secrets::{SecretError, SecretService};
 use async_trait::async_trait;
 use std::time::Duration;
 
 const PREPARE_TIMEOUT: Duration = Duration::from_mins(5);
 const DOCKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+use piqueld_client::{ApplicationLogsOptions, ContainerLogView, ServiceStatusView};
+use piqueld_core::resource::{Convergence, TaskDiagnostic, TaskState};
 
 /// Runtime boundary backed by Docker.
 pub struct DockerRuntime<D> {
@@ -19,6 +22,7 @@ pub struct DockerRuntime<D> {
     wake: Arc<Notify>,
     secret_service: Option<Arc<SecretService>>,
     source_builder: Option<Arc<dyn SourceBuilder>>,
+    ingress: Option<(Arc<dyn IngressApi>, IngressSpec)>,
 }
 
 impl<D> DockerRuntime<D> {
@@ -31,6 +35,7 @@ impl<D> DockerRuntime<D> {
             wake,
             secret_service: None,
             source_builder: None,
+            ingress: None,
         }
     }
 
@@ -45,6 +50,13 @@ impl<D> DockerRuntime<D> {
     #[must_use]
     pub fn with_source_builder(mut self, builder: Arc<dyn SourceBuilder>) -> Self {
         self.source_builder = Some(builder);
+        self
+    }
+
+    /// Enables managed Traefik lifecycle and routed-runtime status.
+    #[must_use]
+    pub fn with_ingress(mut self, controller: Arc<dyn IngressApi>, spec: IngressSpec) -> Self {
+        self.ingress = Some((controller, spec));
         self
     }
 }
@@ -161,5 +173,117 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         application: &StoredApplication,
     ) -> Result<piqueld_core::ObservedApplication, BoundaryError> {
         Ok(self.docker.observe(&application.application.id).await?)
+    }
+
+    async fn runtime_status(
+        &self,
+        application: &StoredApplication,
+    ) -> Result<Vec<ServiceStatusView>, BoundaryError> {
+        let observed = self.docker.observe(&application.application.id).await?;
+        Ok(application
+            .resolved
+            .services
+            .iter()
+            .map(|desired| {
+                let found = observed.services.iter().find(|service| {
+                    service.name
+                        == piqueld_core::docker_resource_name(
+                            &application.application.id,
+                            piqueld_core::ResourceKind::Service,
+                            Some(&desired.logical_name),
+                        )
+                });
+                let running_replicas = found
+                    .map(|service| {
+                        service
+                            .tasks
+                            .iter()
+                            .filter(|task| {
+                                task.desired_running
+                                    && task.state == TaskState::Running
+                                    && task.healthy != Some(false)
+                            })
+                            .count()
+                    })
+                    .and_then(|count| u16::try_from(count).ok())
+                    .unwrap_or_default();
+                let state = found.map_or_else(
+                    || "missing".into(),
+                    |service| match service.convergence {
+                        Convergence::Converged => "converged".into(),
+                        Convergence::Updating => "updating".into(),
+                        Convergence::Degraded => "degraded".into(),
+                        Convergence::Failed => "failed".into(),
+                    },
+                );
+                let diagnostic = found.and_then(|service| {
+                    service.tasks.iter().find_map(|task| {
+                        task.diagnostic.as_ref().map(|diagnostic| match diagnostic {
+                            TaskDiagnostic::Failed { exit_code } => exit_code.map_or_else(
+                                || "task failed".into(),
+                                |code| format!("task failed with exit code {code}"),
+                            ),
+                            TaskDiagnostic::Rejected => "task rejected by Docker".into(),
+                        })
+                    })
+                });
+                ServiceStatusView {
+                    service: desired.logical_name.clone(),
+                    desired_replicas: desired.replicas,
+                    running_replicas,
+                    state,
+                    diagnostic,
+                }
+            })
+            .collect())
+    }
+
+    async fn infrastructure_status(
+        &self,
+        application: &StoredApplication,
+    ) -> Result<Option<String>, BoundaryError> {
+        if application.application.spec.routes.is_empty() {
+            return Ok(None);
+        }
+        let Some((controller, spec)) = &self.ingress else {
+            return Ok(Some("unavailable".into()));
+        };
+        Ok(Some(match controller.status(spec).await? {
+            InfrastructureState::Ready => "ready".into(),
+            InfrastructureState::Degraded { .. } => "degraded".into(),
+        }))
+    }
+
+    async fn application_logs(
+        &self,
+        application: &StoredApplication,
+        options: &ApplicationLogsOptions,
+    ) -> Result<Vec<ContainerLogView>, BoundaryError> {
+        let since_seconds = options.since_seconds.unwrap_or(300).min(i64::MAX as u64) as i64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs().min(i64::MAX as u64) as i64);
+        let query = RuntimeLogQuery {
+            since_seconds: now.saturating_sub(since_seconds),
+            tail: usize::from(options.tail.unwrap_or(200)).clamp(1, 1_000),
+            max_bytes: usize::try_from(options.max_bytes.unwrap_or(262_144))
+                .unwrap_or(262_144)
+                .clamp(1, 1_048_576),
+        };
+        Ok(self
+            .docker
+            .application_logs(&self.instance_id, &application.application.id, &query)
+            .await?
+            .into_iter()
+            .map(|record| ContainerLogView {
+                service: record.service,
+                task_id: record.task_id,
+                container_id: record.container_id,
+                timestamp: record.timestamp,
+                stream: record.stream,
+                message: record.message,
+                display_message: record.display_message,
+            })
+            .collect())
     }
 }

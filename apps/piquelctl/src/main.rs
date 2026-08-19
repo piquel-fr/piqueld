@@ -2,8 +2,9 @@
 
 use clap::{Args, Parser, Subcommand};
 use piqueld_client::{
-    ApplicationView, BuildView, Client, ClientError, ListApplicationsOptions, ListSecretsOptions,
-    OperationView, Page, PlanView, SecretMetadata, Source, ValidationErrors,
+    ApplicationLogsOptions, ApplicationView, BuildView, Client, ClientError, ContainerLogView,
+    ListApplicationsOptions, ListSecretsOptions, OperationView, Page, PlanView, SecretMetadata,
+    Source, ValidationErrors,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -84,6 +85,8 @@ enum Command {
         #[command(subcommand)]
         command: BuildCommand,
     },
+    /// Read one bounded historical log snapshot for an application.
+    Logs(LogsArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -98,6 +101,24 @@ enum BuildCommand {
         /// Stable operation identifier.
         operation_id: String,
     },
+}
+
+#[derive(Debug, Args)]
+struct LogsArgs {
+    /// Application name or stable ID.
+    name_or_id: String,
+
+    /// Include records newer than this many seconds.
+    #[arg(long)]
+    since_seconds: Option<u64>,
+
+    /// Maximum records returned.
+    #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u16).range(1..=1000))]
+    tail: u16,
+
+    /// Maximum approximate response size.
+    #[arg(long, default_value_t = 262_144, value_parser = clap::value_parser!(u32).range(1..=1_048_576))]
+    max_bytes: u32,
 }
 
 #[derive(Debug, Subcommand)]
@@ -329,6 +350,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Command::Operation(args) => operation(cli, &client, args).await,
         Command::Secret { command } => secret(cli, &client, command).await,
         Command::Build { command } => build(cli, &client, command).await,
+        Command::Logs(args) => logs(cli, &client, args).await,
     }
 }
 
@@ -400,6 +422,9 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
             if let Some(message) = status.message {
                 eprintln!("  {}: {message}", application.application.metadata.name);
             }
+            if let Some(infrastructure) = status.infrastructure {
+                eprintln!("  ingress: {infrastructure}");
+            }
         }
     }
     Ok(())
@@ -425,6 +450,9 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
                 .map_or_else(|| "none".to_owned(), |generation| generation.to_string()),
             status.state,
         );
+        if let Some(infrastructure) = &status.infrastructure {
+            println!("ingress: {infrastructure}");
+        }
         println!("desired replicas: {}", desired_replicas(&application));
         for service in &application.application.spec.services {
             let image = match &service.source {
@@ -443,6 +471,22 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
                 "service {}: {} replica(s), image {image}",
                 service.name, service.replicas
             );
+        }
+        for service in &status.services {
+            println!(
+                "runtime {}: {} / {} running ({}){}",
+                service.service,
+                service.running_replicas,
+                service.desired_replicas,
+                service.state,
+                service
+                    .diagnostic
+                    .as_deref()
+                    .map_or_else(String::new, |message| format!(" — {message}")),
+            );
+        }
+        if !application.application.spec.routes.is_empty() {
+            println!("routes: {}", application.application.spec.routes.len());
         }
         if !application.application.spec.volumes.is_empty() {
             let volumes = application
@@ -622,6 +666,38 @@ async fn build(cli: &Cli, client: &Client, command: &BuildCommand) -> Result<()>
             }
         }
     }
+}
+
+async fn logs(cli: &Cli, client: &Client, args: &LogsArgs) -> Result<()> {
+    let application = resolve_application(client, &args.name_or_id).await?;
+    let records = client
+        .application_logs(
+            application.application.id.as_str(),
+            &ApplicationLogsOptions {
+                since_seconds: args.since_seconds,
+                tail: Some(args.tail),
+                max_bytes: Some(args.max_bytes),
+            },
+        )
+        .await?;
+    if cli.json {
+        emit_json(&json!({"items": records}))
+    } else if records.is_empty() {
+        println!("No logs for {}.", application.application.metadata.name);
+        Ok(())
+    } else {
+        for record in records {
+            render_log_text(&record);
+        }
+        Ok(())
+    }
+}
+
+fn render_log_text(record: &ContainerLogView) {
+    println!(
+        "{}\t{}\t{}\t{}",
+        record.timestamp, record.service, record.stream, record.display_message
+    );
 }
 
 fn render_build(cli: &Cli, build: &BuildView) -> Result<()> {
@@ -1358,6 +1434,7 @@ mod tests {
             ],
             vec!["piquelctl", "build", "show", "build-01"],
             vec!["piquelctl", "build", "operation", "operation-01"],
+            vec!["piquelctl", "logs", "notes"],
         ];
         for arguments in cases {
             Cli::try_parse_from(arguments).expect("command parses");

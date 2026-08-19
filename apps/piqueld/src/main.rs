@@ -10,6 +10,7 @@ use piqueld::build::{
 use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::operations::OperationScheduler;
+use piqueld::proxy::{IngressApi, IngressSpec, TraefikController};
 use piqueld::reconcile::{DockerRuntime, ReconcileHandler, run_coordinator};
 use piqueld::registry::RegistryClient;
 use piqueld::secrets::{MasterKey, SecretService};
@@ -75,8 +76,21 @@ async fn main() -> Result<()> {
 
     let wake = Arc::new(tokio::sync::Notify::new());
 
+    let ingress_spec = IngressSpec {
+        instance_id: instance.clone(),
+        image: config.traefik.image.clone(),
+        published_port: config.traefik.published_port,
+        docker_socket: config.docker.socket.clone(),
+    };
+    let ingress_controller: Arc<dyn IngressApi> = Arc::new(TraefikController::new(docker.client()));
+    ingress_controller
+        .ensure(&ingress_spec)
+        .await
+        .context("failed to ensure managed Traefik ingress")?;
+
     let mut runtime = DockerRuntime::new(Arc::clone(&docker), instance, Arc::clone(&wake));
     runtime = runtime.with_source_builder(build_source_builder(&config, &docker, &store)?);
+    runtime = runtime.with_ingress(Arc::clone(&ingress_controller), ingress_spec.clone());
     if let Some(service) = &secret_service {
         runtime = runtime.with_secret_service(Arc::clone(service));
     }
@@ -116,6 +130,7 @@ async fn main() -> Result<()> {
             scheduler,
             Arc::clone(&store),
             Arc::clone(&docker),
+            Some((ingress_controller, ingress_spec)),
             Arc::clone(&wake),
             scan_interval,
             controller_token,

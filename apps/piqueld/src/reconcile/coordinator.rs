@@ -1,8 +1,8 @@
 use super::{
-    ActionKind, ApplicationState, Arc, CancellationToken, DockerApi, Duration, MAX_PAGE_SIZE,
-    Notify, OperationScheduler, PlanAction, PlanRequest, ReconcileHandler, RetryPolicy,
-    SchedulerError, SecretService, SqliteStore, StoreError, StoredApplication,
-    blocked_plan_message,
+    ActionKind, ApplicationState, Arc, CancellationToken, DockerApi, Duration, InfrastructureState,
+    IngressApi, IngressSpec, MAX_PAGE_SIZE, Notify, OperationScheduler, PlanAction, PlanRequest,
+    ReconcileHandler, RetryPolicy, SchedulerError, SecretService, SqliteStore, StoreError,
+    StoredApplication, blocked_plan_message,
 };
 use crate::store::ApplicationStatus;
 use piqueld_core::{plan, resource::ObservedApplication};
@@ -17,6 +17,7 @@ pub async fn run_coordinator<D: DockerApi>(
     scheduler: Arc<OperationScheduler<ReconcileHandler<D>>>,
     store: Arc<SqliteStore>,
     docker: Arc<D>,
+    ingress: Option<(Arc<dyn IngressApi>, IngressSpec)>,
     wake: Arc<Notify>,
     interval: Duration,
     cancellation: CancellationToken,
@@ -38,6 +39,7 @@ pub async fn run_coordinator<D: DockerApi>(
         &scheduler,
         &store,
         &docker,
+        ingress.as_ref(),
         &cancellation,
         secret_service.as_deref(),
     )
@@ -47,8 +49,8 @@ pub async fn run_coordinator<D: DockerApi>(
     loop {
         tokio::select! {
             () = cancellation.cancelled() => return Ok(()),
-            () = wake.notified() => run_scan_until_success(&scheduler, &store, &docker, &cancellation, secret_service.as_deref()).await?,
-            _ = scan.tick() => run_scan_until_success(&scheduler, &store, &docker, &cancellation, secret_service.as_deref()).await?,
+            () = wake.notified() => run_scan_until_success(&scheduler, &store, &docker, ingress.as_ref(), &cancellation, secret_service.as_deref()).await?,
+            _ = scan.tick() => run_scan_until_success(&scheduler, &store, &docker, ingress.as_ref(), &cancellation, secret_service.as_deref()).await?,
         }
     }
 }
@@ -57,6 +59,7 @@ async fn run_scan_until_success<D: DockerApi>(
     scheduler: &OperationScheduler<ReconcileHandler<D>>,
     store: &SqliteStore,
     docker: &D,
+    ingress: Option<&(Arc<dyn IngressApi>, IngressSpec)>,
     cancellation: &CancellationToken,
     secret_service: Option<&SecretService>,
 ) -> Result<(), SchedulerError> {
@@ -64,7 +67,16 @@ async fn run_scan_until_success<D: DockerApi>(
     let mut delay = retry.initial_delay;
     let mut logged_failure = false;
     loop {
-        match scan_and_run(scheduler, store, docker, cancellation, secret_service).await {
+        match scan_and_run(
+            scheduler,
+            store,
+            docker,
+            ingress,
+            cancellation,
+            secret_service,
+        )
+        .await
+        {
             Ok(()) => return Ok(()),
             Err(error) => {
                 if logged_failure {
@@ -87,9 +99,19 @@ async fn scan_and_run<D: DockerApi>(
     scheduler: &OperationScheduler<ReconcileHandler<D>>,
     store: &SqliteStore,
     docker: &D,
+    ingress: Option<&(Arc<dyn IngressApi>, IngressSpec)>,
     cancellation: &CancellationToken,
     secret_service: Option<&SecretService>,
 ) -> Result<(), SchedulerError> {
+    if let Some((controller, spec)) = ingress {
+        match controller.ensure(spec).await {
+            Ok(InfrastructureState::Ready) => {}
+            Ok(InfrastructureState::Degraded { diagnostic }) => {
+                tracing::warn!(%diagnostic, "managed ingress is degraded")
+            }
+            Err(error) => tracing::warn!(%error, "managed ingress reconciliation failed"),
+        }
+    }
     scheduler.run_until_idle(cancellation.child_token()).await?;
     let mut cursor = None;
     loop {

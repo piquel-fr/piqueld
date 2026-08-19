@@ -46,6 +46,9 @@ pub struct ApplicationSpecInput {
     pub services: Vec<ServiceInput>,
     /// Declared named volumes.
     pub volumes: Vec<VolumeInput>,
+    /// Declared HTTP routes through the managed ingress controller.
+    #[serde(default)]
+    pub routes: Vec<RouteInput>,
 }
 
 /// User-declared application service.
@@ -68,6 +71,9 @@ pub struct ServiceInput {
     /// Arguments passed to the command.
     #[serde(default)]
     pub arguments: Vec<String>,
+    /// Container ports exposed to the managed ingress controller.
+    #[serde(default)]
+    pub ports: Vec<u16>,
     /// Persistent volume mounts.
     #[serde(default)]
     pub mounts: Vec<MountInput>,
@@ -153,6 +159,18 @@ pub struct SecretReferenceInput {
     /// File mode expressed as an octal string.
     #[serde(default = "default_secret_mode")]
     pub mode: String,
+}
+
+/// User-declared HTTP route.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RouteInput {
+    /// Hostname matched by the route.
+    pub host: String,
+    /// Logical service receiving the route.
+    pub service: String,
+    /// Container port receiving the route.
+    pub port: u16,
 }
 
 fn default_secret_mode() -> String {
@@ -281,6 +299,8 @@ pub struct ApplicationSpec {
     pub services: Vec<Service>,
     /// Canonical named volumes.
     pub volumes: Vec<Volume>,
+    /// Canonical HTTP routes.
+    pub routes: Vec<Route>,
 }
 
 /// Canonical service definition.
@@ -299,6 +319,8 @@ pub struct Service {
     pub command: Vec<String>,
     /// Arguments passed to the command.
     pub arguments: Vec<String>,
+    /// Container ports exposed to the managed ingress controller.
+    pub ports: Vec<u16>,
     /// Persistent volume mounts.
     pub mounts: Vec<Mount>,
     /// Logical secret mounts.
@@ -361,6 +383,18 @@ pub struct SecretReference {
     pub target: String,
     /// File mode expressed as an octal string.
     pub mode: String,
+}
+
+/// Canonical HTTP route.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Route {
+    /// Canonical hostname matched by the route.
+    pub host: String,
+    /// Logical service receiving the route.
+    pub service: String,
+    /// Container port receiving the route.
+    pub port: u16,
 }
 
 /// Canonical service health check.
@@ -446,11 +480,13 @@ fn safe_decode_path(path: &str) -> String {
         "spec",
         "services",
         "volumes",
+        "routes",
         "source",
         "replicas",
         "environment",
         "command",
         "arguments",
+        "ports",
         "mounts",
         "secrets",
         "healthcheck",
@@ -464,6 +500,8 @@ fn safe_decode_path(path: &str) -> String {
         "volume",
         "target",
         "mode",
+        "host",
+        "service",
         "read_only",
         "port",
         "path",
@@ -523,9 +561,14 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
         "volume_name_duplicate",
         &mut errors,
     );
-    let _ = service_names;
     validate_services(&input.spec.services, &volume_names, &mut errors);
     validate_volumes(&input.spec.volumes, &mut errors);
+    validate_routes(
+        &input.spec.routes,
+        &input.spec.services,
+        &service_names,
+        &mut errors,
+    );
     errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
     if !errors.is_empty() {
         return Err(ValidationErrors(errors));
@@ -619,6 +662,7 @@ fn validate_services(
         validate_environment(&service.environment, &base, errors);
         let mount_targets = validate_mounts(&service.mounts, &base, volume_names, errors);
         validate_secrets(&service.secrets, &base, &mount_targets, errors);
+        validate_ports(&service.ports, &base, errors);
         validate_process_arguments(&service.command, &format!("{base}.command"), errors);
         validate_process_arguments(&service.arguments, &format!("{base}.arguments"), errors);
         if service
@@ -635,6 +679,17 @@ fn validate_services(
         }
         if let Some(healthcheck) = &service.healthcheck {
             validate_health(healthcheck, &format!("{base}.healthcheck"), errors);
+            if let HealthCheckInput::Http { port, .. } = healthcheck
+                && !service.ports.is_empty()
+                && !service.ports.contains(port)
+            {
+                error(
+                    errors,
+                    "healthcheck_port_missing",
+                    &format!("{base}.healthcheck.port"),
+                    "HTTP health-check port must be declared by the service",
+                );
+            }
         }
         validate_resources(service.resources.as_ref(), &base, errors);
     }
@@ -777,6 +832,75 @@ fn validate_volumes(volumes: &[VolumeInput], errors: &mut Vec<ValidationError>) 
     }
 }
 
+fn validate_ports(ports: &[u16], base: &str, errors: &mut Vec<ValidationError>) {
+    for (index, port) in ports.iter().enumerate() {
+        if *port == 0 {
+            error(
+                errors,
+                "port_invalid",
+                &format!("{base}.ports[{index}]"),
+                "port must be between 1 and 65535",
+            );
+        }
+    }
+}
+
+fn validate_routes(
+    routes: &[RouteInput],
+    services: &[ServiceInput],
+    service_names: &BTreeSet<String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut hosts = BTreeSet::new();
+    let mut keys = BTreeSet::new();
+    for (index, route) in routes.iter().enumerate() {
+        let base = format!("spec.routes[{index}]");
+        validate_hostname(&route.host, &format!("{base}.host"), errors);
+        if !service_names.contains(&route.service) {
+            error(
+                errors,
+                "route_service_missing",
+                &format!("{base}.service"),
+                "route references an undeclared service",
+            );
+        }
+        if let Some(service) = services
+            .iter()
+            .find(|service| service.name == route.service)
+            && !service.ports.is_empty()
+            && !service.ports.contains(&route.port)
+        {
+            error(
+                errors,
+                "route_port_missing",
+                &format!("{base}.port"),
+                "route port is not declared by its service",
+            );
+        }
+        if route.port == 0 {
+            error(
+                errors,
+                "port_invalid",
+                &format!("{base}.port"),
+                "port must be between 1 and 65535",
+            );
+        }
+        let host =
+            canonical_hostname(&route.host).unwrap_or_else(|| route.host.to_ascii_lowercase());
+        let duplicate = !keys.insert((host.clone(), route.service.clone(), route.port));
+        if duplicate {
+            error(errors, "route_duplicate", &base, "route is duplicated");
+        } else if !hosts.insert(host) {
+            error(
+                errors,
+                "public_route_conflict",
+                &format!("{base}.host"),
+                "only one public route may own a hostname",
+            );
+        }
+    }
+}
+
 fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<ValidationError>) {
     let (interval, timeout) = match value {
         HealthCheckInput::Http {
@@ -897,6 +1021,7 @@ fn convert_spec(input: ApplicationSpecInput) -> ApplicationSpec {
                 environment: service.environment,
                 command: service.command,
                 arguments: service.arguments,
+                ports: service.ports,
                 mounts: service
                     .mounts
                     .into_iter()
@@ -950,6 +1075,16 @@ fn convert_spec(input: ApplicationSpecInput) -> ApplicationSpec {
             .into_iter()
             .map(|volume| Volume { name: volume.name })
             .collect(),
+        routes: input
+            .routes
+            .into_iter()
+            .map(|route| Route {
+                host: canonical_hostname(&route.host)
+                    .expect("route hosts were canonicalized during validation"),
+                service: route.service,
+                port: route.port,
+            })
+            .collect(),
     }
 }
 
@@ -985,10 +1120,13 @@ fn normalize_spec(spec: &mut ApplicationSpec) {
     spec.services
         .sort_by(|left, right| left.name.cmp(&right.name));
     for service in &mut spec.services {
+        service.ports.sort_unstable();
+        service.ports.dedup();
         service.mounts.sort();
         service.secrets.sort();
     }
     spec.volumes.sort();
+    spec.routes.sort();
 }
 
 impl NormalizedApplication {
@@ -1119,6 +1257,7 @@ impl NormalizedApplication {
                         environment: service.environment.clone(),
                         command: service.command.clone(),
                         arguments: service.arguments.clone(),
+                        ports: service.ports.clone(),
                         mounts: service
                             .mounts
                             .iter()
@@ -1173,6 +1312,16 @@ impl NormalizedApplication {
                     .iter()
                     .map(|volume| VolumeInput {
                         name: volume.name.clone(),
+                    })
+                    .collect(),
+                routes: self
+                    .spec
+                    .routes
+                    .iter()
+                    .map(|route| RouteInput {
+                        host: route.host.clone(),
+                        service: route.service.clone(),
+                        port: route.port,
                     })
                     .collect(),
             },
@@ -1301,6 +1450,50 @@ fn valid_git_reference(value: &str) -> bool {
                     .extension()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("lock"))
         })
+}
+
+fn canonical_hostname(value: &str) -> Option<String> {
+    if value.is_empty()
+        || value.ends_with('.')
+        || value.starts_with("*.")
+        || value.chars().any(char::is_control)
+    {
+        return None;
+    }
+    let url::Host::Domain(domain) = url::Host::parse(value).ok()? else {
+        return None;
+    };
+    let domain = domain.to_ascii_lowercase();
+    let labels = domain.split('.').collect::<Vec<_>>();
+    if domain.len() > 253
+        || labels.len() < 2
+        || labels.iter().any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+        || labels
+            .last()
+            .is_some_and(|label| matches!(*label, "localhost" | "local" | "internal"))
+    {
+        return None;
+    }
+    Some(domain)
+}
+
+fn validate_hostname(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
+    if canonical_hostname(value).is_none() {
+        error(
+            errors,
+            "route_host_invalid",
+            path,
+            "route host must be a valid fully qualified DNS hostname without a trailing dot",
+        );
+    }
 }
 
 fn validate_relative_path(value: &str, path: &str, errors: &mut Vec<ValidationError>) {

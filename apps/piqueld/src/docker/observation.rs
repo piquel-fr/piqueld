@@ -83,6 +83,7 @@ impl BollardDocker {
             environment: BollardDocker::observed_environment(container),
             command: container.command.clone().unwrap_or_default(),
             arguments: container.args.clone().unwrap_or_default(),
+            ports: Self::observed_ports(spec),
             mounts: BollardDocker::observed_mounts(container),
             secrets: BollardDocker::observed_secret_mounts(container),
             healthcheck: container
@@ -176,6 +177,16 @@ impl BollardDocker {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|network| network.target)
+            .collect()
+    }
+
+    pub(super) fn observed_ports(spec: &ServiceSpec) -> Vec<u16> {
+        spec.endpoint_spec
+            .as_ref()
+            .and_then(|endpoint| endpoint.ports.as_ref())
+            .into_iter()
+            .flatten()
+            .filter_map(|port| u16::try_from(port.target_port?).ok())
             .collect()
     }
 

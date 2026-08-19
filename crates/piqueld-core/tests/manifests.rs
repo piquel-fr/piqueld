@@ -36,7 +36,7 @@ kind = "Application"
 name = "notes"
 [[spec.services]]
 name = "web"
-ports = [8080]
+future_field = true
 [spec.services.source]
 type = "image"
 image = "nginx:1.27"
@@ -136,5 +136,57 @@ context = "../"
             .0
             .iter()
             .any(|error| error.code == "source_path_unsafe")
+    );
+}
+
+#[test]
+fn routes_require_declared_ports_and_are_canonicalized() {
+    let application = parse_toml(
+        r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "routed"
+[[spec.services]]
+name = "web"
+ports = [8080, 80, 8080]
+[spec.services.source]
+type = "image"
+image = "nginx:1.27"
+[[spec.routes]]
+host = "WWW.Example.COM"
+service = "web"
+port = 8080
+"#,
+    )
+    .expect("routed manifest is valid")
+    .normalize(ApplicationId::parse("app-routed-01").unwrap());
+    assert_eq!(application.spec.services[0].ports, vec![80, 8080]);
+    assert_eq!(application.spec.routes[0].host, "www.example.com");
+
+    let error = parse_toml(
+        r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "routed"
+[[spec.services]]
+name = "web"
+ports = [8080]
+[spec.services.source]
+type = "image"
+image = "nginx:1.27"
+[[spec.routes]]
+host = "localhost.example"
+service = "web"
+port = 9090
+"#,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .0
+            .iter()
+            .any(|error| error.code == "route_port_missing")
     );
 }

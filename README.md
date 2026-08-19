@@ -25,6 +25,7 @@ The supported manifest and runtime model are documented in:
 - [`docs/quickstart.md`](docs/quickstart.md)
 - [`docs/resource-planning.md`](docs/resource-planning.md)
 - [`docs/docker-reconciliation.md`](docs/docker-reconciliation.md)
+- [`docs/ingress.md`](docs/ingress.md)
 - [`docs/migrations.md`](docs/migrations.md)
 
 | Supported in Plan 06C | Deferred until later plans |
