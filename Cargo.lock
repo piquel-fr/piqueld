@@ -1058,6 +1058,8 @@ dependencies = [
  "futures-util",
  "http",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "piqueld-client",
  "piqueld-core",
  "serde",

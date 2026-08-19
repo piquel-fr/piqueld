@@ -11,6 +11,10 @@ and durable operations in SQLite. It exposes a versioned HTTP API over a
 loopback TCP listener and a Unix socket. Clients poll application and operation
 resources; there is no event-stream endpoint.
 
+The configured database path is the only state location. On a clean install the
+daemon creates missing parent directories without changing existing directory
+permissions, and refuses symlinked database path components.
+
 The supported manifest and runtime model are documented in:
 
 - [`docs/application-manifest.md`](docs/application-manifest.md)

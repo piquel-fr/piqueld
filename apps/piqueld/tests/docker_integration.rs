@@ -2,6 +2,7 @@
 
 use bollard::query_parameters::{InspectServiceOptions, UpdateServiceOptionsBuilder};
 use piqueld::docker::{BollardDocker, DockerApi, DockerError};
+use piqueld_core::manifest::HealthCheck;
 use piqueld_core::resource::{DesiredNetwork, DesiredService, DesiredVolume, ResolvedSource};
 use piqueld_core::{ApplicationId, InstanceId, ResourceKind, docker_resource_name};
 use std::{collections::BTreeMap, path::Path, time::Duration};
@@ -73,12 +74,56 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
         command: vec!["/bin/sh".into()],
         arguments: vec!["-c".into(), "while true; do sleep 5; done".into()],
         mounts: vec![],
-        healthcheck: None,
+        healthcheck: Some(HealthCheck::Command {
+            command: vec!["true".into()],
+            interval_seconds: 1,
+            timeout_seconds: 1,
+        }),
         resources: None,
         networks: vec![network.name.clone()],
         labels: service_labels,
     };
     ensure_service_eventually(&docker, &service).await;
+
+    let mut http_service = service.clone();
+    http_service.logical_name = "http".into();
+    http_service.name = docker_resource_name(&app, ResourceKind::Service, Some("http"));
+    http_service.command = vec!["/bin/sh".into()];
+    http_service.arguments = vec![
+        "-c".into(),
+        "mkdir -p /www && printf healthy >/www/health && httpd -f -p 8080 -h /www".into(),
+    ];
+    http_service.healthcheck = Some(HealthCheck::Http {
+        port: 8080,
+        path: "/health".into(),
+        interval_seconds: 1,
+        timeout_seconds: 1,
+    });
+    http_service
+        .labels
+        .insert("io.piqueld.service".into(), "http".into());
+    ensure_service_eventually(&docker, &http_service).await;
+
+    let observed = docker.observe(&app).await.unwrap();
+    assert_eq!(
+        observed
+            .services
+            .iter()
+            .find(|candidate| candidate.name == service.name)
+            .and_then(|candidate| candidate.healthcheck.as_ref()),
+        service.healthcheck.as_ref(),
+        "command health check survives complete service inspection"
+    );
+    assert_eq!(
+        observed
+            .services
+            .iter()
+            .find(|candidate| candidate.name == http_service.name)
+            .and_then(|candidate| candidate.healthcheck.as_ref()),
+        http_service.healthcheck.as_ref(),
+        "HTTP health check survives complete service inspection"
+    );
+
     service.replicas = 2;
     ensure_service_eventually(&docker, &service).await;
     // Reconnecting exercises the same observation/recovery seam used after daemon restart.
@@ -96,6 +141,15 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+    let observed = restarted.observe(&app).await.unwrap();
+    assert_eq!(
+        observed
+            .services
+            .iter()
+            .find(|candidate| candidate.name == service.name)
+            .and_then(|candidate| candidate.healthcheck.as_ref()),
+        service.healthcheck.as_ref()
+    );
     let raw =
         bollard::Docker::connect_with_unix(&socket, 120, bollard::API_DEFAULT_VERSION).unwrap();
     let matching = raw
@@ -135,6 +189,10 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
     .await
     .unwrap();
     restarted.ensure_service(&service).await.unwrap();
+    restarted
+        .remove_service(&http_service.name, &labels)
+        .await
+        .unwrap();
     restarted
         .remove_service(&service.name, &labels)
         .await

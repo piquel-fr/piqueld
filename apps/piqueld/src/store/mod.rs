@@ -20,7 +20,8 @@ use sqlx::{
 };
 use std::{
     error::Error as StdError,
-    path::Path,
+    fs,
+    path::{Component, Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
@@ -55,6 +56,9 @@ pub enum StoreError {
     /// Schema metadata could not be read or decoded.
     #[error("database schema is incompatible")]
     SchemaMismatchSource(#[source] Box<dyn StdError + Send + Sync>),
+    /// The configured database path could not be prepared safely.
+    #[error("database path could not be prepared")]
+    PathSource(#[source] std::io::Error),
     /// A requested row does not exist.
     #[error("resource was not found")]
     NotFound,
@@ -104,6 +108,10 @@ impl StoreError {
 
     fn invalid_input(source: impl StdError + Send + Sync + 'static) -> Self {
         Self::InvalidInputSource(Box::new(source))
+    }
+
+    fn path(source: std::io::Error) -> Self {
+        Self::PathSource(source)
     }
 }
 
@@ -456,8 +464,10 @@ impl SqliteStore {
     /// # Errors
     /// Returns a sanitized storage or schema compatibility error.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let path = path.as_ref();
+        prepare_database_path(path)?;
         let options = SqliteConnectOptions::new()
-            .filename(path.as_ref())
+            .filename(path)
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
@@ -654,6 +664,73 @@ impl SqliteStore {
             .map_err(StoreError::database)?;
         }
         Ok(())
+    }
+}
+
+/// Prepares only missing database parents and rejects symlinked path components.
+/// Existing directories are never chmodded or otherwise modified. The final
+/// database path is checked as well so a replaced symlink cannot be followed by
+/// the SQLite driver during normal startup.
+fn prepare_database_path(path: &Path) -> Result<(), StoreError> {
+    let parent = path.parent().ok_or_else(|| {
+        StoreError::invalid_input(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "database path has no parent",
+        ))
+    })?;
+
+    let mut current = PathBuf::new();
+    for component in parent.components() {
+        match component {
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => current.push(Path::new("/")),
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                return Err(StoreError::invalid_input(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "database path contains a parent component",
+                )));
+            }
+            Component::Normal(name) => current.push(name),
+        }
+
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            }
+            Ok(_) => {
+                return Err(StoreError::path(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "database parent is not a real directory",
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(StoreError::path(error)),
+                }
+                let metadata = fs::symlink_metadata(&current).map_err(StoreError::path)?;
+                if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+                    return Err(StoreError::path(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "database parent was replaced by a non-directory",
+                    )));
+                }
+            }
+            Err(error) => return Err(StoreError::path(error)),
+        }
+    }
+
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
+            Ok(())
+        }
+        Ok(_) => Err(StoreError::path(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "database path is not a regular file",
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(StoreError::path(error)),
     }
 }
 

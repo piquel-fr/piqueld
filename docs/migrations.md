@@ -18,6 +18,9 @@ backend errors.
 
 On startup the daemon reads `PRAGMA user_version`, rejects a newer schema, applies
 missing embedded migrations, and verifies the singleton instance metadata row.
+Before opening SQLite it creates only missing parents of `database.path`; existing
+directories are left untouched and symlinked parents or database files are
+rejected. `database.path` is the sole authoritative state location.
 The build script provisions a disposable migrated SQLite database before SQLx
 compile-time queries are checked. It never opens an operator database.
 

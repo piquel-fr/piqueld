@@ -12,8 +12,6 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DaemonConfig {
-    /// Persistent control-plane state directory.
-    pub data_dir: PathBuf,
     /// Local API listeners.
     pub server: ServerConfig,
     /// Embedded database location.
@@ -27,7 +25,6 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            data_dir: PathBuf::from("/var/lib/piqueld"),
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
             docker: DockerConfig::default(),
@@ -61,7 +58,6 @@ impl DaemonConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        absolute_directory("data_dir", &self.data_dir)?;
         absolute_file("server.unix_socket", &self.server.unix_socket)?;
         absolute_file("database.path", &self.database.path)?;
         absolute_file("docker.socket", &self.docker.socket)?;

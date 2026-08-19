@@ -19,7 +19,7 @@ use bollard::{
     query_parameters::{
         CreateImageOptionsBuilder, InspectNetworkOptions, InspectServiceOptions,
         ListNetworksOptionsBuilder, ListNodesOptions, ListServicesOptionsBuilder, ListTasksOptions,
-        ListVolumesOptionsBuilder, UpdateServiceOptionsBuilder,
+        ListVolumesOptionsBuilder,
     },
 };
 use futures_util::TryStreamExt;
@@ -49,6 +49,7 @@ const HEALTH_RETRIES: i64 = 3;
 /// A shared connection to the Docker Engine.
 pub struct BollardDocker {
     docker: Arc<Docker>,
+    socket: Arc<Path>,
 }
 
 mod engine;

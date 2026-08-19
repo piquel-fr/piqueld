@@ -11,6 +11,14 @@ mutation. Foreign resources block a plan. Service updates use conservative
 start-first, one-at-a-time rolling settings and pause on failure. Existing
 runtime settings outside the supported model are not silently adopted.
 
+Docker's compact service-list response is never used as the final semantic source:
+the adapter performs a complete service inspection before ordinary observation or
+deciding whether an update is needed. Service create, update, and inspection pass
+through a narrow wire adapter that normalizes Docker's `Healthcheck` spelling to
+the typed `HealthCheck` model. An exact transient `update out of sequence` response
+gets a bounded retry with a refreshed service version; other errors fail without
+retry.
+
 Application deletion removes services and the private network, waits for
 convergence, and retains named volumes. Raw Docker messages and task text are
 kept in internal error sources for logs only; durable operation and status

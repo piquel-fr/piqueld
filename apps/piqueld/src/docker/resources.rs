@@ -4,7 +4,7 @@ use super::{
     InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
     ListTasksOptions, ListVolumesOptionsBuilder, NetworkCreateRequest, ObservedApplication,
     ObservedNetwork, ObservedVolume, SERVICE_LABEL, SwarmInitRequest, SwarmState, TryStreamExt,
-    UpdateServiceOptionsBuilder, VolumeCreateOptions, async_trait,
+    VolumeCreateOptions, async_trait,
 };
 
 #[async_trait]
@@ -29,8 +29,10 @@ impl DockerApi for BollardDocker {
             "initialize Docker Swarm",
             self.docker
                 .init_swarm(SwarmInitRequest {
-                    listen_addr: Some("0.0.0.0:2377".into()),
-                    advertise_addr: Some(String::new()),
+                    // Plan 06 is intentionally single-host. Do not expose the
+                    // manager control port while bootstrapping the local Swarm.
+                    listen_addr: Some("127.0.0.1:2377".into()),
+                    advertise_addr: Some("127.0.0.1".into()),
                     ..Default::default()
                 })
                 .await,
@@ -128,7 +130,7 @@ impl DockerApi for BollardDocker {
         })
         .filter(|r| Self::relevant(&r.name, &r.labels, application))
         .collect();
-        let raw_services = Self::map_request(
+        let listed_services = Self::map_request(
             "list services",
             self.docker
                 .list_services(Some(
@@ -136,6 +138,13 @@ impl DockerApi for BollardDocker {
                 ))
                 .await,
         )?;
+        let mut raw_services = Vec::with_capacity(listed_services.len());
+        for listed in listed_services {
+            let Some(id) = listed.id.as_deref() else {
+                continue;
+            };
+            raw_services.push(self.inspect_service_wire(id).await?);
+        }
         let all_tasks = Self::map_request(
             "list tasks",
             self.docker.list_tasks(None::<ListTasksOptions>).await,
@@ -299,6 +308,12 @@ impl DockerApi for BollardDocker {
             .into_iter()
             .find(|s| s.spec.as_ref().and_then(|s| s.name.as_deref()) == Some(&desired.name))
         {
+            // List responses can omit fields needed for semantic comparison.
+            // Always use the complete service inspection before observing or
+            // deciding whether an update is necessary.
+            let existing = self
+                .inspect_service_wire(existing.id.as_deref().unwrap_or(&desired.name))
+                .await?;
             let labels: BTreeMap<_, _> = existing
                 .spec
                 .as_ref()
@@ -342,28 +357,11 @@ impl DockerApi for BollardDocker {
             let version = existing
                 .version
                 .and_then(|v| v.index)
-                .and_then(|version| i32::try_from(version).ok())
                 .ok_or(DockerError::Request("read existing service version"))?;
-            Self::map_request(
-                "update service",
-                self.docker
-                    .update_service(
-                        &desired.name,
-                        spec,
-                        UpdateServiceOptionsBuilder::default()
-                            .version(version)
-                            .build(),
-                        None,
-                    )
-                    .await,
-            )
-            .map(|_| ())
+            self.update_service_wire(&desired.name, version, &spec)
+                .await
         } else {
-            Self::map_request(
-                "create service",
-                self.docker.create_service(spec, None).await,
-            )
-            .map(|_| ())
+            self.create_service_wire(&spec).await
         }
     }
 

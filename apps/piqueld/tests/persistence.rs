@@ -3,6 +3,7 @@
 use piqueld::store::{ApplicationState, SCHEMA_VERSION, SqliteStore, WorkState};
 use piqueld_core::resource::{ResolutionSet, ResolvedSource, compile_application};
 use piqueld_core::{ApplicationId, InstanceId, parse_toml};
+use std::os::unix::fs::PermissionsExt;
 
 fn application() -> piqueld_core::NormalizedApplication {
     parse_toml(include_str!(
@@ -149,4 +150,26 @@ async fn generation_updates_and_create_idempotency_are_durable() {
             actual: 2
         })
     ));
+}
+
+#[tokio::test]
+async fn missing_database_parent_is_created_without_rewriting_existing_parent_mode() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let parent = directory.path().join("nested").join("state");
+    let database = parent.join("control-plane.db");
+    SqliteStore::open(&database)
+        .await
+        .expect("missing database parents are created");
+    assert!(parent.is_dir());
+
+    let before = std::fs::symlink_metadata(&parent)
+        .expect("created parent metadata")
+        .permissions();
+    SqliteStore::open(&database)
+        .await
+        .expect("existing database parent remains usable");
+    let after = std::fs::symlink_metadata(&parent)
+        .expect("existing parent metadata")
+        .permissions();
+    assert_eq!(before.mode(), after.mode());
 }

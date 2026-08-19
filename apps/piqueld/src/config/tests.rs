@@ -34,3 +34,11 @@ fn host_paths_and_loopback_listener_are_validated() {
         );
     }
 }
+
+#[test]
+fn removed_data_directory_is_not_accepted_as_configuration() {
+    assert!(matches!(
+        DaemonConfig::from_toml("data_dir = '/tmp/piqueld'"),
+        Err(ConfigError::Parse)
+    ));
+}
