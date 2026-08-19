@@ -17,10 +17,10 @@ piquelctl --help
 Create or replace an application from a strict TOML manifest:
 
 ```console
-piquelctl application plan --file app.toml
-piquelctl application apply --file app.toml
-piquelctl application show my-app --output json
-piquelctl application logs my-app --tail 200 --follow
+piquelctl plan --file app.toml
+piquelctl apply --file app.toml
+piquelctl show my-app --json
+piquelctl logs my-app --tail 200 --follow
 ```
 
 Use an expected generation for concurrent operators. `apply`, `delete`, state
@@ -37,8 +37,8 @@ Transfer desired control-plane state with the guarded commands documented in
 [`state-archive-v1.md`](state-archive-v1.md):
 
 ```console
-piquelctl state export --file state.tar --mode portable
-piquelctl state import state.tar --replace --yes
+piquelctl export --output state.tar --mode portable
+piquelctl import state.tar --replace --yes
 ```
 
 A state archive is not a backup of Docker data. Recreate registry blobs, Git

@@ -18,7 +18,7 @@ Common cases:
 
 - **401 on loopback HTTP:** configure a protected bearer credential and pass it
   through `piquelctl --token-file`; the Unix socket remains the local admin path.
-- **A service is degraded:** use `piquelctl application show NAME --output json`
+- **A service is degraded:** use `piquelctl show NAME --json`
   and inspect the operation/status diagnostics, then verify image digest,
   network, volume, secret, and health-check availability.
 - **A build is stuck:** inspect the operation and build endpoints/CLI output,

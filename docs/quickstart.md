@@ -47,7 +47,8 @@ configured, pass it through a private file:
 The dashboard is served by the daemon in the package. Open
 `http://127.0.0.1:7845/` in a browser after configuring the daemon's bearer
 credential or trusted loopback proxy; it uses the same authenticated API as
-`piquelctl`. The Plan 06C dashboard itself is read-only.
+`piquelctl`. The initial Plan 06C dashboard is read-only; Plan 12 adds the
+reviewed mutation workflows used by the complete stack.
 
 When finished, delete the application and note that its named volumes are
 retained:
