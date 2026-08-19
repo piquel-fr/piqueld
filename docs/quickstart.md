@@ -22,7 +22,6 @@ In a second terminal:
 
 ```console
 ./result/bin/piquelctl --socket /tmp/piqueld-dev/piqueld.sock status
-./result/bin/piquelctl --url http://127.0.0.1:7845 status
 ./result/bin/piquelctl --socket /tmp/piqueld-dev/piqueld.sock plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
 ./result/bin/piquelctl --socket /tmp/piqueld-dev/piqueld.sock apply \
@@ -34,11 +33,21 @@ In a second terminal:
 result as the public API. `apply` waits for the durable operation by default;
 `--no-wait` returns immediately with its operation identifier.
 
+The Unix socket is the local administrative path. Loopback HTTP is
+authenticated in the production stack; when a protected bearer credential is
+configured, pass it through a private file:
+
+```console
+./result/bin/piquelctl --url http://127.0.0.1:7845 \
+  --token-file ./protected-bearer-token status
+```
+
 ## Dashboard and cleanup
 
-The read-only dashboard is served by the daemon in the Plan 06C package. After
-building that package, open `http://127.0.0.1:7845/` in a browser and use the
-application list and detail views to inspect the same state as `piquelctl`.
+The dashboard is served by the daemon in the package. Open
+`http://127.0.0.1:7845/` in a browser after configuring the daemon's bearer
+credential or trusted loopback proxy; it uses the same authenticated API as
+`piquelctl`. The Plan 06C dashboard itself is read-only.
 
 When finished, delete the application and note that its named volumes are
 retained:
