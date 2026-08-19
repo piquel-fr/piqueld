@@ -190,7 +190,10 @@ ported. The feature/fix commits map as follows:
 | Write-only browser secret controls | #12 `24a36dc` | #12 uses wasm typed binary secret methods, clears input/drafts after success and component cleanup, zeroizes Rust and JS body buffers, and never reveals or persists plaintext |
 | Browser state transfer and application export | #12 `24a36dc` | #12 uses wasm typed transfer methods, 32 MiB bound, explicit phrase, SHA-256 digest-bound single-use confirmation, zeroized confirmation/archive buffers, dependency report, and in-memory downloads |
 | Hardened SPA fallback and packaged UI documentation | #12 `d845f04` | #12 moved descriptor-relative symlink-safe serving into `api/ui.rs`, added CSP/security headers, HEAD/range/content-type/cache behavior, 16 MiB asset bound, and updated API/UI docs; Nix/Trunk packaging already existed in the frozen Plan 06C base |
-| NixOS/security/operations and recovery | #13 `3254200`, `6a7d09c` | #13 pending; adapt to rebuilt binary/assets |
+| Production authentication, listener bounds, CORS/origin policy, trusted-proxy identity, shared backpressure, timeouts, and sanitized errors | #13 `3254200`, `6a7d09c` | #13 rebuilt as `8322df1965be3382cd86b95bc5612f34bfe85d96`; one transport-neutral policy wraps both real listeners, with fail-closed TCP identity and bounded request bodies/headers |
+| Health, readiness, metrics, Docker/Swarm/registry/ingress probes, and recovery-oriented operational status | #13 `3254200`, `6a7d09c` | #13 added versioned typed client/API/OpenAPI contracts, optional low-cardinality metrics, bounded SQLite probes, runtime readiness, loopback Swarm initialization, build-source readiness, and structured recovery logs |
+| NixOS packaging, split daemon/CLI/UI outputs, systemd credentials, service hardening, private registry wiring, and safe path assertions | #13 `3254200`, `6a7d09c` | #13 rebuilt against the Plan 06C binary and immutable UI layout in `nix/module.nix`/`flake.nix`; no abandoned Plan 06 scaffolding or old package tree restored |
+| Security, recovery, backup, deployment, proxy-boundary, readiness, metrics, and operator documentation | #13 `3254200`, `6a7d09c` | #13 updated `README.md`, `docs/api.md`, `docs/web-ui.md`, and added `docs/operations.md` for the rebuilt API, credentials, NixOS unit, private access, and recovery model |
 | Qualification CI, release, acceptance, docs and Rust compatibility fixes | #14 `22bbb1a`, `5d38829`, `a2990f8`, `38cf58d`, `a1d0f36` | #14 pending; consolidate against cumulative rebuilt stack |
 
 ## Rebuilt heads so far
@@ -203,6 +206,7 @@ ported. The feature/fix commits map as follows:
 | 10 | `rebuild/10-import-export` | `4f92d0b072a04a081c0b706c5588e59c66633edd` (`feat(transfer): rebuild state import and export on product stack`) |
 | 11 | `rebuild/11-cli` | `6916091076de717d21860713d54d44701b63c90a` (`feat(cli): rebuild advanced operator workflow on product stack`) |
 | 12 | `rebuild/12-web-ui` | `0e71c2d` (`fix(web): clarify dashboard structure and actions`; feature base `ae45d9e3d4c7c5f704cf3978a77182639ceffad9`) |
+| 13 | `rebuild/13-nixos-security-and-operations` | `8322df1965be3382cd86b95bc5612f34bfe85d96` (`feat(ops): rebuild security and NixOS operations`) |
 
 ## Local #10 validation at ledger checkpoint
 
@@ -258,3 +262,36 @@ could not run; no release asset canary or Nix package/VM evidence is claimed.
 The T3 collaborative preview reported no automation host after both status and
 open attempts, so no browser interaction evidence is claimed. The privileged
 Docker acceptance test remains intentionally ignored.
+
+## Local #13 validation at ledger checkpoint
+
+Passed on `8322df1965be3382cd86b95bc5612f34bfe85d96`:
+
+- `just` (format, strict workspace Clippy, workspace checks/tests, doc-tests,
+  cargo-deny, generated OpenAPI check, and dependency boundaries)
+- Plan 13 daemon unit tests, including fail-closed TCP authentication, duplicate
+  security headers/origin rejection, protected credential files, config policy,
+  readiness, and metrics contracts
+- elevated typed API contract tests for versioned health/readiness/metrics,
+  authenticated boundaries, and the cumulative #12 state/UI behavior
+- `git diff --check`, `cargo fmt --all`, and the full workspace Clippy command
+- `just nix-check`: all six x86_64 flake checks passed, including NixOS module
+  evaluation, split daemon/CLI/UI package derivations, formatting, dependency
+  boundaries, and the release package/UI build; aarch64 was omitted by the
+  host check
+
+The privileged Docker/Swarm acceptance test remains intentionally ignored. A
+NixOS VM qualification was not available in this checkout, and the T3 preview
+has no automation host, so no browser or VM evidence is claimed.
+
+## #13 range-diff findings
+
+Compared with the old feature range
+`3d3e46e9422794877a9eec6d3ad8a33af811d4f6..3f01d57de6be6c3b1ab8ef682b9edc1631b7e14f`,
+`git range-diff` shows the two substantive old commits (`3254200`, `6a7d09c`)
+were intentionally replaced by one coherent `8322df1` increment. The old
+merge-only commits were not ported. The rebuilt increment preserves the
+security and operations intent while adapting it to the current API/router,
+typed client, runtime, immutable UI package, fresh SQLx query metadata, and
+Plan 06A simplifications; it adds explicit auth/readiness/metrics contracts and
+does not restore the old binary or dashboard trees.
