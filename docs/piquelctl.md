@@ -21,6 +21,9 @@ piquelctl secret delete <name>
 piquelctl build show <build-id>
 piquelctl build operation <operation-id>
 piquelctl logs <name-or-id> [--since-seconds N] [--tail N] [--max-bytes N]
+piquelctl export --application <name-or-id> --output application.toml
+piquelctl export --output state.tar --mode portable
+piquelctl import state.tar
 ```
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit loopback
@@ -56,6 +59,9 @@ written to stderr, so stdout remains valid JSON.
 | `build show` | `BuildView` (includes application and operation IDs) |
 | `build operation` | `Page<BuildView>` |
 | `logs` | `{ "items": [ContainerLogView] }` |
+| `export --application` | Application manifest text, or a JSON summary with `--json` |
+| `export` | Bounded binary state archive, or a JSON digest summary with `--json --output` |
+| `import` | `StateImportResult` |
 
 The DTO fields and error envelope are defined by the versioned API and the
 `piqueld-client` crate. CLI errors are reported on stderr and never mixed into
@@ -96,12 +102,16 @@ to later feature increments.
 `logs` reads one bounded historical snapshot. It never follows or opens an SSE
 stream; follow/watch and profile behavior remain later feature increments.
 
+Application exports are portable manifest text. Complete state exports are
+bounded binary archives and can be portable or encrypted; binary output refuses
+an interactive terminal. Import is transactionally confirmed and reports
+missing secret values and retained volumes as explicit dependencies.
+
 The commonly useful exit codes are 0 for success, 1 for a general error, 2 for
 usage or input errors, 3 for generation conflicts, 4 for unavailable or timed
 out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.
 
-Profiles and configuration files, authentication and tokens, builds,
-registries, routes, logs, state transfer, SSE, shell completion, editor flows,
-conflict merging, and elaborate stable exit categories remain deferred to the
-later CLI plan.
+Profiles and configuration files, authentication and tokens, build log viewing,
+registries, routes, SSE, shell completion, editor flows, conflict merging, and
+elaborate stable exit categories remain deferred to the later CLI plan.
