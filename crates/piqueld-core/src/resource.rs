@@ -1,5 +1,4 @@
 //! Backend-neutral desired, resolved, and observed resource contracts.
-#![allow(missing_docs)]
 
 use crate::{
     ApplicationId, ResourceKind, docker_resource_name,
@@ -18,16 +17,23 @@ use std::{
 use thiserror::Error;
 use utoipa::ToSchema;
 
+/// Label marking a resource as managed by piqueld.
 pub const MANAGED_LABEL: &str = "io.piqueld.managed";
+/// Label carrying the control-plane instance identity.
 pub const INSTANCE_LABEL: &str = "io.piqueld.instance";
+/// Label carrying the application identity.
 pub const APPLICATION_LABEL: &str = "io.piqueld.application";
+/// Label carrying the logical service identity.
 pub const SERVICE_LABEL: &str = "io.piqueld.service";
+/// Label carrying the normalized application spec hash.
 pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("instance IDs must be 1-64 lowercase ASCII letters, digits, or internal hyphens")]
+/// Error returned when an instance identifier violates its storage invariant.
 pub struct InstanceIdError;
 
+/// Stable control-plane instance identity.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(transparent)]
 pub struct InstanceId(String);
@@ -57,6 +63,7 @@ impl InstanceId {
             Err(InstanceIdError)
         }
     }
+    /// Returns the persisted wire representation.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -85,8 +92,10 @@ impl FromStr for InstanceId {
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("SHA-256 digests must use the sha256:<64 lowercase hexadecimal digits> format")]
+/// Error returned when a digest is malformed.
 pub struct Sha256DigestError;
 
+/// Explicitly tagged lowercase SHA-256 digest.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(transparent)]
 pub struct Sha256Digest(String);
@@ -105,6 +114,7 @@ impl Sha256Digest {
         }
     }
 
+    /// Returns the persisted wire representation.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -132,24 +142,37 @@ impl FromStr for Sha256Digest {
     }
 }
 
+/// Immutable source resolution used by the runtime.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResolvedSource {
+    /// An image already resolved to an immutable digest reference.
     Image {
+        /// The user-requested image reference.
         requested: String,
+        /// The immutable image reference used at runtime.
         digest_reference: String,
     },
+    /// A Git source resolved to a built and pushed image.
     Git {
+        /// The source repository.
         repository: String,
+        /// The user-requested Git reference.
         requested_reference: String,
+        /// The resolved commit identifier.
         commit: String,
+        /// The build context within the repository.
         context: String,
+        /// The Dockerfile path within the build context.
         dockerfile: String,
+        /// The registry reference produced by the build pipeline.
         registry_reference: String,
+        /// The immutable image reference used at runtime.
         digest_reference: String,
     },
 }
 impl ResolvedSource {
+    /// Returns the immutable image reference for this source.
     #[must_use]
     pub fn digest_reference(&self) -> &str {
         match self {
@@ -163,41 +186,61 @@ impl ResolvedSource {
     }
 }
 
+/// Immutable content generation for a logical secret.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretGeneration {
+    /// The manifest-level secret name.
     pub logical_name: String,
+    /// The content generation digest.
     pub generation: Sha256Digest,
+    /// The Docker Swarm secret name.
     pub swarm_name: String,
 }
 
+/// Immutable resolutions supplied to application compilation.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResolutionSet {
+    /// Resolved service sources keyed by logical service name.
     pub sources: BTreeMap<String, ResolvedSource>,
+    /// Resolved secret generations keyed by logical secret name.
     pub secrets: BTreeMap<String, SecretGeneration>,
 }
 
+/// Resolution work still required before compilation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResolutionRequirement {
+    /// Resolve an image source to an immutable digest.
     ResolveImage {
+        /// The logical service requesting resolution.
         service: String,
+        /// The requested image reference.
         reference: String,
     },
+    /// Resolve a Git source to a built image.
     ResolveGit {
+        /// The logical service requesting resolution.
         service: String,
+        /// The source repository.
         repository: String,
+        /// The requested Git reference.
         reference: String,
     },
+    /// Build and push the image for a resolved Git source.
     BuildAndPush {
+        /// The logical service requesting the build.
         service: String,
     },
+    /// Provide a generation for a referenced logical secret.
     ProvideSecretGeneration {
+        /// The logical secret name.
         logical_name: String,
     },
 }
 
+/// Returns the immutable resolutions still needed before compilation.
 #[must_use]
 pub fn preview_resolution(
     app: &NormalizedApplication,
@@ -238,15 +281,21 @@ pub fn preview_resolution(
     requirements
 }
 
+/// Ownership metadata used to label runtime resources.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ownership {
+    /// The control-plane instance that owns the resource.
     pub instance_id: InstanceId,
+    /// The application that owns the resource.
     pub application_id: ApplicationId,
+    /// The logical service name, when the resource belongs to one service.
     pub service: Option<String>,
+    /// The normalized application spec hash.
     pub spec_hash: String,
 }
 impl Ownership {
+    /// Produces the labels used to identify the owned resource in Docker.
     #[must_use]
     pub fn labels(&self) -> BTreeMap<String, String> {
         let mut labels = BTreeMap::from([
@@ -262,82 +311,225 @@ impl Ownership {
     }
 }
 
+/// Desired overlay network state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredNetwork {
+    /// The canonical Docker resource name.
     pub name: String,
+    /// Whether this is the shared ingress network.
     pub ingress: bool,
+    /// Ownership labels expected on the resource.
     pub labels: BTreeMap<String, String>,
 }
+
+impl DesiredNetwork {
+    /// Returns whether the desired network has a canonical name and identity.
+    #[must_use]
+    pub fn has_valid_identity(&self) -> bool {
+        if self.ingress {
+            return self.name == "piqueld-ingress"
+                && self.labels.get(MANAGED_LABEL).map(String::as_str) == Some("true")
+                && self
+                    .labels
+                    .get(INSTANCE_LABEL)
+                    .is_some_and(|instance| InstanceId::parse(instance.clone()).is_ok())
+                && !self.labels.contains_key(APPLICATION_LABEL)
+                && !self.labels.contains_key(SERVICE_LABEL)
+                && !self.labels.contains_key(SPEC_HASH_LABEL);
+        }
+        let Some((application, _)) = desired_application_from_labels(&self.labels) else {
+            return false;
+        };
+        !self.labels.contains_key(SERVICE_LABEL)
+            && self.name == docker_resource_name(&application, ResourceKind::Network, None)
+    }
+}
+
+/// Desired persistent volume state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredVolume {
+    /// The manifest-level volume name.
     pub logical_name: String,
+    /// The canonical Docker resource name.
     pub name: String,
+    /// Ownership labels expected on the resource.
     pub labels: BTreeMap<String, String>,
 }
+
+impl DesiredVolume {
+    /// Returns whether the desired volume has a canonical name and identity.
+    #[must_use]
+    pub fn has_valid_identity(&self) -> bool {
+        let Some((application, _)) = desired_application_from_labels(&self.labels) else {
+            return false;
+        };
+        valid_logical_name(&self.logical_name)
+            && !self.labels.contains_key(SERVICE_LABEL)
+            && self.name
+                == docker_resource_name(
+                    &application,
+                    ResourceKind::Volume,
+                    Some(&self.logical_name),
+                )
+    }
+}
+
+/// Desired Swarm secret state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredSecret {
+    /// The manifest-level secret name.
     pub logical_name: String,
+    /// The desired secret content generation.
     pub generation: Sha256Digest,
+    /// The canonical Docker Swarm secret name.
     pub name: String,
+    /// Ownership labels expected on the resource.
     pub labels: BTreeMap<String, String>,
 }
+/// Desired secret mount in a service.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredSecretMount {
+    /// The manifest-level secret name.
     pub logical_name: String,
+    /// The Docker Swarm secret name.
     pub swarm_name: String,
+    /// The container target path.
     pub target: String,
+    /// The file mode presented in the container.
     pub mode: String,
 }
+/// Desired persistent volume mount in a service.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredMount {
+    /// The canonical Docker volume name.
     pub volume_name: String,
+    /// The container target path.
     pub target: String,
+    /// Whether the mount is read-only.
     pub read_only: bool,
 }
+/// Desired Docker service state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredService {
+    /// The manifest-level service name.
     pub logical_name: String,
+    /// The canonical Docker service name.
     pub name: String,
+    /// The immutable source resolution used by this service.
     pub source: ResolvedSource,
+    /// The digest-pinned image reference.
     pub image: String,
+    /// The desired replica count.
     pub replicas: u16,
+    /// Environment variables keyed by name.
     pub environment: BTreeMap<String, String>,
+    /// The container entrypoint command.
     pub command: Vec<String>,
+    /// Arguments passed to the command.
     pub arguments: Vec<String>,
+    /// Published ports requested by the manifest.
     pub ports: Vec<u16>,
+    /// Persistent volume mounts.
     pub mounts: Vec<DesiredMount>,
+    /// Swarm secret mounts.
     pub secrets: Vec<DesiredSecretMount>,
+    /// Optional health check.
     pub healthcheck: Option<HealthCheck>,
+    /// Optional CPU and memory limits.
     pub resources: Option<ResourceLimits>,
+    /// Canonical network names attached to the service.
     pub networks: Vec<String>,
+    /// Ownership and routing labels.
     pub labels: BTreeMap<String, String>,
 }
 
+impl DesiredService {
+    /// Returns whether the desired service has a canonical name and identity.
+    #[must_use]
+    pub fn has_valid_identity(&self) -> bool {
+        let Some((application, _)) = desired_application_from_labels(&self.labels) else {
+            return false;
+        };
+        valid_logical_name(&self.logical_name)
+            && self.labels.get(SERVICE_LABEL).map(String::as_str)
+                == Some(self.logical_name.as_str())
+            && self.name
+                == docker_resource_name(
+                    &application,
+                    ResourceKind::Service,
+                    Some(&self.logical_name),
+                )
+    }
+}
+
+/// Desired state for an application and its resources.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredApplication {
+    /// The stable application identity.
     pub id: ApplicationId,
+    /// The user-facing application name.
     pub name: String,
+    /// The current control-plane instance identity.
     pub instance_id: InstanceId,
+    /// The normalized application spec hash.
     pub spec_hash: String,
+    /// Desired networks.
     pub networks: Vec<DesiredNetwork>,
+    /// Desired persistent volumes.
     pub volumes: Vec<DesiredVolume>,
+    /// Desired Swarm secrets.
     pub secrets: Vec<DesiredSecret>,
+    /// Desired services.
     pub services: Vec<DesiredService>,
 }
+/// Resolved application state used by the runtime reconciler.
 pub type ResolvedApplication = DesiredApplication;
 
+fn desired_application_from_labels(
+    labels: &BTreeMap<String, String>,
+) -> Option<(ApplicationId, InstanceId)> {
+    if labels.get(MANAGED_LABEL).map(String::as_str) != Some("true")
+        || labels.get(INSTANCE_LABEL).is_none_or(String::is_empty)
+        || labels
+            .get(SPEC_HASH_LABEL)
+            .is_none_or(|hash| Sha256Digest::parse(hash.clone()).is_err())
+    {
+        return None;
+    }
+    Some((
+        ApplicationId::parse(labels.get(APPLICATION_LABEL)?.clone()).ok()?,
+        InstanceId::parse(labels.get(INSTANCE_LABEL)?.clone()).ok()?,
+    ))
+}
+
+fn valid_logical_name(value: &str) -> bool {
+    (1..=63).contains(&value.len())
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !value.ends_with('-')
+}
+
+/// Sanitized compilation error for unresolved runtime inputs.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompileError {
+    /// Stable machine-readable error code.
     pub code: String,
+    /// Resource associated with the error.
     pub resource: String,
+    /// Safe human-readable explanation.
     pub message: String,
 }
 
@@ -372,7 +564,7 @@ pub fn compile_application(
         name: app.metadata.name.clone(),
         instance_id,
         spec_hash,
-        networks: compile_networks(&ingress_network, &private_network, &ownership),
+        networks: compile_networks(app, &ingress_network, &private_network, &ownership),
         volumes: compile_volumes(app, &ownership),
         secrets: compile_secrets(resolutions, &referenced_secrets, &ownership),
         services: app
@@ -514,25 +706,31 @@ fn referenced_secrets(app: &NormalizedApplication) -> BTreeSet<&str> {
 }
 
 fn compile_networks(
+    app: &NormalizedApplication,
     ingress_network: &str,
     private_network: &str,
     ownership: &Ownership,
 ) -> Vec<DesiredNetwork> {
-    vec![
-        DesiredNetwork {
-            name: ingress_network.into(),
-            ingress: true,
-            labels: BTreeMap::from([
-                (MANAGED_LABEL.into(), "true".into()),
-                (INSTANCE_LABEL.into(), ownership.instance_id.to_string()),
-            ]),
-        },
-        DesiredNetwork {
-            name: private_network.into(),
-            ingress: false,
-            labels: ownership.labels(),
-        },
-    ]
+    let private = DesiredNetwork {
+        name: private_network.into(),
+        ingress: false,
+        labels: ownership.labels(),
+    };
+    if app.spec.routes.is_empty() {
+        vec![private]
+    } else {
+        vec![
+            DesiredNetwork {
+                name: ingress_network.into(),
+                ingress: true,
+                labels: BTreeMap::from([
+                    (MANAGED_LABEL.into(), "true".into()),
+                    (INSTANCE_LABEL.into(), ownership.instance_id.to_string()),
+                ]),
+            },
+            private,
+        ]
+    }
 }
 
 fn compile_volumes(app: &NormalizedApplication, ownership: &Ownership) -> Vec<DesiredVolume> {
@@ -677,6 +875,13 @@ fn image_repository(reference: &str) -> Option<String> {
     let first = components.next()?;
     let explicit_registry =
         repository.contains('/') && (first.contains(['.', ':']) || first == "localhost");
+    if let Some(path) = repository.strip_prefix("docker.io/") {
+        return Some(if path.contains('/') {
+            repository.to_owned()
+        } else {
+            format!("docker.io/library/{path}")
+        });
+    }
     if explicit_registry {
         return Some(repository.to_owned());
     }
@@ -733,47 +938,92 @@ fn compile_traefik_labels(
     }
 }
 
+/// Lifecycle state of an observed Docker task.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
+    /// The task has been created but not scheduled.
     New,
+    /// The task is waiting for scheduling.
     Pending,
+    /// The task has been assigned to a node.
     Assigned,
+    /// The node accepted the task.
     Accepted,
+    /// The task is preparing its container.
     Preparing,
+    /// The container is starting.
     Starting,
+    /// The container is running.
     Running,
+    /// The task completed successfully.
     Complete,
+    /// The task failed.
     Failed,
+    /// The task was rejected before starting.
     Rejected,
+    /// The task was shut down.
     Shutdown,
+    /// Docker did not provide a recognized state.
     #[default]
     Unknown,
 }
+/// Sanitized observation of one Docker task.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedTask {
+    /// Current Docker task state.
     pub state: TaskState,
+    /// Backend health result, when available.
     pub healthy: Option<bool>,
+    /// Whether the task is still desired by the service.
     pub desired_running: bool,
+    /// Sanitized task failure information. Raw daemon messages are deliberately
+    /// excluded because they can contain registry or runtime-provided data.
+    pub diagnostic: Option<TaskDiagnostic>,
 }
+/// Sanitized diagnostic for a task that failed to start or run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskDiagnostic {
+    /// The container exited with the optional exit code.
+    Failed {
+        /// Process exit code when Docker reported one.
+        exit_code: Option<i64>,
+    },
+    /// Docker rejected the task before it could run.
+    Rejected,
+}
+/// Aggregate health state derived from observed tasks.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Convergence {
+    /// All desired tasks are healthy and running.
     Converged,
+    /// Docker is still applying an update.
     Updating,
+    /// Some desired tasks are healthy but others are not.
     Degraded,
+    /// No desired task is healthy or the update is paused.
     Failed,
 }
 
+/// Observed Docker network state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedNetwork {
+    /// The observed Docker network name.
     pub name: String,
+    /// Whether Docker marks this as the ingress network.
     pub ingress: bool,
+    /// Whether backend-specific immutable network settings match piqueld's
+    /// private/ingress overlay-network contract.
+    pub runtime_configuration_matches: bool,
+    /// Ownership labels observed on the network.
     pub labels: BTreeMap<String, String>,
 }
 impl ObservedNetwork {
+    /// Returns whether the network belongs to the desired application.
     #[must_use]
     pub fn matches_ownership(
         &self,
@@ -793,40 +1043,75 @@ impl ObservedNetwork {
         }
     }
 }
+/// Observed Docker volume state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedVolume {
+    /// The observed Docker volume name.
     pub name: String,
+    /// Whether the backend volume uses piqueld's supported local driver.
+    pub runtime_configuration_matches: bool,
+    /// Ownership labels observed on the volume.
     pub labels: BTreeMap<String, String>,
 }
+/// Observed Docker secret state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedSecret {
+    /// The observed Docker secret name.
     pub name: String,
+    /// Ownership labels observed on the secret.
     pub labels: BTreeMap<String, String>,
+    /// Whether a service currently references the secret.
     pub in_use: bool,
 }
+/// Observed Docker service state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedService {
+    /// The observed Docker service name.
     pub name: String,
+    /// The observed digest-pinned image.
     pub image: String,
+    /// The observed replica count.
     pub replicas: u16,
+    /// Environment variables observed in the container spec.
     pub environment: BTreeMap<String, String>,
+    /// The observed container command.
     pub command: Vec<String>,
+    /// The observed command arguments.
     pub arguments: Vec<String>,
+    /// Published ports observed on the service.
     pub ports: Vec<u16>,
+    /// Persistent mounts observed on the service.
     pub mounts: Vec<DesiredMount>,
+    /// Secret mounts observed on the service.
     pub secrets: Vec<DesiredSecretMount>,
+    /// The observed health check.
     pub healthcheck: Option<HealthCheck>,
+    /// The observed resource limits.
     pub resources: Option<ResourceLimits>,
+    /// Networks attached to the service.
     pub networks: Vec<String>,
+    /// Ownership and routing labels.
     pub labels: BTreeMap<String, String>,
+    /// Whether adapter-owned settings (replicated mode, restart/update policy,
+    /// and absence of unsupported runtime attachments) remain canonical.
+    pub runtime_configuration_matches: bool,
+    /// Task observations used to derive convergence.
     pub tasks: Vec<ObservedTask>,
+    /// Aggregate convergence state for the service.
     pub convergence: Convergence,
 }
 
 impl ObservedService {
+    /// Returns whether all desired service fields and owned runtime settings match.
+    #[must_use]
+    pub fn semantically_matches(&self, desired: &DesiredService) -> bool {
+        self.matches(desired)
+    }
+
+    /// Returns whether all desired service fields match.
     #[must_use]
     pub fn matches(&self, desired: &DesiredService) -> bool {
         self.image == desired.image
@@ -834,15 +1119,16 @@ impl ObservedService {
             && self.environment == desired.environment
             && self.command == desired.command
             && self.arguments == desired.arguments
-            && unordered_eq(&self.ports, &desired.ports)
             && unordered_eq(&self.mounts, &desired.mounts)
             && unordered_eq(&self.secrets, &desired.secrets)
             && self.healthcheck == desired.healthcheck
             && self.resources == desired.resources
             && sorted(&self.networks) == sorted(&desired.networks)
             && owned_label_subset(&self.labels, &desired.labels)
+            && self.runtime_configuration_matches
     }
 
+    /// Returns whether ownership labels identify the desired service.
     #[must_use]
     pub fn matches_ownership(
         &self,
@@ -858,6 +1144,7 @@ impl ObservedService {
                 == Some(desired_service.logical_name.as_str())
     }
 
+    /// Returns whether ownership labels and the canonical name identify this service.
     #[must_use]
     pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
         if OwnershipState::from_labels(&self.labels, instance, application) != OwnershipState::Owned
@@ -899,22 +1186,32 @@ fn owned_label_subset(
             .all(|(k, v)| desired.get(k) == Some(v))
 }
 
+/// Observed resources associated with an application.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedApplication {
+    /// Networks observed for the application.
     pub networks: Vec<ObservedNetwork>,
+    /// Volumes observed for the application.
     pub volumes: Vec<ObservedVolume>,
+    /// Secrets observed for the application.
     pub secrets: Vec<ObservedSecret>,
+    /// Services observed for the application.
     pub services: Vec<ObservedService>,
 }
 
+/// Result of comparing runtime ownership labels with an expected owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OwnershipState {
+    /// Labels identify the expected instance and application.
     Owned,
+    /// Labels identify a different instance or application.
     Foreign,
+    /// Required ownership labels are missing or malformed.
     Invalid,
 }
 impl OwnershipState {
+    /// Classifies ownership labels without exposing raw backend data.
     #[must_use]
     pub fn from_labels(
         labels: &BTreeMap<String, String>,

@@ -1,5 +1,4 @@
 //! Public manifests and their validated, canonical domain representation.
-#![allow(missing_docs)]
 
 use crate::ApplicationId;
 use serde::{Deserialize, Serialize};
@@ -17,48 +16,72 @@ pub const APPLICATION_API_VERSION: &str = "piqueld.dev/v1alpha1";
 pub const APPLICATION_KIND: &str = "Application";
 
 /// Strict public application request and export shape.
+/// User-declared application service.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationManifest {
+    /// API version string.
     pub api_version: String,
+    /// Resource kind string.
     pub kind: String,
+    /// User-provided metadata.
     pub metadata: MetadataInput,
+    /// Desired application resources.
     pub spec: ApplicationSpecInput,
 }
+/// User-provided application metadata.
+/// User-declared persistent volume.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MetadataInput {
+    /// User-facing application name.
     pub name: String,
 }
 
+/// User-provided application resource lists.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ApplicationSpecInput {
+    /// Declared services.
     pub services: Vec<ServiceInput>,
+    /// Declared persistent volumes.
     pub volumes: Vec<VolumeInput>,
+    /// Declared HTTP routes.
     pub routes: Vec<RouteInput>,
 }
 
+/// User-declared logical secret mount.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceInput {
+    /// Logical service name.
     pub name: String,
+    /// Image or Git source.
     pub source: SourceInput,
+    /// Desired replica count.
     #[serde(default = "default_replicas")]
     pub replicas: u16,
+    /// Environment variables keyed by name.
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+    /// Container entrypoint command.
     #[serde(default)]
     pub command: Vec<String>,
+    /// Arguments passed to the command.
     #[serde(default)]
     pub arguments: Vec<String>,
+    /// Published ports.
     #[serde(default)]
     pub ports: Vec<u16>,
+    /// Persistent volume mounts.
     #[serde(default)]
     pub mounts: Vec<MountInput>,
+    /// Logical secret mounts.
     #[serde(default)]
     pub secrets: Vec<SecretReferenceInput>,
+    /// Optional container health check.
     pub healthcheck: Option<HealthCheckInput>,
+    /// Optional resource limits.
     pub resources: Option<ResourceLimitsInput>,
 }
 
@@ -67,18 +90,26 @@ fn default_replicas() -> u16 {
 }
 
 /// Exactly one supported service source. The tag makes image/Git exhaustive.
+/// User-declared HTTP route.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum SourceInput {
+    /// Pull an image from a registry.
     Image {
+        /// Image reference.
         image: String,
     },
+    /// Build an image from a Git repository.
     Git {
+        /// Repository URL.
         repository: String,
+        /// Git reference to build.
         #[serde(default = "default_git_reference")]
         reference: String,
+        /// Build context path.
         #[serde(default = "default_context")]
         context: String,
+        /// Dockerfile path.
         #[serde(default = "default_dockerfile")]
         dockerfile: String,
     },
@@ -93,26 +124,35 @@ fn default_dockerfile() -> String {
     "Dockerfile".into()
 }
 
+/// User-declared persistent volume.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VolumeInput {
+    /// Logical volume name.
     pub name: String,
 }
-
+/// A persistent volume mount in a service.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MountInput {
+    /// Referenced logical volume name.
     pub volume: String,
+    /// Container target path.
     pub target: String,
+    /// Whether the mount is read-only.
     #[serde(default)]
     pub read_only: bool,
 }
 
+/// User-declared logical secret mount.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretReferenceInput {
+    /// Logical secret name.
     pub source: String,
+    /// Optional container target path.
     pub target: Option<String>,
+    /// File mode expressed as an octal string.
     #[serde(default = "default_secret_mode")]
     pub mode: String,
 }
@@ -120,30 +160,44 @@ fn default_secret_mode() -> String {
     "0400".into()
 }
 
+/// User-declared HTTP route.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RouteInput {
+    /// Hostname matched by the route.
     pub host: String,
+    /// Logical service receiving the route.
     pub service: String,
+    /// Container port receiving the route.
     pub port: u16,
 }
 
+/// User-declared container health check.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum HealthCheckInput {
+    /// HTTP health endpoint check.
     Http {
+        /// Container port to probe.
         port: u16,
+        /// HTTP path to probe.
         #[serde(default = "default_health_path")]
         path: String,
+        /// Probe interval in seconds.
         #[serde(default = "default_interval")]
         interval_seconds: u32,
+        /// Probe timeout in seconds.
         #[serde(default = "default_timeout")]
         timeout_seconds: u32,
     },
+    /// Executable command health check.
     Command {
+        /// Command and arguments to execute.
         command: Vec<String>,
+        /// Probe interval in seconds.
         #[serde(default = "default_interval")]
         interval_seconds: u32,
+        /// Probe timeout in seconds.
         #[serde(default = "default_timeout")]
         timeout_seconds: u32,
     },
@@ -158,10 +212,14 @@ fn default_timeout() -> u32 {
     3
 }
 
+/// Optional CPU and memory limits for a service.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimitsInput {
+    /// CPU limit in millicores.
     pub cpu_millis: Option<u32>,
+    /// Memory limit in bytes.
+    #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_u64)]
     pub memory_bytes: Option<u64>,
 }
 
@@ -169,8 +227,11 @@ pub struct ResourceLimitsInput {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidationError {
+    /// Stable machine-readable validation code.
     pub code: String,
+    /// Safe manifest field path.
     pub path: String,
+    /// Safe human-readable validation message.
     pub message: String,
 }
 
@@ -197,103 +258,162 @@ pub struct ValidatedApplication {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NormalizedApplication {
+    /// Stable application identity.
     pub id: ApplicationId,
+    /// API version string.
     pub api_version: String,
+    /// Resource kind string.
     pub kind: String,
+    /// Canonical metadata.
     pub metadata: Metadata,
+    /// Canonical resource specification.
     pub spec: ApplicationSpec,
 }
 
+/// Canonical application metadata.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
+    /// User-facing application name.
     pub name: String,
 }
 
+/// Canonical resource specification.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationSpec {
+    /// Canonical services.
     pub services: Vec<Service>,
+    /// Canonical volumes.
     pub volumes: Vec<Volume>,
+    /// Canonical routes.
     pub routes: Vec<Route>,
 }
 
+/// Canonical service definition.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Service {
+    /// Logical service name.
     pub name: String,
+    /// Resolved source description.
     pub source: Source,
+    /// Desired replica count.
     pub replicas: u16,
+    /// Environment variables keyed by name.
     pub environment: BTreeMap<String, String>,
+    /// Container entrypoint command.
     pub command: Vec<String>,
+    /// Arguments passed to the command.
     pub arguments: Vec<String>,
+    /// Published ports.
     pub ports: Vec<u16>,
+    /// Persistent volume mounts.
     pub mounts: Vec<Mount>,
+    /// Logical secret mounts.
     pub secrets: Vec<SecretReference>,
+    /// Optional health check.
     pub healthcheck: Option<HealthCheck>,
+    /// Optional resource limits.
     pub resources: Option<ResourceLimits>,
 }
 
+/// Canonical service source.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Source {
+    /// An image reference.
     Image {
+        /// Immutable or requested image reference.
         image: String,
     },
+    /// A resolved Git source.
     Git {
+        /// Repository URL.
         repository: String,
+        /// Resolved Git reference.
         reference: String,
+        /// Build context path.
         context: String,
+        /// Dockerfile path.
         dockerfile: String,
     },
 }
 
+/// Canonical persistent volume.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Volume {
+    /// Logical volume name.
     pub name: String,
 }
+/// Canonical persistent volume mount.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Mount {
+    /// Referenced volume name.
     pub volume: String,
+    /// Container target path.
     pub target: String,
+    /// Whether the mount is read-only.
     pub read_only: bool,
 }
+/// Canonical secret mount.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretReference {
+    /// Logical secret name.
     pub source: String,
+    /// Container target path.
     pub target: String,
+    /// File mode expressed as an octal string.
     pub mode: String,
 }
+/// Canonical HTTP route.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
+    /// Hostname matched by the route.
     pub host: String,
+    /// Logical service receiving the route.
     pub service: String,
+    /// Container port receiving the route.
     pub port: u16,
 }
 
+/// Canonical service health check.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum HealthCheck {
+    /// HTTP health endpoint check.
     Http {
+        /// Container port to probe.
         port: u16,
+        /// HTTP path to probe.
         path: String,
+        /// Probe interval in seconds.
         interval_seconds: u32,
+        /// Probe timeout in seconds.
         timeout_seconds: u32,
     },
+    /// Executable command health check.
     Command {
+        /// Command and arguments to execute.
         command: Vec<String>,
+        /// Probe interval in seconds.
         interval_seconds: u32,
+        /// Probe timeout in seconds.
         timeout_seconds: u32,
     },
 }
+/// Canonical CPU and memory limits.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimits {
+    /// CPU limit in millicores.
     pub cpu_millis: Option<u32>,
+    /// Memory limit in bytes.
+    #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_u64)]
     pub memory_bytes: Option<u64>,
 }
 
@@ -403,34 +523,9 @@ fn valid_path_indices(mut value: &str) -> bool {
     true
 }
 
-#[allow(clippy::too_many_lines)]
 fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, ValidationErrors> {
     let mut errors = Vec::new();
-    if input.api_version != APPLICATION_API_VERSION {
-        error(
-            &mut errors,
-            "api_version_unsupported",
-            "api_version",
-            "unsupported application API version",
-        );
-    }
-    if input.kind != APPLICATION_KIND {
-        error(
-            &mut errors,
-            "kind_unsupported",
-            "kind",
-            "resource kind must be Application",
-        );
-    }
-    validate_name(&input.metadata.name, "metadata.name", &mut errors);
-    if input.spec.services.is_empty() {
-        error(
-            &mut errors,
-            "service_required",
-            "spec.services",
-            "application must declare at least one service",
-        );
-    }
+    validate_header(&input, &mut errors);
     let service_names = unique_names(
         input.spec.services.iter().map(|s| &s.name),
         "spec.services",
@@ -441,262 +536,14 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
         "spec.volumes",
         &mut errors,
     );
-    let mut route_hosts = BTreeSet::new();
-    let mut route_keys = BTreeSet::new();
-
-    for (index, service) in input.spec.services.iter().enumerate() {
-        let base = format!("spec.services[{index}]");
-        validate_name(&service.name, &format!("{base}.name"), &mut errors);
-        if !(1..=100).contains(&service.replicas) {
-            error(
-                &mut errors,
-                "replicas_out_of_range",
-                &format!("{base}.replicas"),
-                "replicas must be between 1 and 100",
-            );
-        }
-        match &service.source {
-            SourceInput::Image { image } => {
-                if !valid_image_reference(image) {
-                    error(
-                        &mut errors,
-                        "image_invalid",
-                        &format!("{base}.source.image"),
-                        "image must be a valid registry reference without credentials or a URL scheme",
-                    );
-                }
-            }
-            SourceInput::Git {
-                repository,
-                reference,
-                context,
-                dockerfile,
-            } => {
-                if !valid_git_repository(repository) {
-                    error(
-                        &mut errors,
-                        "git_repository_unsupported",
-                        &format!("{base}.source.repository"),
-                        "only HTTP(S) Git repositories are supported",
-                    );
-                }
-                if !valid_git_reference(reference) {
-                    error(
-                        &mut errors,
-                        "git_reference_invalid",
-                        &format!("{base}.source.reference"),
-                        "Git reference must use safe Git ref syntax",
-                    );
-                }
-                validate_relative_path(context, &format!("{base}.source.context"), &mut errors);
-                validate_relative_path(
-                    dockerfile,
-                    &format!("{base}.source.dockerfile"),
-                    &mut errors,
-                );
-            }
-        }
-        for (index, (key, value)) in service.environment.iter().enumerate() {
-            if !valid_env_name(key) {
-                error(
-                    &mut errors,
-                    "environment_name_invalid",
-                    &format!("{base}.environment[{index}].name"),
-                    "environment names must use letters, digits, and underscores and cannot start with a digit",
-                );
-            }
-            if value.contains('\0') {
-                error(
-                    &mut errors,
-                    "environment_value_invalid",
-                    &format!("{base}.environment[{index}].value"),
-                    "environment values cannot contain NUL",
-                );
-            }
-        }
-        let mut mount_targets = BTreeSet::new();
-        for (mount_index, mount) in service.mounts.iter().enumerate() {
-            let path = format!("{base}.mounts[{mount_index}]");
-            if !volume_names.contains(&mount.volume) {
-                error(
-                    &mut errors,
-                    "mount_volume_missing",
-                    &format!("{path}.volume"),
-                    "mount references an undeclared volume",
-                );
-            }
-            validate_absolute_path(
-                &mount.target,
-                &format!("{path}.target"),
-                "mount_target_unsafe",
-                "mount target must be an absolute, normalized container path below root",
-                &mut errors,
-            );
-            if !mount_targets.insert(mount.target.as_str()) {
-                error(
-                    &mut errors,
-                    "mount_target_duplicate",
-                    &format!("{path}.target"),
-                    "mount target is duplicated in this service",
-                );
-            }
-        }
-        let mut secret_targets = BTreeSet::new();
-        for (secret_index, secret) in service.secrets.iter().enumerate() {
-            let path = format!("{base}.secrets[{secret_index}]");
-            validate_name(&secret.source, &format!("{path}.source"), &mut errors);
-            let target = secret.target.as_deref().unwrap_or(&secret.source);
-            validate_secret_target(target, &format!("{path}.target"), &mut errors);
-            let effective_target = effective_secret_target(target);
-            if !secret_targets.insert(effective_target.clone()) {
-                error(
-                    &mut errors,
-                    "secret_target_duplicate",
-                    &format!("{path}.target"),
-                    "secret target is duplicated in this service",
-                );
-            }
-            if mount_targets.contains(effective_target.as_str()) {
-                error(
-                    &mut errors,
-                    "target_collision",
-                    &format!("{path}.target"),
-                    "secret target conflicts with a volume mount target in this service",
-                );
-            }
-            if !valid_mode(&secret.mode) {
-                error(
-                    &mut errors,
-                    "secret_mode_invalid",
-                    &format!("{path}.mode"),
-                    "secret mode must be 0 plus three octal digits, grant read access, and grant no write access",
-                );
-            }
-        }
-        for (port_index, port) in service.ports.iter().enumerate() {
-            if *port == 0 {
-                error(
-                    &mut errors,
-                    "port_invalid",
-                    &format!("{base}.ports[{port_index}]"),
-                    "port must be between 1 and 65535",
-                );
-            }
-        }
-        validate_process_arguments(&service.command, &format!("{base}.command"), &mut errors);
-        if service
-            .command
-            .first()
-            .is_some_and(|argument| argument.trim().is_empty())
-        {
-            error(
-                &mut errors,
-                "process_command_invalid",
-                &format!("{base}.command[0]"),
-                "an explicit container command must start with a non-empty executable",
-            );
-        }
-        validate_process_arguments(
-            &service.arguments,
-            &format!("{base}.arguments"),
-            &mut errors,
-        );
-        if let Some(health) = &service.healthcheck {
-            validate_health(health, &format!("{base}.healthcheck"), &mut errors);
-            if let HealthCheckInput::Http { port, .. } = health
-                && !service.ports.is_empty()
-                && !service.ports.contains(port)
-            {
-                error(
-                    &mut errors,
-                    "healthcheck_port_missing",
-                    &format!("{base}.healthcheck.port"),
-                    "health-check port is not declared by its service",
-                );
-            }
-        }
-        if let Some(resources) = &service.resources {
-            if resources.cpu_millis.is_none() && resources.memory_bytes.is_none() {
-                error(
-                    &mut errors,
-                    "resource_limits_empty",
-                    &format!("{base}.resources"),
-                    "resource limits must configure CPU, memory, or both",
-                );
-            }
-            if resources.cpu_millis == Some(0) {
-                error(
-                    &mut errors,
-                    "cpu_limit_invalid",
-                    &format!("{base}.resources.cpu_millis"),
-                    "CPU limit must be greater than zero",
-                );
-            }
-            if resources.memory_bytes == Some(0) {
-                error(
-                    &mut errors,
-                    "memory_limit_invalid",
-                    &format!("{base}.resources.memory_bytes"),
-                    "memory limit must be greater than zero",
-                );
-            }
-        }
-    }
-    for (index, volume) in input.spec.volumes.iter().enumerate() {
-        validate_name(
-            &volume.name,
-            &format!("spec.volumes[{index}].name"),
-            &mut errors,
-        );
-    }
-    for (index, route) in input.spec.routes.iter().enumerate() {
-        let base = format!("spec.routes[{index}]");
-        validate_hostname(&route.host, &format!("{base}.host"), &mut errors);
-        if !service_names.contains(&route.service) {
-            error(
-                &mut errors,
-                "route_service_missing",
-                &format!("{base}.service"),
-                "route references an undeclared service",
-            );
-        }
-        if let Some(service) = input
-            .spec
-            .services
-            .iter()
-            .find(|service| service.name == route.service)
-            && !service.ports.is_empty()
-            && !service.ports.contains(&route.port)
-        {
-            error(
-                &mut errors,
-                "route_port_missing",
-                &format!("{base}.port"),
-                "route port is not declared by its service",
-            );
-        }
-        if route.port == 0 {
-            error(
-                &mut errors,
-                "port_invalid",
-                &format!("{base}.port"),
-                "port must be between 1 and 65535",
-            );
-        }
-        let host = route.host.to_ascii_lowercase();
-        let duplicate = !route_keys.insert((host.clone(), route.service.clone(), route.port));
-        if duplicate {
-            error(&mut errors, "route_duplicate", &base, "route is duplicated");
-        }
-        if !route_hosts.insert(host) && !duplicate {
-            error(
-                &mut errors,
-                "public_route_conflict",
-                &format!("{base}.host"),
-                "only one public route may own a hostname",
-            );
-        }
-    }
+    validate_services(&input.spec.services, &volume_names, &mut errors);
+    validate_volumes(&input.spec.volumes, &mut errors);
+    validate_routes(
+        &input.spec.routes,
+        &input.spec.services,
+        &service_names,
+        &mut errors,
+    );
     errors.sort_by(|a, b| a.path.cmp(&b.path).then(a.code.cmp(&b.code)));
     if !errors.is_empty() {
         return Err(ValidationErrors(errors));
@@ -706,6 +553,359 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
         name: input.metadata.name,
         spec: convert_spec(input.spec),
     })
+}
+
+fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) {
+    if input.api_version != APPLICATION_API_VERSION {
+        error(
+            errors,
+            "api_version_unsupported",
+            "api_version",
+            "unsupported application API version",
+        );
+    }
+    if input.kind != APPLICATION_KIND {
+        error(
+            errors,
+            "kind_unsupported",
+            "kind",
+            "resource kind must be Application",
+        );
+    }
+    validate_name(&input.metadata.name, "metadata.name", errors);
+    if input.spec.services.is_empty() {
+        error(
+            errors,
+            "service_required",
+            "spec.services",
+            "application must declare at least one service",
+        );
+    }
+}
+
+fn validate_services(
+    services: &[ServiceInput],
+    volume_names: &BTreeSet<String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    for (index, service) in services.iter().enumerate() {
+        validate_service(service, index, volume_names, errors);
+    }
+}
+
+fn validate_service(
+    service: &ServiceInput,
+    index: usize,
+    volume_names: &BTreeSet<String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let base = format!("spec.services[{index}]");
+    validate_name(&service.name, &format!("{base}.name"), errors);
+    if !(1..=100).contains(&service.replicas) {
+        error(
+            errors,
+            "replicas_out_of_range",
+            &format!("{base}.replicas"),
+            "replicas must be between 1 and 100",
+        );
+    }
+    validate_source(&service.source, &base, errors);
+    validate_environment(&service.environment, &base, errors);
+    let mount_targets = validate_mounts(&service.mounts, &base, volume_names, errors);
+    validate_secrets(&service.secrets, &base, &mount_targets, errors);
+    validate_ports(&service.ports, &base, errors);
+    validate_process_arguments(&service.command, &format!("{base}.command"), errors);
+    if service
+        .command
+        .first()
+        .is_some_and(|argument| argument.trim().is_empty())
+    {
+        error(
+            errors,
+            "process_command_invalid",
+            &format!("{base}.command[0]"),
+            "an explicit container command must start with a non-empty executable",
+        );
+    }
+    validate_process_arguments(&service.arguments, &format!("{base}.arguments"), errors);
+    validate_healthcheck(service, &base, errors);
+    validate_resources(service.resources.as_ref(), &base, errors);
+}
+
+fn validate_source(source: &SourceInput, base: &str, errors: &mut Vec<ValidationError>) {
+    match source {
+        SourceInput::Image { image } if !valid_image_reference(image) => {
+            error(
+                errors,
+                "image_invalid",
+                &format!("{base}.source.image"),
+                "image must be a valid registry reference without credentials or a URL scheme",
+            );
+        }
+        SourceInput::Git {
+            repository,
+            reference,
+            context,
+            dockerfile,
+        } => {
+            if !valid_git_repository(repository) {
+                error(
+                    errors,
+                    "git_repository_unsupported",
+                    &format!("{base}.source.repository"),
+                    "only HTTP(S) Git repositories are supported",
+                );
+            }
+            if !valid_git_reference(reference) {
+                error(
+                    errors,
+                    "git_reference_invalid",
+                    &format!("{base}.source.reference"),
+                    "Git reference must use safe Git ref syntax",
+                );
+            }
+            validate_relative_path(context, &format!("{base}.source.context"), errors);
+            validate_relative_path(dockerfile, &format!("{base}.source.dockerfile"), errors);
+        }
+        SourceInput::Image { .. } => {}
+    }
+}
+
+fn validate_environment(
+    environment: &BTreeMap<String, String>,
+    base: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    for (index, (key, value)) in environment.iter().enumerate() {
+        if !valid_env_name(key) {
+            error(
+                errors,
+                "environment_name_invalid",
+                &format!("{base}.environment[{index}].name"),
+                "environment names must use letters, digits, and underscores and cannot start with a digit",
+            );
+        }
+        if value.contains('\0') {
+            error(
+                errors,
+                "environment_value_invalid",
+                &format!("{base}.environment[{index}].value"),
+                "environment values cannot contain NUL",
+            );
+        }
+    }
+}
+
+fn validate_mounts(
+    mounts: &[MountInput],
+    base: &str,
+    volume_names: &BTreeSet<String>,
+    errors: &mut Vec<ValidationError>,
+) -> BTreeSet<String> {
+    let mut targets = BTreeSet::new();
+    for (index, mount) in mounts.iter().enumerate() {
+        let path = format!("{base}.mounts[{index}]");
+        if !volume_names.contains(&mount.volume) {
+            error(
+                errors,
+                "mount_volume_missing",
+                &format!("{path}.volume"),
+                "mount references an undeclared volume",
+            );
+        }
+        validate_absolute_path(
+            &mount.target,
+            &format!("{path}.target"),
+            "mount_target_unsafe",
+            "mount target must be an absolute, normalized container path below root",
+            errors,
+        );
+        if !targets.insert(mount.target.clone()) {
+            error(
+                errors,
+                "mount_target_duplicate",
+                &format!("{path}.target"),
+                "mount target is duplicated in this service",
+            );
+        }
+    }
+    targets
+}
+
+fn validate_secrets(
+    secrets: &[SecretReferenceInput],
+    base: &str,
+    mount_targets: &BTreeSet<String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut targets = BTreeSet::new();
+    for (index, secret) in secrets.iter().enumerate() {
+        let path = format!("{base}.secrets[{index}]");
+        validate_name(&secret.source, &format!("{path}.source"), errors);
+        let target = secret.target.as_deref().unwrap_or(&secret.source);
+        validate_secret_target(target, &format!("{path}.target"), errors);
+        let effective_target = effective_secret_target(target);
+        if !targets.insert(effective_target.clone()) {
+            error(
+                errors,
+                "secret_target_duplicate",
+                &format!("{path}.target"),
+                "secret target is duplicated in this service",
+            );
+        }
+        if mount_targets.contains(&effective_target) {
+            error(
+                errors,
+                "target_collision",
+                &format!("{path}.target"),
+                "secret target conflicts with a volume mount target in this service",
+            );
+        }
+        if !valid_mode(&secret.mode) {
+            error(
+                errors,
+                "secret_mode_invalid",
+                &format!("{path}.mode"),
+                "secret mode must be 0 plus three octal digits, grant read access, and grant no write access",
+            );
+        }
+    }
+}
+
+fn validate_ports(ports: &[u16], base: &str, errors: &mut Vec<ValidationError>) {
+    for (index, port) in ports.iter().enumerate() {
+        if *port == 0 {
+            error(
+                errors,
+                "port_invalid",
+                &format!("{base}.ports[{index}]"),
+                "port must be between 1 and 65535",
+            );
+        }
+    }
+}
+
+fn validate_healthcheck(service: &ServiceInput, base: &str, errors: &mut Vec<ValidationError>) {
+    let Some(health) = &service.healthcheck else {
+        return;
+    };
+    validate_health(health, &format!("{base}.healthcheck"), errors);
+    if let HealthCheckInput::Http { port, .. } = health
+        && !service.ports.is_empty()
+        && !service.ports.contains(port)
+    {
+        error(
+            errors,
+            "healthcheck_port_missing",
+            &format!("{base}.healthcheck.port"),
+            "health-check port is not declared by its service",
+        );
+    }
+}
+
+fn validate_resources(
+    resources: Option<&ResourceLimitsInput>,
+    base: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(resources) = resources else { return };
+    if resources.cpu_millis.is_none() && resources.memory_bytes.is_none() {
+        error(
+            errors,
+            "resource_limits_empty",
+            &format!("{base}.resources"),
+            "resource limits must configure CPU, memory, or both",
+        );
+    }
+    if resources.cpu_millis == Some(0) {
+        error(
+            errors,
+            "cpu_limit_invalid",
+            &format!("{base}.resources.cpu_millis"),
+            "CPU limit must be greater than zero",
+        );
+    }
+    if resources.memory_bytes == Some(0) {
+        error(
+            errors,
+            "memory_limit_invalid",
+            &format!("{base}.resources.memory_bytes"),
+            "memory limit must be greater than zero",
+        );
+    }
+    if resources
+        .memory_bytes
+        .is_some_and(|bytes| i64::try_from(bytes).is_err())
+    {
+        error(
+            errors,
+            "memory_limit_invalid",
+            &format!("{base}.resources.memory_bytes"),
+            "memory limit exceeds the maximum supported runtime value",
+        );
+    }
+}
+
+fn validate_volumes(volumes: &[VolumeInput], errors: &mut Vec<ValidationError>) {
+    for (index, volume) in volumes.iter().enumerate() {
+        validate_name(&volume.name, &format!("spec.volumes[{index}].name"), errors);
+    }
+}
+
+fn validate_routes(
+    routes: &[RouteInput],
+    services: &[ServiceInput],
+    service_names: &BTreeSet<String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut route_hosts = BTreeSet::new();
+    let mut route_keys = BTreeSet::new();
+    for (index, route) in routes.iter().enumerate() {
+        let base = format!("spec.routes[{index}]");
+        validate_hostname(&route.host, &format!("{base}.host"), errors);
+        if !service_names.contains(&route.service) {
+            error(
+                errors,
+                "route_service_missing",
+                &format!("{base}.service"),
+                "route references an undeclared service",
+            );
+        }
+        if let Some(service) = services
+            .iter()
+            .find(|service| service.name == route.service)
+            && !service.ports.is_empty()
+            && !service.ports.contains(&route.port)
+        {
+            error(
+                errors,
+                "route_port_missing",
+                &format!("{base}.port"),
+                "route port is not declared by its service",
+            );
+        }
+        if route.port == 0 {
+            error(
+                errors,
+                "port_invalid",
+                &format!("{base}.port"),
+                "port must be between 1 and 65535",
+            );
+        }
+        let host = route.host.to_ascii_lowercase();
+        let duplicate = !route_keys.insert((host.clone(), route.service.clone(), route.port));
+        if duplicate {
+            error(errors, "route_duplicate", &base, "route is duplicated");
+        }
+        if !route_hosts.insert(host) && !duplicate {
+            error(
+                errors,
+                "public_route_conflict",
+                &format!("{base}.host"),
+                "only one public route may own a hostname",
+            );
+        }
+    }
 }
 
 fn unique_names<'a>(

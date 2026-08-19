@@ -523,6 +523,26 @@ path = "/../ready?token=sensitive"
             .iter()
             .all(|error| !error.path.contains("token") && !error.message.contains("sensitive"))
     );
+
+    let oversized_memory = serde_json::json!({
+        "api_version": "piqueld.dev/v1alpha1",
+        "kind": "Application",
+        "metadata": { "name": "test" },
+        "spec": {
+            "services": [{
+                "name": "web",
+                "source": { "type": "image", "image": "alpine" },
+                "resources": { "memory_bytes": u64::MAX }
+            }]
+        }
+    });
+    assert!(
+        parse_json(&oversized_memory.to_string())
+            .unwrap_err()
+            .0
+            .iter()
+            .any(|error| error.code == "memory_limit_invalid")
+    );
 }
 
 #[test]

@@ -7,96 +7,142 @@ use utoipa::ToSchema;
 use crate::{Client, ClientError, Page, SseEvent, path_segment};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Public application state returned by the API.
 pub struct ApplicationView {
+    /// Normalized application manifest.
     pub application: NormalizedApplication,
+    /// Monotonic application generation.
     #[schema(minimum = 1)]
     pub generation: u64,
+    /// Hash of the normalized desired specification.
     pub spec_hash: String,
+    /// Whether deletion has been requested.
     pub delete_intent: bool,
+    /// Creation timestamp in Unix milliseconds.
     pub created_at_ms: i64,
+    /// Last update timestamp in Unix milliseconds.
     pub updated_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+/// Request to create an application.
 pub struct CreateApplicationRequest {
+    /// Application manifest to store and reconcile.
     pub manifest: ApplicationManifest,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+/// Request to replace an application at an expected generation.
 pub struct ReplaceApplicationRequest {
+    /// Generation that must still be current.
     #[schema(minimum = 1)]
     pub expected_generation: u64,
+    /// Replacement application manifest.
     pub manifest: ApplicationManifest,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+/// Request to preview creation of an application.
 pub struct PlanApplicationRequest {
+    /// Application manifest to plan.
     pub manifest: ApplicationManifest,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+/// Request to preview replacing an application.
 pub struct ReplacePlanRequest {
+    /// Generation that the plan is based on.
     #[schema(minimum = 1)]
     pub expected_generation: u64,
+    /// Replacement application manifest.
     pub manifest: ApplicationManifest,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+/// Request carrying an optimistic-concurrency generation.
 pub struct ExpectedGeneration {
+    /// Generation that must still be current.
     #[schema(minimum = 1)]
     pub expected_generation: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+/// Request to mark an application for deletion.
 pub struct DeleteApplicationRequest {
+    /// Generation that must still be current.
     #[schema(minimum = 1)]
     pub expected_generation: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Operation accepted by an application mutation endpoint.
 pub struct AcceptedOperation {
+    /// Asynchronous operation identifier.
     pub operation_id: String,
+    /// Stable application identifier.
     pub application_id: String,
+    /// Generation created by the mutation.
     #[schema(minimum = 1)]
     pub generation: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Dry-run plan returned by the API.
 pub struct PlanView {
+    /// Stable application identifier.
     pub application_id: String,
+    /// Generation that would be created.
     #[schema(minimum = 1)]
     pub proposed_generation: u64,
+    /// Ordered runtime plan.
     pub plan: Plan,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Current application reconciliation status.
 pub struct ApplicationStatusView {
+    /// Stable application identifier.
     pub application_id: String,
+    /// Machine-readable lifecycle state.
     pub state: String,
+    /// Last observed application generation.
     #[schema(minimum = 1)]
     pub observed_generation: Option<u64>,
+    /// Optional safe status message.
     pub message: Option<String>,
+    /// Last update timestamp in Unix milliseconds.
     pub updated_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Cursor and page-size options for listing applications.
 pub struct ListApplicationsOptions {
+    /// Cursor returned by a previous page.
     pub cursor: Option<String>,
+    /// Maximum number of items to return.
     pub limit: Option<u16>,
 }
 
 impl Client {
+    /// Lists the first page of applications.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn applications(&self) -> Result<Page<ApplicationView>, ClientError> {
         self.applications_with(&ListApplicationsOptions::default())
             .await
     }
 
+    /// Lists a page of applications using cursor and limit options.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn applications_with(
         &self,
         options: &ListApplicationsOptions,
@@ -117,6 +163,10 @@ impl Client {
         self.send::<_, ()>(Method::GET, &path, None, &[]).await
     }
 
+    /// Fetches one application by identifier.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn application(&self, id: &str) -> Result<ApplicationView, ClientError> {
         self.send::<_, ()>(
             Method::GET,
@@ -127,6 +177,10 @@ impl Client {
         .await
     }
 
+    /// Creates an application and starts its asynchronous reconciliation.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn create_application(
         &self,
         request: &CreateApplicationRequest,
@@ -141,6 +195,10 @@ impl Client {
         .await
     }
 
+    /// Replaces an application at an expected generation.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn replace_application(
         &self,
         id: &str,
@@ -155,6 +213,10 @@ impl Client {
         .await
     }
 
+    /// Marks an application for deletion.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn delete_application(
         &self,
         id: &str,
@@ -169,6 +231,10 @@ impl Client {
         .await
     }
 
+    /// Plans creating an application without mutating runtime state.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn plan_create(
         &self,
         request: &PlanApplicationRequest,
@@ -182,6 +248,10 @@ impl Client {
         .await
     }
 
+    /// Plans replacing an application without mutating runtime state.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn plan_replace(
         &self,
         id: &str,
@@ -196,6 +266,10 @@ impl Client {
         .await
     }
 
+    /// Requests reconciliation at an expected generation.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn reconcile(
         &self,
         id: &str,
@@ -212,6 +286,10 @@ impl Client {
         .await
     }
 
+    /// Fetches current reconciliation status for an application.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn application_status(&self, id: &str) -> Result<ApplicationStatusView, ClientError> {
         self.send::<_, ()>(
             Method::GET,
@@ -222,6 +300,10 @@ impl Client {
         .await
     }
 
+    /// Creates an application from a TOML manifest.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn create_application_toml(
         &self,
         manifest: &str,
@@ -239,6 +321,10 @@ impl Client {
         .await
     }
 
+    /// Replaces an application using a TOML manifest.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn replace_application_toml(
         &self,
         id: &str,
@@ -258,6 +344,10 @@ impl Client {
         .await
     }
 
+    /// Plans creating an application from a TOML manifest.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn plan_create_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
         self.send_text(
             Method::POST,
@@ -268,6 +358,10 @@ impl Client {
         .await
     }
 
+    /// Plans replacing an application from a TOML manifest.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn plan_replace_toml(
         &self,
         id: &str,
@@ -287,6 +381,8 @@ impl Client {
         .await
     }
 
+    /// Watches application operation events until the receiver is dropped.
+    /// Watches application operation events until the receiver is dropped.
     #[must_use]
     pub fn watch_application(
         &self,

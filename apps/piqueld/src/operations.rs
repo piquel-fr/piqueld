@@ -11,16 +11,126 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+/// Sanitized failure returned while executing a durable operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum OperationError {
+    /// The application state could not be loaded.
+    #[error("application state is unavailable")]
+    StateUnavailable,
+    /// The durable operation journal could not be read or updated.
+    #[error("operation journal is unavailable")]
+    JournalUnavailable,
+    /// Operation execution was cancelled.
+    #[error("operation was cancelled")]
+    Cancelled,
+    /// A newer application generation made this operation obsolete.
+    #[error("operation was superseded by a newer application generation")]
+    Superseded,
+    /// A runtime resource is not safely owned by the application.
+    #[error("a Docker resource is not safely owned by this application")]
+    OwnershipConflict,
+    /// The application has no compiled runtime state.
+    #[error("resolved application state is unavailable")]
+    ResolvedStateMissing,
+    /// An immutable Docker resource differs from the desired configuration.
+    #[error("Docker resource configuration cannot be reconciled safely in place")]
+    DockerConfigurationConflict,
+    /// Docker is not an active Swarm manager.
+    #[error("Docker is not an active Swarm manager")]
+    SwarmManagerUnavailable,
+    /// The Docker Swarm topology is unsupported.
+    #[error("Docker Swarm must contain exactly one manager node")]
+    SwarmTopologyUnsupported,
+    /// Docker Engine is unavailable while performing the described operation.
+    #[error("Docker Engine is unavailable while {0}")]
+    DockerUnavailable(&'static str),
+    /// An image could not be resolved while performing the described operation.
+    #[error("container image could not be resolved to a digest while {0}")]
+    ImageResolutionFailed(&'static str),
+    /// A Docker request failed while performing the described operation.
+    #[error("Docker request failed while {0}")]
+    DockerRequestFailed(&'static str),
+    /// Secret deployment has not been implemented yet.
+    #[error("secret deployment is unavailable until Plan 07")]
+    SecretLifecycleUnavailable,
+    /// Git image builds have not been implemented yet.
+    #[error("image builds are unavailable until Plan 08")]
+    BuildPipelineUnavailable,
+    /// A service update failed in Docker.
+    #[error("service update paused after task failure; the previous healthy task is retained")]
+    ServiceUpdateFailed,
+    /// A service did not converge before its deadline.
+    #[error("service did not converge before the deadline")]
+    ConvergenceTimeout,
+    /// Application-owned resources still exist when deletion reaches its final barrier.
+    #[error("application deletion has not converged")]
+    DeletionNotConverged,
+}
+
+impl OperationError {
+    /// Returns the stable machine-readable failure code.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::StateUnavailable => "state_unavailable",
+            Self::JournalUnavailable => "journal_unavailable",
+            Self::Cancelled => "cancelled",
+            Self::Superseded => "superseded",
+            Self::OwnershipConflict => "ownership_conflict",
+            Self::ResolvedStateMissing => "resolved_state_missing",
+            Self::DockerConfigurationConflict => "docker_configuration_conflict",
+            Self::SwarmManagerUnavailable => "swarm_manager_unavailable",
+            Self::SwarmTopologyUnsupported => "swarm_topology_unsupported",
+            Self::DockerUnavailable(_) => "docker_unavailable",
+            Self::ImageResolutionFailed(_) => "image_resolution_failed",
+            Self::DockerRequestFailed(_) => "docker_request_failed",
+            Self::SecretLifecycleUnavailable => "secret_lifecycle_unavailable",
+            Self::BuildPipelineUnavailable => "build_pipeline_unavailable",
+            Self::ServiceUpdateFailed => "service_update_failed",
+            Self::ConvergenceTimeout => "convergence_timeout",
+            Self::DeletionNotConverged => "deletion_not_converged",
+        }
+    }
+
+    /// Formats the stable, sanitized public failure message.
+    #[must_use]
+    pub fn message(&self) -> String {
+        format!("{self}")
+    }
+
+    /// Returns the stable code and sanitized message as a persistence-ready pair.
+    #[must_use]
+    pub fn tuple(&self) -> (&'static str, String) {
+        (self.code(), self.message())
+    }
+}
+
+#[cfg(test)]
+mod operation_error_tests {
+    use super::OperationError;
+
+    #[test]
+    fn operation_error_exposes_stable_sanitized_parts() {
+        let error = OperationError::OwnershipConflict;
+        assert_eq!(error.code(), "ownership_conflict");
+        assert_eq!(
+            error.message(),
+            "a Docker resource is not safely owned by this application".to_owned()
+        );
+        assert_eq!(error.tuple(), (error.code(), error.message()));
+    }
+}
+
 /// Executes one already-durable operation. Implementations must be idempotent:
 /// startup recovery can invoke an interrupted operation again.
 #[async_trait]
 pub trait OperationHandler: Send + Sync + 'static {
-    /// Performs operation work. Returned text must already be safe for durable/public storage.
+    /// Performs operation work.
     async fn execute(
         &self,
         operation: &Operation,
         cancellation: &CancellationToken,
-    ) -> Result<(), (&'static str, &'static str)>;
+    ) -> Result<(), OperationError>;
 }
 
 /// Scheduler failures. Individual operation failures are journaled and are not scheduler failures.
@@ -31,7 +141,10 @@ pub enum SchedulerError {
     Store(#[from] StoreError),
     /// An operation task unexpectedly panicked.
     #[error("operation task failed")]
-    Task,
+    Task(#[source] tokio::task::JoinError),
+    /// A scheduler semaphore was closed unexpectedly.
+    #[error("operation scheduler is unavailable")]
+    Semaphore(#[source] tokio::sync::AcquireError),
 }
 
 /// In-process dispatcher with global, build-specific, and per-application bounds.
@@ -53,9 +166,48 @@ where
         handler: &H,
         operation_id: &str,
         token: &CancellationToken,
-    ) -> Result<Result<(), (&'static str, &'static str)>, StoreError> {
+    ) -> Result<Result<(), OperationError>, StoreError> {
         let claimed = repository.operation(operation_id).await?;
         Ok(handler.execute(&claimed, token).await)
+    }
+
+    async fn finish_claimed(
+        repository: &R,
+        operation_id: &str,
+        result: Result<(), OperationError>,
+    ) -> Result<(), StoreError> {
+        match result {
+            Ok(()) => {
+                repository
+                    .transition_operation(
+                        operation_id,
+                        WorkState::Running,
+                        WorkState::Succeeded,
+                        None,
+                    )
+                    .await
+            }
+            Err(OperationError::Superseded) => {
+                repository
+                    .transition_operation(
+                        operation_id,
+                        WorkState::Running,
+                        WorkState::Cancelled,
+                        None,
+                    )
+                    .await
+            }
+            Err(error) => {
+                repository
+                    .transition_operation(
+                        operation_id,
+                        WorkState::Running,
+                        WorkState::Failed,
+                        Some(error),
+                    )
+                    .await
+            }
+        }
     }
 
     /// Creates a scheduler. Both concurrency limits must be non-zero.
@@ -132,13 +284,13 @@ where
                     let _global = tokio::select! {
                         biased;
                         () = token.cancelled() => return Ok(()),
-                        permit = global.acquire_owned() => permit.map_err(|_| StoreError::Database)?,
+                        permit = global.acquire_owned() => permit.map_err(SchedulerError::Semaphore)?,
                     };
                     let _build = if operation.kind == OperationKind::Build {
                         Some(tokio::select! {
                             biased;
                             () = token.cancelled() => return Ok(()),
-                            permit = builds.acquire_owned() => permit.map_err(|_| StoreError::Database)?,
+                            permit = builds.acquire_owned() => permit.map_err(SchedulerError::Semaphore)?,
                         })
                     } else {
                         None
@@ -159,7 +311,7 @@ where
                     {
                         Ok(()) => {}
                         Err(StoreError::IllegalTransition) => return Ok(()),
-                        Err(error) => return Err(error),
+                        Err(error) => return Err(error.into()),
                     }
                     let result = tokio::select! {
                         biased;
@@ -174,29 +326,12 @@ where
                         },
                         result = Self::execute_claimed(&repository, &handler, &operation.id, &token) => result?,
                     };
-                    match result {
-                        Ok(()) => repository
-                            .transition_operation(
-                                &operation.id,
-                                WorkState::Running,
-                                WorkState::Succeeded,
-                                None,
-                            )
-                            .await?,
-                        Err((code, message)) => repository
-                            .transition_operation(
-                                &operation.id,
-                                WorkState::Running,
-                                WorkState::Failed,
-                                Some((code, message)),
-                            )
-                            .await?,
-                    }
-                    Ok::<(),StoreError>(())
+                    Self::finish_claimed(&repository, &operation.id, result).await?;
+                    Ok::<(), SchedulerError>(())
                 });
             }
             while let Some(result) = tasks.join_next().await {
-                result.map_err(|_| SchedulerError::Task)??;
+                result.map_err(SchedulerError::Task)??;
             }
             // Every operation in the snapshot is now terminal or recovery due to cancellation.
             if cancellation.is_cancelled() {

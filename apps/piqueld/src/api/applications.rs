@@ -24,10 +24,10 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::{
-    ApiError, ApiState, RequestShape, StateEventSnapshot, accepted, current_state_stream,
-    decode_json, generation, header_text, hex, idempotency_key_hash, idempotent_application_id,
-    last_event_id, ok, openapi::ApiErrorResponse, parse_manifest, parse_update, require_json,
-    valid_expected_generation,
+    ApiError, ApiState, BoundaryError, RequestShape, StateEventSnapshot, accepted,
+    current_state_stream, decode_json, generation, header_text, hex, idempotency_key_hash,
+    idempotent_application_id, last_event_id, ok, openapi::ApiErrorResponse, parse_manifest,
+    parse_update, require_json, valid_expected_generation,
 };
 use crate::store::{
     ApplicationRepository, DEFAULT_PAGE_SIZE, StatusRepository, StoreError, StoredApplication,
@@ -71,7 +71,7 @@ pub(super) async fn list(
         .list(query.cursor.as_deref(), limit)
         .await
         .map_err(|error| match error {
-            StoreError::InvalidInput => ApiError::new(
+            StoreError::InvalidInput | StoreError::InvalidInputSource(_) => ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "pagination_invalid",
                 "pagination parameters are invalid",
@@ -175,7 +175,6 @@ pub(super) async fn create(
             generation: mutation.generation,
         }));
     }
-    state.require_runtime_execution()?;
     reject_name_collision(&state, &app, None).await?;
     let prepared = state.runtime.prepare(&app).await?;
     let plan = plan(
@@ -207,6 +206,7 @@ pub(super) async fn create(
             &request_hash,
         )
         .await?;
+    state.runtime.trigger_reconciliation();
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
         application_id: id.to_string(),
@@ -254,7 +254,6 @@ pub(super) async fn replace(
     let (validated, expected) = parse_update(&headers, &body)?;
     let current = state.store.get(&id).await?;
     generation(expected, current.generation)?;
-    state.require_runtime_execution()?;
     let app = validated.normalize(id.clone());
     reject_name_collision(&state, &app, Some(&id)).await?;
     let prepared = state.runtime.prepare(&app).await?;
@@ -280,6 +279,7 @@ pub(super) async fn replace(
         .store
         .replace(&app, Some(&prepared.resolved), expected, &steps)
         .await?;
+    state.runtime.trigger_reconciliation();
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
         application_id: id.to_string(),
@@ -319,9 +319,8 @@ pub(super) async fn delete(
     let id = ApplicationId::parse(&id)?;
     let current = state.store.get(&id).await?;
     generation(request.expected_generation, current.generation)?;
-    state.require_runtime_execution()?;
     let observed = state.runtime.observe(&current).await?;
-    let instance = InstanceId::parse(&state.instance_id).map_err(|_| StoreError::Corrupt)?;
+    let instance = InstanceId::parse(&state.instance_id).map_err(StoreError::corrupt)?;
     let plan = plan(
         &PlanRequest::Delete {
             application_id: id.clone(),
@@ -346,6 +345,7 @@ pub(super) async fn delete(
         .store
         .request_delete(&id, request.expected_generation, &steps)
         .await?;
+    state.runtime.trigger_reconciliation();
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
         application_id: id.to_string(),
@@ -385,7 +385,7 @@ pub(super) async fn plan_create(
     let validated = parse_manifest(&headers, &body, RequestShape::PlanCreate)?;
     let hash = Sha256::digest(validated.name().as_bytes());
     let id = ApplicationId::parse(format!("preview-{}", hex(&hash[..8])))
-        .map_err(|_| StoreError::Corrupt)?;
+        .map_err(StoreError::corrupt)?;
     let app = validated.normalize(id.clone());
     reject_name_collision(&state, &app, None).await?;
     let plan = preview_plan(&state, &app, None).await?;
@@ -465,19 +465,18 @@ async fn preview_plan(
             reusable_resolutions(app, resolved)
         });
     let unresolved = preview_resolution(app, &resolutions);
-    let desired = if unresolved.is_empty() {
-        current
-            .and_then(|stored| stored.resolved.as_ref())
-            .and_then(|resolved| {
-                let ingress = resolved.networks.iter().find(|network| network.ingress)?;
-                compile_application(
-                    app,
-                    resolved.instance_id.clone(),
-                    ingress.name.clone(),
-                    &resolutions,
-                )
-                .ok()
-            })
+    let desired = if unresolved.is_empty()
+        && let Some(resolved) = current.and_then(|stored| stored.resolved.as_ref())
+    {
+        let ingress = resolved
+            .networks
+            .iter()
+            .find(|network| network.ingress)
+            .map_or("piqueld-ingress", |network| network.name.as_str());
+        Some(
+            compile_application(app, resolved.instance_id.clone(), ingress, &resolutions)
+                .map_err(BoundaryError::Compilation)?,
+        )
     } else {
         None
     };
@@ -613,7 +612,6 @@ pub(super) async fn reconcile(
             generation: mutation.generation,
         }));
     }
-    state.require_runtime_execution()?;
     let desired = current.resolved.clone().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -640,6 +638,7 @@ pub(super) async fn reconcile(
         .store
         .request_reconcile(&id, request.expected_generation, &steps)
         .await?;
+    state.runtime.trigger_reconciliation();
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
         application_id: id.to_string(),

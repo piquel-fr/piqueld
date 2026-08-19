@@ -1,10 +1,11 @@
 //! Typed asynchronous client and transport contracts for the versioned piqueld API.
-#![allow(missing_docs)]
-#![allow(clippy::missing_errors_doc, clippy::struct_excessive_bools)]
 
+/// Application CRUD, planning, and event-stream endpoints.
 pub mod applications;
 mod openapi;
+/// Operation inspection and event-stream endpoints.
 pub mod operations;
+/// Control-plane status endpoints.
 pub mod system;
 
 pub use applications::{
@@ -13,7 +14,7 @@ pub use applications::{
     PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
 };
 pub use operations::{OperationStepView, OperationView};
-pub use system::{SystemCapabilities, SystemStatus};
+pub use system::SystemStatus;
 
 use bytes::Bytes;
 use http::{Method, Request, StatusCode, header};
@@ -31,32 +32,47 @@ use tokio::net::{TcpStream, UnixStream};
 use url::Url;
 use utoipa::ToSchema;
 
+/// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
 
+/// Successful API response envelope.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Envelope<T> {
+    /// Response payload.
     pub data: T,
 }
 
+/// Cursor-paginated API response.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Page<T> {
+    /// Items in this page.
     pub items: Vec<T>,
+    /// Cursor for the next page, when more items are available.
     pub next_cursor: Option<String>,
 }
 
+/// Structured error returned by the API.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct ErrorBody {
+    /// Stable machine-readable error code.
     pub code: String,
+    /// Safe human-readable error message.
     pub message: String,
+    /// Optional structured error details.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub details: serde_json::Value,
+    /// Server-generated request identifier.
     pub request_id: String,
 }
 
+/// One parsed server-sent event.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SseEvent {
+    /// Event identifier, when supplied by the server.
     pub id: Option<String>,
+    /// Event type, when supplied by the server.
     pub event: Option<String>,
+    /// Event data payload.
     pub data: String,
 }
 
@@ -71,27 +87,39 @@ enum Endpoint {
 }
 
 #[derive(Clone, Debug)]
+/// Configured asynchronous API client.
 pub struct Client {
     endpoint: Endpoint,
     timeout: Duration,
 }
 
 #[derive(Debug, Error)]
+/// Errors produced while making an API request.
 pub enum ClientError {
+    /// The endpoint URL or request could not be constructed.
     #[error("invalid API endpoint")]
     Endpoint,
+    /// The connection, protocol, or request timeout failed.
     #[error("API transport failed")]
     Transport,
+    /// The server returned a non-success response.
     #[error("API returned {status}: {error:?}")]
     Api {
+        /// HTTP response status.
         status: StatusCode,
+        /// Structured server error.
         error: ErrorBody,
     },
+    /// The server response could not be decoded.
     #[error("API returned an invalid response")]
     Decode,
 }
 
 impl Client {
+    /// Creates a client for an HTTP endpoint.
+    ///
+    /// # Errors
+    /// Returns [`ClientError::Endpoint`] when `base_url` is not a plain HTTP origin.
     pub fn tcp(base_url: &str) -> Result<Self, ClientError> {
         let url = Url::parse(base_url).map_err(|_| ClientError::Endpoint)?;
         if url.scheme() != "http"
@@ -120,6 +148,7 @@ impl Client {
         })
     }
 
+    /// Creates a client for a Unix-domain socket.
     #[must_use]
     pub fn unix(path: impl AsRef<Path>) -> Self {
         Self {
@@ -128,6 +157,7 @@ impl Client {
         }
     }
 
+    /// Overrides the per-request timeout.
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;

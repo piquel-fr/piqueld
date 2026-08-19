@@ -1,4 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
 use super::*;
 use axum::body::Body;
 use axum::http::Request;
@@ -16,14 +15,6 @@ struct FakeRuntime {
 }
 #[async_trait]
 impl RuntimeBoundary for FakeRuntime {
-    fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            source_resolution: true,
-            runtime_observation: true,
-            runtime_execution: true,
-            reason: None,
-        }
-    }
     async fn prepare(
         &self,
         app: &NormalizedApplication,
@@ -36,7 +27,9 @@ impl RuntimeBoundary for FakeRuntime {
                 let requested = match &service.source {
                     piqueld_core::manifest::Source::Image { image } => image.clone(),
                     piqueld_core::manifest::Source::Git { .. } => {
-                        return Err(BoundaryError::Failed);
+                        return Err(BoundaryError::Runtime(DockerError::Request(
+                            "prepare application",
+                        )));
                     }
                 };
                 let repository = requested
@@ -71,44 +64,9 @@ impl RuntimeBoundary for FakeRuntime {
     }
 }
 
-struct ExecutionUnavailableRuntime {
-    inner: FakeRuntime,
-}
-
-#[async_trait]
-impl RuntimeBoundary for ExecutionUnavailableRuntime {
-    fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            source_resolution: true,
-            runtime_observation: true,
-            runtime_execution: false,
-            reason: Some("runtime execution is unavailable".into()),
-        }
-    }
-
-    async fn prepare(
-        &self,
-        app: &NormalizedApplication,
-    ) -> Result<PreparedApplication, BoundaryError> {
-        self.inner.prepare(app).await
-    }
-
-    async fn observe(&self, app: &StoredApplication) -> Result<ObservedApplication, BoundaryError> {
-        self.inner.observe(app).await
-    }
-}
-
 struct PreviewOnlyRuntime;
 #[async_trait]
 impl RuntimeBoundary for PreviewOnlyRuntime {
-    fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            source_resolution: true,
-            runtime_observation: false,
-            runtime_execution: false,
-            reason: None,
-        }
-    }
     async fn prepare(
         &self,
         _: &NormalizedApplication,
@@ -123,14 +81,6 @@ impl RuntimeBoundary for PreviewOnlyRuntime {
 struct ActiveRetryRuntime;
 #[async_trait]
 impl RuntimeBoundary for ActiveRetryRuntime {
-    fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            source_resolution: true,
-            runtime_observation: true,
-            runtime_execution: true,
-            reason: None,
-        }
-    }
     async fn prepare(
         &self,
         _: &NormalizedApplication,
@@ -169,7 +119,7 @@ async fn fake_fixture() -> (TempDir, Arc<SqliteStore>, Router) {
 fn manifest() -> Value {
     json!({"api_version":"piqueld.dev/v1alpha1","kind":"Application","metadata":{"name":"notes"},"spec":{"services":[{"name":"web","source":{"type":"image","image":"ghcr.io/example/notes:1"}}]}})
 }
-fn request(method: Method, uri: &str, value: Value) -> Request<Body> {
+fn request(method: Method, uri: &str, value: &Value) -> Request<Body> {
     Request::builder()
         .method(method)
         .uri(uri)
@@ -251,83 +201,6 @@ async fn create_is_accepted_idempotent_and_queryable() {
 }
 
 #[tokio::test]
-async fn mutations_require_runtime_execution_before_persisting_state() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Arc::new(
-        SqliteStore::open(temp.path().join("unavailable.db"))
-            .await
-            .unwrap(),
-    );
-    let instance = InstanceId::parse(store.instance_id().to_owned()).unwrap();
-    let unavailable = router(ApiState::new(
-        Arc::clone(&store),
-        Arc::new(ExecutionUnavailableRuntime {
-            inner: FakeRuntime { instance },
-        }),
-    ));
-    let create = unavailable
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v1/applications")
-                .header(header::CONTENT_TYPE, JSON)
-                .header("idempotency-key", "execution-unavailable")
-                .body(Body::from(json!({"manifest":manifest()}).to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(create.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json_body(create).await["code"], "runtime_unavailable");
-    assert!(store.list(None, 50).await.unwrap().items.is_empty());
-
-    let (_temp, store, available) = fake_fixture().await;
-    let created = json_body(
-        available
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/v1/applications")
-                    .header(header::CONTENT_TYPE, JSON)
-                    .header("idempotency-key", "execution-gated-mutations")
-                    .body(Body::from(json!({"manifest":manifest()}).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    let id = ApplicationId::parse(created["data"]["application_id"].as_str().unwrap()).unwrap();
-    let instance = InstanceId::parse(store.instance_id().to_owned()).unwrap();
-    let unavailable = router(ApiState::new(
-        Arc::clone(&store),
-        Arc::new(ExecutionUnavailableRuntime {
-            inner: FakeRuntime { instance },
-        }),
-    ));
-
-    for (method, body) in [
-        (
-            Method::PUT,
-            json!({"expected_generation":1,"manifest":manifest()}),
-        ),
-        (Method::DELETE, json!({"expected_generation":1})),
-    ] {
-        let response = unavailable
-            .clone()
-            .oneshot(request(method, &format!("/api/v1/applications/{id}"), body))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(json_body(response).await["code"], "runtime_unavailable");
-    }
-    let stored = store.get(&id).await.unwrap();
-    assert_eq!(stored.generation, 1);
-    assert!(!stored.delete_intent);
-}
-
-#[tokio::test]
 async fn create_retry_returns_original_result_after_later_replacement() {
     let (temp, store, app) = fake_fixture().await;
     let create = || {
@@ -346,7 +219,7 @@ async fn create_retry_returns_original_result_after_later_replacement() {
         .oneshot(request(
             Method::PUT,
             &format!("/api/v1/applications/{id}"),
-            json!({"expected_generation":1,"manifest":manifest()}),
+            &json!({"expected_generation":1,"manifest":manifest()}),
         ))
         .await
         .unwrap();
@@ -395,7 +268,8 @@ async fn create_retry_returns_original_result_after_later_replacement() {
             .await
             .unwrap(),
     );
-    let app = router(ApiState::new(reopened, Arc::new(UnavailableRuntime)));
+    let instance = InstanceId::parse(reopened.instance_id().to_owned()).unwrap();
+    let app = router(ApiState::new(reopened, Arc::new(FakeRuntime { instance })));
     assert_eq!(
         json_body(app.oneshot(create()).await.unwrap()).await,
         original
@@ -511,14 +385,14 @@ async fn operation_current_state_id_changes_when_only_a_step_advances() {
 }
 
 #[tokio::test]
-async fn preview_is_pure_and_unavailable_runtime_is_honest() {
-    let (_temp, _store, app) = fixture(Arc::new(UnavailableRuntime)).await;
+async fn preview_is_pure() {
+    let (_temp, _store, app) = fixture(Arc::new(PreviewOnlyRuntime)).await;
     let preview = app
         .clone()
         .oneshot(request(
             Method::POST,
             "/api/v1/applications/plan",
-            json!({"manifest":manifest()}),
+            &json!({"manifest":manifest()}),
         ))
         .await
         .unwrap();
@@ -546,19 +420,6 @@ async fn preview_is_pure_and_unavailable_runtime_is_honest() {
             .unwrap()
             .is_empty()
     );
-    let capabilities = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/system/capabilities")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        json_body(capabilities).await["data"]["runtime_execution"],
-        false
-    );
 }
 
 #[tokio::test]
@@ -568,7 +429,7 @@ async fn create_preview_never_invokes_resolution_or_observation() {
         .oneshot(request(
             Method::POST,
             "/api/v1/applications/plan",
-            json!({"manifest":manifest()}),
+            &json!({"manifest":manifest()}),
         ))
         .await
         .unwrap();
@@ -605,7 +466,7 @@ async fn replacement_preview_reuses_unchanged_resolutions_without_resolver_io() 
         .oneshot(request(
             Method::POST,
             &format!("/api/v1/applications/{id}/plan"),
-            json!({"expected_generation":1,"manifest":manifest()}),
+            &json!({"expected_generation":1,"manifest":manifest()}),
         ))
         .await
         .unwrap();
@@ -626,13 +487,13 @@ async fn replacement_preview_reuses_unchanged_resolutions_without_resolver_io() 
 
 #[tokio::test]
 async fn transport_failures_are_structured_and_safe() {
-    let (_temp, _store, app) = fixture(Arc::new(UnavailableRuntime)).await;
+    let (_temp, _store, app) = fake_fixture().await;
     let missing_key = app
         .clone()
         .oneshot(request(
             Method::POST,
             "/api/v1/applications",
-            json!({"manifest":manifest()}),
+            &json!({"manifest":manifest()}),
         ))
         .await
         .unwrap();
@@ -722,7 +583,7 @@ async fn validation_not_found_unknown_fields_and_malformed_json_are_structured()
             .oneshot(request(
                 Method::POST,
                 "/api/v1/applications/plan",
-                json!({"manifest":{"api_version":"piqueld.dev/v1alpha1","kind":"Application","metadata":{"name":"INVALID"},"spec":{"services":[]}}}),
+                &json!({"manifest":{"api_version":"piqueld.dev/v1alpha1","kind":"Application","metadata":{"name":"INVALID"},"spec":{"services":[]}}}),
             ))
             .await
             .unwrap();
@@ -780,7 +641,7 @@ async fn validation_not_found_unknown_fields_and_malformed_json_are_structured()
         .oneshot(request(
             Method::DELETE,
             &format!("/api/v1/applications/{id}"),
-            json!({"expected_generation":1,"force":true}),
+            &json!({"expected_generation":1,"force":true}),
         ))
         .await
         .unwrap();
@@ -804,7 +665,7 @@ async fn openapi_snapshot_lists_exact_plan_five_surface() {
         "saved snapshot does not match OpenAPI spec"
     );
 
-    let (_temp, _store, app) = fixture(Arc::new(UnavailableRuntime)).await;
+    let (_temp, _store, app) = fake_fixture().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -853,7 +714,7 @@ async fn openapi_snapshot_lists_exact_plan_five_surface() {
 
 #[tokio::test]
 async fn request_ids_match_headers_and_transport_errors_are_complete() {
-    let (_temp, _store, app) = fixture(Arc::new(UnavailableRuntime)).await;
+    let (_temp, _store, app) = fake_fixture().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -885,7 +746,7 @@ async fn json_and_toml_share_normalization_and_malformed_toml_is_safe() {
         .oneshot(request(
             Method::POST,
             "/api/v1/applications/plan",
-            json!({"manifest":manifest()}),
+            &json!({"manifest":manifest()}),
         ))
         .await
         .unwrap();
@@ -955,7 +816,7 @@ async fn conflicts_and_reconcile_retries_preserve_durable_identity() {
         .oneshot(request(
             Method::PUT,
             &format!("/api/v1/applications/{id}"),
-            json!({"expected_generation":2,"manifest":manifest()}),
+            &json!({"expected_generation":2,"manifest":manifest()}),
         ))
         .await
         .unwrap();
@@ -966,7 +827,7 @@ async fn conflicts_and_reconcile_retries_preserve_durable_identity() {
         request(
             Method::POST,
             &format!("/api/v1/applications/{id}/reconcile"),
-            json!({"expected_generation":1}),
+            &json!({"expected_generation":1}),
         )
     };
     let first = json_body(app.clone().oneshot(reconcile()).await.unwrap()).await;
@@ -1083,7 +944,7 @@ async fn active_reconcile_retry_does_not_repeat_runtime_io() {
         .oneshot(request(
             Method::POST,
             &format!("/api/v1/applications/{id}/reconcile"),
-            json!({"expected_generation":1}),
+            &json!({"expected_generation":1}),
         ))
         .await
         .unwrap();

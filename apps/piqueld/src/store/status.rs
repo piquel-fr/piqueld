@@ -2,7 +2,7 @@
 
 use super::{
     ApplicationId, ApplicationState, ApplicationStatus, SqliteStore, StatusRepository, StoreError,
-    async_trait, now_ms, valid_bounded_text,
+    async_trait, generation_i64, now_ms, valid_bounded_text,
 };
 
 #[async_trait]
@@ -10,12 +10,12 @@ impl StatusRepository for SqliteStore {
     async fn status(&self, id: &ApplicationId) -> Result<ApplicationStatus, StoreError> {
         let id_value = id.as_str();
         let row = sqlx::query!(
-            r#"SELECT state AS "state!",observed_generation,message,updated_at_ms AS "updated_at_ms!" FROM application_status WHERE application_id=?1"#,
+            r#"SELECT s.state AS "state!",s.observed_generation,s.message,s.updated_at_ms AS "updated_at_ms!" FROM application_status s JOIN applications a ON a.id=s.application_id WHERE s.application_id=?1 AND a.deleted_at_ms IS NULL"#,
             id_value
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
         Ok(ApplicationStatus {
             application_id: id.clone(),
@@ -24,7 +24,7 @@ impl StatusRepository for SqliteStore {
                 .observed_generation
                 .map(u64::try_from)
                 .transpose()
-                .map_err(|_| StoreError::Corrupt)?,
+                .map_err(StoreError::corrupt)?,
             message: row.message,
             updated_at_ms: row.updated_at_ms,
         })
@@ -56,7 +56,7 @@ impl StatusRepository for SqliteStore {
             return Err(StoreError::InvalidInput);
         }
         let mut connection = self.connection().await?;
-        let observed_generation = observed_generation.map(|value| value as i64);
+        let observed_generation = observed_generation.map(generation_i64).transpose()?;
         let to_state = to.as_str();
         let from_state = from.as_str();
         let now = now_ms();
@@ -72,7 +72,7 @@ impl StatusRepository for SqliteStore {
         )
         .execute(&mut *connection)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .rows_affected();
         if changed == 1 {
             Ok(())

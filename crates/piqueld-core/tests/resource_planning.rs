@@ -1,6 +1,6 @@
 //! Resource compilation and pure planner acceptance tests.
 
-use piqueld_core::planner::{ActionKind, ActionReason, PlanRequest, plan};
+use piqueld_core::planner::{ActionKind, ActionReason, PlanAction, PlanRequest, plan};
 use piqueld_core::resource::{
     APPLICATION_LABEL, Convergence, DesiredApplication, INSTANCE_LABEL, InstanceId, MANAGED_LABEL,
     ObservedApplication, ObservedNetwork, ObservedSecret, ObservedService, ObservedVolume,
@@ -24,6 +24,18 @@ fn generation_digest(label: &str) -> Sha256Digest {
         _ => panic!("unknown test secret generation"),
     };
     Sha256Digest::parse(format!("sha256:{}", digit.to_string().repeat(64))).unwrap()
+}
+
+#[test]
+fn long_operation_steps_remain_distinct() {
+    let first_name = format!("{}-a", "x".repeat(60));
+    let second_name = format!("{}-b", "x".repeat(60));
+    let first = PlanAction::wait_for_service(&first_name).operation_step();
+    let second = PlanAction::wait_for_service(&second_name).operation_step();
+
+    assert!(first.len() <= 64);
+    assert!(second.len() <= 64);
+    assert_ne!(first, second);
 }
 
 fn image_desired() -> DesiredApplication {
@@ -90,6 +102,7 @@ fn matching(desired: &DesiredApplication) -> ObservedApplication {
             .map(|v| ObservedNetwork {
                 name: v.name.clone(),
                 ingress: v.ingress,
+                runtime_configuration_matches: true,
                 labels: v.labels.clone(),
             })
             .collect(),
@@ -98,6 +111,7 @@ fn matching(desired: &DesiredApplication) -> ObservedApplication {
             .iter()
             .map(|v| ObservedVolume {
                 name: v.name.clone(),
+                runtime_configuration_matches: true,
                 labels: v.labels.clone(),
             })
             .collect(),
@@ -127,6 +141,7 @@ fn matching(desired: &DesiredApplication) -> ObservedApplication {
                 resources: v.resources.clone(),
                 networks: v.networks.clone(),
                 labels: v.labels.clone(),
+                runtime_configuration_matches: true,
                 tasks: vec![],
                 convergence: Convergence::Converged,
             })
@@ -156,6 +171,50 @@ fn action_names(plan: &piqueld_core::Plan) -> Vec<&'static str> {
             ActionKind::AwaitSecretGeneration { .. } => "await_secret",
         })
         .collect()
+}
+
+#[test]
+fn adapter_owned_runtime_configuration_drift_is_not_treated_as_converged() {
+    let desired = image_desired();
+    let infrastructure_desired = git_desired("g1");
+    let mut observed = matching(&desired);
+    observed.services[0].runtime_configuration_matches = false;
+    let service_plan = plan(
+        &PlanRequest::Reconcile {
+            desired: desired.clone(),
+        },
+        &observed,
+    );
+    assert!(service_plan.actions.iter().any(|action| {
+        matches!(action.kind, ActionKind::EnsureService { .. })
+            && matches!(&action.reason, ActionReason::Drift { fields } if fields.contains(&"runtime_policy".into()))
+    }));
+
+    let mut observed = matching(&infrastructure_desired);
+    observed
+        .networks
+        .last_mut()
+        .unwrap()
+        .runtime_configuration_matches = false;
+    observed.volumes[0].runtime_configuration_matches = false;
+    let infrastructure_plan = plan(
+        &PlanRequest::Reconcile {
+            desired: infrastructure_desired,
+        },
+        &observed,
+    );
+    assert!(
+        infrastructure_plan
+            .actions
+            .iter()
+            .any(|action| matches!(action.kind, ActionKind::EnsureNetwork { .. }))
+    );
+    assert!(
+        infrastructure_plan
+            .actions
+            .iter()
+            .any(|action| matches!(action.kind, ActionKind::EnsureVolume { .. }))
+    );
 }
 
 #[test]
@@ -392,14 +451,14 @@ name = "hub"
 name = "web"
 [spec.services.source]
 type = "image"
-image = "alpine:3.20"
+image = "docker.io/alpine:3.20"
 "#;
     let app = parse_toml(manifest).unwrap().normalize(app_id());
     let resolutions = ResolutionSet {
         sources: BTreeMap::from([(
             "web".into(),
             ResolvedSource::Image {
-                requested: "alpine:3.20".into(),
+                requested: "docker.io/alpine:3.20".into(),
                 digest_reference: format!("docker.io/library/alpine@sha256:{}", "a".repeat(64)),
             },
         )]),
@@ -460,7 +519,7 @@ fn arbitrary_traefik_drift_is_repaired() {
 }
 
 #[test]
-fn unordered_owned_collections_are_noise_but_port_changes_are_drift() {
+fn unordered_owned_collections_and_internal_port_observation_are_noise() {
     let mut desired = git_desired("g1");
     desired.services[0].ports.push(4000);
     let second_mount = piqueld_core::resource::DesiredMount {
@@ -487,12 +546,14 @@ fn unordered_owned_collections_are_noise_but_port_changes_are_drift() {
         .is_empty()
     );
 
+    // Internal ports are application metadata, not published Swarm endpoint state.
+    // Route labels (Plan 09) carry the runtime-relevant backend port instead.
     observed.services[0].ports.pop();
-    let drift = plan(&PlanRequest::Reconcile { desired }, &observed);
-    assert!(matches!(
-        &drift.actions[0].reason,
-        ActionReason::Drift { fields } if fields == &["ports"]
-    ));
+    assert!(
+        plan(&PlanRequest::Reconcile { desired }, &observed)
+            .actions
+            .is_empty()
+    );
 }
 
 #[test]
@@ -629,6 +690,7 @@ fn partial_updates_defer_obsolete_cleanup_until_dependencies_converge() {
     observed.networks.push(ObservedNetwork {
         name: "obsolete-owned-network".into(),
         ingress: false,
+        runtime_configuration_matches: true,
         labels: desired.networks[1].labels.clone(),
     });
     let result = plan(&PlanRequest::Reconcile { desired }, &observed);
@@ -657,6 +719,7 @@ fn cleanup_is_stable_dependency_ordered_and_requires_valid_service_ownership() {
     observed.networks.push(ObservedNetwork {
         name: "z-obsolete-network".into(),
         ingress: false,
+        runtime_configuration_matches: true,
         labels: desired.networks[1].labels.clone(),
     });
     observed.secrets.push(ObservedSecret {
@@ -761,6 +824,7 @@ fn removed_volume_is_retained_during_ordinary_reconciliation() {
     let owned_labels = desired.networks[1].labels.clone();
     observed.volumes.push(ObservedVolume {
         name: "previous-data".into(),
+        runtime_configuration_matches: true,
         labels: owned_labels,
     });
     let result = plan(&PlanRequest::Reconcile { desired }, &observed);

@@ -1,8 +1,11 @@
-#![allow(missing_docs)]
+//! Persistence integration tests.
 
-use piqueld::store::{
-    ApplicationRepository, ApplicationState, BuildRepository, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
-    OperationRepository, SqliteStore, StatusRepository, StepState, StoreError, WorkState,
+use piqueld::{
+    operations::OperationError,
+    store::{
+        ApplicationRepository, ApplicationState, BuildRepository, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
+        OperationRepository, SqliteStore, StatusRepository, StepState, StoreError, WorkState,
+    },
 };
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ResolutionSet, compile_application,
@@ -13,8 +16,8 @@ use sqlx::{
     Connection, Executor,
     sqlite::{SqliteConnectOptions, SqliteConnection},
 };
-use std::collections::BTreeMap;
 use std::path::Path;
+use std::{collections::BTreeMap, error::Error as _};
 
 fn application(id: &str, name: &str, secret: Option<&str>) -> NormalizedApplication {
     let secrets = secret.map_or_else(String::new, |name| {
@@ -205,6 +208,10 @@ async fn missing_secret_rejects_the_whole_create_without_partial_rows() {
         StoreError::MissingSecrets(vec!["database-url".into()])
     );
     assert_eq!(store.get(&app.id).await.unwrap_err(), StoreError::NotFound);
+    assert_eq!(
+        store.status(&app.id).await.unwrap_err(),
+        StoreError::NotFound
+    );
     store.declare_logical_secret("database-url").await.unwrap();
     store.create(&app, None, &["resolve".into()]).await.unwrap();
 }
@@ -296,10 +303,9 @@ async fn operation_insert_failure_rolls_back_delete_generation_and_status() {
     let app = application("application-0004", "rollback", None);
     store.create(&app, None, &[]).await.unwrap();
     raw(&path, "CREATE TRIGGER reject_delete BEFORE INSERT ON operations WHEN NEW.kind='delete' BEGIN SELECT RAISE(ABORT, 'injected'); END;").await;
-    assert_eq!(
-        store.request_delete(&app.id, 1, &[]).await.unwrap_err(),
-        StoreError::Database
-    );
+    let error = store.request_delete(&app.id, 1, &[]).await.unwrap_err();
+    assert_eq!(error, StoreError::Database);
+    assert!(error.source().is_some());
     let stored = store.get(&app.id).await.unwrap();
     assert_eq!(stored.generation, 1);
     assert!(!stored.delete_intent);
@@ -506,7 +512,7 @@ async fn terminal_operation_atomically_cancels_unfinished_children() {
                 &mutation.operation_id,
                 WorkState::Running,
                 WorkState::Failed,
-                Some(("execution_failed", "operation execution failed")),
+                Some(OperationError::DockerRequestFailed("test request")),
             )
             .await
             .unwrap_err(),
@@ -526,7 +532,7 @@ async fn terminal_operation_atomically_cancels_unfinished_children() {
             &mutation.operation_id,
             WorkState::Running,
             WorkState::Failed,
-            Some(("execution_failed", "operation execution failed")),
+            Some(OperationError::DockerRequestFailed("test request")),
         )
         .await
         .unwrap();
@@ -943,6 +949,74 @@ async fn resolved_state_is_bound_to_desired_hash_instance_and_canonical_compilat
 }
 
 #[tokio::test]
+async fn typed_errors_are_persisted_for_steps_and_builds() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("typed-errors.db"))
+        .await
+        .unwrap();
+    let app = application("application-0025", "typed-errors", None);
+    let mutation = store.create(&app, None, &["deploy".into()]).await.unwrap();
+    let step = store
+        .operation_steps(&mutation.operation_id)
+        .await
+        .unwrap()
+        .remove(0);
+    let build = store
+        .create_build(&mutation.operation_id, &app.id, "web")
+        .await
+        .unwrap();
+    store
+        .transition_operation(
+            &mutation.operation_id,
+            WorkState::Pending,
+            WorkState::Running,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let step_error = OperationError::ServiceUpdateFailed;
+    store
+        .transition_step(&step.id, StepState::Pending, StepState::Running, None)
+        .await
+        .unwrap();
+    store
+        .transition_step(
+            &step.id,
+            StepState::Running,
+            StepState::Failed,
+            Some(step_error),
+        )
+        .await
+        .unwrap();
+    let failed_step = store
+        .operation_steps(&mutation.operation_id)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(failed_step.error_code.as_deref(), Some(step_error.code()));
+    assert_eq!(failed_step.error_message, Some(step_error.message()));
+
+    let build_error = OperationError::BuildPipelineUnavailable;
+    store
+        .transition_build(&build.id, WorkState::Pending, WorkState::Running, None)
+        .await
+        .unwrap();
+    store
+        .transition_build(
+            &build.id,
+            WorkState::Running,
+            WorkState::Failed,
+            Some(build_error),
+        )
+        .await
+        .unwrap();
+    let failed_build = store.build(&build.id).await.unwrap();
+    assert_eq!(failed_build.error_code.as_deref(), Some(build_error.code()));
+    assert_eq!(failed_build.error_message, Some(build_error.message()));
+}
+
+#[tokio::test]
 async fn build_application_mismatches_are_rejected_before_persistence() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(directory.path().join("foreign-keys.db"))
@@ -962,7 +1036,7 @@ async fn build_application_mismatches_are_rejected_before_persistence() {
 }
 
 #[tokio::test]
-async fn delete_intent_cannot_be_repeated_or_silently_replaced() {
+async fn failed_delete_can_be_retried_without_replacing_intent() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(directory.path().join("delete-state.db"))
         .await
@@ -982,7 +1056,25 @@ async fn delete_intent_cannot_be_repeated_or_silently_replaced() {
             .unwrap_err(),
         StoreError::IllegalTransition
     );
-    store.request_delete(&app.id, 1, &[]).await.unwrap();
+    let deletion = store.request_delete(&app.id, 1, &[]).await.unwrap();
+    store
+        .transition_operation(
+            &deletion.operation_id,
+            WorkState::Pending,
+            WorkState::Running,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .transition_operation(
+            &deletion.operation_id,
+            WorkState::Running,
+            WorkState::Failed,
+            Some(OperationError::DockerRequestFailed("test request")),
+        )
+        .await
+        .unwrap();
     store
         .set_status(
             &app.id,
@@ -993,9 +1085,19 @@ async fn delete_intent_cannot_be_repeated_or_silently_replaced() {
         )
         .await
         .unwrap();
+    let retry = store
+        .request_delete(&app.id, 2, &["remove resources".into()])
+        .await
+        .unwrap();
+    assert_eq!(retry.generation, 2);
+    assert_eq!(retry.operation_id, deletion.operation_id);
     assert_eq!(
-        store.request_delete(&app.id, 2, &[]).await.unwrap_err(),
-        StoreError::IllegalTransition
+        store.operation_steps(&retry.operation_id).await.unwrap()[0].action,
+        "remove resources"
+    );
+    assert_eq!(
+        store.status(&app.id).await.unwrap().state,
+        ApplicationState::Deleting
     );
     assert_eq!(
         store.replace(&app, None, 2, &[]).await.unwrap_err(),
@@ -1088,7 +1190,7 @@ async fn database_identity_columns_and_instance_id_are_revalidated() {
     .await;
     assert!(matches!(
         SqliteStore::open(path).await,
-        Err(StoreError::Corrupt)
+        Err(StoreError::Corrupt | StoreError::CorruptSource(_))
     ));
 }
 
@@ -1134,4 +1236,40 @@ async fn forward_upgrade_from_version_one_updates_metadata() {
         SqliteStore::open(path).await.unwrap().instance_id(),
         "instance-old"
     );
+}
+
+#[tokio::test]
+async fn successful_delete_is_tombstoned_without_losing_its_operation_journal() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("delete.db"))
+        .await
+        .unwrap();
+    let app = application("app-delete-final", "delete-final", None);
+    let state = resolved(&app, store.instance_id());
+    store.create(&app, Some(&state), &[]).await.unwrap();
+    let deletion = store.request_delete(&app.id, 1, &[]).await.unwrap();
+    store
+        .finalize_delete(&app.id, deletion.generation)
+        .await
+        .unwrap();
+    assert_eq!(store.get(&app.id).await.unwrap_err(), StoreError::NotFound);
+    assert_eq!(
+        store.status(&app.id).await.unwrap_err(),
+        StoreError::NotFound
+    );
+    assert!(store.list(None, 50).await.unwrap().items.is_empty());
+    assert_eq!(
+        store
+            .operation(&deletion.operation_id)
+            .await
+            .unwrap()
+            .generation,
+        2
+    );
+    let replacement = application("app-delete-next", "delete-final", None);
+    let replacement_state = resolved(&replacement, store.instance_id());
+    store
+        .create(&replacement, Some(&replacement_state), &[])
+        .await
+        .unwrap();
 }

@@ -1,8 +1,8 @@
-#![allow(missing_docs)]
+//! Scheduler integration tests.
 
 use async_trait::async_trait;
 use piqueld::{
-    operations::{OperationHandler, OperationScheduler},
+    operations::{OperationError, OperationHandler, OperationScheduler},
     store::{
         ApplicationRepository, Operation, OperationKind, OperationRepository, SqliteStore,
         WorkState,
@@ -36,7 +36,7 @@ impl OperationHandler for ClaimedStateHandler {
         &self,
         operation: &Operation,
         _: &CancellationToken,
-    ) -> Result<(), (&'static str, &'static str)> {
+    ) -> Result<(), OperationError> {
         self.0.store(
             operation.state == WorkState::Running && operation.started_at_ms.is_some(),
             Ordering::SeqCst,
@@ -81,7 +81,7 @@ impl OperationHandler for TrackingHandler {
         &self,
         operation: &Operation,
         _: &CancellationToken,
-    ) -> Result<(), (&'static str, &'static str)> {
+    ) -> Result<(), OperationError> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.maximum.fetch_max(active, Ordering::SeqCst);
         if operation.kind == OperationKind::Build {
@@ -229,7 +229,7 @@ impl OperationHandler for BlockingHandler {
         &self,
         _: &Operation,
         cancellation: &CancellationToken,
-    ) -> Result<(), (&'static str, &'static str)> {
+    ) -> Result<(), OperationError> {
         cancellation.cancelled().await;
         Ok(())
     }

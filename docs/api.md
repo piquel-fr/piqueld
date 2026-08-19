@@ -23,13 +23,11 @@ manifest that fails semantic validation is a `422 manifest_validation_failed`.
 
 Plan endpoints are read-only. Mutation endpoints return HTTP 202 and a durable
 operation identity. Deletion never accepts `force` and operation plans retain named
-volumes. Until Plan 06 supplies Docker source resolution and execution, capability
-discovery reports those features unavailable and apply/reconcile requests return
-HTTP 503 rather than persisting fabricated resolved state. Pure unresolved previews
-remain available. Replacement previews reuse only immutable resolutions whose
+volumes. The daemon requires its Docker runtime at startup. Pure unresolved previews
+remain available without contacting that runtime. Replacement previews reuse only immutable resolutions whose
 original source intent is unchanged, so ordinary configuration changes produce a
 concrete desired/observed comparison without invoking a resolver. If observation is
-unavailable, replacement planning returns `503 runtime_unavailable` instead of
+unavailable, replacement planning returns `502 runtime_request_failed` instead of
 treating missing runtime state as an empty observation.
 
 Operation and application event endpoints use SSE. Events have durable/current-state
@@ -44,7 +42,7 @@ state event. Later state changes on the same connection are normal events, not r
 resets.
 
 Reconcile creates its operation in the same durable store used by every other
-mutation; the injected runtime boundary supplies capability and observation only.
+mutation; the injected runtime boundary supplies preparation and observation.
 Retrying reconcile for the same current generation while its operation remains
 active returns the existing operation identity without repeating runtime
 observation.

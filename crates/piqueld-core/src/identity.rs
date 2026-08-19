@@ -1,5 +1,4 @@
 //! Stable application identity and deterministic Docker-safe names.
-#![allow(missing_docs)]
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use sha2::{Digest, Sha256};
@@ -77,9 +76,13 @@ impl FromStr for ApplicationId {
 /// Managed Docker resource category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceKind {
+    /// A private or ingress overlay network.
     Network,
+    /// A Swarm service.
     Service,
+    /// A persistent Docker volume.
     Volume,
+    /// A Swarm secret.
     Secret,
 }
 

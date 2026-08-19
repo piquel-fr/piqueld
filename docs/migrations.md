@@ -27,3 +27,8 @@ no secret fixture or plaintext is present in SQL, diagnostics, snapshots, or log
 Create idempotency records retain only SHA-256 key/request hashes and stable resource
 identities. Their referenced create operations are excluded from ordinary operation
 retention so a lost-response retry remains durable.
+
+Migration 0004 adds deletion tombstones. Completed applications disappear from the
+live repository and release their logical name, while the row remains as the parent
+of its durable operation journal. Retained Docker volumes are independent of this
+control-plane tombstone.

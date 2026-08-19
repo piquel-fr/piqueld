@@ -26,3 +26,6 @@ test:
 
 doc-test:
     @cargo test --doc --workspace
+
+docker-test:
+    @bash ./scripts/run-docker-integration-test.sh

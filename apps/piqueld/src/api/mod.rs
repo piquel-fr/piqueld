@@ -1,5 +1,4 @@
 //! Versioned HTTP/JSON API and streaming event boundary.
-#![allow(missing_docs)]
 
 use async_trait::async_trait;
 use axum::{
@@ -16,7 +15,7 @@ use piqueld_client::{
     ReplaceApplicationRequest,
 };
 use piqueld_core::{
-    ApplicationId, ApplicationIdError, NormalizedApplication, ObservedApplication,
+    ApplicationId, ApplicationIdError, CompileError, NormalizedApplication, ObservedApplication,
     resource::ResolvedApplication,
 };
 use serde::{Deserialize, Serialize};
@@ -29,7 +28,10 @@ use tower_http::{
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-use crate::store::{SqliteStore, StoreError, StoredApplication};
+use crate::{
+    docker::DockerError,
+    store::{SqliteStore, StoreError, StoredApplication},
+};
 
 #[cfg(test)]
 mod tests;
@@ -45,65 +47,46 @@ const JSON: &str = "application/json";
 const TOML: &str = "application/toml";
 
 #[derive(Clone, Debug)]
-pub struct RuntimeCapabilities {
-    pub source_resolution: bool,
-    pub runtime_observation: bool,
-    pub runtime_execution: bool,
-    pub reason: Option<String>,
-}
-
-#[derive(Clone, Debug)]
+/// Resolved desired state paired with the initial runtime observation.
 pub struct PreparedApplication {
+    /// Immutable desired application state.
     pub resolved: ResolvedApplication,
+    /// Runtime resources observed before planning.
     pub observed: ObservedApplication,
 }
 
 #[derive(Debug, thiserror::Error)]
+/// Errors crossing the runtime boundary.
 pub enum BoundaryError {
-    #[error("runtime capability is unavailable")]
-    Unavailable,
+    /// A Docker runtime request failed.
     #[error("runtime request failed")]
-    Failed,
+    Runtime(#[from] DockerError),
+    /// Resolved inputs could not be compiled into desired runtime resources.
+    #[error("application compilation failed")]
+    Compilation(Vec<CompileError>),
+    /// The requested runtime capability is not available.
+    #[error("runtime capability is not implemented yet")]
+    Capability(&'static str),
 }
 
 /// Source resolution, runtime observation, and execution seam supplied by Plan 06.
 #[async_trait]
 pub trait RuntimeBoundary: Send + Sync + 'static {
-    fn capabilities(&self) -> RuntimeCapabilities;
+    /// Wakes the reconciler after a runtime event changes observation.
+    fn trigger_reconciliation(&self) {}
+    /// Resolves mutable inputs and captures an initial runtime observation.
     async fn prepare(
         &self,
         application: &NormalizedApplication,
     ) -> Result<PreparedApplication, BoundaryError>;
+    /// Captures current runtime state for a stored application.
     async fn observe(
         &self,
         application: &StoredApplication,
     ) -> Result<ObservedApplication, BoundaryError>;
 }
 
-/// Honest production boundary until Docker reconciliation lands in Plan 06.
-pub struct UnavailableRuntime;
-
-#[async_trait]
-impl RuntimeBoundary for UnavailableRuntime {
-    fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            source_resolution: false,
-            runtime_observation: false,
-            runtime_execution: false,
-            reason: Some("Docker source resolution and execution arrive in Plan 06".into()),
-        }
-    }
-    async fn prepare(
-        &self,
-        _: &NormalizedApplication,
-    ) -> Result<PreparedApplication, BoundaryError> {
-        Err(BoundaryError::Unavailable)
-    }
-    async fn observe(&self, _: &StoredApplication) -> Result<ObservedApplication, BoundaryError> {
-        Err(BoundaryError::Unavailable)
-    }
-}
-
+/// Shared state for API handlers.
 #[derive(Clone)]
 pub struct ApiState {
     store: Arc<SqliteStore>,
@@ -113,6 +96,7 @@ pub struct ApiState {
 }
 
 impl ApiState {
+    /// Creates API state backed by the given store and runtime adapter.
     #[must_use]
     pub fn new(store: Arc<SqliteStore>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
         Self {
@@ -120,14 +104,6 @@ impl ApiState {
             store,
             runtime,
             create_lock: Arc::new(tokio::sync::Mutex::new(())),
-        }
-    }
-
-    fn require_runtime_execution(&self) -> Result<(), ApiError> {
-        if self.runtime.capabilities().runtime_execution {
-            Ok(())
-        } else {
-            Err(BoundaryError::Unavailable.into())
         }
     }
 }
@@ -157,6 +133,17 @@ impl ApiError {
 
 impl From<StoreError> for ApiError {
     fn from(value: StoreError) -> Self {
+        if matches!(
+            &value,
+            StoreError::Database
+                | StoreError::DatabaseSource(_)
+                | StoreError::SchemaMismatch
+                | StoreError::SchemaMismatchSource(_)
+                | StoreError::Corrupt
+                | StoreError::CorruptSource(_)
+        ) {
+            tracing::error!(error = ?value, "storage request failed");
+        }
         match value {
             StoreError::NotFound => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
@@ -188,22 +175,22 @@ impl From<StoreError> for ApiError {
                 "application_state_conflict",
                 "the requested application transition is not allowed",
             ),
-            StoreError::InvalidInput => Self::new(
+            StoreError::InvalidInput | StoreError::InvalidInputSource(_) => Self::new(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
                 "the request is invalid",
             ),
-            StoreError::SchemaMismatch => Self::new(
+            StoreError::SchemaMismatch | StoreError::SchemaMismatchSource(_) => Self::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "schema_mismatch",
                 "database schema is incompatible",
             ),
-            StoreError::Corrupt => Self::new(
+            StoreError::Corrupt | StoreError::CorruptSource(_) => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "stored_state_corrupt",
                 "stored application state is corrupt",
             ),
-            StoreError::Database => Self::new(
+            StoreError::Database | StoreError::DatabaseSource(_) => Self::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "storage_unavailable",
                 "control-plane storage is unavailable",
@@ -214,16 +201,19 @@ impl From<StoreError> for ApiError {
 
 impl From<BoundaryError> for ApiError {
     fn from(value: BoundaryError) -> Self {
+        if !matches!(&value, BoundaryError::Capability(_)) {
+            tracing::error!(error = ?value, "runtime boundary request failed");
+        }
         match value {
-            BoundaryError::Unavailable => Self::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "runtime_unavailable",
-                "runtime source resolution or execution is unavailable",
-            ),
-            BoundaryError::Failed => Self::new(
+            BoundaryError::Runtime(_) | BoundaryError::Compilation(_) => Self::new(
                 StatusCode::BAD_GATEWAY,
                 "runtime_request_failed",
                 "runtime request failed",
+            ),
+            BoundaryError::Capability(code) => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                code,
+                "the application requires a runtime capability that is not available yet",
             ),
         }
     }
@@ -300,7 +290,6 @@ pub fn router(state: ApiState) -> Router {
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .routes(routes!(system::status))
-        .routes(routes!(system::capabilities))
         .routes(routes!(openapi::openapi))
         .routes(routes!(applications::list, applications::create))
         .routes(routes!(applications::plan_create))

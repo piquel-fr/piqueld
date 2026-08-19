@@ -1,9 +1,8 @@
-#![allow(missing_docs)]
+//! API contract integration tests.
 
 use async_trait::async_trait;
-use piqueld::api::{
-    ApiState, BoundaryError, PreparedApplication, RuntimeBoundary, RuntimeCapabilities, router,
-};
+use piqueld::api::{ApiState, BoundaryError, PreparedApplication, RuntimeBoundary, router};
+use piqueld::docker::DockerError;
 use piqueld::store::{SqliteStore, StoredApplication};
 use piqueld_client::{
     Client, CreateApplicationRequest, DeleteApplicationRequest, ListApplicationsOptions,
@@ -24,15 +23,6 @@ struct FakeRuntime {
 
 #[async_trait]
 impl RuntimeBoundary for FakeRuntime {
-    fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            source_resolution: true,
-            runtime_observation: true,
-            runtime_execution: true,
-            reason: None,
-        }
-    }
-
     async fn prepare(
         &self,
         application: &NormalizedApplication,
@@ -43,7 +33,9 @@ impl RuntimeBoundary for FakeRuntime {
             .iter()
             .map(|service| {
                 let Source::Image { image } = &service.source else {
-                    return Err(BoundaryError::Failed);
+                    return Err(BoundaryError::Runtime(DockerError::Request(
+                        "prepare application",
+                    )));
                 };
                 let repository = image.rsplit_once(':').map_or(image.as_str(), |v| v.0);
                 Ok((
@@ -64,7 +56,7 @@ impl RuntimeBoundary for FakeRuntime {
                 secrets: BTreeMap::new(),
             },
         )
-        .map_err(|_| BoundaryError::Failed)?;
+        .map_err(BoundaryError::Compilation)?;
         Ok(PreparedApplication {
             resolved,
             observed: ObservedApplication::default(),
@@ -86,16 +78,22 @@ fn manifest() -> ApplicationManifest {
     .unwrap()
 }
 
-#[allow(clippy::too_many_lines)]
 async fn exercise(client: Client) {
+    let toml = assert_status_and_plans(&client).await;
+    let application_id = create_and_replace(&client, &toml).await;
+    reconcile_and_watch(&client, &application_id).await;
+    create_second_and_check_pagination(&client, &toml).await;
+    delete_and_check(&client, &application_id).await;
+}
+
+async fn assert_status_and_plans(client: &Client) -> String {
     assert_eq!(client.system_status().await.unwrap().api_version, "v1");
-    assert!(client.capabilities().await.unwrap().runtime_execution);
     assert!(
         client.openapi().await.unwrap()["paths"]
             .as_object()
             .unwrap()
             .len()
-            >= 12
+            >= 11
     );
     let preview = client
         .plan_create(&PlanApplicationRequest {
@@ -122,6 +120,10 @@ image = "ghcr.io/example/notes:1"
             .proposed_generation,
         1
     );
+    toml.to_owned()
+}
+
+async fn create_and_replace(client: &Client, toml: &str) -> String {
     let created = client
         .create_application(
             &CreateApplicationRequest {
@@ -186,7 +188,11 @@ image = "ghcr.io/example/notes:1"
         .await
         .unwrap();
     assert_eq!(replaced.generation, 3);
-    let reconciled = client.reconcile(&created.application_id, 3).await.unwrap();
+    created.application_id
+}
+
+async fn reconcile_and_watch(client: &Client, application_id: &str) {
+    let reconciled = client.reconcile(application_id, 3).await.unwrap();
     assert_eq!(
         client
             .operation(&reconciled.operation_id)
@@ -203,7 +209,7 @@ image = "ghcr.io/example/notes:1"
             .unwrap()
             .unwrap();
     assert_eq!(operation_event.event.as_deref(), Some("operation"));
-    let mut events = client.watch_application(&created.application_id, None);
+    let mut events = client.watch_application(application_id, None);
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
         .await
         .unwrap()
@@ -211,7 +217,9 @@ image = "ghcr.io/example/notes:1"
         .unwrap();
     assert!(event.id.is_some());
     assert_eq!(event.event.as_deref(), Some("application"));
+}
 
+async fn create_second_and_check_pagination(client: &Client, toml: &str) {
     let second_toml = toml.replace("name = \"notes\"", "name = \"notes-two\"");
     let second = client
         .create_application_toml(&second_toml, "transport-contract-toml")
@@ -227,10 +235,12 @@ image = "ghcr.io/example/notes:1"
         .unwrap();
     assert_eq!(page.items.len(), 1);
     assert!(page.next_cursor.is_some());
+}
 
+async fn delete_and_check(client: &Client, application_id: &str) {
     let deleted = client
         .delete_application(
-            &created.application_id,
+            application_id,
             &DeleteApplicationRequest {
                 expected_generation: 3,
             },

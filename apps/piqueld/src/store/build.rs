@@ -1,8 +1,8 @@
 //! Build repository implementation.
 
 use super::{
-    ApplicationId, ApplicationRow, Build, BuildRepository, SqliteStore, StoreError, WorkState,
-    async_trait, new_id, now_ms, page_limit, valid_error,
+    ApplicationId, ApplicationRow, Build, BuildRepository, OperationError, SqliteStore, StoreError,
+    WorkState, async_trait, new_id, now_ms, page_limit,
 };
 
 #[derive(Debug)]
@@ -29,7 +29,7 @@ impl Build {
             id: row.id,
             operation_id: row.operation_id,
             application_id: ApplicationId::parse(row.application_id)
-                .map_err(|_| StoreError::Corrupt)?,
+                .map_err(StoreError::corrupt)?,
             service_name: row.service_name,
             state: WorkState::parse(&row.state)?,
             source_commit: row.source_commit,
@@ -61,7 +61,7 @@ impl BuildRepository for SqliteStore {
         )
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
         let operation_state = WorkState::parse(&operation.state)?;
         if operation.application_id != application_id_value || operation_state.terminal() {
@@ -75,7 +75,7 @@ impl BuildRepository for SqliteStore {
         )
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
         let application = application.decode(&self.instance_id)?;
         if !application
@@ -100,12 +100,12 @@ impl BuildRepository for SqliteStore {
         )
         .execute(&mut *tx)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .rows_affected();
         if inserted != 1 {
             return Err(StoreError::AlreadyExists);
         }
-        tx.commit().await.map_err(|_| StoreError::Database)?;
+        tx.commit().await.map_err(StoreError::database)?;
         Ok(Build {
             id,
             operation_id: operation_id.into(),
@@ -132,7 +132,7 @@ impl BuildRepository for SqliteStore {
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
         Build::parse_row(row)
     }
@@ -145,7 +145,7 @@ impl BuildRepository for SqliteStore {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| StoreError::Database)?;
+        .map_err(StoreError::database)?;
         rows.into_iter().map(Build::parse_row).collect()
     }
 
@@ -177,7 +177,7 @@ impl BuildRepository for SqliteStore {
         )
         .execute(&mut *connection)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .rows_affected();
         if changed == 1 {
             Ok(())
@@ -191,7 +191,7 @@ impl BuildRepository for SqliteStore {
         id: &str,
         from: WorkState,
         to: WorkState,
-        error: Option<(&str, &str)>,
+        error: Option<OperationError>,
     ) -> Result<(), StoreError> {
         if !from.can_transition_to(to) {
             return Err(StoreError::IllegalTransition);
@@ -199,11 +199,9 @@ impl BuildRepository for SqliteStore {
         if error.is_some() != (to == WorkState::Failed) {
             return Err(StoreError::IllegalTransition);
         }
-        if !valid_error(error) {
-            return Err(StoreError::InvalidInput);
-        }
         let now = now_ms();
-        let (error_code, error_message) = error.map_or((None, None), |(a, b)| (Some(a), Some(b)));
+        let error_code = error.as_ref().map(OperationError::code);
+        let error_message = error.as_ref().map(OperationError::message);
         let to_state = to.as_str();
         let from_state = from.as_str();
         let started = (to == WorkState::Running).then_some(now);
@@ -222,7 +220,7 @@ impl BuildRepository for SqliteStore {
         )
         .execute(&mut *connection)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .rows_affected();
         if changed == 1 {
             Ok(())
@@ -240,7 +238,7 @@ impl BuildRepository for SqliteStore {
         )
         .execute(&self.pool)
         .await
-        .map_err(|_| StoreError::Database)
+        .map_err(StoreError::database)
         .map(|result| result.rows_affected())
     }
 }

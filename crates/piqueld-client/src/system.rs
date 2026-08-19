@@ -5,29 +5,23 @@ use utoipa::ToSchema;
 use crate::{Client, ClientError};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Current control-plane status.
 pub struct SystemStatus {
+    /// Machine-readable service status.
     pub status: String,
+    /// Version of the exposed API.
     pub api_version: String,
+    /// Control-plane instance identifier.
     pub instance_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-pub struct SystemCapabilities {
-    pub persistence: bool,
-    pub source_resolution: bool,
-    pub runtime_observation: bool,
-    pub runtime_execution: bool,
-    pub reason: Option<String>,
-}
-
 impl Client {
+    /// Fetches control-plane status.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn system_status(&self) -> Result<SystemStatus, ClientError> {
         self.send::<_, ()>(Method::GET, "/api/v1/system/status", None, &[])
-            .await
-    }
-
-    pub async fn capabilities(&self) -> Result<SystemCapabilities, ClientError> {
-        self.send::<_, ()>(Method::GET, "/api/v1/system/capabilities", None, &[])
             .await
     }
 }

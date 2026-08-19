@@ -89,7 +89,7 @@ CREATE TABLE operation_steps (
     id TEXT PRIMARY KEY,
     operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
     position INTEGER NOT NULL CHECK (position >= 0),
-    kind TEXT NOT NULL CHECK (length(kind) BETWEEN 1 AND 64),
+    action TEXT NOT NULL CHECK (length(action) BETWEEN 1 AND 64),
     state TEXT NOT NULL CHECK (state IN ('pending','running','recovery','succeeded','failed','cancelled','skipped')),
     attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
     error_code TEXT CHECK (error_code IS NULL OR length(error_code) BETWEEN 1 AND 64),

@@ -1,8 +1,8 @@
 //! Operation repository implementation.
 
 use super::{
-    ApplicationId, Operation, OperationKind, OperationRepository, OperationStep, SqliteStore,
-    StepState, StoreError, WorkState, async_trait, now_ms, page_limit, valid_error,
+    ApplicationId, Operation, OperationError, OperationKind, OperationRepository, OperationStep,
+    SqliteStore, StepState, StoreError, WorkState, async_trait, now_ms, page_limit,
 };
 
 #[derive(Debug)]
@@ -20,13 +20,98 @@ struct OperationRow {
     finished_at_ms: Option<i64>,
 }
 
+impl SqliteStore {
+    async fn recover_operation(&self, operation_id: &str, now: i64) -> Result<(), StoreError> {
+        let mut tx = self.begin_immediate().await?;
+        let changed = sqlx::query!(
+            "UPDATE operations SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE id=?2 AND state='running'",
+            now,
+            operation_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if changed != 1 {
+            return Err(Self::transition_miss(&mut tx, "operations", operation_id).await?);
+        }
+        sqlx::query!(
+            "UPDATE operation_steps SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE operation_id=?2 AND state='running'",
+            now,
+            operation_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        sqlx::query!(
+            "UPDATE builds SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE operation_id=?2 AND state='running'",
+            now,
+            operation_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    async fn finish_operation(
+        &self,
+        operation_id: &str,
+        from: WorkState,
+        to: WorkState,
+        error: Option<&OperationError>,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let to_state = to.as_str();
+        let from_state = from.as_str();
+        let error_code = error.map(OperationError::code);
+        let error_message = error.map(OperationError::message);
+        let started = (to == WorkState::Running).then_some(now);
+        let mut tx = self.begin_immediate().await?;
+        sqlx::query!(
+            "UPDATE operation_steps SET state='cancelled',error_code=NULL,error_message=NULL,updated_at_ms=?1,finished_at_ms=?1 WHERE operation_id=?2 AND state IN ('pending','running','recovery')",
+            now,
+            operation_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        sqlx::query!(
+            "UPDATE builds SET state='cancelled',error_code=NULL,error_message=NULL,updated_at_ms=?1,finished_at_ms=?1 WHERE operation_id=?2 AND state IN ('pending','running','recovery')",
+            now,
+            operation_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let changed = sqlx::query!(
+            "UPDATE operations SET state=?1,error_code=?2,error_message=?3,updated_at_ms=?4,started_at_ms=COALESCE(started_at_ms,?5),finished_at_ms=?4 WHERE id=?6 AND state=?7",
+            to_state,
+            error_code,
+            error_message,
+            now,
+            started,
+            operation_id,
+            from_state
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if changed != 1 {
+            return Err(Self::transition_miss(&mut tx, "operations", operation_id).await?);
+        }
+        tx.commit().await.map_err(StoreError::database)
+    }
+}
+
 impl Operation {
     fn parse_row(row: OperationRow) -> Result<Self, StoreError> {
         Ok(Self {
             id: row.id,
             application_id: ApplicationId::parse(row.application_id)
-                .map_err(|_| StoreError::Corrupt)?,
-            generation: u64::try_from(row.generation).map_err(|_| StoreError::Corrupt)?,
+                .map_err(StoreError::corrupt)?,
+            generation: u64::try_from(row.generation).map_err(StoreError::corrupt)?,
             kind: OperationKind::parse(&row.kind)?,
             state: WorkState::parse(&row.state)?,
             error_code: row.error_code,
@@ -44,7 +129,7 @@ struct OperationStepRow {
     id: String,
     operation_id: String,
     position: i64,
-    kind: String,
+    action: String,
     state: String,
     attempt: i64,
     error_code: Option<String>,
@@ -57,23 +142,13 @@ struct OperationStepRow {
 
 impl OperationStep {
     fn parse_step_row(row: OperationStepRow) -> Result<Self, StoreError> {
-        let state = match row.state.as_str() {
-            "pending" => StepState::Pending,
-            "running" => StepState::Running,
-            "recovery" => StepState::Recovery,
-            "succeeded" => StepState::Succeeded,
-            "failed" => StepState::Failed,
-            "cancelled" => StepState::Cancelled,
-            "skipped" => StepState::Skipped,
-            _ => return Err(StoreError::Corrupt),
-        };
         Ok(Self {
             id: row.id,
             operation_id: row.operation_id,
-            position: u32::try_from(row.position).map_err(|_| StoreError::Corrupt)?,
-            kind: row.kind,
-            state,
-            attempt: u32::try_from(row.attempt).map_err(|_| StoreError::Corrupt)?,
+            position: u32::try_from(row.position).map_err(StoreError::corrupt)?,
+            action: row.action,
+            state: StepState::parse(row.state.as_str())?,
+            attempt: u32::try_from(row.attempt).map_err(StoreError::corrupt)?,
             error_code: row.error_code,
             error_message: row.error_message,
             created_at_ms: row.created_at_ms,
@@ -90,7 +165,7 @@ impl SqliteStore {
         &self,
         operation_id: &str,
     ) -> Result<(Operation, Vec<OperationStep>), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(|_| StoreError::Database)?;
+        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let operation = sqlx::query_as!(
             OperationRow,
             r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE id=?1"#,
@@ -98,21 +173,21 @@ impl SqliteStore {
         )
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)
         .and_then(Operation::parse_row)?;
         let steps = sqlx::query_as!(
             OperationStepRow,
-            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",kind AS "kind!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
+            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",action AS "action!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
             operation_id
         )
         .fetch_all(&mut *tx)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .into_iter()
         .map(OperationStep::parse_step_row)
         .collect::<Result<Vec<_>, _>>()?;
-        tx.commit().await.map_err(|_| StoreError::Database)?;
+        tx.commit().await.map_err(StoreError::database)?;
         Ok((operation, steps))
     }
 }
@@ -127,7 +202,7 @@ impl OperationRepository for SqliteStore {
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
         Operation::parse_row(row)
     }
@@ -135,12 +210,12 @@ impl OperationRepository for SqliteStore {
     async fn operation_steps(&self, operation_id: &str) -> Result<Vec<OperationStep>, StoreError> {
         let rows = sqlx::query_as!(
             OperationStepRow,
-            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",kind AS "kind!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
+            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",action AS "action!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
             operation_id
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| StoreError::Database)?;
+        .map_err(StoreError::database)?;
         rows.into_iter()
             .map(OperationStep::parse_step_row)
             .collect()
@@ -161,7 +236,7 @@ impl OperationRepository for SqliteStore {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| StoreError::Database)?;
+        .map_err(StoreError::database)?;
         rows.into_iter().map(Operation::parse_row).collect()
     }
 
@@ -177,17 +252,16 @@ impl OperationRepository for SqliteStore {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|_| StoreError::Database)?;
+        .map_err(StoreError::database)?;
         rows.into_iter().map(Operation::parse_row).collect()
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn transition_operation(
         &self,
         operation_id: &str,
         from: WorkState,
         to: WorkState,
-        error: Option<(&str, &str)>,
+        error: Option<crate::operations::OperationError>,
     ) -> Result<(), StoreError> {
         if !from.can_transition_to(to) {
             return Err(StoreError::IllegalTransition);
@@ -195,87 +269,22 @@ impl OperationRepository for SqliteStore {
         if error.is_some() != (to == WorkState::Failed) {
             return Err(StoreError::IllegalTransition);
         }
-        if !valid_error(error) {
-            return Err(StoreError::InvalidInput);
-        }
+        let error_code = error.as_ref().map(OperationError::code);
+        let error_message = error.as_ref().map(OperationError::message);
         let now = now_ms();
-        let (error_code, error_message) = error.map_or((None, None), |(a, b)| (Some(a), Some(b)));
         let finished = to.terminal().then_some(now);
         let started = (to == WorkState::Running).then_some(now);
         let to_state = to.as_str();
         let from_state = from.as_str();
 
         if from == WorkState::Running && to == WorkState::Recovery {
-            let mut tx = self.begin_immediate().await?;
-            let changed = sqlx::query!(
-                "UPDATE operations SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE id=?2 AND state='running'",
-                now,
-                operation_id
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| StoreError::Database)?
-            .rows_affected();
-            if changed != 1 {
-                return Err(Self::transition_miss(&mut tx, "operations", operation_id).await?);
-            }
-            sqlx::query!(
-                "UPDATE operation_steps SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE operation_id=?2 AND state='running'",
-                now,
-                operation_id
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| StoreError::Database)?;
-            sqlx::query!(
-                "UPDATE builds SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE operation_id=?2 AND state='running'",
-                now,
-                operation_id
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| StoreError::Database)?;
-            tx.commit().await.map_err(|_| StoreError::Database)?;
-            return Ok(());
+            return self.recover_operation(operation_id, now).await;
         }
 
         if matches!(to, WorkState::Failed | WorkState::Cancelled) {
-            let mut tx = self.begin_immediate().await?;
-            sqlx::query!(
-                "UPDATE operation_steps SET state='cancelled',error_code=NULL,error_message=NULL,updated_at_ms=?1,finished_at_ms=?1 WHERE operation_id=?2 AND state IN ('pending','running','recovery')",
-                now,
-                operation_id
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| StoreError::Database)?;
-            sqlx::query!(
-                "UPDATE builds SET state='cancelled',error_code=NULL,error_message=NULL,updated_at_ms=?1,finished_at_ms=?1 WHERE operation_id=?2 AND state IN ('pending','running','recovery')",
-                now,
-                operation_id
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| StoreError::Database)?;
-            let changed = sqlx::query!(
-                "UPDATE operations SET state=?1,error_code=?2,error_message=?3,updated_at_ms=?4,started_at_ms=COALESCE(started_at_ms,?5),finished_at_ms=?4 WHERE id=?6 AND state=?7",
-                to_state,
-                error_code,
-                error_message,
-                now,
-                started,
-                operation_id,
-                from_state
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| StoreError::Database)?
-            .rows_affected();
-            if changed != 1 {
-                return Err(Self::transition_miss(&mut tx, "operations", operation_id).await?);
-            }
-            tx.commit().await.map_err(|_| StoreError::Database)?;
-            return Ok(());
+            return self
+                .finish_operation(operation_id, from, to, error.as_ref(), now)
+                .await;
         }
 
         let mut connection = self.connection().await?;
@@ -292,7 +301,7 @@ impl OperationRepository for SqliteStore {
         )
         .execute(&mut *connection)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .rows_affected();
         if changed == 1 {
             Ok(())
@@ -300,13 +309,12 @@ impl OperationRepository for SqliteStore {
             Err(Self::transition_miss(&mut connection, "operations", operation_id).await?)
         }
     }
-
     async fn transition_step(
         &self,
         step_id: &str,
         from: StepState,
         to: StepState,
-        error: Option<(&str, &str)>,
+        error: Option<OperationError>,
     ) -> Result<(), StoreError> {
         if !from.can_transition_to(to) {
             return Err(StoreError::IllegalTransition);
@@ -314,11 +322,9 @@ impl OperationRepository for SqliteStore {
         if error.is_some() != (to == StepState::Failed) {
             return Err(StoreError::IllegalTransition);
         }
-        if !valid_error(error) {
-            return Err(StoreError::InvalidInput);
-        }
         let now = now_ms();
-        let (error_code, error_message) = error.map_or((None, None), |(a, b)| (Some(a), Some(b)));
+        let error_code = error.as_ref().map(OperationError::code);
+        let error_message = error.as_ref().map(OperationError::message);
         let finished = to.terminal().then_some(now);
         let started = (to == StepState::Running).then_some(now);
         let attempt = i64::from(to == StepState::Running && from != StepState::Running);
@@ -339,7 +345,7 @@ impl OperationRepository for SqliteStore {
         )
         .execute(&mut *connection)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .rows_affected();
         if changed == 1 {
             Ok(())
@@ -357,7 +363,7 @@ impl OperationRepository for SqliteStore {
         )
         .execute(&mut *tx)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .rows_affected();
         count += sqlx::query!(
             "UPDATE operation_steps SET state='recovery',updated_at_ms=?1,started_at_ms=NULL WHERE state='running'",
@@ -365,7 +371,7 @@ impl OperationRepository for SqliteStore {
         )
         .execute(&mut *tx)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .rows_affected();
         count += sqlx::query!(
             "UPDATE builds SET state='recovery',updated_at_ms=?1,started_at_ms=NULL WHERE state='running'",
@@ -373,9 +379,9 @@ impl OperationRepository for SqliteStore {
         )
         .execute(&mut *tx)
         .await
-        .map_err(|_| StoreError::Database)?
+        .map_err(StoreError::database)?
         .rows_affected();
-        tx.commit().await.map_err(|_| StoreError::Database)?;
+        tx.commit().await.map_err(StoreError::database)?;
         Ok(count)
     }
 
@@ -392,7 +398,7 @@ impl OperationRepository for SqliteStore {
         )
         .execute(&self.pool)
         .await
-        .map_err(|_| StoreError::Database)
+        .map_err(StoreError::database)
         .map(|result| result.rows_affected())
     }
 }

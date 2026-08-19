@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+//! Transport and event-stream integration tests for the typed client.
 
 use axum::{
     Json, Router,
