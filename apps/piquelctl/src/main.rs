@@ -2,7 +2,7 @@
 
 use clap::{Args, Parser, Subcommand};
 use piqueld_client::{
-    ApplicationView, Client, ClientError, ListApplicationsOptions, ListSecretsOptions,
+    ApplicationView, BuildView, Client, ClientError, ListApplicationsOptions, ListSecretsOptions,
     OperationView, Page, PlanView, SecretMetadata, Source, ValidationErrors,
 };
 use serde::Serialize;
@@ -78,6 +78,25 @@ enum Command {
     Secret {
         #[command(subcommand)]
         command: SecretCommand,
+    },
+    /// Inspect durable source-build status associated with an application or operation.
+    Build {
+        #[command(subcommand)]
+        command: BuildCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BuildCommand {
+    /// Inspect one build; its metadata includes application and operation IDs.
+    Show {
+        /// Stable build identifier.
+        build_id: String,
+    },
+    /// List builds attached to one operation.
+    Operation {
+        /// Stable operation identifier.
+        operation_id: String,
     },
 }
 
@@ -309,6 +328,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Command::Delete(args) => delete(cli, &client, args).await,
         Command::Operation(args) => operation(cli, &client, args).await,
         Command::Secret { command } => secret(cli, &client, command).await,
+        Command::Build { command } => build(cli, &client, command).await,
     }
 }
 
@@ -579,6 +599,52 @@ async fn secret(cli: &Cli, client: &Client, command: &SecretCommand) -> Result<(
         SecretCommand::Set(args) => set_secret(cli, client, args).await,
         SecretCommand::Delete(args) => delete_secret(cli, client, args).await,
     }
+}
+
+async fn build(cli: &Cli, client: &Client, command: &BuildCommand) -> Result<()> {
+    match command {
+        BuildCommand::Show { build_id } => {
+            let build = client.build(build_id).await?;
+            render_build(cli, &build)
+        }
+        BuildCommand::Operation { operation_id } => {
+            let builds = client.operation_builds(operation_id).await?;
+            if cli.json {
+                emit_json(&builds)
+            } else if builds.items.is_empty() {
+                println!("No builds for operation {operation_id}.");
+                Ok(())
+            } else {
+                for build in builds.items {
+                    render_build_text(&build);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+fn render_build(cli: &Cli, build: &BuildView) -> Result<()> {
+    if cli.json {
+        emit_json(build)
+    } else {
+        render_build_text(build);
+        Ok(())
+    }
+}
+
+fn render_build_text(build: &BuildView) {
+    println!(
+        "build {}: {} (application {}, operation {}, service {})",
+        build.id, build.state, build.application_id, build.operation_id, build.service_name,
+    );
+    if let Some(commit) = &build.source_commit {
+        println!("  source commit: {commit}");
+    }
+    if let Some(image) = &build.image_digest {
+        println!("  image digest: {image}");
+    }
+    println!("  verified: {}", build.verified);
 }
 
 async fn list_secrets(cli: &Cli, client: &Client) -> Result<()> {
@@ -1290,6 +1356,8 @@ mod tests {
                 "database-password",
                 "--yes",
             ],
+            vec!["piquelctl", "build", "show", "build-01"],
+            vec!["piquelctl", "build", "operation", "operation-01"],
         ];
         for arguments in cases {
             Cli::try_parse_from(arguments).expect("command parses");
