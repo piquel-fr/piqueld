@@ -90,14 +90,9 @@ struct Cli {
     #[arg(long, global = true, default_value = "30s", value_parser = parse_duration)]
     timeout: Duration,
 
-    /// Emit only the command's documented JSON result on stdout.
+    /// Emit the command's stable JSON envelope on stdout.
     #[arg(long, global = true)]
     json: bool,
-
-    /// Stable output format (`human` or `json`); for legacy export this also
-    /// accepts the historical destination path.
-    #[arg(long, global = true, value_name = "FORMAT|PATH")]
-    output: Option<String>,
 
     /// Suppress progress and successful human output.
     #[arg(long, short, global = true)]
@@ -130,24 +125,7 @@ struct Profile {
 
 impl Cli {
     fn structured_json(&self) -> bool {
-        self.output.as_deref() == Some("json")
-    }
-
-    fn json_output(&self) -> bool {
-        self.json || self.structured_json()
-    }
-
-    fn validate_output(&self) -> Result<()> {
-        if let Some(output) = &self.output
-            && !matches!(output.as_str(), "human" | "json")
-            && !matches!(&self.command, Command::Export(_))
-        {
-            return Err(CliError::new(
-                ErrorKind::Input,
-                "--output must be human or json",
-            ));
-        }
-        Ok(())
+        self.json
     }
 }
 
@@ -186,82 +164,6 @@ enum Command {
     Export(ExportArgs),
     /// Confirm and transactionally import a complete binary state archive.
     Import(ImportArgs),
-    /// Advanced grouped application commands. Legacy flat commands remain available.
-    Application {
-        #[command(subcommand)]
-        command: ApplicationCommand,
-    },
-    /// Export or replace complete control-plane state.
-    State {
-        #[command(subcommand)]
-        command: StateCommand,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum ApplicationCommand {
-    /// List applications and their persisted generations.
-    List,
-    /// Show desired and observed application status.
-    Show { name: String },
-    /// Preview a manifest without changing desired state.
-    Plan(ManifestArgs),
-    /// Replace desired state and optionally wait for reconciliation.
-    Apply(ApplyArgs),
-    /// Export one canonical application manifest.
-    Export {
-        name: String,
-        #[arg(long)]
-        file: Option<PathBuf>,
-        #[arg(long)]
-        include_resolved: bool,
-        #[arg(long)]
-        force: bool,
-    },
-    /// Delete an application while retaining named volumes.
-    Delete {
-        name: String,
-        #[arg(long, value_parser = parse_generation)]
-        expected_generation: Option<u64>,
-        #[arg(long)]
-        yes: bool,
-        /// Kept as an explicit rejected option; runtime force deletion is unsupported.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Read or follow sanitized application logs.
-    Logs(ApplicationLogsArgs),
-}
-
-#[derive(Debug, Subcommand)]
-enum OperationCommand {
-    /// Watch an operation through SSE with polling fallback.
-    Watch {
-        id: String,
-        #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
-        poll_seconds: u64,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum StateCommand {
-    /// Export a portable or encrypted state archive.
-    Export {
-        #[arg(long)]
-        file: Option<PathBuf>,
-        #[arg(long, value_enum, default_value = "portable")]
-        mode: ExportMode,
-        #[arg(long)]
-        force: bool,
-    },
-    /// Transactionally replace state after explicit confirmation.
-    Import {
-        archive: PathBuf,
-        #[arg(long)]
-        replace: bool,
-        #[arg(long)]
-        yes: bool,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -294,6 +196,10 @@ struct LogsArgs {
     /// Maximum approximate response size.
     #[arg(long, default_value_t = 262_144, value_parser = clap::value_parser!(u32).range(1..=1_048_576))]
     max_bytes: u32,
+
+    /// Follow new log records until interrupted.
+    #[arg(long)]
+    follow: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -347,9 +253,9 @@ struct ExportArgs {
     #[arg(long)]
     application: Option<String>,
 
-    /// Explicit output file. `-` means stdout.
+    /// Output file. `-` means stdout; state archives refuse a terminal stdout.
     #[arg(long, value_name = "PATH")]
-    file: Option<PathBuf>,
+    output: Option<PathBuf>,
 
     /// Secret mode for complete state exports.
     #[arg(long, value_enum, default_value = "portable")]
@@ -370,23 +276,13 @@ struct ImportArgs {
     #[arg(value_name = "PATH")]
     file: PathBuf,
 
+    /// Confirm that the archive may replace all control-plane state.
+    #[arg(long)]
+    replace: bool,
+
     /// Skip the destructive replacement confirmation prompt.
     #[arg(long)]
     yes: bool,
-}
-
-#[derive(Debug, Args)]
-struct ApplicationLogsArgs {
-    /// Application name or stable ID.
-    name: String,
-    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(0..=86_400))]
-    since_seconds: u64,
-    #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u16).range(1..=1_000))]
-    tail: u16,
-    #[arg(long, default_value_t = 256 * 1024, value_parser = clap::value_parser!(u32).range(1..=1_048_576))]
-    max_bytes: u32,
-    #[arg(long)]
-    follow: bool,
 }
 
 #[derive(Debug, Args)]
@@ -439,11 +335,16 @@ struct DeleteArgs {
 
 #[derive(Debug, Args)]
 struct OperationArgs {
-    /// Stable operation ID for the legacy flat form.
-    operation_id: Option<String>,
+    /// Stable operation ID.
+    operation_id: String,
 
-    #[command(subcommand)]
-    command: Option<OperationCommand>,
+    /// Watch progress through SSE with polling fallback.
+    #[arg(long, conflicts_with = "no_wait")]
+    watch: bool,
+
+    /// Polling interval used after streaming becomes unavailable.
+    #[arg(long, requires = "watch", default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
+    poll_seconds: u64,
 
     /// Fetch once instead of waiting for a terminal state.
     #[arg(long)]
@@ -473,17 +374,6 @@ impl ErrorKind {
             Self::Operation => 7,
             Self::Interrupted => 8,
             Self::Refused => 9,
-        }
-    }
-
-    const fn legacy_exit_code(self) -> u8 {
-        match self {
-            Self::General => 1,
-            Self::Input | Self::Refused => 2,
-            Self::Authentication | Self::Unavailable => 4,
-            Self::Conflict => 3,
-            Self::Operation => 5,
-            Self::Interrupted => 130,
         }
     }
 }
@@ -590,7 +480,6 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: &Cli) -> Result<()> {
-    cli.validate_output()?;
     let client = build_client(cli)?;
     match &cli.command {
         Command::Status => status(cli, &client).await,
@@ -605,8 +494,6 @@ async fn run(cli: &Cli) -> Result<()> {
         Command::Logs(args) => logs(cli, &client, args).await,
         Command::Export(args) => export_command(cli, &client, args).await,
         Command::Import(args) => import_command(cli, &client, args).await,
-        Command::Application { command } => application(cli, &client, command).await,
-        Command::State { command } => state(cli, &client, command).await,
     }
 }
 
@@ -704,16 +591,7 @@ fn build_client(cli: &Cli) -> Result<Client> {
 async fn status(cli: &Cli, client: &Client) -> Result<()> {
     let status = client.system_status().await?;
     if cli.structured_json() {
-        let capabilities = client.capabilities().await?;
-        emit_json_envelope(
-            "status",
-            &json!({
-                "status": status,
-                "capabilities": capabilities,
-            }),
-        )?;
-    } else if cli.json {
-        emit_json(&status)?;
+        emit_json_envelope("status", &status)?;
     } else {
         let capabilities = client.capabilities().await?;
         println!(
@@ -734,145 +612,6 @@ async fn status(cli: &Cli, client: &Client) -> Result<()> {
         }
     }
     Ok(())
-}
-
-async fn application(cli: &Cli, client: &Client, command: &ApplicationCommand) -> Result<()> {
-    match command {
-        ApplicationCommand::List => list(cli, client).await,
-        ApplicationCommand::Show { name } => show(cli, client, name).await,
-        ApplicationCommand::Plan(args) => plan_command(cli, client, args).await,
-        ApplicationCommand::Apply(args) => apply(cli, client, args).await,
-        ApplicationCommand::Export {
-            name,
-            file,
-            include_resolved,
-            force,
-        } => {
-            let application = resolve_application(client, name).await?;
-            let document = client
-                .export_application(application.application.id.as_str(), *include_resolved)
-                .await?;
-            let output = if cli.json_output() && file.is_none() {
-                None
-            } else {
-                write_text_output(file.as_deref(), &document, *force)?
-            };
-            if cli.structured_json() {
-                emit_json_envelope(
-                    "application_export",
-                    &json!({
-                        "name": name,
-                        "bytes": document.len(),
-                        "output": output,
-                        "include_resolved": include_resolved,
-                        "toml": (file.is_none()).then_some(&document),
-                    }),
-                )?;
-            } else if cli.json {
-                emit_json(&json!({
-                    "kind": "application",
-                    "application_id": application.application.id,
-                    "bytes": document.len(),
-                    "output": output,
-                }))?;
-            } else if let Some(path) = output
-                && !cli.quiet
-            {
-                eprintln!("exported application manifest to {}", path.display());
-            }
-            Ok(())
-        }
-        ApplicationCommand::Delete {
-            name,
-            expected_generation,
-            yes,
-            force,
-        } => {
-            if *force {
-                return Err(CliError::new(
-                    ErrorKind::Refused,
-                    "force deletion is unsupported; named volumes are always retained",
-                ));
-            }
-            delete(
-                cli,
-                client,
-                &DeleteArgs {
-                    name_or_id: name.clone(),
-                    expected_generation: *expected_generation,
-                    yes: *yes,
-                    no_wait: false,
-                },
-            )
-            .await
-        }
-        ApplicationCommand::Logs(args) => application_logs(cli, client, args).await,
-    }
-}
-
-async fn state(cli: &Cli, client: &Client, command: &StateCommand) -> Result<()> {
-    match command {
-        StateCommand::Export { file, mode, force } => {
-            let args = ExportArgs {
-                application: None,
-                file: file.clone(),
-                mode: *mode,
-                include_resolved: false,
-                force: *force,
-            };
-            export_command(cli, client, &args).await
-        }
-        StateCommand::Import {
-            archive,
-            replace,
-            yes,
-        } => {
-            if !replace {
-                return Err(CliError::new(
-                    ErrorKind::Refused,
-                    "state import replaces control-plane state; pass --replace explicitly",
-                ));
-            }
-            import_command(
-                cli,
-                client,
-                &ImportArgs {
-                    file: archive.clone(),
-                    yes: *yes,
-                },
-            )
-            .await
-        }
-    }
-}
-
-async fn application_logs(cli: &Cli, client: &Client, args: &ApplicationLogsArgs) -> Result<()> {
-    let application = resolve_application(client, &args.name).await?;
-    let options = ApplicationLogsOptions {
-        since_seconds: Some(args.since_seconds),
-        tail: Some(args.tail),
-        max_bytes: Some(args.max_bytes),
-    };
-    if args.follow {
-        follow_logs(cli, client, application.application.id.as_str(), &options).await
-    } else {
-        let logs = client
-            .application_logs(application.application.id.as_str(), &options)
-            .await?;
-        if cli.structured_json() {
-            emit_json_envelope("application_logs", &logs)?;
-        } else if cli.json {
-            emit_json(&logs)?;
-        } else if !cli.quiet {
-            for log in logs {
-                println!(
-                    "{} {} {}: {}",
-                    log.timestamp, log.service, log.stream, log.display_message
-                );
-            }
-        }
-        Ok(())
-    }
 }
 
 async fn list(cli: &Cli, client: &Client) -> Result<()> {
@@ -898,17 +637,6 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
             "application_list",
             &json!({"items": items, "next_cursor": Value::Null}),
         )?;
-    } else if cli.json {
-        let items = rows
-            .iter()
-            .map(|(application, status)| {
-                json!({
-                    "application": application,
-                    "status": status,
-                })
-            })
-            .collect::<Vec<_>>();
-        emit_json(&json!({"items": items, "next_cursor": Value::Null}))?;
     } else if rows.is_empty() {
         println!("No applications.");
     } else {
@@ -942,8 +670,6 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
             "application_show",
             &json!({"application": application, "status": status}),
         )?;
-    } else if cli.json {
-        emit_json(&json!({"application": application, "status": status}))?;
     } else {
         println!(
             "{} ({})",
@@ -1019,8 +745,6 @@ async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result
     let (plan, _) = prepare_plan(client, &manifest, &name, args.expected_generation).await?;
     if cli.structured_json() {
         emit_json_envelope("application_plan", &plan)?;
-    } else if cli.json {
-        emit_json(&plan)?;
     } else {
         render_plan(&plan, &mut io::stdout()).map_err(|error| {
             CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
@@ -1068,8 +792,6 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     if args.no_wait {
         if cli.structured_json() {
             emit_json_envelope("application_apply", &accepted)?;
-        } else if cli.json {
-            emit_json(&accepted)?;
         } else {
             println!(
                 "accepted operation {} for application {}",
@@ -1084,8 +806,6 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
             "application_apply",
             &json!({"accepted": accepted, "operation": operation}),
         )?;
-    } else if cli.json {
-        emit_json(&json!({"accepted": accepted, "operation": operation}))?;
     } else {
         println!("operation {} {}", operation.id, operation.state);
     }
@@ -1127,8 +847,6 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
                 "application_delete",
                 &json!({"accepted": accepted, "volumes_retained": true}),
             )?;
-        } else if cli.json {
-            emit_json(&json!({"accepted": accepted, "volumes_retained": true}))?;
         } else {
             println!(
                 "accepted operation {} (named volumes retained)",
@@ -1147,12 +865,6 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
                 "volumes_retained": true,
             }),
         )?;
-    } else if cli.json {
-        emit_json(&json!({
-            "accepted": accepted,
-            "operation": operation,
-            "volumes_retained": true,
-        }))?;
     } else {
         println!(
             "operation {} {} (named volumes retained)",
@@ -1163,29 +875,21 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
 }
 
 async fn operation(cli: &Cli, client: &Client, args: &OperationArgs) -> Result<()> {
-    if let Some(OperationCommand::Watch { id, poll_seconds }) = &args.command {
-        let operation = watch_operation(cli, client, id, *poll_seconds).await?;
+    if args.watch {
+        let operation = watch_operation(cli, client, &args.operation_id, args.poll_seconds).await?;
         if cli.structured_json() {
             emit_json_envelope("operation_watch", &operation)?;
-        } else if cli.json {
-            emit_json(&operation)?;
         } else if !cli.quiet {
             println!("operation {} {}", operation.id, operation.state);
         }
         return Ok(());
     }
-    let operation_id = args.operation_id.as_deref().ok_or_else(|| {
-        CliError::new(
-            ErrorKind::Input,
-            "operation requires an ID or the `watch` subcommand",
-        )
-    })?;
-    let initial = client.operation(operation_id).await?;
+    let initial = client.operation(&args.operation_id).await?;
     if args.no_wait {
         render_operation(cli, &initial)?;
         return Ok(());
     }
-    let operation = wait_for_operation(client, operation_id, Some(initial)).await?;
+    let operation = wait_for_operation(client, &args.operation_id, Some(initial)).await?;
     render_operation(cli, &operation)
 }
 
@@ -1207,8 +911,6 @@ async fn build(cli: &Cli, client: &Client, command: &BuildCommand) -> Result<()>
             let builds = client.operation_builds(operation_id).await?;
             if cli.structured_json() {
                 emit_json_envelope("build_operation", &builds)
-            } else if cli.json {
-                emit_json(&builds)
             } else if builds.items.is_empty() {
                 println!("No builds for operation {operation_id}.");
                 Ok(())
@@ -1224,20 +926,19 @@ async fn build(cli: &Cli, client: &Client, command: &BuildCommand) -> Result<()>
 
 async fn logs(cli: &Cli, client: &Client, args: &LogsArgs) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
+    let options = ApplicationLogsOptions {
+        since_seconds: args.since_seconds,
+        tail: Some(args.tail),
+        max_bytes: Some(args.max_bytes),
+    };
+    if args.follow {
+        return follow_logs(cli, client, application.application.id.as_str(), &options).await;
+    }
     let records = client
-        .application_logs(
-            application.application.id.as_str(),
-            &ApplicationLogsOptions {
-                since_seconds: args.since_seconds,
-                tail: Some(args.tail),
-                max_bytes: Some(args.max_bytes),
-            },
-        )
+        .application_logs(application.application.id.as_str(), &options)
         .await?;
     if cli.structured_json() {
         emit_json_envelope("logs", &json!({"items": records}))
-    } else if cli.json {
-        emit_json(&json!({"items": records}))
     } else if records.is_empty() {
         println!("No logs for {}.", application.application.metadata.name);
         Ok(())
@@ -1259,8 +960,6 @@ fn render_log_text(record: &ContainerLogView) {
 fn render_build(cli: &Cli, build: &BuildView) -> Result<()> {
     if cli.structured_json() {
         emit_json_envelope("build_show", build)
-    } else if cli.json {
-        emit_json(build)
     } else {
         render_build_text(build);
         Ok(())
@@ -1285,8 +984,6 @@ async fn list_secrets(cli: &Cli, client: &Client) -> Result<()> {
     let secrets = all_secrets(client).await?;
     if cli.structured_json() {
         emit_json_envelope("secret_list", &json!({"items": secrets}))?;
-    } else if cli.json {
-        emit_json(&json!({"items": secrets}))?;
     } else if secrets.is_empty() {
         println!("No logical secrets.");
     } else {
@@ -1313,8 +1010,8 @@ async fn export_command(cli: &Cli, client: &Client, args: &ExportArgs) -> Result
             "--include-resolved requires --application",
         ));
     }
-    let destination = export_destination(cli, args);
-    if cli.json_output() && destination.is_none() {
+    let destination = args.output.as_deref();
+    if cli.structured_json() && destination.is_none() {
         return Err(CliError::new(
             ErrorKind::Input,
             "binary state export with --json requires --output",
@@ -1345,14 +1042,6 @@ async fn export_command(cli: &Cli, client: &Client, args: &ExportArgs) -> Result
                 "output": output,
             }),
         )?;
-    } else if cli.json {
-        emit_json(&json!({
-            "kind": "state",
-            "mode": match args.mode { ExportMode::Portable => "portable", ExportMode::Encrypted => "encrypted" },
-            "archive_digest": archive_digest,
-            "bytes": archive.len(),
-            "output": output,
-        }))?;
     } else if let Some(output) = output {
         eprintln!(
             "exported state archive to {} ({archive_digest})",
@@ -1379,8 +1068,8 @@ async fn export_application_command(cli: &Cli, client: &Client, args: &ExportArg
     let document = client
         .export_application(application.application.id.as_str(), args.include_resolved)
         .await?;
-    let destination = export_destination(cli, args);
-    let output = if cli.json_output() && destination.is_none() {
+    let destination = args.output.as_deref();
+    let output = if cli.structured_json() && destination.is_none() {
         None
     } else {
         write_text_output(destination, &document, args.force)?
@@ -1396,14 +1085,6 @@ async fn export_application_command(cli: &Cli, client: &Client, args: &ExportArg
                 "toml": (destination.is_none()).then_some(&document),
             }),
         )?;
-    } else if cli.json {
-        emit_json(&json!({
-            "kind": "application",
-            "application_id": application.application.id,
-            "bytes": document.len(),
-            "output": output,
-            "toml": (destination.is_none()).then_some(&document),
-        }))?;
     } else if let Some(output) = output
         && !cli.quiet
     {
@@ -1412,16 +1093,13 @@ async fn export_application_command(cli: &Cli, client: &Client, args: &ExportArg
     Ok(())
 }
 
-fn export_destination<'a>(cli: &'a Cli, args: &'a ExportArgs) -> Option<&'a Path> {
-    args.file.as_deref().or_else(|| {
-        cli.output
-            .as_deref()
-            .filter(|value| !matches!(*value, "human" | "json"))
-            .map(Path::new)
-    })
-}
-
 async fn import_command(cli: &Cli, client: &Client, args: &ImportArgs) -> Result<()> {
+    if !args.replace {
+        return Err(CliError::new(
+            ErrorKind::Refused,
+            "state import replaces control-plane state; pass --replace explicitly",
+        ));
+    }
     let archive = read_archive(&args.file)?;
     let archive_digest = digest(&archive);
     let confirmation = client.prepare_state_import(&archive_digest).await?;
@@ -1446,8 +1124,6 @@ async fn import_command(cli: &Cli, client: &Client, args: &ImportArgs) -> Result
     let result = result?;
     if cli.structured_json() {
         emit_json_envelope("state_import", &result)?;
-    } else if cli.json {
-        emit_json(&result)?;
     } else if !cli.quiet {
         println!(
             "imported {} application(s) and {} secret(s); operation {}",
@@ -1496,8 +1172,6 @@ async fn set_secret(cli: &Cli, client: &Client, args: &SecretSetArgs) -> Result<
     };
     if cli.structured_json() {
         emit_json_envelope("secret_set", &metadata)?;
-    } else if cli.json {
-        emit_json(&metadata)?;
     } else {
         println!(
             "secret {} {} (generation {})",
@@ -1536,8 +1210,6 @@ async fn delete_secret(cli: &Cli, client: &Client, args: &SecretDeleteArgs) -> R
             "secret_delete",
             &json!({"deleted": true, "name": metadata.name}),
         )?;
-    } else if cli.json {
-        emit_json(&json!({"deleted": true, "name": metadata.name}))?;
     } else {
         println!("secret {} deleted", metadata.name);
     }
@@ -2052,8 +1724,6 @@ async fn follow_logs(
                                 "data": event.data,
                                 "cursor": cursor,
                             }))?;
-                        } else if cli.json {
-                            emit_json(&json!({"event": event.event, "data": event.data}))?;
                         } else if !cli.quiet {
                             if let Ok(logs) = serde_json::from_str::<Vec<piqueld_client::ContainerLogView>>(&event.data) {
                                 for log in logs {
@@ -2169,8 +1839,6 @@ fn report_operation(operation: &OperationView) {
 fn render_operation(cli: &Cli, operation: &OperationView) -> Result<()> {
     if cli.structured_json() {
         emit_json_envelope("operation", operation)
-    } else if cli.json {
-        emit_json(operation)
     } else {
         println!("operation {}: {}", operation.id, operation.state);
         println!(
@@ -2558,6 +2226,7 @@ fn finish_error(cli: &Cli, error: CliError) -> ExitCode {
                 "message": &error.message,
                 "api_code": &error.api_code,
                 "request_id": &error.request_id,
+                "details": &error.details,
                 "exit_code": error.kind.exit_code(),
             }
         });
@@ -2565,23 +2234,6 @@ fn finish_error(cli: &Cli, error: CliError) -> ExitCode {
             "{}",
             serde_json::to_string(&value)
                 .unwrap_or_else(|_| { "{\"schema\":\"piquelctl.error.v1\"}".to_owned() })
-        );
-    } else if cli.json {
-        eprintln!(
-            "piquelctl: {}{}{}{}",
-            error.message,
-            error
-                .api_code
-                .as_deref()
-                .map_or_else(String::new, |code| format!("; API code {code}")),
-            error
-                .request_id
-                .as_deref()
-                .map_or_else(String::new, |id| format!("; request ID {id}")),
-            error
-                .details
-                .as_ref()
-                .map_or_else(String::new, |details| format!("; details {details}")),
         );
     } else {
         eprintln!("piquelctl: {}", error.message);
@@ -2595,11 +2247,7 @@ fn finish_error(cli: &Cli, error: CliError) -> ExitCode {
             eprintln!("details: {details}");
         }
     }
-    ExitCode::from(if cli.structured_json() {
-        error.kind.exit_code()
-    } else {
-        error.kind.legacy_exit_code()
-    })
+    ExitCode::from(error.kind.exit_code())
 }
 
 fn terminal_operation(state: &str) -> bool {
@@ -2661,7 +2309,7 @@ mod tests {
                 "encrypted",
                 "--force",
             ],
-            vec!["piquelctl", "import", "state.tar", "--yes"],
+            vec!["piquelctl", "import", "state.tar", "--replace", "--yes"],
         ];
         for arguments in cases {
             Cli::try_parse_from(arguments).expect("command parses");
@@ -2669,30 +2317,22 @@ mod tests {
     }
 
     #[test]
-    fn parser_covers_the_advanced_grouped_surface() {
+    fn parser_covers_advanced_options_on_the_flat_surface() {
         let cases = [
-            vec!["piquelctl", "--output", "json", "application", "list"],
-            vec!["piquelctl", "application", "logs", "notes", "--follow"],
+            vec!["piquelctl", "--json", "list"],
+            vec!["piquelctl", "logs", "notes", "--follow"],
             vec!["piquelctl", "secret", "list"],
             vec!["piquelctl", "secret", "set", "database", "--file", "secret"],
-            vec!["piquelctl", "operation", "watch", "operation-01"],
+            vec!["piquelctl", "operation", "operation-01", "--watch"],
             vec![
                 "piquelctl",
-                "state",
                 "export",
-                "--file",
+                "--output",
                 "state.tar",
                 "--mode",
                 "encrypted",
             ],
-            vec![
-                "piquelctl",
-                "state",
-                "import",
-                "state.tar",
-                "--replace",
-                "--yes",
-            ],
+            vec!["piquelctl", "import", "state.tar", "--replace", "--yes"],
         ];
         for arguments in cases {
             Cli::try_parse_from(arguments).expect("advanced command parses");
@@ -2715,6 +2355,26 @@ mod tests {
         assert!(Cli::try_parse_from(["piquelctl", "--timeout", "zero", "status"]).is_err());
         assert!(Cli::try_parse_from(["piquelctl", "--timeout", "0s", "status"]).is_err());
         assert!(Cli::try_parse_from(["piquelctl", "plan", "status"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "piquelctl",
+                "operation",
+                "operation-01",
+                "--watch",
+                "--no-wait",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "piquelctl",
+                "operation",
+                "operation-01",
+                "--poll-seconds",
+                "1",
+            ])
+            .is_err()
+        );
         assert!(Cli::try_parse_from(["piquelctl", "secret", "set", "database-password"]).is_err());
         assert!(
             Cli::try_parse_from([

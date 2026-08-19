@@ -1,4 +1,4 @@
-//! Grouped CLI, bearer-token, binary-output, and transport contract checks.
+//! CLI, bearer-token, binary-output, and transport contract checks.
 
 use serde_json::Value;
 use std::{
@@ -64,10 +64,6 @@ fn replies() -> Vec<Reply> {
         Reply::json(
             "GET /api/v1/system/status ",
             r#"{"status":"ok","api_version":"v1","daemon_version":"0.1.0","instance_id":"test-instance"}"#,
-        ),
-        Reply::json(
-            "GET /api/v1/system/capabilities ",
-            r#"{"persistence":true,"source_resolution":true,"runtime_observation":true,"runtime_execution":true,"secret_management":true,"reason":null}"#,
         ),
         Reply::json("GET /api/v1/applications?", &app_page),
         Reply::json(
@@ -234,8 +230,7 @@ fn run(transport: &Transport, profiles: &Path, args: &[String]) -> Output {
         .args([
             "--profiles-file",
             profiles.to_str().expect("profiles"),
-            "--output",
-            "json",
+            "--json",
         ])
         .args(args)
         .env("PIQUELD_TOKEN", TOKEN)
@@ -259,7 +254,7 @@ fn assert_success(output: &Output, kind: &str) {
 }
 
 // This is one deliberately ordered end-to-end fixture covering the complete
-// grouped command contract on both transports.
+// command contract on both transports.
 #[allow(clippy::too_many_lines)]
 fn exercise(unix: bool) {
     let directory = tempfile::tempdir().expect("directory");
@@ -276,17 +271,10 @@ fn exercise(unix: bool) {
     let (transport, server) = spawn_server(directory.path(), replies(), unix);
     let cases: Vec<(Vec<String>, &str)> = vec![
         (vec!["status".into()], "status"),
-        (
-            vec!["application".into(), "list".into()],
-            "application_list",
-        ),
-        (
-            vec!["application".into(), "show".into(), "notes".into()],
-            "application_show",
-        ),
+        (vec!["list".into()], "application_list"),
+        (vec!["show".into(), "notes".into()], "application_show"),
         (
             vec![
-                "application".into(),
                 "plan".into(),
                 "--file".into(),
                 manifest.to_string_lossy().into_owned(),
@@ -295,7 +283,6 @@ fn exercise(unix: bool) {
         ),
         (
             vec![
-                "application".into(),
                 "apply".into(),
                 "--file".into(),
                 manifest.to_string_lossy().into_owned(),
@@ -305,32 +292,24 @@ fn exercise(unix: bool) {
             "application_apply",
         ),
         (
-            vec!["application".into(), "export".into(), "notes".into()],
+            vec!["export".into(), "--application".into(), "notes".into()],
             "application_export",
         ),
         (
             vec![
-                "application".into(),
                 "export".into(),
+                "--application".into(),
                 "notes".into(),
-                "--file".into(),
+                "--output".into(),
                 exported_application.to_string_lossy().into_owned(),
             ],
             "application_export",
         ),
         (
-            vec![
-                "application".into(),
-                "delete".into(),
-                "notes".into(),
-                "--yes".into(),
-            ],
+            vec!["delete".into(), "notes".into(), "--yes".into()],
             "application_delete",
         ),
-        (
-            vec!["application".into(), "logs".into(), "notes".into()],
-            "application_logs",
-        ),
+        (vec!["logs".into(), "notes".into()], "logs"),
         (vec!["secret".into(), "list".into()], "secret_list"),
         (
             vec![
@@ -352,21 +331,19 @@ fn exercise(unix: bool) {
             "secret_delete",
         ),
         (
-            vec!["operation".into(), "watch".into(), "operation-01".into()],
+            vec!["operation".into(), "operation-01".into(), "--watch".into()],
             "operation_watch",
         ),
         (
             vec![
-                "state".into(),
                 "export".into(),
-                "--file".into(),
+                "--output".into(),
                 exported.to_string_lossy().into_owned(),
             ],
             "state_export",
         ),
         (
             vec![
-                "state".into(),
                 "import".into(),
                 archive.to_string_lossy().into_owned(),
                 "--replace".into(),
@@ -387,12 +364,12 @@ fn exercise(unix: bool) {
 }
 
 #[test]
-fn grouped_commands_use_tcp_with_stable_json() {
+fn commands_use_tcp_with_stable_json() {
     exercise(false);
 }
 
 #[test]
-fn grouped_commands_use_unix_with_stable_json() {
+fn commands_use_unix_with_stable_json() {
     exercise(true);
 }
 
@@ -406,9 +383,7 @@ fn unsafe_binary_stdout_and_missing_replace_are_refused_before_network_use() {
         .args([
             "--profiles-file",
             profiles.to_str().expect("profiles"),
-            "--output",
-            "json",
-            "state",
+            "--json",
             "import",
             archive.to_str().expect("archive"),
         ])
