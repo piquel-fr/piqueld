@@ -2,8 +2,8 @@
 
 use clap::{Args, Parser, Subcommand};
 use piqueld_client::{
-    ApplicationView, Client, ClientError, ListApplicationsOptions, OperationView, Page, PlanView,
-    Source, ValidationErrors,
+    ApplicationView, Client, ClientError, ListApplicationsOptions, ListSecretsOptions,
+    OperationView, Page, PlanView, SecretMetadata, Source, ValidationErrors,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -12,7 +12,7 @@ use std::{
     fmt,
     fmt::Write as _,
     future::Future,
-    io::{self, IsTerminal, Write},
+    io::{self, IsTerminal, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
     time::Duration,
@@ -24,6 +24,7 @@ const DEFAULT_SOCKET: &str = "/run/piqueld/piqueld.sock";
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_PAGINATION_PAGES: usize = 10_000;
 const PAGE_SIZE: u16 = 100;
+const MAX_SECRET_BYTES: usize = 500 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Essential commands for inspecting and operating Plan 06 applications.
@@ -73,6 +74,50 @@ enum Command {
     Delete(DeleteArgs),
     /// Inspect or wait for one asynchronous operation.
     Operation(OperationArgs),
+    /// Manage logical secret metadata and values without exposing plaintext.
+    Secret {
+        #[command(subcommand)]
+        command: SecretCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SecretCommand {
+    /// List logical secret metadata; plaintext is never returned.
+    List,
+    /// Create or replace a logical secret from stdin or a protected file.
+    Set(SecretSetArgs),
+    /// Delete an unreferenced logical secret after confirmation.
+    Delete(SecretDeleteArgs),
+}
+
+#[derive(Debug, Args)]
+struct SecretSetArgs {
+    /// Logical secret name.
+    name: String,
+
+    /// Read the value from a private, regular, symlink-free file.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with = "stdin",
+        required_unless_present = "stdin"
+    )]
+    file: Option<PathBuf>,
+
+    /// Read the exact value bytes from a noninteractive stdin pipe.
+    #[arg(long, conflicts_with = "file", required_unless_present = "file")]
+    stdin: bool,
+}
+
+#[derive(Debug, Args)]
+struct SecretDeleteArgs {
+    /// Logical secret name.
+    name: String,
+
+    /// Skip the interactive confirmation prompt.
+    #[arg(long)]
+    yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -263,6 +308,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Command::Apply(args) => apply(cli, &client, args).await,
         Command::Delete(args) => delete(cli, &client, args).await,
         Command::Operation(args) => operation(cli, &client, args).await,
+        Command::Secret { command } => secret(cli, &client, command).await,
     }
 }
 
@@ -518,6 +564,101 @@ async fn operation(cli: &Cli, client: &Client, args: &OperationArgs) -> Result<(
     render_operation(cli, &operation)
 }
 
+async fn secret(cli: &Cli, client: &Client, command: &SecretCommand) -> Result<()> {
+    match command {
+        SecretCommand::List => list_secrets(cli, client).await,
+        SecretCommand::Set(args) => set_secret(cli, client, args).await,
+        SecretCommand::Delete(args) => delete_secret(cli, client, args).await,
+    }
+}
+
+async fn list_secrets(cli: &Cli, client: &Client) -> Result<()> {
+    let secrets = all_secrets(client).await?;
+    if cli.json {
+        emit_json(&json!({"items": secrets}))?;
+    } else if secrets.is_empty() {
+        println!("No logical secrets.");
+    } else {
+        for secret in secrets {
+            println!(
+                "{}\tgeneration {}\tvalue {}\treferences {}",
+                secret.name,
+                secret.generation,
+                if secret.value_is_set { "set" } else { "unset" },
+                secret.references.len(),
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn set_secret(cli: &Cli, client: &Client, args: &SecretSetArgs) -> Result<()> {
+    let existing = match client.secret(&args.name).await {
+        Ok(secret) => Some(secret),
+        Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => None,
+        Err(error) => return Err(error.into()),
+    };
+
+    let metadata = if args.stdin {
+        let value = read_secret_stdin()?;
+        if existing.is_some() {
+            client.replace_secret(&args.name, value).await?
+        } else {
+            client.create_secret(&args.name, value).await?
+        }
+    } else {
+        let path = args
+            .file
+            .as_deref()
+            .expect("clap requires either --file or --stdin");
+        if existing.is_some() {
+            client.replace_secret_file(&args.name, path).await?
+        } else {
+            client.create_secret_file(&args.name, path).await?
+        }
+    };
+    if cli.json {
+        emit_json(&metadata)?;
+    } else {
+        println!(
+            "secret {} {} (generation {})",
+            metadata.name,
+            if existing.is_some() {
+                "replaced"
+            } else {
+                "created"
+            },
+            metadata.generation,
+        );
+    }
+    Ok(())
+}
+
+async fn delete_secret(cli: &Cli, client: &Client, args: &SecretDeleteArgs) -> Result<()> {
+    let metadata = client.secret(&args.name).await?;
+    if !metadata.references.is_empty() {
+        return Err(CliError::new(
+            ErrorKind::Conflict,
+            format!(
+                "secret {:?} is still referenced by {} application service(s); remove those references first",
+                metadata.name,
+                metadata.references.len()
+            ),
+        ));
+    }
+    confirm(
+        args.yes,
+        &format!("Delete logical secret {:?}? [y/N] ", metadata.name),
+    )?;
+    client.delete_secret(&metadata.name).await?;
+    if cli.json {
+        emit_json(&json!({"deleted": true, "name": metadata.name}))?;
+    } else {
+        println!("secret {} deleted", metadata.name);
+    }
+    Ok(())
+}
+
 async fn prepare_plan(
     client: &Client,
     manifest: &str,
@@ -570,6 +711,35 @@ async fn all_applications(client: &Client) -> Result<Vec<ApplicationView>> {
     Err(CliError::new(
         ErrorKind::General,
         "application pagination exceeded the safety bound",
+    ))
+}
+
+async fn all_secrets(client: &Client) -> Result<Vec<SecretMetadata>> {
+    let mut secrets = Vec::new();
+    let mut cursor = None;
+    let mut seen_cursors = BTreeSet::new();
+    for _ in 0..MAX_PAGINATION_PAGES {
+        let page: Page<SecretMetadata> = client
+            .secrets_with(&ListSecretsOptions {
+                cursor: cursor.clone(),
+                limit: Some(PAGE_SIZE),
+            })
+            .await?;
+        secrets.extend(page.items);
+        let Some(next_cursor) = page.next_cursor else {
+            return Ok(secrets);
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err(CliError::new(
+                ErrorKind::General,
+                "the daemon returned a repeated secret pagination cursor",
+            ));
+        }
+        cursor = Some(next_cursor);
+    }
+    Err(CliError::new(
+        ErrorKind::General,
+        "secret pagination exceeded the safety bound",
     ))
 }
 
@@ -832,6 +1002,32 @@ fn confirm(yes: bool, prompt: &str) -> Result<()> {
     }
 }
 
+fn read_secret_stdin() -> Result<Vec<u8>> {
+    if io::stdin().is_terminal() {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            "secret input must be supplied through a pipe or with --file; plaintext command arguments are not accepted",
+        ));
+    }
+    let mut value = Vec::new();
+    io::stdin()
+        .take((MAX_SECRET_BYTES + 1) as u64)
+        .read_to_end(&mut value)
+        .map_err(|error| {
+            CliError::new(
+                ErrorKind::Input,
+                format!("could not read secret input: {error}"),
+            )
+        })?;
+    if value.is_empty() || value.len() > MAX_SECRET_BYTES {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            format!("secret input must be between 1 and {MAX_SECRET_BYTES} bytes"),
+        ));
+    }
+    Ok(value)
+}
+
 async fn read_manifest(path: &Path) -> Result<String> {
     let metadata = fs::metadata(path).await.map_err(|error| {
         CliError::new(
@@ -1068,6 +1264,23 @@ mod tests {
             vec!["piquelctl", "apply", "--file", "application.toml", "--yes"],
             vec!["piquelctl", "delete", "notes", "--yes", "--no-wait"],
             vec!["piquelctl", "operation", "operation-01", "--no-wait"],
+            vec!["piquelctl", "secret", "list"],
+            vec!["piquelctl", "secret", "set", "database-password", "--stdin"],
+            vec![
+                "piquelctl",
+                "secret",
+                "set",
+                "database-password",
+                "--file",
+                "secret.txt",
+            ],
+            vec![
+                "piquelctl",
+                "secret",
+                "delete",
+                "database-password",
+                "--yes",
+            ],
         ];
         for arguments in cases {
             Cli::try_parse_from(arguments).expect("command parses");
@@ -1090,6 +1303,19 @@ mod tests {
         assert!(Cli::try_parse_from(["piquelctl", "--timeout", "zero", "status"]).is_err());
         assert!(Cli::try_parse_from(["piquelctl", "--timeout", "0s", "status"]).is_err());
         assert!(Cli::try_parse_from(["piquelctl", "plan", "status"]).is_err());
+        assert!(Cli::try_parse_from(["piquelctl", "secret", "set", "database-password"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "piquelctl",
+                "secret",
+                "set",
+                "database-password",
+                "--stdin",
+                "--file",
+                "secret.txt",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
