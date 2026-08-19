@@ -7,9 +7,9 @@ use crate::state::{
 };
 use gloo_timers::future::TimeoutFuture;
 use leptos::{
-    Callback, CollectView, IntoView, RwSignal, SignalGet, SignalGetUntracked, SignalSet, View,
-    component, create_rw_signal, ev, mount_to_body, on_cleanup, spawn_local, view,
-    window_event_listener,
+    Callable, Callback, CollectView, IntoView, RwSignal, SignalGet, SignalGetUntracked, SignalSet,
+    SignalUpdate, View, component, create_effect, create_node_ref, create_rw_signal, ev,
+    event_target_value, html, mount_to_body, on_cleanup, spawn_local, view, window_event_listener,
 };
 use piqueld_client::{
     ApplicationDetailView, ApplicationLogsOptions, ApplicationStatusView, ApplicationView,
@@ -33,7 +33,6 @@ use std::{
     rc::Rc,
 };
 use wasm_bindgen::{JsCast, closure::Closure};
-use wasm_bindgen_futures::spawn_local;
 use web_sys::window as browser_window;
 use web_sys::{EventSource, HtmlInputElement, MessageEvent, Url};
 use zeroize::Zeroize;
