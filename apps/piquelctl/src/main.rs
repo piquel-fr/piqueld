@@ -212,6 +212,10 @@ impl From<ClientError> for CliError {
                 ErrorKind::General,
                 "the daemon returned an invalid public API response",
             ),
+            ClientError::SecretFile => Self::new(
+                ErrorKind::Input,
+                "secret input file must be a private, regular, symlink-free file",
+            ),
             ClientError::Api { status, error } => {
                 let kind = match status.as_u16() {
                     400 | 404 | 413 | 415 | 422 => ErrorKind::Input,

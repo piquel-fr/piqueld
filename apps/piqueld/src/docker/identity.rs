@@ -1,6 +1,6 @@
 use super::{
     APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, INSTANCE_LABEL, MANAGED_LABEL,
-    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name,
+    ResourceKind, SECRET_LABEL, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name,
     docker_resource_readable_prefix, valid_logical_name,
 };
 
@@ -94,6 +94,25 @@ impl BollardDocker {
         valid_logical_name(service)
             && Self::owns(observed, expected)
             && docker_resource_name(&application, ResourceKind::Service, Some(service)) == name
+    }
+
+    /// Rechecks ownership, logical identity, and the randomized secret name.
+    pub(super) fn owns_named_secret(
+        observed: &BTreeMap<String, String>,
+        expected: &BTreeMap<String, String>,
+        name: &str,
+        logical_name: &str,
+    ) -> bool {
+        let Some(application) = expected
+            .get(APPLICATION_LABEL)
+            .and_then(|value| ApplicationId::parse(value.clone()).ok())
+        else {
+            return false;
+        };
+        Self::owns(observed, expected)
+            && observed.get(SECRET_LABEL).map(String::as_str) == Some(logical_name)
+            && !observed.contains_key(SERVICE_LABEL)
+            && piqueld_core::DesiredSecret::is_valid_runtime_name(&application, logical_name, name)
     }
 
     /// Rechecks ownership and the canonical name before deleting a network.

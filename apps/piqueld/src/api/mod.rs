@@ -30,12 +30,14 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::{
     config::default_ui_dir,
     docker::DockerError,
+    secrets::{SecretError, SecretService},
     store::{SqliteStore, StoreError, StoredApplication},
 };
 
 mod applications;
 mod openapi;
 mod operations;
+mod secrets;
 mod system;
 mod ui;
 
@@ -62,6 +64,9 @@ pub enum BoundaryError {
     /// Resolved inputs could not be compiled into desired runtime resources.
     #[error("application compilation failed")]
     Compilation(Vec<CompileError>),
+    /// Logical-secret resolution failed.
+    #[error("logical-secret resolution failed")]
+    Secrets(#[from] SecretError),
 }
 
 /// Source resolution, runtime observation, and execution seam supplied by Plan 06.
@@ -86,6 +91,7 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
 pub struct ApiState {
     store: Arc<SqliteStore>,
     runtime: Arc<dyn RuntimeBoundary>,
+    secret_service: Option<Arc<SecretService>>,
     instance_id: String,
     create_lock: Arc<tokio::sync::Mutex<()>>,
     ui_dir: std::path::PathBuf,
@@ -99,6 +105,7 @@ impl ApiState {
             instance_id: store.instance_id().to_owned(),
             store,
             runtime,
+            secret_service: None,
             create_lock: Arc::new(tokio::sync::Mutex::new(())),
             ui_dir: default_ui_dir(),
         }
@@ -109,6 +116,17 @@ impl ApiState {
     pub fn with_ui_dir(mut self, path: std::path::PathBuf) -> Self {
         self.ui_dir = path;
         self
+    }
+
+    /// Enables logical-secret API operations.
+    #[must_use]
+    pub fn with_secret_service(mut self, service: Arc<SecretService>) -> Self {
+        self.secret_service = Some(service);
+        self
+    }
+
+    pub(crate) fn secret_service(&self) -> Option<&Arc<SecretService>> {
+        self.secret_service.as_ref()
     }
 
     pub(crate) fn ui_dir(&self) -> &std::path::Path {
@@ -218,6 +236,7 @@ impl From<BoundaryError> for ApiError {
                 "application_compilation_failed",
                 "application compilation failed",
             ),
+            BoundaryError::Secrets(error) => error.into(),
         }
     }
 }
@@ -252,6 +271,55 @@ impl From<piqueld_core::ValidationErrors> for ApiError {
                 "application manifest failed validation",
             )
             .details(json!({"errors": errors}))
+        }
+    }
+}
+
+impl From<SecretError> for ApiError {
+    fn from(value: SecretError) -> Self {
+        match value {
+            SecretError::InvalidName | SecretError::InvalidValue => Self::new(
+                StatusCode::BAD_REQUEST,
+                "secret_invalid",
+                "secret name or value is invalid",
+            ),
+            SecretError::InvalidPagination => Self::new(
+                StatusCode::BAD_REQUEST,
+                "pagination_invalid",
+                "pagination parameters are invalid",
+            ),
+            SecretError::NotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                "secret_not_found",
+                "logical secret was not found",
+            ),
+            SecretError::AlreadyExists => Self::new(
+                StatusCode::CONFLICT,
+                "secret_exists",
+                "logical secret already exists",
+            ),
+            SecretError::Referenced => Self::new(
+                StatusCode::CONFLICT,
+                "secret_referenced",
+                "logical secret is still referenced by desired or deployed state",
+            ),
+            SecretError::KeyUnavailable | SecretError::KeyPermissions | SecretError::KeyInvalid => {
+                Self::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "master_key_unavailable",
+                    "master encryption key is unavailable",
+                )
+            }
+            SecretError::DecryptionFailed => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "secret_decryption_failed",
+                "logical secret could not be decrypted",
+            ),
+            SecretError::Storage => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "secret_storage_unavailable",
+                "secret storage is unavailable",
+            ),
         }
     }
 }
@@ -320,6 +388,13 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::status))
         .routes(routes!(operations::get))
+        .routes(routes!(secrets::list, secrets::create_header))
+        .routes(routes!(
+            secrets::get,
+            secrets::create,
+            secrets::replace,
+            secrets::delete
+        ))
 }
 
 async fn bind_error_request_id(request: Request, next: Next) -> Response {

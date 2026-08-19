@@ -3,8 +3,9 @@ use super::{
     Mount, MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND, NetworkAttachmentConfig,
     RESTART_DELAY, ResourceLimits, ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated,
     ServiceSpecUpdateConfig, ServiceSpecUpdateConfigFailureActionEnum,
-    ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec, TaskSpecResources,
-    TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
+    ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec, TaskSpecContainerSpecFile,
+    TaskSpecContainerSpecSecrets, TaskSpecResources, TaskSpecRestartPolicy,
+    TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
 };
 
 impl BollardDocker {
@@ -54,6 +55,30 @@ impl BollardDocker {
                             ..Default::default()
                         })
                         .collect(),
+                ),
+                secrets: Some(
+                    desired
+                        .secrets
+                        .iter()
+                        .map(|secret| {
+                            let digits = secret.mode.strip_prefix('0').ok_or(
+                                DockerError::Request("build service secret specification"),
+                            )?;
+                            let mode = u32::from_str_radix(digits, 8).map_err(|_| {
+                                DockerError::Request("build service secret specification")
+                            })?;
+                            Ok(TaskSpecContainerSpecSecrets {
+                                secret_id: Some(secret.swarm_name.clone()),
+                                secret_name: Some(secret.swarm_name.clone()),
+                                file: Some(TaskSpecContainerSpecFile {
+                                    name: Some(secret.target.clone()),
+                                    uid: Some("0".into()),
+                                    gid: Some("0".into()),
+                                    mode: Some(mode),
+                                }),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, DockerError>>()?,
                 ),
                 health_check: desired
                     .healthcheck

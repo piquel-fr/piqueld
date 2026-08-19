@@ -57,6 +57,9 @@ pub enum OperationError {
     /// Application-owned resources still exist when deletion reaches its final barrier.
     #[error("application deletion has not converged")]
     DeletionNotConverged,
+    /// A logical secret could not be recovered for a runtime action.
+    #[error("a logical secret could not be recovered safely")]
+    SecretUnavailable,
 }
 
 impl OperationError {
@@ -79,6 +82,7 @@ impl OperationError {
             Self::ServiceUpdateFailed => "service_update_failed",
             Self::ConvergenceTimeout => "convergence_timeout",
             Self::DeletionNotConverged => "deletion_not_converged",
+            Self::SecretUnavailable => "secret_unavailable",
         }
     }
 

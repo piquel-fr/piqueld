@@ -3,12 +3,17 @@
 use crate::{
     ApplicationId, ResourceKind, docker_resource_name,
     manifest::{
-        HealthCheck, Mount, NormalizedApplication, ResourceLimits, Service, Source,
-        valid_image_reference,
+        HealthCheck, Mount, NormalizedApplication, ResourceLimits, SecretReference, Service,
+        Source, valid_image_reference,
     },
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
-use std::{collections::BTreeMap, fmt, str::FromStr};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    str::FromStr,
+};
 use thiserror::Error;
 use utoipa::ToSchema;
 
@@ -22,6 +27,8 @@ pub const APPLICATION_LABEL: &str = "io.piqueld.application";
 pub const SERVICE_LABEL: &str = "io.piqueld.service";
 /// Label carrying the normalized application spec hash.
 pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
+/// Label carrying the logical secret identity.
+pub const SECRET_LABEL: &str = "io.piqueld.secret";
 
 /// Error returned when an instance identifier violates its storage invariant.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -172,12 +179,27 @@ impl ResolvedSource {
     }
 }
 
+/// Immutable content generation for a logical secret.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretGeneration {
+    /// Logical secret name.
+    pub logical_name: String,
+    /// Digest identifying the secret content.
+    pub generation: Sha256Digest,
+    /// Randomized immutable Swarm secret name.
+    pub swarm_name: String,
+}
+
 /// Immutable resolutions supplied to application compilation.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResolutionSet {
     /// Resolved service sources keyed by logical service name.
     pub sources: BTreeMap<String, ResolvedSource>,
+    /// Resolved secret generations keyed by logical secret name.
+    #[serde(default)]
+    pub secrets: BTreeMap<String, SecretGeneration>,
 }
 
 /// Resolution work still required before compilation.
@@ -191,6 +213,11 @@ pub enum ResolutionRequirement {
         /// Requested image reference.
         reference: String,
     },
+    /// Provide a generation for a referenced logical secret.
+    ProvideSecretGeneration {
+        /// Logical secret name.
+        logical_name: String,
+    },
 }
 
 /// Returns the image resolutions still needed before compilation.
@@ -199,21 +226,28 @@ pub fn preview_resolution(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
 ) -> Vec<ResolutionRequirement> {
-    app.spec
-        .services
-        .iter()
-        .filter_map(|service| {
-            if resolutions.sources.contains_key(&service.name) {
-                None
-            } else {
-                let Source::Image { image } = &service.source;
-                Some(ResolutionRequirement::ResolveImage {
-                    service: service.name.clone(),
-                    reference: image.clone(),
+    let mut requirements = Vec::new();
+    for service in &app.spec.services {
+        if !resolutions.sources.contains_key(&service.name) {
+            let Source::Image { image } = &service.source;
+            requirements.push(ResolutionRequirement::ResolveImage {
+                service: service.name.clone(),
+                reference: image.clone(),
+            });
+        }
+        for secret in &service.secrets {
+            if !resolutions.secrets.contains_key(&secret.source)
+                && !requirements.iter().any(|requirement| {
+                    matches!(requirement, ResolutionRequirement::ProvideSecretGeneration { logical_name } if logical_name == &secret.source)
                 })
+            {
+                requirements.push(ResolutionRequirement::ProvideSecretGeneration {
+                    logical_name: secret.source.clone(),
+                });
             }
-        })
-        .collect()
+        }
+    }
+    requirements
 }
 
 /// Ownership metadata used to label runtime resources.
@@ -299,6 +333,58 @@ impl DesiredVolume {
     }
 }
 
+/// Desired Swarm secret state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DesiredSecret {
+    /// Logical secret name.
+    pub logical_name: String,
+    /// Desired secret content generation.
+    pub generation: Sha256Digest,
+    /// Randomized immutable Swarm secret name.
+    pub name: String,
+    /// Expected ownership labels.
+    pub labels: BTreeMap<String, String>,
+}
+
+impl DesiredSecret {
+    /// Returns whether the desired secret has a canonical runtime identity.
+    #[must_use]
+    pub fn has_valid_identity(&self) -> bool {
+        let Some((application, _)) = desired_application_from_labels(&self.labels) else {
+            return false;
+        };
+        valid_logical_name(&self.logical_name)
+            && Self::is_valid_runtime_name(&application, &self.logical_name, &self.name)
+            && self.labels.get(SECRET_LABEL).map(String::as_str) == Some(self.logical_name.as_str())
+            && !self.labels.contains_key(SERVICE_LABEL)
+    }
+
+    /// Checks the bounded randomized Swarm name format for a logical secret.
+    #[must_use]
+    pub fn is_valid_runtime_name(
+        application: &ApplicationId,
+        logical_name: &str,
+        value: &str,
+    ) -> bool {
+        valid_swarm_secret_name(logical_name, value, application)
+    }
+}
+
+/// Desired secret mount in a service.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DesiredSecretMount {
+    /// Logical secret name.
+    pub logical_name: String,
+    /// Randomized Docker Swarm secret name.
+    pub swarm_name: String,
+    /// Container target path.
+    pub target: String,
+    /// File mode presented in the container.
+    pub mode: String,
+}
+
 /// Desired persistent volume mount in a service.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -333,6 +419,8 @@ pub struct DesiredService {
     pub arguments: Vec<String>,
     /// Persistent volume mounts.
     pub mounts: Vec<DesiredMount>,
+    /// Swarm secret mounts.
+    pub secrets: Vec<DesiredSecretMount>,
     /// Optional health check.
     pub healthcheck: Option<HealthCheck>,
     /// Optional CPU and memory limits.
@@ -378,6 +466,8 @@ pub struct DesiredApplication {
     pub networks: Vec<DesiredNetwork>,
     /// Desired persistent volumes.
     pub volumes: Vec<DesiredVolume>,
+    /// Desired Swarm secrets.
+    pub secrets: Vec<DesiredSecret>,
     /// Desired services.
     pub services: Vec<DesiredService>,
 }
@@ -453,6 +543,7 @@ pub fn compile_application(
         spec_hash: spec_hash.clone(),
     };
     let private_network = docker_resource_name(&app.id, ResourceKind::Network, None);
+    let referenced_secrets = referenced_secrets(app);
     Ok(DesiredApplication {
         id: app.id.clone(),
         name: app.metadata.name.clone(),
@@ -472,6 +563,7 @@ pub fn compile_application(
                 labels: ownership.labels(),
             })
             .collect(),
+        secrets: compile_secrets(resolutions, &referenced_secrets, &ownership),
         services: app
             .spec
             .services
@@ -499,6 +591,23 @@ fn validate_application(
             });
         }
     }
+    let referenced = referenced_secrets(app);
+    for (logical_name, secret) in resolutions
+        .secrets
+        .iter()
+        .filter(|(name, _)| referenced.contains(name.as_str()))
+    {
+        if logical_name != &secret.logical_name
+            || !valid_swarm_secret_name(logical_name, &secret.swarm_name, &app.id)
+        {
+            errors.push(CompileError {
+                code: "secret_generation_invalid".into(),
+                resource: logical_name.clone(),
+                message: "secret generation metadata is inconsistent or its Swarm name is invalid"
+                    .into(),
+            });
+        }
+    }
     errors
 }
 
@@ -513,6 +622,11 @@ fn unresolved_errors(
                 code: "source_unresolved".into(),
                 resource: service,
                 message: "service image has not been resolved to an immutable digest".into(),
+            },
+            ResolutionRequirement::ProvideSecretGeneration { logical_name } => CompileError {
+                code: "secret_generation_unresolved".into(),
+                resource: logical_name,
+                message: "logical secret has no current runtime generation".into(),
             },
         })
         .collect()
@@ -566,11 +680,83 @@ fn compile_service(
                 read_only: mount.read_only,
             })
             .collect(),
+        secrets: service
+            .secrets
+            .iter()
+            .map(|secret: &SecretReference| DesiredSecretMount {
+                logical_name: secret.source.clone(),
+                swarm_name: resolutions.secrets[&secret.source].swarm_name.clone(),
+                target: secret.target.clone(),
+                mode: secret.mode.clone(),
+            })
+            .collect(),
         healthcheck: service.healthcheck.clone(),
         resources: service.resources.clone(),
         networks: vec![private_network.into()],
         labels: ownership.labels(),
     }
+}
+
+fn compile_secrets(
+    resolutions: &ResolutionSet,
+    referenced: &BTreeSet<&str>,
+    ownership: &Ownership,
+) -> Vec<DesiredSecret> {
+    let mut secrets = resolutions
+        .secrets
+        .values()
+        .filter(|secret| referenced.contains(secret.logical_name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    secrets.sort_by(|left, right| left.logical_name.cmp(&right.logical_name));
+    secrets
+        .into_iter()
+        .map(|secret| {
+            let mut labels = ownership.labels();
+            labels.insert(SECRET_LABEL.into(), secret.logical_name.clone());
+            DesiredSecret {
+                logical_name: secret.logical_name,
+                generation: secret.generation,
+                name: secret.swarm_name,
+                labels,
+            }
+        })
+        .collect()
+}
+
+fn referenced_secrets(app: &NormalizedApplication) -> BTreeSet<&str> {
+    app.spec
+        .services
+        .iter()
+        .flat_map(|service| service.secrets.iter().map(|secret| secret.source.as_str()))
+        .collect()
+}
+
+fn valid_swarm_secret_name(logical_name: &str, value: &str, application: &ApplicationId) -> bool {
+    let readable = logical_name.chars().take(15).collect::<String>();
+    let application_hash = lower_hex(&Sha256::digest(application.as_str().as_bytes())[..5]);
+    let prefix = format!("piqueld-secret-{readable}-");
+    let suffix = format!("-{application_hash}");
+    value.len() <= 64
+        && value
+            .strip_prefix(&prefix)
+            .and_then(|value| value.strip_suffix(&suffix))
+            .is_some_and(|random| {
+                random.len() == 22
+                    && random
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 fn immutable_digest_reference(reference: &str) -> bool {
@@ -741,6 +927,47 @@ pub struct ObservedVolume {
     pub labels: BTreeMap<String, String>,
 }
 
+/// Observed Docker Swarm secret state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedSecret {
+    /// Observed Docker secret name.
+    pub name: String,
+    /// Ownership labels observed on the secret.
+    pub labels: BTreeMap<String, String>,
+    /// Whether a service currently references the secret.
+    pub in_use: bool,
+}
+
+impl ObservedSecret {
+    /// Returns whether ownership labels identify the desired secret.
+    #[must_use]
+    pub fn matches_ownership(
+        &self,
+        desired: &DesiredSecret,
+        application: &DesiredApplication,
+    ) -> bool {
+        OwnershipState::from_labels(&self.labels, &application.instance_id, &application.id)
+            == OwnershipState::Owned
+            && self.labels.get(SECRET_LABEL).map(String::as_str)
+                == Some(desired.logical_name.as_str())
+            && !self.labels.contains_key(SERVICE_LABEL)
+            && self.name == desired.name
+    }
+
+    /// Returns whether a runtime secret is safely owned by an application.
+    #[must_use]
+    pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
+        OwnershipState::from_labels(&self.labels, instance, application) == OwnershipState::Owned
+            && self
+                .labels
+                .get(SECRET_LABEL)
+                .is_some_and(|logical| !logical.is_empty())
+            && self.name.starts_with("piqueld-secret-")
+            && !self.labels.contains_key(SERVICE_LABEL)
+    }
+}
+
 /// Observed Docker service state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -759,6 +986,8 @@ pub struct ObservedService {
     pub arguments: Vec<String>,
     /// Persistent mounts observed on the service.
     pub mounts: Vec<DesiredMount>,
+    /// Secret mounts observed on the service.
+    pub secrets: Vec<DesiredSecretMount>,
     /// Observed health check.
     pub healthcheck: Option<HealthCheck>,
     /// Observed resource limits.
@@ -785,6 +1014,7 @@ impl ObservedService {
             && self.command == desired.command
             && self.arguments == desired.arguments
             && unordered_eq(&self.mounts, &desired.mounts)
+            && unordered_eq(&self.secrets, &desired.secrets)
             && self.healthcheck == desired.healthcheck
             && self.resources == desired.resources
             && sorted(&self.networks) == sorted(&desired.networks)
@@ -832,6 +1062,8 @@ pub struct ObservedApplication {
     pub networks: Vec<ObservedNetwork>,
     /// Volumes observed for the application.
     pub volumes: Vec<ObservedVolume>,
+    /// Secrets observed for the application.
+    pub secrets: Vec<ObservedSecret>,
     /// Services observed for the application.
     pub services: Vec<ObservedService>,
 }

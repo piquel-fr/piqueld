@@ -74,6 +74,7 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
         command: vec!["/bin/sh".into()],
         arguments: vec!["-c".into(), "while true; do sleep 5; done".into()],
         mounts: vec![],
+        secrets: vec![],
         healthcheck: Some(HealthCheck::Command {
             command: vec!["true".into()],
             interval_seconds: 1,

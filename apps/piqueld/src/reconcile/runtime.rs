@@ -3,6 +3,7 @@ use super::{
     PreparedApplication, ResolutionSet, ResolvedSource, RuntimeBoundary, Source, StoredApplication,
     compile_application,
 };
+use crate::secrets::{SecretError, SecretService};
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use std::time::Duration;
@@ -15,6 +16,7 @@ pub struct DockerRuntime<D> {
     docker: Arc<D>,
     instance_id: InstanceId,
     wake: Arc<Notify>,
+    secret_service: Option<Arc<SecretService>>,
 }
 
 impl<D> DockerRuntime<D> {
@@ -25,7 +27,15 @@ impl<D> DockerRuntime<D> {
             docker,
             instance_id,
             wake,
+            secret_service: None,
         }
+    }
+
+    /// Enables encrypted logical-secret resolution during preparation.
+    #[must_use]
+    pub fn with_secret_service(mut self, service: Arc<SecretService>) -> Self {
+        self.secret_service = Some(service);
+        self
     }
 }
 
@@ -69,9 +79,26 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             .buffer_unordered(4)
             .try_collect::<Vec<_>>()
             .await?;
-            let resolutions = ResolutionSet {
+            let mut resolutions = ResolutionSet {
                 sources: sources.into_iter().collect(),
+                ..ResolutionSet::default()
             };
+            let names = application
+                .logical_secret_references()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if !names.is_empty() {
+                let service = self
+                    .secret_service
+                    .as_ref()
+                    .ok_or(BoundaryError::Secrets(SecretError::KeyUnavailable))?;
+                for generation in service.current_generations(names, &application.id).await? {
+                    resolutions
+                        .secrets
+                        .insert(generation.logical_name.clone(), generation);
+                }
+            }
             let resolved = compile_application(application, self.instance_id.clone(), &resolutions)
                 .map_err(BoundaryError::Compilation)?;
             let observed =

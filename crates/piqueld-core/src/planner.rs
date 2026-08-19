@@ -1,7 +1,7 @@
 //! Pure, deterministic desired/observed planning for the supported Swarm model.
 
 use crate::resource::{
-    Convergence, DesiredApplication, DesiredNetwork, DesiredService, DesiredVolume,
+    Convergence, DesiredApplication, DesiredNetwork, DesiredSecret, DesiredService, DesiredVolume,
     ObservedApplication, ObservedService, OwnershipState, ResolutionRequirement,
     owned_label_subset, unordered_eq,
 };
@@ -69,6 +69,8 @@ pub enum ActionReason {
     Obsolete,
     /// The action waits for a prior runtime change.
     ConvergencePending,
+    /// A secret generation changed and the service must adopt the new Swarm secret.
+    SecretGenerationChanged,
     /// An image still needs immutable digest resolution.
     ResolutionRequired,
     /// The application is being deleted.
@@ -98,6 +100,11 @@ pub enum ActionKind {
         /// Volume state to create or verify.
         volume: DesiredVolume,
     },
+    /// Ensure a desired Swarm secret exists.
+    EnsureSecret {
+        /// Secret state to create or verify.
+        secret: DesiredSecret,
+    },
     /// Ensure a desired service exists.
     EnsureService {
         /// Service state to create or verify.
@@ -113,6 +120,11 @@ pub enum ActionKind {
         /// Service whose removal is awaited.
         service: String,
     },
+    /// Wait until a secret is no longer in use.
+    WaitForSecretUnused {
+        /// Docker secret name.
+        name: String,
+    },
     /// Remove a service.
     RemoveService {
         /// Canonical service name to remove.
@@ -123,10 +135,20 @@ pub enum ActionKind {
         /// Canonical network name to remove.
         name: String,
     },
+    /// Remove an obsolete Swarm secret.
+    RemoveSecret {
+        /// Docker secret name.
+        name: String,
+    },
     /// Retain a volume by policy.
     RetainVolume {
         /// Canonical volume name intentionally left in place.
         name: String,
+    },
+    /// Wait for a newly generated secret to be adopted.
+    AwaitSecretGeneration {
+        /// Logical secret name.
+        logical_name: String,
     },
 }
 
@@ -138,12 +160,16 @@ impl ActionKind {
             Self::ResolveImage { .. } => "resolve_image",
             Self::EnsureNetwork { .. } => "ensure_network",
             Self::EnsureVolume { .. } => "ensure_volume",
+            Self::EnsureSecret { .. } => "ensure_secret",
             Self::EnsureService { .. } => "ensure_service",
             Self::WaitForService { .. } => "wait_for_service",
             Self::WaitForServiceRemoval { .. } => "wait_for_service_removal",
+            Self::WaitForSecretUnused { .. } => "wait_for_secret_unused",
             Self::RemoveService { .. } => "remove_service",
             Self::RemoveNetwork { .. } => "remove_network",
+            Self::RemoveSecret { .. } => "remove_secret",
             Self::RetainVolume { .. } => "retain_volume",
+            Self::AwaitSecretGeneration { .. } => "await_secret_generation",
         }
     }
 }
@@ -154,12 +180,16 @@ impl fmt::Display for ActionKind {
             Self::ResolveImage { service, .. } => ("RESOLVE IMAGE", service.as_str()),
             Self::EnsureNetwork { network } => ("ENSURE NETWORK", network.name.as_str()),
             Self::EnsureVolume { volume } => ("ENSURE VOLUME", volume.name.as_str()),
+            Self::EnsureSecret { secret } => ("ENSURE SECRET", secret.logical_name.as_str()),
             Self::EnsureService { service } => ("ENSURE SERVICE", service.logical_name.as_str()),
             Self::WaitForService { service } => ("WAIT SERVICE", service.as_str()),
             Self::WaitForServiceRemoval { service } => ("WAIT SERVICE REMOVAL", service.as_str()),
+            Self::WaitForSecretUnused { name } => ("WAIT SECRET UNUSED", name.as_str()),
             Self::RemoveService { name } => ("REMOVE SERVICE", name.as_str()),
             Self::RemoveNetwork { name } => ("REMOVE NETWORK", name.as_str()),
+            Self::RemoveSecret { name } => ("REMOVE SECRET", name.as_str()),
             Self::RetainVolume { name } => ("RETAIN VOLUME", name.as_str()),
+            Self::AwaitSecretGeneration { logical_name } => ("AWAIT SECRET", logical_name.as_str()),
         };
         write!(formatter, "{verb} {resource}")
     }
@@ -228,6 +258,17 @@ impl PlanAction {
             ActionKind::WaitForServiceRemoval {
                 service: service.into(),
             },
+            ActionReason::ConvergencePending,
+            ActionRisk::None,
+            false,
+        )
+    }
+
+    /// Creates a non-mutating secret usage wait.
+    #[must_use]
+    pub fn wait_for_secret_unused(name: &str) -> Self {
+        Self::new(
+            ActionKind::WaitForSecretUnused { name: name.into() },
             ActionReason::ConvergencePending,
             ActionRisk::None,
             false,
@@ -362,6 +403,16 @@ impl Plan {
                                 false,
                             )
                         }
+                        ResolutionRequirement::ProvideSecretGeneration { logical_name } => {
+                            PlanAction::new(
+                                ActionKind::AwaitSecretGeneration {
+                                    logical_name: logical_name.clone(),
+                                },
+                                ActionReason::ResolutionRequired,
+                                ActionRisk::None,
+                                false,
+                            )
+                        }
                     })
                     .collect::<Vec<_>>();
                 plan.actions.splice(0..0, prefix);
@@ -445,13 +496,15 @@ impl Plan {
         let mut blocked_names = BTreeSet::new();
         let networks_ready = plan.ensure_networks(desired, observed, &mut blocked_names);
         let volumes_ready = plan.ensure_volumes(desired, observed, &mut blocked_names);
-        let infrastructure_ready = networks_ready && volumes_ready;
+        let secrets_ready = plan.ensure_secrets(desired, observed, &mut blocked_names);
+        let infrastructure_ready = networks_ready && volumes_ready && secrets_ready;
         plan.retain_obsolete_volumes(desired, observed);
         let (services_ready, mut waits) =
             plan.ensure_services(desired, observed, &mut blocked_names);
         plan.actions.append(&mut waits);
         let cleanup_ready = infrastructure_ready && services_ready && !plan.is_blocked();
         plan.remove_obsolete_services(desired, observed, cleanup_ready);
+        plan.remove_obsolete_secrets(desired, observed, cleanup_ready);
         plan.remove_obsolete_networks(desired, observed, cleanup_ready);
         plan
     }
@@ -573,6 +626,40 @@ impl Plan {
         }
     }
 
+    fn ensure_secrets(
+        &mut self,
+        desired: &DesiredApplication,
+        observed: &ObservedApplication,
+        blocked: &mut BTreeSet<String>,
+    ) -> bool {
+        let mut ready = true;
+        for secret in &desired.secrets {
+            match observed
+                .secrets
+                .iter()
+                .find(|found| found.name == secret.name)
+            {
+                None => {
+                    ready = false;
+                    self.actions.push(PlanAction::new(
+                        ActionKind::EnsureSecret {
+                            secret: secret.clone(),
+                        },
+                        ActionReason::Missing,
+                        ActionRisk::None,
+                        true,
+                    ));
+                }
+                Some(found) if !found.matches_ownership(secret, desired) => {
+                    ready = false;
+                    self.collision(&secret.name, blocked);
+                }
+                Some(_) => {}
+            }
+        }
+        ready
+    }
+
     fn ensure_services(
         &mut self,
         desired: &DesiredApplication,
@@ -609,8 +696,12 @@ impl Plan {
                         ActionKind::EnsureService {
                             service: Box::new(service.clone()),
                         },
-                        ActionReason::Drift {
-                            fields: service_drift(found, service),
+                        if unordered_eq(&found.secrets, &service.secrets) {
+                            ActionReason::Drift {
+                                fields: service_drift(found, service),
+                            }
+                        } else {
+                            ActionReason::SecretGenerationChanged
                         },
                         ActionRisk::Availability,
                         true,
@@ -704,6 +795,38 @@ impl Plan {
         }
     }
 
+    fn remove_obsolete_secrets(
+        &mut self,
+        desired: &DesiredApplication,
+        observed: &ObservedApplication,
+        cleanup_ready: bool,
+    ) {
+        let wanted = desired
+            .secrets
+            .iter()
+            .map(|secret| secret.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for secret in sorted_by_name(&observed.secrets, |secret| &secret.name)
+            .into_iter()
+            .filter(|secret| !wanted.contains(secret.name.as_str()))
+        {
+            if secret.is_owned_by(&desired.instance_id, &desired.id) {
+                if cleanup_ready && !secret.in_use {
+                    self.actions.push(PlanAction::new(
+                        ActionKind::RemoveSecret {
+                            name: secret.name.clone(),
+                        },
+                        ActionReason::Obsolete,
+                        ActionRisk::Destructive,
+                        true,
+                    ));
+                }
+            } else {
+                self.ignored(&secret.name);
+            }
+        }
+    }
+
     fn deletion(
         application_id: &ApplicationId,
         instance_id: &InstanceId,
@@ -743,6 +866,24 @@ impl Plan {
                 plan.ignored(&network.name);
             }
         }
+        for secret in sorted_by_name(&observed.secrets, |secret| &secret.name) {
+            if secret.is_owned_by(instance_id, application_id) {
+                if secret.in_use {
+                    plan.actions
+                        .push(PlanAction::wait_for_secret_unused(&secret.name));
+                }
+                plan.actions.push(PlanAction::new(
+                    ActionKind::RemoveSecret {
+                        name: secret.name.clone(),
+                    },
+                    ActionReason::ApplicationDeletion,
+                    ActionRisk::Destructive,
+                    true,
+                ));
+            } else {
+                plan.ignored(&secret.name);
+            }
+        }
         for volume in sorted_by_name(&observed.volumes, |volume| &volume.name) {
             if OwnershipState::from_labels(&volume.labels, instance_id, application_id)
                 == OwnershipState::Owned
@@ -761,6 +902,12 @@ impl Plan {
         }
         plan
     }
+}
+
+/// Builds a plan for a request and the current observed state.
+#[must_use]
+pub fn plan(request: &PlanRequest, observed: &ObservedApplication) -> Plan {
+    Plan::from_request(request, observed)
 }
 
 fn sorted_by_name<T, F>(values: &[T], name: F) -> Vec<&T>

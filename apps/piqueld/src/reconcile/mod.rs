@@ -4,6 +4,7 @@ use crate::{
     api::{BoundaryError, PreparedApplication, RuntimeBoundary},
     docker::{DockerApi, DockerError},
     operations::{OperationError, OperationHandler, OperationScheduler, SchedulerError},
+    secrets::SecretService,
     store::{
         ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, SqliteStore, StepState,
         StoreError, StoredApplication,
@@ -24,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 pub struct ReconcileHandler<D> {
     docker: Arc<D>,
     store: Arc<SqliteStore>,
+    secret_service: Option<Arc<SecretService>>,
     retry: RetryPolicy,
 }
 
@@ -34,6 +36,7 @@ impl<D> ReconcileHandler<D> {
         Self {
             docker,
             store,
+            secret_service: None,
             retry: RetryPolicy::default(),
         }
     }
@@ -49,6 +52,13 @@ impl<D> ReconcileHandler<D> {
             panic!("invalid retry policy: {error}");
         }
         self.retry = retry;
+        self
+    }
+
+    /// Enables encrypted logical-secret delivery for runtime actions.
+    #[must_use]
+    pub fn with_secret_service(mut self, service: Arc<SecretService>) -> Self {
+        self.secret_service = Some(service);
         self
     }
 }

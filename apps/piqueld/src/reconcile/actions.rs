@@ -1,7 +1,9 @@
+use super::handler::journal_error;
 use super::{
     ActionKind, CancellationToken, Convergence, DockerApi, DockerError, Duration, OperationError,
     PlanAction, ReconcileHandler,
 };
+use crate::secrets::SecretError;
 use piqueld_core::ApplicationId;
 
 impl<D: DockerApi> ReconcileHandler<D> {
@@ -21,6 +23,21 @@ impl<D: DockerApi> ReconcileHandler<D> {
                 self.retry(cancellation, || self.docker.ensure_volume(volume))
                     .await
             }
+            ActionKind::EnsureSecret { secret } => {
+                let service = self
+                    .secret_service
+                    .as_ref()
+                    .ok_or(OperationError::SecretUnavailable)?;
+                let _stored = self.store.get(app).await.map_err(journal_error)?;
+                let (_, plaintext) = service
+                    .decrypt_generation(&secret.logical_name, &secret.generation, &secret.name, app)
+                    .await
+                    .map_err(secret_error)?;
+                self.retry(cancellation, || {
+                    self.docker.ensure_secret(secret, plaintext.expose())
+                })
+                .await
+            }
             ActionKind::EnsureService { service } => {
                 self.retry(cancellation, || self.docker.ensure_service(service))
                     .await
@@ -33,13 +50,22 @@ impl<D: DockerApi> ReconcileHandler<D> {
                 self.retry(cancellation, || self.docker.remove_network(name, ownership))
                     .await
             }
+            ActionKind::RemoveSecret { name } => {
+                self.retry(cancellation, || self.docker.remove_secret(name, ownership))
+                    .await
+            }
             ActionKind::WaitForService { service } => {
                 self.wait_service(app, service, false, cancellation).await
             }
             ActionKind::WaitForServiceRemoval { service } => {
                 self.wait_service(app, service, true, cancellation).await
             }
-            ActionKind::RetainVolume { .. } | ActionKind::ResolveImage { .. } => Ok(()),
+            ActionKind::WaitForSecretUnused { name } => {
+                self.wait_secret_unused(app, name, cancellation).await
+            }
+            ActionKind::RetainVolume { .. }
+            | ActionKind::ResolveImage { .. }
+            | ActionKind::AwaitSecretGeneration { .. } => Ok(()),
         }
     }
     pub(super) fn ownership_labels(
@@ -170,4 +196,35 @@ impl<D: DockerApi> ReconcileHandler<D> {
             }
         }
     }
+
+    async fn wait_secret_unused(
+        &self,
+        app: &piqueld_core::ApplicationId,
+        name: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+        loop {
+            let observed = self.observe_with_retry(app, cancellation, deadline).await?;
+            if observed
+                .secrets
+                .iter()
+                .find(|secret| secret.name == name)
+                .is_none_or(|secret| !secret.in_use)
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(OperationError::ConvergenceTimeout);
+            }
+            tokio::select! {
+                () = cancellation.cancelled() => return Err(OperationError::Cancelled),
+                () = tokio::time::sleep(Duration::from_millis(250)) => {},
+            }
+        }
+    }
+}
+
+fn secret_error(_: SecretError) -> OperationError {
+    OperationError::SecretUnavailable
 }

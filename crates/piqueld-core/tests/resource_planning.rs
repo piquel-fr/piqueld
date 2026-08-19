@@ -29,6 +29,7 @@ fn resolutions() -> ResolutionSet {
         )]
         .into_iter()
         .collect(),
+        secrets: std::collections::BTreeMap::default(),
     }
 }
 
@@ -52,6 +53,7 @@ fn observed(desired: &piqueld_core::resource::DesiredApplication) -> ObservedApp
                 labels: volume.labels.clone(),
             })
             .collect(),
+        secrets: Vec::new(),
         services: desired
             .services
             .iter()
@@ -63,6 +65,7 @@ fn observed(desired: &piqueld_core::resource::DesiredApplication) -> ObservedApp
                 command: service.command.clone(),
                 arguments: service.arguments.clone(),
                 mounts: service.mounts.clone(),
+                secrets: service.secrets.clone(),
                 healthcheck: service.healthcheck.clone(),
                 resources: service.resources.clone(),
                 networks: service.networks.clone(),

@@ -67,6 +67,16 @@ impl<D: DockerApi> ReconcileHandler<D> {
         if operation.kind == OperationKind::Delete {
             return self.finish_delete(operation, &request, cancellation).await;
         }
+        self.store
+            .mark_deployed(&operation.application_id, operation.generation)
+            .await
+            .map_err(journal_error)?;
+        if let Some(secret_service) = &self.secret_service {
+            secret_service
+                .prune_retired_generations()
+                .await
+                .map_err(journal_error)?;
+        }
         Ok(())
     }
 }

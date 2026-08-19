@@ -6,6 +6,8 @@ pub mod applications;
 mod openapi;
 /// Operation inspection endpoints.
 pub mod operations;
+/// Logical-secret metadata and transfer endpoints.
+pub mod secrets;
 /// Control-plane status endpoints.
 pub mod system;
 
@@ -18,6 +20,7 @@ pub use applications::{
 pub use operations::{OperationStepView, OperationView};
 pub use piqueld_core::manifest::Source;
 pub use piqueld_core::{ValidatedApplication, ValidationErrors};
+pub use secrets::{ListSecretsOptions, SecretMetadata, SecretReferenceView};
 pub use system::SystemStatus;
 
 use http::{Method, StatusCode};
@@ -134,6 +137,9 @@ pub enum ClientError {
     /// The server response could not be decoded.
     #[error("API returned an invalid response")]
     Decode,
+    /// A secret input path is not a private, regular, symlink-free file.
+    #[error("secret input file is not a private regular file")]
+    SecretFile,
 }
 
 impl Client {

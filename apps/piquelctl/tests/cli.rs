@@ -286,6 +286,7 @@ fn app_view(id: &str, name: &str, generation: u64) -> Value {
                     "command": [],
                     "arguments": [],
                     "mounts": [],
+                    "secrets": [],
                     "healthcheck": null,
                     "resources": null
                 }],
