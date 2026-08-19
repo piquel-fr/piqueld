@@ -30,7 +30,7 @@ impl DockerApi for BollardDocker {
             "initialize Docker Swarm",
             self.docker
                 .init_swarm(SwarmInitRequest {
-                    listen_addr: Some("0.0.0.0:2377".into()),
+                    listen_addr: Some("127.0.0.1:2377".into()),
                     advertise_addr: Some(String::new()),
                     ..Default::default()
                 })
