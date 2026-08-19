@@ -15,13 +15,11 @@ use piqueld_core::{
     manifest::Source,
     plan,
     planner::ActionKind,
-    resource::{Convergence, ResolvedSource},
+    resource::{Convergence, INGRESS_NETWORK, ResolvedSource},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-
-const INGRESS_NETWORK: &str = "piqueld-ingress";
 
 /// Executes durable operations against `Docker` and `SQLite`.
 pub struct ReconcileHandler<D> {

@@ -17,7 +17,7 @@ use piqueld_client::{
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, PlanAction, PlanRequest,
     ResolutionSet, compile_application, plan, preview_resolution,
-    resource::{ResolvedApplication, ResolvedSource, SecretGeneration},
+    resource::{INGRESS_NETWORK, ResolvedApplication, ResolvedSource, SecretGeneration},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -472,7 +472,7 @@ async fn preview_plan(
             .networks
             .iter()
             .find(|network| network.ingress)
-            .map_or("piqueld-ingress", |network| network.name.as_str());
+            .map_or(INGRESS_NETWORK, |network| network.name.as_str());
         Some(
             compile_application(app, resolved.instance_id.clone(), ingress, &resolutions)
                 .map_err(BoundaryError::Compilation)?,

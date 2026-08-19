@@ -1,11 +1,11 @@
 use super::{
     APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CancellationToken,
     CreateImageOptionsBuilder, DesiredNetwork, DesiredService, DesiredVolume, DockerApi,
-    DockerError, EventsOptionsBuilder, HashMap, InspectNetworkOptions, InspectServiceOptions, Ipam,
-    ListNetworksOptionsBuilder, ListServicesOptionsBuilder, ListTasksOptions,
-    ListVolumesOptionsBuilder, NetworkCreateRequest, ObservedApplication, ObservedNetwork,
-    ObservedVolume, SERVICE_LABEL, SPEC_HASH_LABEL, StreamExt, SwarmInitRequest, SwarmState,
-    TryStreamExt, UpdateServiceOptionsBuilder, VolumeCreateOptions, async_trait,
+    DockerError, EventsOptionsBuilder, HashMap, INGRESS_NETWORK, InspectNetworkOptions,
+    InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
+    ListTasksOptions, ListVolumesOptionsBuilder, NetworkCreateRequest, ObservedApplication,
+    ObservedNetwork, ObservedVolume, SERVICE_LABEL, SPEC_HASH_LABEL, StreamExt, SwarmInitRequest,
+    SwarmState, TryStreamExt, UpdateServiceOptionsBuilder, VolumeCreateOptions, async_trait,
 };
 
 #[async_trait]
@@ -100,10 +100,9 @@ impl DockerApi for BollardDocker {
         let networks = raw_networks
             .into_iter()
             .filter_map(|network| {
-                let ingress = network.ingress.unwrap_or(false);
-                let runtime_configuration_matches =
-                    Self::network_configuration_matches(&network, ingress);
+                let runtime_configuration_matches = Self::network_configuration_matches(&network);
                 let name = network.name?;
+                let ingress = name == INGRESS_NETWORK;
                 Some(ObservedNetwork {
                     name,
                     ingress,
@@ -204,8 +203,7 @@ impl DockerApi for BollardDocker {
             .into_iter()
             .find(|n| n.name.as_deref() == Some(&desired.name))
         {
-            let runtime_configuration_matches =
-                Self::network_configuration_matches(&network, desired.ingress);
+            let runtime_configuration_matches = Self::network_configuration_matches(&network);
             let labels = network
                 .labels
                 .unwrap_or_default()
@@ -231,7 +229,7 @@ impl DockerApi for BollardDocker {
                     driver: Some("overlay".into()),
                     internal: Some(false),
                     attachable: Some(true),
-                    ingress: Some(desired.ingress),
+                    ingress: Some(false),
                     ipam: Some(Ipam::default()),
                     enable_ipv6: Some(false),
                     options: Some(HashMap::new()),

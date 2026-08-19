@@ -27,6 +27,8 @@ pub const APPLICATION_LABEL: &str = "io.piqueld.application";
 pub const SERVICE_LABEL: &str = "io.piqueld.service";
 /// Label carrying the normalized application spec hash.
 pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
+/// Canonical name for the shared application ingress network.
+pub const INGRESS_NETWORK: &str = "piqueld-ingress";
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("instance IDs must be 1-64 lowercase ASCII letters, digits, or internal hyphens")]
@@ -328,7 +330,7 @@ impl DesiredNetwork {
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
         if self.ingress {
-            return self.name == "piqueld-ingress"
+            return self.name == INGRESS_NETWORK
                 && self.labels.get(MANAGED_LABEL).map(String::as_str) == Some("true")
                 && self
                     .labels
@@ -549,6 +551,13 @@ pub fn compile_application(
     }
 
     let ingress_network = ingress_network.into();
+    if !app.spec.routes.is_empty() && ingress_network != INGRESS_NETWORK {
+        return Err(vec![CompileError {
+            code: "ingress_network_invalid".into(),
+            resource: "spec.routes".into(),
+            message: "routed applications must use the canonical ingress network".into(),
+        }]);
+    }
     let spec_hash = app.spec_hash();
     let ownership = Ownership {
         instance_id: instance_id.clone(),
@@ -1014,7 +1023,7 @@ pub enum Convergence {
 pub struct ObservedNetwork {
     /// The observed Docker network name.
     pub name: String,
-    /// Whether Docker marks this as the ingress network.
+    /// Whether this is piqueld's shared ingress network role.
     pub ingress: bool,
     /// Whether backend-specific immutable network settings match piqueld's
     /// private/ingress overlay-network contract.

@@ -1,6 +1,6 @@
 use super::{
-    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, INSTANCE_LABEL, MANAGED_LABEL,
-    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name,
+    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, INGRESS_NETWORK, INSTANCE_LABEL,
+    MANAGED_LABEL, ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name,
 };
 
 impl BollardDocker {
@@ -15,7 +15,8 @@ impl BollardDocker {
     ) -> bool {
         let readable_application = app.as_str().chars().take(42).collect::<String>();
         let prefix = format!("piqueld-{readable_application}-");
-        name.starts_with(&prefix)
+        name == INGRESS_NETWORK
+            || name.starts_with(&prefix)
             || labels
                 .get(APPLICATION_LABEL)
                 .is_some_and(|value| value == app.as_str())
@@ -25,17 +26,14 @@ impl BollardDocker {
     ///
     /// Docker may add its VXLAN identifier to `options` after creation; that
     /// backend-assigned value is the only tolerated option.
-    pub(super) fn network_configuration_matches(
-        network: &bollard::models::Network,
-        expected_ingress: bool,
-    ) -> bool {
+    pub(super) fn network_configuration_matches(network: &bollard::models::Network) -> bool {
         network.driver.as_deref() == Some("overlay")
             && !network.internal.unwrap_or(false)
             && network.attachable.unwrap_or(false)
             && !network.enable_ipv6.unwrap_or(false)
             && !network.config_only.unwrap_or(false)
             && network.config_from.is_none()
-            && network.ingress.unwrap_or(false) == expected_ingress
+            && !network.ingress.unwrap_or(false)
             && network.options.as_ref().is_none_or(|options| {
                 options
                     .keys()

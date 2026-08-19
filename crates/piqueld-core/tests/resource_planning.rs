@@ -468,6 +468,40 @@ image = "docker.io/alpine:3.20"
 }
 
 #[test]
+fn routed_compilation_rejects_a_noncanonical_ingress_network() {
+    let manifest = r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "routed"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "image"
+image = "example.test/web:1"
+[[spec.routes]]
+host = "routed.example.com"
+service = "web"
+port = 8080
+"#;
+    let app = parse_toml(manifest).unwrap().normalize(app_id());
+    let resolutions = ResolutionSet {
+        sources: BTreeMap::from([(
+            "web".into(),
+            ResolvedSource::Image {
+                requested: "example.test/web:1".into(),
+                digest_reference: format!("example.test/web@sha256:{}", "a".repeat(64)),
+            },
+        )]),
+        secrets: BTreeMap::new(),
+    };
+    let errors = compile_application(&app, instance(), "custom-ingress", &resolutions).unwrap_err();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].code, "ingress_network_invalid");
+    assert_eq!(errors[0].resource, "spec.routes");
+}
+
+#[test]
 fn create_actions_are_dependency_ordered_and_stably_serialized() {
     let desired = git_desired("g2");
     let request = PlanRequest::Reconcile { desired };

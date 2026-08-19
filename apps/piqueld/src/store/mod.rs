@@ -16,7 +16,7 @@ use piqueld_client::{
 use piqueld_core::{
     ApplicationId, ErrorCode, NormalizedApplication, PublicError, ResolutionSet,
     compile_application,
-    resource::{ResolvedApplication, SecretGeneration},
+    resource::{INGRESS_NETWORK, ResolvedApplication, SecretGeneration},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -1179,7 +1179,7 @@ fn validate_resolved(
             })
             .collect::<BTreeMap<_, _>>(),
     };
-    let ingress_name = ingress.first().copied().unwrap_or("piqueld-ingress");
+    let ingress_name = ingress.first().copied().unwrap_or(INGRESS_NETWORK);
     let rebuilt = compile_application(
         app,
         resolved.instance_id.clone(),
