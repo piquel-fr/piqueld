@@ -670,7 +670,7 @@ impl SqliteStore {
 /// Prepares only missing database parents and rejects symlinked path components.
 /// Existing directories are never chmodded or otherwise modified. The final
 /// database path is checked as well so a replaced symlink cannot be followed by
-/// the SQLite driver during normal startup.
+/// the `SQLite` driver during normal startup.
 fn prepare_database_path(path: &Path) -> Result<(), StoreError> {
     let parent = path.parent().ok_or_else(|| {
         StoreError::invalid_input(std::io::Error::new(
