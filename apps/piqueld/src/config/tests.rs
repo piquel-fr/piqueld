@@ -23,6 +23,7 @@ fn host_paths_and_loopback_listener_are_validated() {
         "[server]\nhttp_listen = '127.0.0.1:0'",
         "[server]\ndata_dir = 'relative/state'",
         "[server]\ndata_dir = '/'",
+        "[server]\nui_dir = 'relative-ui'",
         "[docker]\nsocket = 'relative.sock'",
         "[database]\npath = '/tmp/piqueld.db'",
         "[reconciliation]\nmax_parallel_operations = 0",

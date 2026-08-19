@@ -84,7 +84,8 @@ async fn main() -> Result<()> {
         config.reconciliation.max_parallel_operations,
     ));
 
-    let state = ApiState::new(Arc::clone(&store), runtime);
+    let state =
+        ApiState::new(Arc::clone(&store), runtime).with_ui_dir(config.server.ui_dir.clone());
 
     // cancellation token for workers
     let cancellation = CancellationToken::new();
@@ -245,7 +246,7 @@ async fn spawn_unix_api(
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(listener, piqueld::api::router(state))
+            axum::serve(listener, piqueld::api::api_router(state))
                 .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);

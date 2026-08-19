@@ -1,7 +1,7 @@
 # piqueld
 
 `piqueld` is a small Rust control plane for one Docker Engine running a
-single-node Swarm. Plan 06B supports one honest workflow: submit an application
+single-node Swarm. Plan 06C supports one honest workflow: submit an application
 manifest that names prebuilt container images, resolve those images to digests,
 and reconcile the resulting private network, named volumes, and replicated
 services.
@@ -20,6 +20,7 @@ The supported manifest and runtime model are documented in:
 
 - [`docs/application-manifest.md`](docs/application-manifest.md)
 - [`docs/api.md`](docs/api.md)
+- [`docs/web-ui.md`](docs/web-ui.md)
 - [`docs/piquelctl.md`](docs/piquelctl.md)
 - [`docs/configuration.md`](docs/configuration.md)
 - [`docs/quickstart.md`](docs/quickstart.md)
@@ -27,11 +28,11 @@ The supported manifest and runtime model are documented in:
 - [`docs/docker-reconciliation.md`](docs/docker-reconciliation.md)
 - [`docs/migrations.md`](docs/migrations.md)
 
-| Supported in Plan 06B | Deferred until later plans |
+| Supported in Plan 06C | Deferred until later plans |
 | --- | --- |
 | Prebuilt images, replicas, environment, command/args, health checks, resource limits, named volumes, and mounts | Git sources, builds, registry management, credentials, and secrets |
-| Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, and the essential `piquelctl` workflow | Published ports, routes, Traefik, logs, state transfer, authentication, packaging, and UI |
-| Unix-socket and loopback-TCP API transports | Remote or multi-node operation |
+| Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, and the essential `piquelctl` workflow | Published ports, routes, Traefik, logs, state transfer, authentication, and remote or multi-node operation |
+| Unix-socket and loopback-TCP API transports, plus a read-only Leptos/WASM dashboard on the TCP listener | Mutating web controls, secrets, streams, and the advanced Plan 12 web UI |
 
 ## Development
 
@@ -66,3 +67,5 @@ The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
 another host configuration. Configuration only covers local paths, listeners,
 SQLite, Docker, and reconciliation limits. The complete non-root development
 example is [`config/piqueld.example.toml`](config/piqueld.example.toml).
+See [`docs/web-ui.md`](docs/web-ui.md) for development and release dashboard
+asset commands.

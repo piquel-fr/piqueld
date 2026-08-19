@@ -8,19 +8,24 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use piqueld_client::{
-    AcceptedOperation, ApplicationStatusView, ApplicationView, CreateApplicationRequest,
-    DeleteApplicationRequest, Envelope, ExpectedGeneration, Page, PlanApplicationRequest, PlanView,
-    ReplaceApplicationRequest, ReplacePlanRequest,
+    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
+    CreateApplicationRequest, DeleteApplicationRequest, DiagnosticView, Envelope,
+    ExpectedGeneration, ObservedApplicationView, ObservedServiceView, Page, PlanApplicationRequest,
+    PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
 };
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, Plan, PlanAction,
     PlanRequest, ResolutionSet, compile_application, preview_resolution,
-    resource::{ResolvedApplication, ResolvedSource},
+    resource::{
+        Convergence, ObservedService, ResolvedApplication, ResolvedSource, TaskDiagnostic,
+        TaskState,
+    },
 };
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use super::operations;
 use super::{
     ApiError, ApiState, BoundaryError, RequestShape, accepted, decode_json, generation, hex,
     idempotency_key_hash, idempotent_application_id, mutation_request_hash, ok,
@@ -102,6 +107,45 @@ pub(super) async fn get(
 ) -> Result<impl IntoResponse, ApiError> {
     let id = ApplicationId::parse(&id)?;
     Ok(ok(application_view(state.store.get(&id).await?)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/applications/{id}/detail",
+    operation_id = "getApplicationDetail",
+    summary = "Get desired and observed application state",
+    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    responses(
+        (status = 200, description = "Success", body = Envelope<ApplicationDetailView>),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 502, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
+pub(super) async fn detail(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let id = ApplicationId::parse(&id)?;
+    let stored = state.store.get(&id).await?;
+    let status = status_view(state.store.status(&id).await?);
+    let observed = state.runtime.observe(&stored).await?;
+    let observed_view = observed_view(&stored, &observed);
+    let latest_operation = state
+        .store
+        .latest_operation_for_application(&id)
+        .await?
+        .map(|(operation, steps)| operations::view(operation, steps));
+    let diagnostics = detail_diagnostics(&status, &observed_view, latest_operation.as_ref());
+    Ok(ok(ApplicationDetailView {
+        application: application_view(stored),
+        status,
+        observed: observed_view,
+        latest_operation,
+        diagnostics,
+    }))
 }
 
 #[utoipa::path(
@@ -752,4 +796,164 @@ fn status_view(status: ApplicationStatus) -> ApplicationStatusView {
         message: status.message,
         updated_at_ms: status.updated_at_ms,
     }
+}
+
+const MAX_DETAIL_DIAGNOSTICS: usize = 24;
+const MAX_SERVICE_DIAGNOSTICS: usize = 8;
+
+fn observed_view(
+    stored: &StoredApplication,
+    observed: &ObservedApplication,
+) -> ObservedApplicationView {
+    let services = stored
+        .resolved
+        .services
+        .iter()
+        .map(|desired| {
+            let runtime = observed
+                .services
+                .iter()
+                .find(|service| service.name == desired.name);
+            let (image, observed_replicas, healthy_replicas, convergence, diagnostics) = runtime
+                .map_or_else(
+                    || {
+                        (
+                            None,
+                            0,
+                            0,
+                            "failed".into(),
+                            vec![DiagnosticView {
+                                code: "service_missing".into(),
+                                message:
+                                    "the desired service was not found in the runtime observation"
+                                        .into(),
+                            }],
+                        )
+                    },
+                    |service| {
+                        (
+                            Some(service.image.clone()),
+                            service.replicas,
+                            healthy_replicas(service),
+                            convergence_name(&service.convergence).into(),
+                            service_diagnostics(service),
+                        )
+                    },
+                );
+            ObservedServiceView {
+                name: desired.logical_name.clone(),
+                image,
+                desired_replicas: desired.replicas,
+                observed_replicas,
+                healthy_replicas,
+                convergence,
+                diagnostics,
+            }
+        })
+        .collect();
+    ObservedApplicationView {
+        services,
+        network_count: u32::try_from(observed.networks.len()).unwrap_or(u32::MAX),
+        volume_count: u32::try_from(observed.volumes.len()).unwrap_or(u32::MAX),
+    }
+}
+
+fn healthy_replicas(service: &ObservedService) -> u16 {
+    u16::try_from(
+        service
+            .tasks
+            .iter()
+            .filter(|task| {
+                task.desired_running
+                    && task.state == TaskState::Running
+                    && task.healthy != Some(false)
+            })
+            .count(),
+    )
+    .unwrap_or(u16::MAX)
+}
+
+fn convergence_name(convergence: &Convergence) -> &'static str {
+    match convergence {
+        Convergence::Converged => "converged",
+        Convergence::Updating => "updating",
+        Convergence::Degraded => "degraded",
+        Convergence::Failed => "failed",
+    }
+}
+
+fn service_diagnostics(service: &ObservedService) -> Vec<DiagnosticView> {
+    let mut diagnostics = service
+        .tasks
+        .iter()
+        .filter_map(|task| task.diagnostic.as_ref())
+        .map(|diagnostic| match diagnostic {
+            TaskDiagnostic::Failed { exit_code } => DiagnosticView {
+                code: "task_failed".into(),
+                message: exit_code.map_or_else(
+                    || "a desired task exited unsuccessfully".into(),
+                    |code| format!("a desired task exited with status code {code}"),
+                ),
+            },
+            TaskDiagnostic::Rejected => DiagnosticView {
+                code: "task_rejected".into(),
+                message: "the runtime rejected a desired task before it started".into(),
+            },
+        })
+        .collect::<Vec<_>>();
+    if matches!(
+        service.convergence,
+        Convergence::Degraded | Convergence::Failed
+    ) {
+        diagnostics.push(DiagnosticView {
+            code: "service_not_converged".into(),
+            message: format!(
+                "{} of {} desired replicas are healthy",
+                healthy_replicas(service),
+                service.replicas
+            ),
+        });
+    }
+    diagnostics.truncate(MAX_SERVICE_DIAGNOSTICS);
+    diagnostics
+}
+
+fn detail_diagnostics(
+    status: &ApplicationStatusView,
+    observed: &ObservedApplicationView,
+    operation: Option<&piqueld_client::OperationView>,
+) -> Vec<DiagnosticView> {
+    let mut diagnostics = Vec::new();
+    if let Some(message) = &status.message {
+        diagnostics.push(DiagnosticView {
+            code: "application_status".into(),
+            message: message.clone(),
+        });
+    }
+    diagnostics.extend(
+        observed
+            .services
+            .iter()
+            .flat_map(|service| service.diagnostics.iter().cloned()),
+    );
+    if let Some(operation) = operation {
+        if let (Some(code), Some(message)) = (&operation.error_code, &operation.error_message) {
+            diagnostics.push(DiagnosticView {
+                code: code.clone(),
+                message: message.clone(),
+            });
+        }
+        diagnostics.extend(operation.steps.iter().filter_map(|step| {
+            let message = step.error_message.as_ref()?;
+            Some(DiagnosticView {
+                code: step
+                    .error_code
+                    .clone()
+                    .unwrap_or_else(|| "operation_step_failed".into()),
+                message: message.clone(),
+            })
+        }));
+    }
+    diagnostics.truncate(MAX_DETAIL_DIAGNOSTICS);
+    diagnostics
 }

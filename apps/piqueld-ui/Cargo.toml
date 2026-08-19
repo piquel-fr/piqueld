@@ -10,6 +10,10 @@ rust-version.workspace = true
 [dependencies]
 piqueld-client.workspace = true
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-timers = { workspace = true, features = ["futures"] }
+leptos = { workspace = true, features = ["csr"] }
+web-sys = { workspace = true, features = ["Document", "Window"] }
+
 [lints]
 workspace = true
-

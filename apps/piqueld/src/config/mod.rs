@@ -60,8 +60,8 @@ impl DaemonConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        absolute_directory("server.data_dir", &self.server.data_dir)?;
-        if self.server.data_dir.file_name().is_none() {
+        absolute_directory("server.ui_dir", &self.server.ui_dir)?;
+        absolute_file("docker.socket", &self.docker.socket)?;
             return Err(ConfigError::Invalid(
                 "server.data_dir must name a directory".into(),
             ));
@@ -127,6 +127,8 @@ pub struct ServerConfig {
     /// Optional loopback HTTP listener. Omitting it disables TCP.
     #[serde(default)]
     pub http_listen: Option<SocketAddr>,
+    /// Production dashboard asset directory.
+    pub ui_dir: PathBuf,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -152,6 +154,7 @@ impl Default for ServerConfig {
         Self {
             data_dir: PathBuf::from("/var/lib/piqueld"),
             http_listen: Some("127.0.0.1:7845".parse().expect("constant socket address")),
+            ui_dir: PathBuf::from("/usr/share/piqueld/ui"),
         }
     }
 }
