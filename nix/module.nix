@@ -14,7 +14,6 @@ let
     builtins.match ("" + prefix + "/[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)*") (toString value) != null;
   credential = name: value: lib.optional (value != null) "${name}:${value}";
   daemonConfig = toml.generate "piqueld.toml" {
-    data_dir = cfg.dataDir;
     server = {
       unix_socket = cfg.server.unixSocket;
       http_listen = cfg.server.httpListen;
