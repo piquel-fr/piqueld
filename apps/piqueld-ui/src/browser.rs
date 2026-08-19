@@ -48,6 +48,7 @@ struct DashboardSignals {
     selected_id: RwSignal<Option<String>>,
     detail: RwSignal<Option<ApplicationDetailView>>,
     detail_loading: RwSignal<bool>,
+    detail_request: RwSignal<u64>,
     detail_error: RwSignal<Option<String>>,
 }
 
@@ -72,6 +73,7 @@ fn Dashboard() -> impl IntoView {
         selected_id: create_rw_signal(None),
         detail: create_rw_signal(None),
         detail_loading: create_rw_signal(false),
+        detail_request: create_rw_signal(0),
         detail_error: create_rw_signal(None),
     };
     let client = Client::browser();
@@ -472,13 +474,18 @@ fn start_refresh(
 }
 
 fn load_detail(client: Client, signals: DashboardSignals, id: String) {
-    if signals.detail_loading.get_untracked() {
-        return;
-    }
+    let request = signals.detail_request.get_untracked().wrapping_add(1);
+    signals.detail_request.set(request);
     signals.detail_loading.set(true);
     signals.detail_error.set(None);
     spawn_local(async move {
-        match client.application_detail(&id).await {
+        let result = client.application_detail(&id).await;
+        if signals.detail_request.get_untracked() != request
+            || signals.selected_id.get_untracked().as_deref() != Some(id.as_str())
+        {
+            return;
+        }
+        match result {
             Ok(detail) => signals.detail.set(Some(detail)),
             Err(error) => signals.detail_error.set(Some(client_error_message(&error))),
         }
