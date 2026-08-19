@@ -33,7 +33,7 @@ future increments on top of it; no Plan 06D is required for basic usability.
 | PR #11 | `plan/11-cli` | `48bd4d0a5ad8944663780da261f2fe8e126330ca` |
 | PR #12 | `plan/12-web-ui` | `ae1e97a1ba58b3632b811123cb32358d1242b964` |
 | PR #13 | `plan/13-nixos-security-and-operations` | `b37478da71610745166cc425c2251a49509c0832` |
-| PR #14 | `plan/14-qualification-ci-and-docs` | `6213e58a43a9195422d24d484c3f07754d648779` |
+| PR #14 | `plan/14-qualification-ci-and-docs` | `ce4447c1e93f2b56c29310313bc554f82dc2eb59` |
 
 The Plan 06C head is independently qualified before the future stack was
 rebuilt. The final #14 head additionally contains the NixOS module correction
@@ -89,7 +89,7 @@ refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-10-impor
 refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-11-cli -> 48bd4d0a5ad8944663780da261f2fe8e126330ca
 refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-12-web-ui -> ae1e97a1ba58b3632b811123cb32358d1242b964
 refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-13-nixos-security-and-operations -> b37478da71610745166cc425c2251a49509c0832
-refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-14-qualification-ci-and-docs -> 6213e58a43a9195422d24d484c3f07754d648779
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-14-qualification-ci-and-docs -> ce4447c1e93f2b56c29310313bc554f82dc2eb59
 ```
 
 ## Exact pre-rewrite PR metadata
@@ -255,7 +255,7 @@ git range-diff --no-dual-color <old-base>..<old-head> <new-base>..<new-head>
 | #11 | `76afc92..7504afe` | `cdbb35b..48bd4d0` | Advanced CLI behavior is rebuilt without duplicating lower feature commands. |
 | #12 | `7504afe..56d25b4` | `48bd4d0..ae1e97a` | UI feature commits are rebuilt on the single Plan 06C client/state architecture. |
 | #13 | `56d25b4..35b26ce` | `ae1e97a..b37478d` | Security/NixOS operations are rebuilt against the corrected API and package. |
-| #14 | `35b26ce..ccb911d` | `b37478d..6213e58` | Qualification/docs are rebuilt; lower fixes are inherited rather than duplicated. |
+| #14 | `35b26ce..ccb911d` | `b37478d..ce4447c` | Qualification/docs are rebuilt; lower fixes are inherited rather than duplicated. |
 
 The abbreviated ranges above are unambiguous in this repository; the exact
 full SHAs are in the metadata tables and backup refs.
@@ -343,7 +343,7 @@ open/draft/mergeable stack:
 | #11 | `plan/10-import-export` | `cdbb35bd9d1f4678d2e4fb03c80f392a7fedf60d` | `plan/11-cli` | `48bd4d0a5ad8944663780da261f2fe8e126330ca` |
 | #12 | `plan/11-cli` | `48bd4d0a5ad8944663780da261f2fe8e126330ca` | `plan/12-web-ui` | `ae1e97a1ba58b3632b811123cb32358d1242b964` |
 | #13 | `plan/12-web-ui` | `ae1e97a1ba58b3632b811123cb32358d1242b964` | `plan/13-nixos-security-and-operations` | `b37478da71610745166cc425c2251a49509c0832` |
-| #14 | `plan/13-nixos-security-and-operations` | `b37478da71610745166cc425c2251a49509c0832` | `plan/14-qualification-ci-and-docs` | `22e8684e8d28782ddfddb2e7c67d2e5fc148f596` |
+| #14 | `plan/13-nixos-security-and-operations` | `b37478da71610745166cc425c2251a49509c0832` | `plan/14-qualification-ci-and-docs` | `ce4447c1e93f2b56c29310313bc554f82dc2eb59` |
 
 All PRs remain open and draft. The connector's PR-body update action returned
 403 for this integration; the authenticated `gh api` fallback successfully
@@ -351,8 +351,16 @@ updated all eleven descriptions, including the corrected #7–#9 CLI ownership
 claims and the #14 inherited-fix wording. The connector then verified the
 updated bodies, bases, and heads.
 
-The final #14 workflow was created as run `32287335149` for head
-`22e8684e`. At this ledger revision, Rust/contracts, production
-WASM/Chromium, and disposable Docker had passed; Nix packages/NixOS VM was
-still in progress. The final completed run is appended in the next ledger
-revision if this documentation-only publication update causes a new CI run.
+The final #14 workflow for the published implementation head
+`ce4447c1e93f2b56c29310313bc554f82dc2eb59` was run `32287810891` and completed
+successfully. All four required jobs passed:
+
+| Job | Job ID | Result |
+|---|---:|---|
+| Rust and contract qualification | `96181503845` | success |
+| Production WASM and Chromium smoke | `96181504318` | success; production bundle and browser smoke passed |
+| Privileged disposable Docker qualification | `96181504376` | success; registry, Swarm, routing, logs, and retention passed |
+| Nix packages and NixOS VM | `96181504188` | success; flake, module, package, and VM checks passed |
+
+The final ledger publication is documentation-only; the CI result above is the
+authoritative qualification for the corrected implementation tree.
