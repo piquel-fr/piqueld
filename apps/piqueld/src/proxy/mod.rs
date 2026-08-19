@@ -10,7 +10,8 @@ use bollard::{
         EndpointPortConfig, EndpointPortConfigProtocolEnum, EndpointPortConfigPublishModeEnum,
         EndpointSpec, EndpointSpecModeEnum, Mount, MountTypeEnum, NetworkAttachmentConfig,
         NetworkCreateRequest, ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated, TaskSpec,
-        TaskSpecContainerSpec, TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum,
+        TaskSpecContainerSpec, TaskSpecPlacement, TaskSpecRestartPolicy,
+        TaskSpecRestartPolicyConditionEnum,
     },
     query_parameters::{
         ListNetworksOptionsBuilder, ListServicesOptionsBuilder, UpdateServiceOptionsBuilder,
@@ -279,19 +280,78 @@ fn service_matches(observed: Option<&ServiceSpec>, desired: &ServiceSpec) -> boo
         && observed.mode == desired.mode
         && observed.endpoint_spec == desired.endpoint_spec
         && observed_task.networks == desired_task.networks
-        && observed_task.restart_policy == desired_task.restart_policy
-        && observed_task.placement == desired_task.placement
+        && restart_policy_matches(
+            observed_task.restart_policy.as_ref(),
+            desired_task.restart_policy.as_ref(),
+        )
+        && placement_matches(
+            observed_task.placement.as_ref(),
+            desired_task.placement.as_ref(),
+        )
         && observed_task
             .container_spec
             .as_ref()
             .zip(desired_task.container_spec.as_ref())
             .is_some_and(|(observed, desired)| {
                 observed.image == desired.image
-                    && observed.args == desired.args
-                    && observed.mounts == desired.mounts
-                    && observed.env == desired.env
+                    && empty_vec_option_matches(observed.args.as_deref(), desired.args.as_deref())
+                    && empty_vec_option_matches(
+                        observed.mounts.as_deref(),
+                        desired.mounts.as_deref(),
+                    )
+                    && empty_vec_option_matches(observed.env.as_deref(), desired.env.as_deref())
                     && observed.read_only.unwrap_or(false) == desired.read_only.unwrap_or(false)
             })
+}
+
+fn restart_policy_matches(
+    observed: Option<&TaskSpecRestartPolicy>,
+    desired: Option<&TaskSpecRestartPolicy>,
+) -> bool {
+    let (Some(observed), Some(desired)) = (observed, desired) else {
+        return observed == desired;
+    };
+    observed.condition == desired.condition
+        && observed.delay == desired.delay
+        && observed.max_attempts.unwrap_or(0) == desired.max_attempts.unwrap_or(0)
+        && observed.window.unwrap_or(0) == desired.window.unwrap_or(0)
+}
+
+fn placement_matches(
+    observed: Option<&TaskSpecPlacement>,
+    desired: Option<&TaskSpecPlacement>,
+) -> bool {
+    let (Some(observed), Some(desired)) = (observed, desired) else {
+        return default_option_matches(observed, desired);
+    };
+    empty_vec_option_matches(
+        observed.constraints.as_deref(),
+        desired.constraints.as_deref(),
+    ) && empty_vec_option_matches(
+        observed.preferences.as_deref(),
+        desired.preferences.as_deref(),
+    ) && observed.max_replicas.unwrap_or(0) == desired.max_replicas.unwrap_or(0)
+        && empty_vec_option_matches(observed.platforms.as_deref(), desired.platforms.as_deref())
+}
+
+fn default_option_matches<T: Default + PartialEq>(
+    observed: Option<&T>,
+    desired: Option<&T>,
+) -> bool {
+    match (observed, desired) {
+        (Some(observed), Some(desired)) => observed == desired,
+        (Some(observed), None) => observed == &T::default(),
+        (None, Some(desired)) => desired == &T::default(),
+        (None, None) => true,
+    }
+}
+
+fn empty_vec_option_matches<T: PartialEq>(observed: Option<&[T]>, desired: Option<&[T]>) -> bool {
+    match (observed, desired) {
+        (None | Some([]), None | Some([])) => true,
+        (Some(observed), Some(desired)) => observed == desired,
+        _ => false,
+    }
 }
 
 fn owned(labels: &HashMap<String, String>, instance: &InstanceId) -> bool {
@@ -421,5 +481,20 @@ mod tests {
     fn image_must_be_digest_pinned() {
         assert!(pinned_image(&desired(None).image));
         assert!(!pinned_image("traefik:v3.5.0"));
+    }
+
+    #[test]
+    fn daemon_default_canonicalization_does_not_trigger_ingress_drift() {
+        let wanted = service_spec(&desired(None), "network-id");
+        let mut observed = wanted.clone();
+        let task = observed.task_template.as_mut().unwrap();
+        let restart = task.restart_policy.as_mut().unwrap();
+        restart.max_attempts = Some(0);
+        restart.window = Some(0);
+        let placement = task.placement.as_mut().unwrap();
+        placement.preferences = Some(Vec::new());
+        placement.max_replicas = Some(0);
+        placement.platforms = Some(Vec::new());
+        assert!(service_matches(Some(&observed), &wanted));
     }
 }

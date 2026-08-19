@@ -108,6 +108,43 @@
                 }
               ];
             }).config.environment.etc."piqueld/config.toml".source;
+          vmRelease = self.packages.${system}.release.overrideAttrs (_: {
+            # The package check already runs the release test suite. The VM
+            # check exercises the installed split package and service wiring.
+            doCheck = false;
+          });
+          vmPackage = pkgs.runCommand "piqueld-daemon-vm-0.1.0" { } ''
+            mkdir -p "$out/bin"
+            cp ${vmRelease}/bin/piqueld "$out/bin/piqueld"
+          '';
+          vmCliPackage = pkgs.runCommand "piquelctl-vm-0.1.0" { } ''
+            mkdir -p "$out/bin"
+            cp ${vmRelease}/bin/piquelctl "$out/bin/piquelctl"
+          '';
+          vmUiPackage = pkgs.runCommand "piqueld-ui-vm-0.1.0" { } ''
+            mkdir -p "$out/share/piqueld"
+            cp -R ${vmRelease}/share/piqueld/ui "$out/share/piqueld/ui"
+          '';
+          vmTraefikStub = pkgs.writeShellScriptBin "piqueld-traefik-stub" ''
+            while :; do
+              /bin/sleep 3600
+            done
+          '';
+          vmTraefikImage = pkgs.dockerTools.buildImage {
+            name = "piqueld-traefik-vm";
+            tag = "v0";
+            copyToRoot = pkgs.buildEnv {
+              name = "piqueld-traefik-vm-root";
+              paths = [
+                pkgs.busybox
+                vmTraefikStub
+              ];
+              pathsToLink = [ "/bin" ];
+            };
+            config = {
+              Entrypoint = [ "/bin/piqueld-traefik-stub" ];
+            };
+          };
         in
         {
           package = self.packages.${system}.default;
@@ -163,6 +200,70 @@
             grep -q '^path = "/var/lib/piqueld/piqueld.db"' ${moduleConfig}
             touch "$out"
           '';
+          nixos-vm = pkgs.testers.runNixOSTest {
+            name = "piqueld-module";
+            nodes.machine =
+              {
+                config,
+                lib,
+                pkgs,
+                ...
+              }:
+              {
+                imports = [ self.nixosModules.default ];
+                services.piqueld = {
+                  enable = true;
+                  package = vmPackage;
+                  cliPackage = vmCliPackage;
+                  uiPackage = vmUiPackage;
+                  installCli = true;
+                  dataDir = "/var/lib/piqueld-vm";
+                  server.unixSocket = "/run/piqueld-vm/control.sock";
+                  registry.address = "127.0.0.1:5050";
+                  registry.dataDir = "/var/lib/piqueld-registry-vm";
+                  metrics.enable = true;
+                  credentials.masterKeyFile = "/run/keys/piqueld-master-key";
+                  credentials.bearerTokenFile = "/run/keys/piqueld-bearer-token";
+                  credentials.gitTokenFile = "/run/keys/piqueld-git-token";
+                };
+                # The test controls startup so credentials can be created
+                # outside the Nix store before the daemon reads them.
+                systemd.services.piqueld.wantedBy = lib.mkForce [ ];
+                environment.systemPackages = [
+                  pkgs.curl
+                  pkgs.jq
+                ];
+                virtualisation.memorySize = 2048;
+                virtualisation.diskSize = 4096;
+              };
+            testScript = ''
+              start_all()
+              machine.wait_for_unit("docker.service")
+              machine.wait_for_unit("docker-registry.service")
+              machine.succeed("docker load < ${vmTraefikImage}")
+              machine.succeed("image_id=$(docker image inspect --format '{{.Id}}' piqueld-traefik-vm:v0 | cut -d: -f2); sed -i \"s#^image = .*#image = \\\"piqueld-traefik-vm:v0@sha256:$image_id\\\"#\" /etc/piqueld/config.toml")
+              machine.succeed("install -d -m 0700 /run/keys")
+              machine.succeed("head -c 32 /dev/urandom > /run/keys/piqueld-master-key && chmod 0600 /run/keys/piqueld-master-key")
+              machine.succeed("printf '%s' 'vm-bearer-'$(printf 'canary') > /run/keys/piqueld-bearer-token && chmod 0600 /run/keys/piqueld-bearer-token")
+              machine.succeed("printf '%s' 'vm-git-'$(printf 'canary') > /run/keys/piqueld-git-token && chmod 0600 /run/keys/piqueld-git-token")
+              machine.succeed("systemctl start piqueld.service")
+              machine.wait_for_unit("piqueld.service")
+              machine.wait_until_succeeds("docker info --format '{{.Swarm.ControlAvailable}}' | grep true", timeout=60)
+              machine.wait_until_succeeds("test -S /run/piqueld-vm/control.sock", timeout=30)
+              machine.wait_until_succeeds("curl --fail --silent --unix-socket /run/piqueld-vm/control.sock http://localhost/api/v1/system/health | grep alive", timeout=30)
+              machine.wait_until_succeeds("curl --fail --silent --unix-socket /run/piqueld-vm/control.sock http://localhost/api/v1/system/readiness | grep '\"ready\":true'", timeout=60)
+              machine.succeed("curl --fail --silent --unix-socket /run/piqueld-vm/control.sock http://localhost/api/v1/system/metrics | grep '^piqueld_up 1$'")
+              machine.succeed("test $(stat -c %a /var/lib/piqueld-vm) = 750")
+              machine.succeed("test $(stat -c %a /run/piqueld-vm) = 750")
+              machine.succeed("test ! -e ${vmPackage}/bin/piquelctl && test ! -e ${vmCliPackage}/bin/piqueld && test ! -e ${vmUiPackage}/bin/piqueld")
+              machine.succeed("command -v piqueld >/dev/null && command -v piquelctl >/dev/null")
+              machine.succeed("! grep -R --binary-files=without-match -F \"$(cat /run/keys/piqueld-bearer-token)\" /nix/store/*piqueld* 2>/dev/null")
+              machine.succeed("! grep -R --binary-files=without-match -F \"$(cat /run/keys/piqueld-git-token)\" /nix/store/*piqueld* 2>/dev/null")
+              machine.succeed("! journalctl -u piqueld.service --no-pager | grep -F \"$(cat /run/keys/piqueld-bearer-token)\"")
+              machine.succeed("curl --fail --silent -H \"Authorization: Bearer $(cat /run/keys/piqueld-bearer-token)\" http://127.0.0.1:7845/api/v1/system/health | grep alive")
+              machine.fail("curl --fail --silent http://127.0.0.1:7845/api/v1/system/health")
+            '';
+          };
         }
       );
 

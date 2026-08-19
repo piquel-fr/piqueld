@@ -1,0 +1,52 @@
+name: Release artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Reproducible Linux bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: DeterminateSystems/determinate-nix-action@c70cb8ae92d68c66953db28a26a63db1665bc837 # v3.21.5
+      - uses: DeterminateSystems/magic-nix-cache-action@76aaf8814cdb385b86597c32b8c51b66b69b0839
+        with:
+          source-revision: c2f46a0afa5f95fd4c184a533afd280c68cf63ff # v0.1.6
+          use-flakehub: false
+          diagnostic-endpoint: ""
+      - name: Validate release tag
+        if: ${{ github.ref_type == 'tag' }}
+        run: |
+          version=$(sed -n 's/^version = "\([^\"]*\)"/\1/p' Cargo.toml | head -n1)
+          test "${GITHUB_REF_NAME}" = "v${version}"
+      - name: Build checked Nix package
+        run: nix build .#release -L --no-update-lock-file --out-link /tmp/piqueld-release-result
+      - name: Verify startup and deterministic package release
+        run: |
+          /tmp/piqueld-release-result/bin/piqueld --version
+          /tmp/piqueld-release-result/bin/piquelctl --version
+          first="$(mktemp -d)"
+          second="$(mktemp -d)"
+          (umask 0022; ./scripts/package-release.sh /tmp/piqueld-release-result "$first")
+          (umask 0077; ./scripts/package-release.sh /tmp/piqueld-release-result "$second")
+          diff --recursive --no-dereference "$first" "$second"
+          mkdir artifacts
+          cp "$first"/* artifacts/
+          (cd artifacts && sha256sum --check SHA256SUMS)
+          nix path-info --json .#release > artifacts/nix-package.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: piqueld-release-${{ github.sha }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 14

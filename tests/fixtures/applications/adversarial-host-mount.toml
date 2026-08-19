@@ -1,0 +1,18 @@
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+
+[metadata]
+name = "must-be-rejected"
+
+[[spec.services]]
+name = "web"
+
+[spec.services.source]
+type = "image"
+image = "alpine:3.20"
+
+# Deliberately outside the strict public schema. It must be rejected before
+# the manifest reaches the Docker adapter.
+[[spec.services.bind_mounts]]
+source = "/"
+target = "/host"

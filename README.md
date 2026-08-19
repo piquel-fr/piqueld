@@ -29,6 +29,11 @@ The supported manifest and runtime model are documented in:
 - [`docs/migrations.md`](docs/migrations.md)
 - [`docs/state-archive-v1.md`](docs/state-archive-v1.md)
 - [`docs/operations.md`](docs/operations.md)
+- [`docs/operator-guide.md`](docs/operator-guide.md)
+- [`docs/acceptance-runbook.md`](docs/acceptance-runbook.md)
+- [`docs/security.md`](docs/security.md)
+- [`docs/release.md`](docs/release.md)
+- [`docs/troubleshooting.md`](docs/troubleshooting.md)
 
 | Supported product behavior | Deliberate boundary |
 | --- | --- |
@@ -61,6 +66,10 @@ daemon:
 ```console
 just docker-test
 ```
+
+The cross-layer qualification entry points are `./scripts/qualification.sh
+contracts` and `nix flake check -L`; the acceptance matrix is in
+[`docs/acceptance-runbook.md`](docs/acceptance-runbook.md).
 
 The reproducible Nix package and checks can be evaluated explicitly with
 `just nix-check`.

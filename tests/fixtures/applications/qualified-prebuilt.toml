@@ -1,0 +1,41 @@
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+
+[metadata]
+name = "qualified-prebuilt"
+
+[[spec.services]]
+name = "web"
+replicas = 2
+ports = [80]
+
+[spec.services.source]
+type = "image"
+image = "nginx:1.27-alpine"
+
+[spec.services.environment]
+APP_MODE = "qualification"
+API_TOKEN_FILE = "/run/secrets/api-token"
+
+[spec.services.healthcheck]
+type = "command"
+command = ["/bin/sh", "-c", "test -f /usr/share/nginx/html/index.html"]
+interval_seconds = 10
+timeout_seconds = 3
+
+[[spec.services.mounts]]
+volume = "data"
+target = "/var/lib/qualified"
+
+[[spec.services.secrets]]
+source = "api-token"
+target = "/run/secrets/api-token"
+mode = "0400"
+
+[[spec.volumes]]
+name = "data"
+
+[[spec.routes]]
+host = "qualified.example.test"
+service = "web"
+port = 80
