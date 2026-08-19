@@ -1,4 +1,4 @@
-use axum::{extract::State, response::IntoResponse};
+use axum::{extract::State, http::StatusCode, response::IntoResponse};
 use piqueld_client::{Envelope, SystemStatus};
 
 use super::{ApiState, ok, openapi::ApiErrorResponse};
@@ -21,4 +21,22 @@ pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
         daemon_version: env!("CARGO_PKG_VERSION").into(),
         instance_id: state.instance_id,
     })
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+struct HealthResponse {
+    status: &'static str,
+}
+
+#[utoipa::path(
+    get,
+    path = "/health",
+    operation_id = "health",
+    summary = "Check daemon health",
+    responses(
+        (status = 200, description = "Daemon is serving requests", body = HealthResponse)
+    )
+)]
+pub(super) async fn health() -> impl IntoResponse {
+    (StatusCode::OK, axum::Json(HealthResponse { status: "ok" }))
 }

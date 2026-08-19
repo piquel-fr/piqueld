@@ -77,7 +77,8 @@ async fn main() -> Result<()> {
         config.reconciliation.max_parallel_operations,
     ));
 
-    let state = ApiState::new(Arc::clone(&store), runtime);
+    let state =
+        ApiState::new(Arc::clone(&store), runtime).with_ui_dir(config.server.ui_dir.clone());
 
     // cancellation token for workers
     let cancellation = CancellationToken::new();
@@ -220,7 +221,7 @@ async fn spawn_unix_api(
         .context("failed to restrict Unix API socket permissions")?;
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
-        let result = axum::serve(listener, piqueld::api::router(state))
+        let result = axum::serve(listener, piqueld::api::api_router(state))
             .with_graceful_shutdown(async move { shutdown.cancelled().await })
             .await;
         cancellation.cancel();

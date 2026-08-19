@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use axum::{
     Extension, Router,
     body::Body,
-    extract::Request,
+    extract::{Request, State},
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -36,6 +36,7 @@ mod applications;
 mod openapi;
 mod operations;
 mod system;
+mod ui;
 
 pub use openapi::openapi_document;
 
@@ -86,6 +87,7 @@ pub struct ApiState {
     runtime: Arc<dyn RuntimeBoundary>,
     instance_id: String,
     create_lock: Arc<tokio::sync::Mutex<()>>,
+    ui_dir: std::path::PathBuf,
 }
 
 impl ApiState {
@@ -97,7 +99,19 @@ impl ApiState {
             store,
             runtime,
             create_lock: Arc::new(tokio::sync::Mutex::new(())),
+            ui_dir: std::path::PathBuf::from("/usr/share/piqueld/ui"),
         }
+    }
+
+    /// Selects the production asset directory used by the loopback web listener.
+    #[must_use]
+    pub fn with_ui_dir(mut self, path: std::path::PathBuf) -> Self {
+        self.ui_dir = path;
+        self
+    }
+
+    pub(crate) fn ui_dir(&self) -> &std::path::Path {
+        &self.ui_dir
     }
 }
 
@@ -260,11 +274,24 @@ impl IntoResponse for ApiError {
 
 /// Builds the Plan 06 HTTP router.
 pub fn router(state: ApiState) -> Router {
+    build_router(state, true)
+}
+
+/// Builds the API-only router used by the Unix-socket client transport.
+pub fn api_router(state: ApiState) -> Router {
+    build_router(state, false)
+}
+
+fn build_router(state: ApiState, serve_ui: bool) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     let (router, openapi) = documented_router().split_for_parts();
+    let router = router.method_not_allowed_fallback(method_not_allowed);
+    let router = if serve_ui {
+        router.fallback(fallback)
+    } else {
+        router.fallback(api_fallback)
+    };
     router
-        .method_not_allowed_fallback(method_not_allowed)
-        .fallback(fallback)
         .with_state(state)
         .layer(Extension(Arc::new(openapi)))
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
@@ -278,6 +305,7 @@ pub fn router(state: ApiState) -> Router {
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .routes(routes!(system::status))
+        .routes(routes!(system::health))
         .routes(routes!(openapi::openapi))
         .routes(routes!(applications::list, applications::create))
         .routes(routes!(applications::plan_create))
@@ -286,6 +314,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
             applications::replace,
             applications::delete
         ))
+        .routes(routes!(applications::detail))
         .routes(routes!(applications::plan_replace))
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::status))
@@ -327,7 +356,14 @@ async fn bind_error_request_id(request: Request, next: Next) -> Response {
     Response::from_parts(parts, Body::from(bytes))
 }
 
-async fn fallback(method: Method) -> ApiError {
+async fn fallback(State(state): State<ApiState>, request: Request) -> Response {
+    if ui::is_reserved_path(request.uri().path()) {
+        return api_fallback(request.method().clone()).await.into_response();
+    }
+    ui::fallback(state.ui_dir().to_owned(), request).await
+}
+
+async fn api_fallback(method: Method) -> ApiError {
     let _ = method;
     ApiError::new(
         StatusCode::NOT_FOUND,

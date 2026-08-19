@@ -61,6 +61,7 @@ impl DaemonConfig {
 
     fn validate(&self) -> Result<(), ConfigError> {
         absolute_file("server.unix_socket", &self.server.unix_socket)?;
+        absolute_directory("server.ui_dir", &self.server.ui_dir)?;
         absolute_file("database.path", &self.database.path)?;
         absolute_file("docker.socket", &self.docker.socket)?;
         if self.server.http_listen.port() == 0 {
@@ -111,6 +112,8 @@ pub struct ServerConfig {
     pub unix_socket: PathBuf,
     /// Loopback HTTP listener.
     pub http_listen: SocketAddr,
+    /// Production dashboard asset directory.
+    pub ui_dir: PathBuf,
 }
 
 impl Default for ServerConfig {
@@ -118,6 +121,7 @@ impl Default for ServerConfig {
         Self {
             unix_socket: PathBuf::from("/run/piqueld/piqueld.sock"),
             http_listen: "127.0.0.1:7845".parse().expect("constant socket address"),
+            ui_dir: PathBuf::from("/usr/share/piqueld/ui"),
         }
     }
 }

@@ -4,7 +4,7 @@ use piqueld_core::{NormalizedApplication, Plan};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{Client, ClientError, Page, path_segment};
+use crate::{Client, ClientError, OperationView, Page, path_segment};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Public application state returned by the API.
@@ -120,6 +120,60 @@ pub struct ApplicationStatusView {
     pub updated_at_ms: i64,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Sanitized runtime diagnostic shown by the read-only dashboard.
+pub struct DiagnosticView {
+    /// Stable diagnostic category.
+    pub code: String,
+    /// Bounded, actionable message safe for a browser.
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Observed service state summarized for browser and operator clients.
+pub struct ObservedServiceView {
+    /// Logical service name from the desired application.
+    pub name: String,
+    /// Observed immutable image reference, when the service exists.
+    pub image: Option<String>,
+    /// Desired replica count from the application manifest.
+    pub desired_replicas: u16,
+    /// Replicas currently reported by the runtime.
+    pub observed_replicas: u16,
+    /// Replicas that are running and healthy enough to serve traffic.
+    pub healthy_replicas: u16,
+    /// Runtime convergence category.
+    pub convergence: String,
+    /// Sanitized task and service diagnostics.
+    pub diagnostics: Vec<DiagnosticView>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
+/// Bounded observed runtime state for one application.
+pub struct ObservedApplicationView {
+    /// Observed services in desired service order.
+    pub services: Vec<ObservedServiceView>,
+    /// Number of owned networks observed.
+    pub network_count: u32,
+    /// Number of owned volumes observed.
+    pub volume_count: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Read-only application detail composed at the API boundary.
+pub struct ApplicationDetailView {
+    /// Desired application and generation.
+    pub application: ApplicationView,
+    /// Durable application lifecycle status.
+    pub status: ApplicationStatusView,
+    /// Sanitized runtime observation.
+    pub observed: ObservedApplicationView,
+    /// Most recent durable operation, when one exists.
+    pub latest_operation: Option<OperationView>,
+    /// Bounded diagnostics from status, runtime, and the latest operation.
+    pub diagnostics: Vec<DiagnosticView>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// Cursor and page-size options for listing applications.
 pub struct ListApplicationsOptions {
@@ -171,6 +225,20 @@ impl Client {
         self.send::<_, ()>(
             Method::GET,
             &format!("/api/v1/applications/{}", path_segment(id)),
+            None,
+            &[],
+        )
+        .await
+    }
+
+    /// Fetches desired, observed, operation, and diagnostic state for an application.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn application_detail(&self, id: &str) -> Result<ApplicationDetailView, ClientError> {
+        self.send::<_, ()>(
+            Method::GET,
+            &format!("/api/v1/applications/{}/detail", path_segment(id)),
             None,
             &[],
         )

@@ -212,6 +212,30 @@ impl SqliteStore {
         tx.commit().await.map_err(StoreError::database)?;
         Ok((operation, steps))
     }
+
+    /// Reads the most recently created operation for an application.
+    ///
+    /// The dashboard uses this bounded lookup to show current command progress
+    /// without exposing a general operation-list endpoint.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the operation query or row decoding fails.
+    pub async fn latest_operation_for_application(
+        &self,
+        application_id: &ApplicationId,
+    ) -> Result<Option<(Operation, Vec<OperationStep>)>, StoreError> {
+        let operation_id = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM operations WHERE application_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1",
+        )
+        .bind(application_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        let Some(operation_id) = operation_id else {
+            return Ok(None);
+        };
+        self.operation_with_steps(&operation_id).await.map(Some)
+    }
 }
 
 impl SqliteStore {

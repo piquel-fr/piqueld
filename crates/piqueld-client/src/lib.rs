@@ -2,6 +2,7 @@
 
 /// Application CRUD and planning endpoints.
 pub mod applications;
+#[cfg(not(target_arch = "wasm32"))]
 mod openapi;
 /// Operation inspection endpoints.
 pub mod operations;
@@ -9,8 +10,9 @@ pub mod operations;
 pub mod system;
 
 pub use applications::{
-    AcceptedOperation, ApplicationStatusView, ApplicationView, CreateApplicationRequest,
-    DeleteApplicationRequest, ExpectedGeneration, ListApplicationsOptions, PlanApplicationRequest,
+    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
+    CreateApplicationRequest, DeleteApplicationRequest, DiagnosticView, ExpectedGeneration,
+    ListApplicationsOptions, ObservedApplicationView, ObservedServiceView, PlanApplicationRequest,
     PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
 };
 pub use operations::{OperationStepView, OperationView};
@@ -18,22 +20,32 @@ pub use piqueld_core::manifest::Source;
 pub use piqueld_core::{ValidatedApplication, ValidationErrors};
 pub use system::SystemStatus;
 
-use bytes::Bytes;
-use http::{Method, Request, StatusCode, header};
-use http_body_util::{BodyExt, Full};
-use hyper::client::conn::http1;
-use hyper_util::rt::TokioIo;
+use http::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{
-    fmt,
-    future::Future,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{fmt, future::Future, time::Duration};
 use thiserror::Error;
-use tokio::net::{TcpStream, UnixStream};
-use url::{Host, Url};
 use utoipa::ToSchema;
+
+#[cfg(not(target_arch = "wasm32"))]
+use bytes::Bytes;
+#[cfg(not(target_arch = "wasm32"))]
+use http::{Request, header};
+#[cfg(not(target_arch = "wasm32"))]
+use http_body_util::{BodyExt, Full};
+#[cfg(not(target_arch = "wasm32"))]
+use hyper::client::conn::http1;
+#[cfg(not(target_arch = "wasm32"))]
+use hyper_util::rt::TokioIo;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::net::{TcpStream, UnixStream};
+#[cfg(not(target_arch = "wasm32"))]
+use url::{Host, Url};
+#[cfg(target_arch = "wasm32")]
+use web_sys::{RequestCache, RequestCredentials, RequestMode};
 
 /// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
@@ -80,6 +92,7 @@ pub struct ErrorBody {
     pub request_id: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug)]
 enum Endpoint {
     Tcp {
@@ -93,6 +106,7 @@ enum Endpoint {
 #[derive(Clone, Debug)]
 /// Configured asynchronous API client.
 pub struct Client {
+    #[cfg(not(target_arch = "wasm32"))]
     endpoint: Endpoint,
     timeout: Duration,
 }
@@ -127,6 +141,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns [`ClientError::Endpoint`] when `base_url` is not a loopback HTTP origin.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn tcp(base_url: &str) -> Result<Self, ClientError> {
         let url = Url::parse(base_url).map_err(|_| ClientError::Endpoint)?;
         if url.scheme() != "http"
@@ -162,9 +177,19 @@ impl Client {
 
     /// Creates a client for a Unix-domain socket.
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn unix(path: impl AsRef<Path>) -> Self {
         Self {
             endpoint: Endpoint::Unix(path.as_ref().to_owned()),
+            timeout: Duration::from_secs(30),
+        }
+    }
+
+    /// Creates a client that fetches the daemon API from the current browser origin.
+    #[cfg(target_arch = "wasm32")]
+    #[must_use]
+    pub fn browser() -> Self {
+        Self {
             timeout: Duration::from_secs(30),
         }
     }
@@ -180,11 +205,23 @@ impl Client {
         &self,
         future: impl Future<Output = Result<T, ClientError>>,
     ) -> Result<T, ClientError> {
-        tokio::time::timeout(self.timeout, future)
-            .await
-            .map_err(|_| ClientError::transport("request timed out"))?
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Browser fetches are cancelled by navigation and report network
+            // failures promptly. Polling adds its own bounded cadence, so a
+            // second timer dependency is unnecessary in the WASM client.
+            let _ = self.timeout;
+            future.await
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            tokio::time::timeout(self.timeout, future)
+                .await
+                .map_err(|_| ClientError::transport("request timed out"))?
+        }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn raw_request<B: Serialize>(
         &self,
         method: Method,
@@ -204,6 +241,7 @@ impl Client {
         self.raw_bytes(method, path, bytes, &headers).await
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn raw_bytes(
         &self,
         method: Method,
@@ -266,6 +304,7 @@ impl Client {
         .map_err(|_| ClientError::transport("request timed out"))?
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn send_text<T: DeserializeOwned>(
         &self,
         method: Method,
@@ -282,6 +321,25 @@ impl Client {
         .await
     }
 
+    #[cfg(target_arch = "wasm32")]
+    async fn send_text<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<T, ClientError> {
+        self.with_request_timeout(async {
+            let request = browser_request(method, path, headers)
+                .header("content-type", "application/toml")
+                .body(body.to_owned())
+                .map_err(|_| ClientError::Decode)?;
+            decode_browser_response(request.send().await.map_err(ClientError::transport)?).await
+        })
+        .await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     async fn send<T: DeserializeOwned, B: Serialize>(
         &self,
         method: Method,
@@ -291,6 +349,31 @@ impl Client {
     ) -> Result<T, ClientError> {
         self.with_request_timeout(async {
             decode_envelope(self.raw_request(method, path, body, headers).await?).await
+        })
+        .await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn send<T: DeserializeOwned, B: Serialize>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+        headers: &[(&str, &str)],
+    ) -> Result<T, ClientError> {
+        self.with_request_timeout(async {
+            let request = browser_request(method, path, headers);
+            let response = if let Some(body) = body {
+                request
+                    .json(body)
+                    .map_err(|_| ClientError::Decode)?
+                    .send()
+                    .await
+            } else {
+                request.send().await
+            }
+            .map_err(ClientError::transport)?;
+            decode_browser_response(response).await
         })
         .await
     }
@@ -304,6 +387,7 @@ impl ClientError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn decode_envelope<T: DeserializeOwned>(
     response: hyper::Response<hyper::body::Incoming>,
 ) -> Result<T, ClientError> {
@@ -325,6 +409,48 @@ async fn decode_envelope<T: DeserializeOwned>(
         .map_err(|_| ClientError::Decode)
 }
 
+#[cfg(target_arch = "wasm32")]
+fn browser_request(
+    method: Method,
+    path: &str,
+    headers: &[(&str, &str)],
+) -> gloo_net::http::RequestBuilder {
+    let mut request = match method {
+        Method::GET => gloo_net::http::Request::get(path),
+        Method::POST => gloo_net::http::Request::post(path),
+        Method::PUT => gloo_net::http::Request::put(path),
+        Method::DELETE => gloo_net::http::Request::delete(path),
+        _ => gloo_net::http::RequestBuilder::new(path).method(method),
+    }
+    .header("accept", "application/json")
+    .cache(RequestCache::NoStore)
+    .credentials(RequestCredentials::Omit)
+    .mode(RequestMode::SameOrigin);
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+    request
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn decode_browser_response<T: DeserializeOwned>(
+    response: gloo_net::http::Response,
+) -> Result<T, ClientError> {
+    let status =
+        StatusCode::from_u16(response.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let payload = response.text().await.map_err(ClientError::transport)?;
+    if !status.is_success() {
+        return Err(ClientError::Api {
+            status,
+            error: error_body(payload.as_bytes()),
+        });
+    }
+    serde_json::from_str::<Envelope<T>>(&payload)
+        .map(|value| value.data)
+        .map_err(|_| ClientError::Decode)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn decode_api_error(
     response: hyper::Response<hyper::body::Incoming>,
 ) -> ClientError {
