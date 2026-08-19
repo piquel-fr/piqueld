@@ -326,26 +326,33 @@ gate.
 
 ## Publication status
 
-Before publication, the remote PR metadata above was verified. The intended
-bottom-up bases are:
+The eleven branches were published bottom-up with
+`--force-with-lease=<ref>:<captured-old-head>`. Every lease matched; no lease
+failure or concurrent branch update occurred. GitHub now reports this exact
+open/draft/mergeable stack:
 
-```text
-#19 base plan/06-docker-reconciliation
-#20 base plan/06a-simplification
-#21 base plan/06b-cli
-#7  base plan/06c-basic-web-ui
-#8  base plan/07-secret-lifecycle
-#9  base plan/08-build-and-registry
-#10 base plan/09-traefik-status-and-logs
-#11 base plan/10-import-export
-#12 base plan/11-cli
-#13 base plan/12-web-ui
-#14 base plan/13-nixos-security-and-operations
-```
+| PR | Final base | Final base SHA | Final head | Final head SHA |
+|---:|---|---|---|---|
+| #19 | `plan/06-docker-reconciliation` | `586b3abcf9b0df6f615ff2e3e335a83f6bb7e5e6` | `plan/06a-simplification` | `d422de79a5cc30b1e7d367af348d5cb248864ca6` |
+| #20 | `plan/06a-simplification` | `d422de79a5cc30b1e7d367af348d5cb248864ca6` | `plan/06b-cli` | `3488b68aab91bfa7c5d492182d52c4bd08fff425` |
+| #21 | `plan/06b-cli` | `3488b68aab91bfa7c5d492182d52c4bd08fff425` | `plan/06c-basic-web-ui` | `6652b1eed3449d0f7300fd9e15a41b7b38186050` |
+| #7 | `plan/06c-basic-web-ui` | `6652b1eed3449d0f7300fd9e15a41b7b38186050` | `plan/07-secret-lifecycle` | `653feba0a96c3119d35b4a653c608c71a44b187f` |
+| #8 | `plan/07-secret-lifecycle` | `653feba0a96c3119d35b4a653c608c71a44b187f` | `plan/08-build-and-registry` | `7a253057775fb2e5ac375ab591e7282e4a515f96` |
+| #9 | `plan/08-build-and-registry` | `7a253057775fb2e5ac375ab591e7282e4a515f96` | `plan/09-traefik-status-and-logs` | `406fe739e1277e08ef792c07bbda94344fe9e724` |
+| #10 | `plan/09-traefik-status-and-logs` | `406fe739e1277e08ef792c07bbda94344fe9e724` | `plan/10-import-export` | `cdbb35bd9d1f4678d2e4fb03c80f392a7fedf60d` |
+| #11 | `plan/10-import-export` | `cdbb35bd9d1f4678d2e4fb03c80f392a7fedf60d` | `plan/11-cli` | `48bd4d0a5ad8944663780da261f2fe8e126330ca` |
+| #12 | `plan/11-cli` | `48bd4d0a5ad8944663780da261f2fe8e126330ca` | `plan/12-web-ui` | `ae1e97a1ba58b3632b811123cb32358d1242b964` |
+| #13 | `plan/12-web-ui` | `ae1e97a1ba58b3632b811123cb32358d1242b964` | `plan/13-nixos-security-and-operations` | `b37478da71610745166cc425c2251a49509c0832` |
+| #14 | `plan/13-nixos-security-and-operations` | `b37478da71610745166cc425c2251a49509c0832` | `plan/14-qualification-ci-and-docs` | `22e8684e8d28782ddfddb2e7c67d2e5fc148f596` |
 
-Each branch will be pushed only with an exact `--force-with-lease` expectation
-read immediately before that push. A lease failure requires stopping and
-re-inventorying; backup refs are never deleted.
+All PRs remain open and draft. The connector's PR-body update action returned
+403 for this integration; the authenticated `gh api` fallback successfully
+updated all eleven descriptions, including the corrected #7–#9 CLI ownership
+claims and the #14 inherited-fix wording. The connector then verified the
+updated bodies, bases, and heads.
 
-Final GitHub heads, PR body metadata, workflow runs, and job results are added
-below after the bottom-up publication completes.
+The final #14 workflow was created as run `32287335149` for head
+`22e8684e`. At this ledger revision, Rust/contracts, production
+WASM/Chromium, and disposable Docker had passed; Nix packages/NixOS VM was
+still in progress. The final completed run is appended in the next ledger
+revision if this documentation-only publication update causes a new CI run.
