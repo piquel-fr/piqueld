@@ -37,7 +37,9 @@ impl RuntimeBoundary for FakeRuntime {
             .services
             .iter()
             .map(|service| {
-                let Source::Image { image } = &service.source;
+                let Source::Image { image } = &service.source else {
+                    unreachable!("API contract fixture uses image sources")
+                };
                 let repository = image
                     .rsplit_once(':')
                     .map_or(image.as_str(), |value| value.0);
@@ -62,6 +64,7 @@ impl RuntimeBoundary for FakeRuntime {
         Ok(PreparedApplication {
             resolved,
             observed: ObservedApplication::default(),
+            builds: Vec::new(),
         })
     }
 

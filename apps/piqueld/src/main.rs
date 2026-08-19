@@ -3,10 +3,15 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use piqueld::api::ApiState;
+use piqueld::build::{
+    BollardBuildKit, BuildExecutor, BuildService, DEFAULT_MAX_CONTEXT_BYTES, GixGitSource,
+    ProtectedGitCredentials, SourceBuilder,
+};
 use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::operations::OperationScheduler;
 use piqueld::reconcile::{DockerRuntime, ReconcileHandler, run_coordinator};
+use piqueld::registry::RegistryClient;
 use piqueld::secrets::{MasterKey, SecretService};
 use piqueld::store::SqliteStore;
 use piqueld_core::InstanceId;
@@ -71,6 +76,7 @@ async fn main() -> Result<()> {
     let wake = Arc::new(tokio::sync::Notify::new());
 
     let mut runtime = DockerRuntime::new(Arc::clone(&docker), instance, Arc::clone(&wake));
+    runtime = runtime.with_source_builder(build_source_builder(&config, &docker, &store)?);
     if let Some(service) = &secret_service {
         runtime = runtime.with_secret_service(Arc::clone(service));
     }
@@ -181,6 +187,46 @@ fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> 
             )
         }),
     }
+}
+
+fn build_source_builder(
+    config: &DaemonConfig,
+    docker: &BollardDocker,
+    store: &Arc<SqliteStore>,
+) -> Result<Arc<dyn SourceBuilder>> {
+    let registry_authority = config.registry.address.to_string();
+    let registry = RegistryClient::new(
+        &format!("http://{registry_authority}"),
+        std::time::Duration::from_secs(15),
+    )
+    .context("invalid local registry configuration")?;
+    let git_credentials =
+        ProtectedGitCredentials::from_reference(config.credentials.git_token.as_ref())
+            .context("failed to load Git credential provider")?;
+    let checkout_dir = config
+        .database
+        .path
+        .parent()
+        .map(|parent| parent.join("build-checkouts"))
+        .context("database path has no parent for build checkouts")?;
+    let git = GixGitSource::new(checkout_dir, Arc::new(git_credentials));
+    let buildkit = Arc::new(BollardBuildKit::new(docker.client()));
+    let executor = BuildExecutor::new(
+        buildkit,
+        config.reconciliation.max_parallel_builds,
+        std::time::Duration::from_mins(30),
+    );
+    let builder = BuildService::new(
+        git,
+        executor,
+        registry,
+        registry_authority,
+        store.instance_id().to_owned(),
+        std::time::Duration::from_mins(5),
+        DEFAULT_MAX_CONTEXT_BYTES,
+        Arc::clone(store),
+    );
+    Ok(Arc::new(builder))
 }
 
 async fn spawn_tcp_api(

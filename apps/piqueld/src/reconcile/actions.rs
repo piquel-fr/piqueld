@@ -65,6 +65,8 @@ impl<D: DockerApi> ReconcileHandler<D> {
             }
             ActionKind::RetainVolume { .. }
             | ActionKind::ResolveImage { .. }
+            | ActionKind::ResolveGit { .. }
+            | ActionKind::BuildImage { .. }
             | ActionKind::AwaitSecretGeneration { .. } => Ok(()),
         }
     }

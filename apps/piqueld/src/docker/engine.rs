@@ -24,6 +24,12 @@ impl ServiceWireError {
 }
 
 impl BollardDocker {
+    /// Returns a cloneable Bollard handle for build operations.
+    #[must_use]
+    pub fn client(&self) -> Docker {
+        self.docker.as_ref().clone()
+    }
+
     /// Opens one shared, cheaply cloneable Bollard connection handle.
     ///
     /// # Errors

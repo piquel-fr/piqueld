@@ -1,10 +1,12 @@
 //! Daemon bootstrap and internal module boundaries.
 
 pub mod api;
+pub mod build;
 pub mod config;
 pub mod docker;
 pub mod operations;
 pub mod reconcile;
+pub mod registry;
 pub mod secrets;
 pub mod store;
 

@@ -409,6 +409,15 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
         for service in &application.application.spec.services {
             let image = match &service.source {
                 Source::Image { image } => image,
+                Source::Git {
+                    repository,
+                    reference,
+                    ..
+                } => {
+                    // The resolved service image is shown separately below;
+                    // this keeps the source summary useful for Git services.
+                    &format!("git:{repository}#{reference}")
+                }
             };
             println!(
                 "service {}: {} replica(s), image {image}",

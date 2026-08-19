@@ -1,5 +1,6 @@
 //! Focused manifest parsing and strict-schema coverage.
 
+use piqueld_core::manifest::Source;
 use piqueld_core::{ApplicationId, parse_json, parse_toml};
 
 const TOML: &str = include_str!("fixtures/manifests/prebuilt.toml");
@@ -66,5 +67,74 @@ fn malformed_and_invalid_manifests_return_safe_validation_errors() {
             .0
             .iter()
             .all(|error| error.code == "manifest_decode_failed")
+    );
+}
+
+#[test]
+fn git_source_defaults_validates_and_round_trips_without_old_fields() {
+    let validated = parse_toml(
+        r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "builder"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "git"
+repository = "https://example.test/org/project.git"
+"#,
+    )
+    .expect("Git manifest is valid")
+    .normalize(ApplicationId::parse("app-builder-01").unwrap());
+    assert!(matches!(
+        &validated.spec.services[0].source,
+        Source::Git {
+            reference,
+            context,
+            dockerfile,
+            ..
+        } if reference == "main" && context == "." && dockerfile == "Dockerfile"
+    ));
+    let exported = validated.export_toml().unwrap();
+    assert_eq!(
+        parse_toml(&exported)
+            .unwrap()
+            .normalize(validated.id.clone()),
+        validated
+    );
+    let invalid = parse_toml(
+        r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "builder"
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "git"
+repository = "http://example.test/project.git?token=secret"
+reference = "../main"
+context = "../"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+        invalid
+            .0
+            .iter()
+            .any(|error| error.code == "git_repository_unsupported")
+    );
+    assert!(
+        invalid
+            .0
+            .iter()
+            .any(|error| error.code == "git_reference_invalid")
+    );
+    assert!(
+        invalid
+            .0
+            .iter()
+            .any(|error| error.code == "source_path_unsafe")
     );
 }

@@ -27,8 +27,8 @@ use sha2::{Digest, Sha256};
 
 use super::operations;
 use super::{
-    ApiError, ApiState, BoundaryError, RequestShape, accepted, decode_json, generation, hex,
-    idempotency_key_hash, idempotent_application_id, mutation_request_hash, ok,
+    ApiError, ApiState, BoundaryError, PreparedBuild, RequestShape, accepted, decode_json,
+    generation, hex, idempotency_key_hash, idempotent_application_id, mutation_request_hash, ok,
     openapi::ApiErrorResponse, optional_idempotency_key, parse_manifest, parse_update,
     require_json, valid_expected_generation,
 };
@@ -231,6 +231,7 @@ pub(super) async fn create(
         .store
         .create_idempotent(&app, &prepared.resolved, &steps, &key_hash, &request_hash)
         .await?;
+    record_prepared_builds(&state, &mutation.operation_id, &app.id, &prepared.builds).await?;
     state.runtime.trigger_reconciliation();
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
@@ -339,6 +340,7 @@ pub(super) async fn replace(
             .replace(&app, &prepared.resolved, expected, &steps)
             .await?
     };
+    record_prepared_builds(&state, &mutation.operation_id, &app.id, &prepared.builds).await?;
     state.runtime.trigger_reconciliation();
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
@@ -595,6 +597,27 @@ fn reusable_resolutions(
                     piqueld_core::manifest::Source::Image { image },
                     ResolvedSource::Image { requested, .. },
                 ) => image == requested,
+                (
+                    piqueld_core::manifest::Source::Git {
+                        repository,
+                        reference,
+                        context,
+                        dockerfile,
+                    },
+                    ResolvedSource::Git {
+                        repository: resolved_repository,
+                        requested_reference,
+                        context: resolved_context,
+                        dockerfile: resolved_dockerfile,
+                        ..
+                    },
+                ) => {
+                    repository == resolved_repository
+                        && reference == requested_reference
+                        && context == resolved_context
+                        && dockerfile == resolved_dockerfile
+                }
+                _ => false,
             };
             reusable.then(|| (service.name.clone(), resolved.source.clone()))
         })
@@ -614,6 +637,31 @@ fn reusable_resolutions(
         })
         .collect();
     ResolutionSet { sources, secrets }
+}
+
+async fn record_prepared_builds(
+    state: &ApiState,
+    operation_id: &str,
+    application_id: &ApplicationId,
+    builds: &[PreparedBuild],
+) -> Result<(), ApiError> {
+    for build in builds {
+        state
+            .store
+            .record_prepared_build(
+                operation_id,
+                application_id,
+                &build.service_name,
+                &build.source_commit,
+                &build.image_reference,
+                &build.image_digest,
+                &build.build_key,
+                &build.context_hash,
+                &build.logs,
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 async fn reject_name_collision(
