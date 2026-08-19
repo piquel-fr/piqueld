@@ -433,7 +433,7 @@ pub struct DesiredService {
     pub command: Vec<String>,
     /// Arguments passed to the command.
     pub arguments: Vec<String>,
-    /// Published ports requested by the manifest.
+    /// Container ports exposed to the managed ingress controller.
     pub ports: Vec<u16>,
     /// Persistent volume mounts.
     pub mounts: Vec<DesiredMount>,
@@ -1081,7 +1081,7 @@ pub struct ObservedService {
     pub command: Vec<String>,
     /// The observed command arguments.
     pub arguments: Vec<String>,
-    /// Published ports observed on the service.
+    /// Container ports exposed by the service endpoint.
     pub ports: Vec<u16>,
     /// Persistent mounts observed on the service.
     pub mounts: Vec<DesiredMount>,
@@ -1119,6 +1119,7 @@ impl ObservedService {
             && self.environment == desired.environment
             && self.command == desired.command
             && self.arguments == desired.arguments
+            && unordered_eq(&self.ports, &desired.ports)
             && unordered_eq(&self.mounts, &desired.mounts)
             && unordered_eq(&self.secrets, &desired.secrets)
             && self.healthcheck == desired.healthcheck

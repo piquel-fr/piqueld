@@ -21,7 +21,7 @@ messages are not persisted or returned because they may contain sensitive
 runtime data.
 
 Observation also records whether adapter-owned network, volume, and service
-settings remain canonical. This prevents unsupported mounts, published ports,
+settings remain canonical. This prevents unsupported mounts, endpoint ports,
 non-local volume drivers, or weakened restart/rolling-update policies from being
 silently treated as converged. Immutable network/volume mismatches fail with a
 sanitized configuration-conflict result instead of being mislabeled as an

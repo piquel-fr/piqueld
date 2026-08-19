@@ -70,7 +70,7 @@ pub struct ServiceInput {
     /// Arguments passed to the command.
     #[serde(default)]
     pub arguments: Vec<String>,
-    /// Published ports.
+    /// Container ports exposed to the managed ingress controller.
     #[serde(default)]
     pub ports: Vec<u16>,
     /// Persistent volume mounts.
@@ -306,7 +306,7 @@ pub struct Service {
     pub command: Vec<String>,
     /// Arguments passed to the command.
     pub arguments: Vec<String>,
-    /// Published ports.
+    /// Container ports exposed to the managed ingress controller.
     pub ports: Vec<u16>,
     /// Persistent volume mounts.
     pub mounts: Vec<Mount>,

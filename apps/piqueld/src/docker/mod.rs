@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use bollard::{
     Docker,
     models::{
+        EndpointPortConfig, EndpointPortConfigProtocolEnum, EndpointSpec, EndpointSpecModeEnum,
         HealthConfig, Ipam, Limit, Mount, MountTypeEnum, NetworkAttachmentConfig,
         NetworkCreateRequest, ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated,
         ServiceSpecRollbackConfig, ServiceSpecRollbackConfigFailureActionEnum,

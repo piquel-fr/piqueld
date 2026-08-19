@@ -111,11 +111,30 @@ impl ServiceRuntimePolicy {
     }
 
     fn endpoint(spec: &ServiceSpec) -> bool {
-        let no_published_ports = spec
+        let supported_ports = spec
             .endpoint_spec
             .as_ref()
             .and_then(|endpoint| endpoint.ports.as_ref())
-            .is_none_or(Vec::is_empty);
+            .is_none_or(|ports| {
+                ports.iter().all(|port| {
+                    port.name.as_deref().is_none_or(str::is_empty)
+                        && port.protocol.is_none_or(|protocol| {
+                            matches!(
+                                protocol,
+                                bollard::models::EndpointPortConfigProtocolEnum::EMPTY
+                                    | bollard::models::EndpointPortConfigProtocolEnum::TCP
+                            )
+                        })
+                        && port.target_port.is_some_and(|target| target > 0)
+                        && port.published_port.is_none()
+                        && port.publish_mode.is_none_or(|mode| {
+                            matches!(
+                                mode,
+                                bollard::models::EndpointPortConfigPublishModeEnum::EMPTY
+                            )
+                        })
+                })
+            });
         let supported_mode = spec.endpoint_spec.as_ref().is_none_or(|endpoint| {
             endpoint.mode.is_none_or(|mode| {
                 matches!(
@@ -125,7 +144,7 @@ impl ServiceRuntimePolicy {
                 )
             })
         });
-        no_published_ports && supported_mode
+        supported_ports && supported_mode
     }
 
     fn container_configuration(container: &TaskSpecContainerSpec) -> bool {

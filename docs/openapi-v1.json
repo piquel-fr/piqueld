@@ -912,7 +912,7 @@
             "type": "array"
           },
           "ports": {
-            "description": "Published ports requested by the manifest.",
+            "description": "Container ports exposed to the managed ingress controller.",
             "items": {
               "format": "int32",
               "minimum": 0,
@@ -2339,7 +2339,7 @@
             "type": "string"
           },
           "ports": {
-            "description": "Published ports.",
+            "description": "Container ports exposed to the managed ingress controller.",
             "items": {
               "format": "int32",
               "minimum": 0,
@@ -2440,7 +2440,7 @@
             "type": "string"
           },
           "ports": {
-            "description": "Published ports.",
+            "description": "Container ports exposed to the managed ingress controller.",
             "items": {
               "format": "int32",
               "minimum": 0,

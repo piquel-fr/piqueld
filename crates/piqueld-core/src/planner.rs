@@ -1022,6 +1022,9 @@ fn service_drift(
     if found.command != desired.command || found.arguments != desired.arguments {
         fields.push("process".into());
     }
+    if !unordered_eq(&found.ports, &desired.ports) {
+        fields.push("ports".into());
+    }
     if !unordered_eq(&found.mounts, &desired.mounts) {
         fields.push("mounts".into());
     }

@@ -519,7 +519,7 @@ fn arbitrary_traefik_drift_is_repaired() {
 }
 
 #[test]
-fn unordered_owned_collections_and_internal_port_observation_are_noise() {
+fn unordered_owned_collections_and_internal_port_drift_are_handled() {
     let mut desired = git_desired("g1");
     desired.services[0].ports.push(4000);
     let second_mount = piqueld_core::resource::DesiredMount {
@@ -546,14 +546,14 @@ fn unordered_owned_collections_and_internal_port_observation_are_noise() {
         .is_empty()
     );
 
-    // Internal ports are application metadata, not published Swarm endpoint state.
-    // Route labels (Plan 09) carry the runtime-relevant backend port instead.
+    // Internal container ports are part of the service contract and drift must be repaired.
     observed.services[0].ports.pop();
-    assert!(
-        plan(&PlanRequest::Reconcile { desired }, &observed)
-            .actions
-            .is_empty()
-    );
+    let result = plan(&PlanRequest::Reconcile { desired }, &observed);
+    assert_eq!(action_names(&result), ["service", "wait"]);
+    assert!(matches!(
+        &result.actions[0].reason,
+        ActionReason::Drift { fields } if fields == &["ports"]
+    ));
 }
 
 #[test]

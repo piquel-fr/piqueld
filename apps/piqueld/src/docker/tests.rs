@@ -106,6 +106,30 @@ fn service_edge_generates_safe_replicated_rolling_spec() {
     );
     assert_eq!(container.health_check.unwrap().test.unwrap()[0], "CMD");
 }
+
+#[test]
+fn service_ports_round_trip_without_host_publication() {
+    let mut desired = desired();
+    desired.ports = vec![8080, 3000];
+
+    let spec = BollardDocker::service_spec(&desired).unwrap();
+    let endpoint = spec.endpoint_spec.as_ref().unwrap();
+    assert_eq!(endpoint.mode, Some(EndpointSpecModeEnum::VIP));
+    assert_eq!(
+        endpoint
+            .ports
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|port| (port.target_port, port.published_port, port.publish_mode))
+            .collect::<Vec<_>>(),
+        vec![(Some(8080), None, None), (Some(3000), None, None)]
+    );
+
+    let observed = BollardDocker::observe_service(&spec, Vec::new(), None).unwrap();
+    assert_eq!(observed.ports, [3000, 8080]);
+    assert!(observed.runtime_configuration_matches);
+}
 #[test]
 fn swarm_topology_requires_exactly_one_ready_manager() {
     let manager = bollard::models::Node {
