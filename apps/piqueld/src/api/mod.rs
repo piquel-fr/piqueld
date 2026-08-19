@@ -520,6 +520,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         ))
         .routes(routes!(applications::detail))
         .routes(routes!(applications::plan_replace))
+        .routes(routes!(applications::plan_delete))
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::status))
         .routes(routes!(applications::logs))

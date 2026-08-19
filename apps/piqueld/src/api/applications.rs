@@ -548,9 +548,65 @@ pub(super) async fn plan_replace(
     let plan = preview_plan(&state, &app, Some(&current)).await?;
     Ok(ok(PlanView {
         application_id: id.to_string(),
-        proposed_generation: expected + 1,
+        proposed_generation: next_generation(expected)?,
         plan,
     }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/applications/{id}/delete-plan",
+    operation_id = "planApplicationDelete",
+    summary = "Preview application deletion",
+    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    request_body = DeleteApplicationRequest,
+    responses(
+        (status = 200, description = "Success", body = Envelope<PlanView>),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 409, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 502, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
+pub(super) async fn plan_delete(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<impl IntoResponse, ApiError> {
+    let body = request_body(body)?;
+    require_json(&headers)?;
+    let request: DeleteApplicationRequest = decode_json(&body)?;
+    valid_expected_generation(request.expected_generation)?;
+    let id = ApplicationId::parse(&id)?;
+    let current = state.store.get(&id).await?;
+    generation(request.expected_generation, current.generation)?;
+    let observed = state.runtime.observe(&current).await?;
+    let instance = InstanceId::parse(&state.instance_id).map_err(StoreError::corrupt)?;
+    let plan = plan(
+        &PlanRequest::Delete {
+            application_id: id.clone(),
+            instance_id: instance,
+        },
+        &observed,
+    );
+    Ok(ok(PlanView {
+        application_id: id.to_string(),
+        proposed_generation: next_generation(request.expected_generation)?,
+        plan,
+    }))
+}
+
+fn next_generation(current: u64) -> Result<u64, ApiError> {
+    current.checked_add(1).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "application_generation_exhausted",
+            "application generation cannot be incremented",
+        )
+    })
 }
 
 async fn preview_plan(

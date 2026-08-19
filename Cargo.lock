@@ -3231,6 +3231,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "js-sys",
  "piqueld-core",
  "rustix",
  "serde",
@@ -3264,9 +3265,17 @@ name = "piqueld-ui"
 version = "0.1.0"
 dependencies = [
  "gloo-timers",
+ "js-sys",
  "leptos",
  "piqueld-client",
+ "piqueld-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
+ "zeroize",
 ]
 
 [[package]]

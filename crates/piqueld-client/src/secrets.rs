@@ -253,3 +253,76 @@ async fn read_protected_secret_file(path: std::path::PathBuf) -> Result<Vec<u8>,
     .await
     .map_err(|_| ClientError::SecretFile)?
 }
+
+#[cfg(target_arch = "wasm32")]
+impl Client {
+    /// Creates a logical secret from browser-held plaintext bytes.
+    ///
+    /// The browser UI owns clearing its input and must never persist the value.
+    ///
+    /// # Errors
+    /// Returns a transport or API error when the request fails.
+    pub async fn create_secret(
+        &self,
+        name: &str,
+        mut value: Vec<u8>,
+    ) -> Result<SecretMetadata, ClientError> {
+        let body = js_sys::Uint8Array::from(value.as_slice());
+        value.zeroize();
+        let request = crate::browser_request(
+            http::Method::POST,
+            &format!("/api/v1/secrets/{}", path_segment(name)),
+            &[("content-type", "application/octet-stream")],
+        )
+        .body(body.clone())
+        .map_err(|_| ClientError::Endpoint)?;
+        let response = request.send().await.map_err(ClientError::transport);
+        body.fill(0, 0, body.length());
+        let response = response?;
+        crate::decode_browser_response(response).await
+    }
+
+    /// Replaces a logical secret with a new browser-held generation.
+    ///
+    /// # Errors
+    /// Returns a transport or API error when the request fails.
+    pub async fn replace_secret(
+        &self,
+        name: &str,
+        mut value: Vec<u8>,
+    ) -> Result<SecretMetadata, ClientError> {
+        let body = js_sys::Uint8Array::from(value.as_slice());
+        value.zeroize();
+        let request = crate::browser_request(
+            http::Method::PUT,
+            &format!("/api/v1/secrets/{}", path_segment(name)),
+            &[("content-type", "application/octet-stream")],
+        )
+        .body(body.clone())
+        .map_err(|_| ClientError::Endpoint)?;
+        let response = request.send().await.map_err(ClientError::transport);
+        body.fill(0, 0, body.length());
+        let response = response?;
+        crate::decode_browser_response(response).await
+    }
+
+    /// Deletes an unreferenced logical secret from the browser.
+    ///
+    /// # Errors
+    /// Returns a transport or API error when the request fails.
+    pub async fn delete_secret(&self, name: &str) -> Result<(), ClientError> {
+        let response = crate::browser_request(
+            http::Method::DELETE,
+            &format!("/api/v1/secrets/{}", path_segment(name)),
+            &[],
+        )
+        .send()
+        .await
+        .map_err(ClientError::transport)?;
+        if response.status() == http::StatusCode::NO_CONTENT.as_u16() {
+            Ok(())
+        } else {
+            Err(crate::decode_browser_error(response).await)
+        }
+    }
+}

@@ -241,16 +241,7 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     assert_eq!(deep_link.0, axum::http::StatusCode::OK);
     assert!(deep_link.1.contains("dashboard-shell"));
 
-    let asset = response_text(
-        application
-            .clone()
-            .oneshot(request("/app.js"))
-            .await
-            .expect("asset request succeeds"),
-    )
-    .await;
-    assert_eq!(asset.0, axum::http::StatusCode::OK);
-    assert!(asset.1.contains("console.log"));
+    assert_asset_security(application.clone()).await;
 
     let missing_asset = response_text(
         application
@@ -477,6 +468,50 @@ async fn response_text(response: axum::response::Response) -> (axum::http::Statu
     )
 }
 
+async fn assert_asset_security(application: Router) {
+    let asset_response = application
+        .clone()
+        .oneshot(request("/app.js"))
+        .await
+        .expect("asset request succeeds");
+    assert_eq!(asset_response.headers()[header::CACHE_CONTROL], "no-cache");
+    assert_eq!(
+        asset_response.headers()["x-content-type-options"],
+        "nosniff"
+    );
+    assert!(
+        asset_response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .is_some()
+    );
+    let asset = response_text(asset_response).await;
+    assert_eq!(asset.0, StatusCode::OK);
+    assert!(asset.1.contains("console.log"));
+
+    let range_request = Request::builder()
+        .uri("/app.js")
+        .header(header::RANGE, "bytes=0-6")
+        .body(Body::empty())
+        .expect("range request is valid");
+    let range = application
+        .clone()
+        .oneshot(range_request)
+        .await
+        .expect("range request succeeds");
+    assert_eq!(range.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(range.headers()[header::CONTENT_RANGE], "bytes 0-6/25");
+
+    let encoded_path = response_text(
+        application
+            .oneshot(request("/%2e%2e/app.js"))
+            .await
+            .expect("encoded path request succeeds"),
+    )
+    .await;
+    assert_eq!(encoded_path.0, StatusCode::NOT_FOUND);
+}
+
 async fn replace_and_plan(
     client: &Client,
     created: &AcceptedOperation,
@@ -508,6 +543,17 @@ async fn replace_and_plan(
 }
 
 async fn reconcile_and_delete(client: &Client, created: &AcceptedOperation, generation: u64) {
+    let deletion_preview = client
+        .plan_delete(
+            &created.application_id,
+            &DeleteApplicationRequest {
+                expected_generation: generation,
+            },
+        )
+        .await
+        .expect("deletion preview succeeds");
+    assert_eq!(deletion_preview.proposed_generation, generation + 1);
+
     let reconciled = client
         .reconcile(&created.application_id, generation)
         .await
