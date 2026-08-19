@@ -1,52 +1,58 @@
-# PR 07–14 semantic rebuild ledger
+# Usable-product stack stabilization ledger
 
-This is the contemporaneous migration record for rebuilding the existing PR
-stack on the completed Plan 06C product stack. It is intentionally kept with
-the repository so the old branch heads, review intent, and capability mapping
-remain available after the remote branches are rewritten.
+This is the contemporaneous record for the Plan 06A/06B/06C stabilization and
+the semantic rebuild of PRs #7–#14. It records the exact pre-rewrite GitHub
+state, the corrected local stack, preserved review context, moved behavior,
+validation, and publication status.
 
 Inventory date: 2026-08-19 (Europe/Paris)
+
 Repository: `piquel-fr/piqueld`
+
 Checkout: `/home/piquel/Projects/piqueld`
 
-## Frozen base
+The checkout was kept serial and no worktrees were created. The remote was
+fetched before the rebuild and again before publication. No unconditional force
+push or hard reset was used.
 
-The exact Plan 06C base is:
+## Corrected stack
+
+The corrected product base is the exact Plan 06C head below. Plans 07–14 are
+future increments on top of it; no Plan 06D is required for basic usability.
+
+| Increment | Branch | Corrected local head |
+|---|---|---|
+| Plan 06 | `plan/06-docker-reconciliation` | `586b3abcf9b0df6f615ff2e3e335a83f6bb7e5e6` |
+| PR #19 / Plan 06A | `plan/06a-simplification` | `d422de79a5cc30b1e7d367af348d5cb248864ca6` |
+| PR #20 / Plan 06B | `plan/06b-cli` | `3488b68aab91bfa7c5d492182d52c4bd08fff425` |
+| PR #21 / Plan 06C | `plan/06c-basic-web-ui` | `6652b1eed3449d0f7300fd9e15a41b7b38186050` |
+| PR #7 | `plan/07-secret-lifecycle` | `653feba0a96c3119d35b4a653c608c71a44b187f` |
+| PR #8 | `plan/08-build-and-registry` | `7a253057775fb2e5ac375ab591e7282e4a515f96` |
+| PR #9 | `plan/09-traefik-status-and-logs` | `406fe739e1277e08ef792c07bbda94344fe9e724` |
+| PR #10 | `plan/10-import-export` | `cdbb35bd9d1f4678d2e4fb03c80f392a7fedf60d` |
+| PR #11 | `plan/11-cli` | `48bd4d0a5ad8944663780da261f2fe8e126330ca` |
+| PR #12 | `plan/12-web-ui` | `ae1e97a1ba58b3632b811123cb32358d1242b964` |
+| PR #13 | `plan/13-nixos-security-and-operations` | `b37478da71610745166cc425c2251a49509c0832` |
+| PR #14 | `plan/14-qualification-ci-and-docs` | `6213e58a43a9195422d24d484c3f07754d648779` |
+
+The Plan 06C head is independently qualified before the future stack was
+rebuilt. The final #14 head additionally contains the NixOS module correction
+that stopped emitting the removed `data_dir` field and the authenticated
+future-stack quickstart clarification.
+
+## Preserved backup refs
+
+The original-stack refs were retained. A new dated stabilization generation
+was created before rewriting remote branches, with `pre` refs for every old PR
+head and `corrected` refs for every rebuilt head.
+
+### Original stack
 
 ```text
-e6df8821d5a63b9b121dec6781602348879ddea2
-```
-
-Backup ref:
-`refs/backup/rebase-07-14/base/plan-06c-basic-web-ui-20260819-e6df882`
-
-The remote `plan/06c-basic-web-ui` ref was verified at this exact commit before
-the rebuild. The rebuild therefore starts from and remains pinned to this
-immutable product-stack base.
-
-## Old head and ancestry inventory
-
-At the initial fetch, every old PR head below matched its remote branch. The
-merge-base column is against the immediately recorded old predecessor (and for
-#7, against the old Plan 06 base). PR #8 is the important ancestry warning: its
-recorded base was `f8b6abe…`, not the then-current #7 head `d5cb30a…`.
-
-| PR | Branch | Old local/remote head | Recorded base | Merge base used for old increment | Old commits/files | State |
-|---:|---|---|---|---|---:|---|
-| 7 | `plan/07-secret-lifecycle` | `d5cb30ad292e94bca29c857ee88756710c6b1d29` | `plan/06-docker-reconciliation` (`715170bfef8467fe8f8376861b7705e08b8d7f3e`) | `715170bfef8467fe8f8376861b7705e08b8d7f3e` | 11 / 37 | open draft |
-| 8 | `plan/08-build-and-registry` | `1a5bfdfe7a6dcae454c2606b9933a09187818d3a` | #7 at `f8b6abeacbb4a3e3c638f0f5c29c52dc83939711` | `f8b6abeacbb4a3e3c638f0f5c29c52dc83939711` | 5 / 54 | open draft |
-| 9 | `plan/09-traefik-status-and-logs` | `09726980002f5f50b885d3ecfd2340b4f6b0ab3a` | #8 at `1a5bfdfe7a6dcae454c2606b9933a09187818d3a` | `1a5bfdfe7a6dcae454c2606b9933a09187818d3a` | 5 / 25 | open draft |
-| 10 | `plan/10-import-export` | `311881d528d5621ef2597ce203c79848915e483c` | #9 at `09726980002f5f50b885d3ecfd2340b4f6b0ab3a` | `09726980002f5f50b885d3ecfd2340b4f6b0ab3a` | 5 / 41 | open draft |
-| 11 | `plan/11-cli` | `99e85d694e0f35e3418f35dd27984957dc4425ba` | #10 at `311881d528d5621ef2597ce203c79848915e483c` | `311881d528d5621ef2597ce203c79848915e483c` | 5 / 20 | open draft |
-| 12 | `plan/12-web-ui` | `3d3e46e9422794877a9eec6d3ad8a33af811d4f6` | #11 at `99e85d694e0f35e3418f35dd27984957dc4425ba` | `99e85d694e0f35e3418f35dd27984957dc4425ba` | 5 / 22 | open draft |
-| 13 | `plan/13-nixos-security-and-operations` | `3f01d57de6be6c3b1ab8ef682b9edc1631b7e14f` | #12 at `3d3e46e9422794877a9eec6d3ad8a33af811d4f6` | `3d3e46e9422794877a9eec6d3ad8a33af811d4f6` | 5 / 24 | open draft |
-| 14 | `plan/14-qualification-ci-and-docs` | `b129bafd102cf2fb461ed776f3808f110a451b5e` | #13 at `3f01d57de6be6c3b1ab8ef682b9edc1631b7e14f` | `3f01d57de6be6c3b1ab8ef682b9edc1631b7e14f` | 8 / 94 | open draft |
-
-## Immutable old-head backups
-
-These refs are never deleted by this operation:
-
-```text
+refs/backup/rebase-06-stack/old/plan-06-docker-reconciliation-20260819-715170b -> 715170bfef8467fe8f8376861b7705e08b8d7f3e
+refs/backup/rebase-06-stack/old/plan-06a-simplification-20260819-84a2793 -> 84a279309ad2ab39b08f671ecfdf0be712ef7801
+refs/backup/rebase-06-stack/old/plan-06b-cli-20260819-b89a993 -> b89a9938b7ea5e1415761be0b02e655618fec882
+refs/backup/rebase-06-stack/old/plan-06c-basic-web-ui-20260819-e6df882 -> e6df8821d5a63b9b121dec6781602348879ddea2
 refs/backup/rebase-07-14/base/plan-06c-basic-web-ui-20260819-e6df882 -> e6df8821d5a63b9b121dec6781602348879ddea2
 refs/backup/rebase-07-14/old/pr-07-secret-lifecycle-20260819-d5cb30a -> d5cb30ad292e94bca29c857ee88756710c6b1d29
 refs/backup/rebase-07-14/old/pr-08-build-and-registry-20260819-1a5bfdf -> 1a5bfdfe7a6dcae454c2606b9933a09187818d3a
@@ -58,325 +64,288 @@ refs/backup/rebase-07-14/old/pr-13-nixos-security-and-operations-20260819-3f01d5
 refs/backup/rebase-07-14/old/pr-14-qualification-ci-and-docs-20260819-b129ba -> b129bafd102cf2fb461ed776f3808f110a451b5e
 ```
 
-## Captured PR descriptions and review intent
-
-The following bodies were captured from GitHub before any remote rewrite.
-
-### #7 — Plan 07: secret lifecycle
-
-> Implements Plan 07 secret lifecycle as a stacked change on Plan 06.
->
-> Includes encrypted-at-rest storage, protected key/file handling, metadata-only APIs, Docker secret reconciliation, rotation and historical generation handling, and two independent review passes.
->
-> Validation: workspace tests and clippy, docs, no-default-features, cargo-deny, dependency boundaries, OpenAPI snapshot, and nix flake check. The privileged Docker integration test remains intentionally ignored because it requires an isolated engine.
-
-Review intent: one CodeRabbit review-skipped comment only; it says auto reviews
-are disabled for non-default base branches. No actionable review thread.
-
-### #8 — Plan 08: build and registry pipeline
-
-> Implements Plan 08 as a stacked change on Plan 07.
->
-> Includes reproducible HTTPS Git resolution, hardened deterministic build contexts, scheduler-owned durable BuildKit execution, verified OCI registry digests, exact cache identity, bounded redacted logs/SSE, restart recovery, and digest-only deployment. Two independent review/fix passes hardened credential scope, context TOCTOU, OCI verification, and redesigned the real path so build rows exist before external I/O and resolved state is published atomically only from verified artifacts.
->
-> Validation: workspace all-feature tests, no-default feature check, strict clippy, docs, cargo-deny, OpenAPI snapshot, and nix flake check. Two privileged isolated Docker/registry/Swarm tests compile but remain gated because they require a disposable engine and registry.
-
-No review comments or requested changes.
-
-### #9 — Plan 09: Traefik, status, and logs
-
-> Implements Plan 09 as a stacked change on Plan 08.
->
-> Includes owned digest-pinned Traefik/ingress infrastructure, secure route generation and global host collision checks, readiness-aware runtime status, bounded historical and SSE log streaming, typed-client/OpenAPI support, and cloudflared topology documentation. Two review passes hardened exact ownership/drift, IDNA/internal-host handling, task diagnostics, socket/manager placement, concurrency races, cursor/backpressure behavior, and client bounds.
->
-> Validation: full workspace tests, strict clippy, all-feature Docker integration compilation, docs/OpenAPI, and exact final-tree nix flake check. Privileged ingress/scale/update/log qualification remains gated behind an isolated disposable Docker engine.
-
-No review comments or requested changes.
-
-### #10 — Plan 10: state import and export
-
-> Implements Plan 10 as a stacked change on Plan 09.
->
-> Includes canonical application export, deterministic versioned checksummed state archives, portable/encrypted modes, strict bounded pre-mutation validation, expiring digest-bound replacement confirmation, maintenance gating, transactional replacement/audit, instance-safe ownership semantics, dependency reporting, API/OpenAPI/client support, and documentation. Two review passes hardened raw ustar parsing, envelope authentication, confirmation concurrency, FK ordering, schema/deletion safety, restore reconciliation bootstrap, and disclosure controls.
->
-> Validation: all-feature and no-default workspace tests, strict clippy, cargo-deny, focused archive/encryption/audit/fault tests, and exact final-tree nix flake check. Shared Docker was not touched.
-
-No review comments or requested changes.
-
-### #11 — Plan 11: piquelctl operator CLI
-
-> Implements Plan 11 as a stacked change on Plan 10.
->
-> Includes the complete public-client-only piquelctl command surface, Unix/HTTP profiles and protected bearer tokens, safe secret inputs, generation-aware mutations, human/stable JSON output, SSE watch and polling fallback, binary archive safeguards, stable exit codes, and operator docs. Two review passes hardened profile/credential precedence, protected-file TOCTOU, plaintext/body zeroization, reflected errors, retry/timeout behavior, atomic outputs, and command-by-command contracts.
->
-> Validation: every command exercised over TCP and Unix in black-box tests, stable JSON/human/exits/canaries/Ctrl-C coverage, all-feature and no-default workspace tests, strict clippy, dependency-boundary confirmation, and exact final-tree nix flake check. Three isolated-Docker tests remain intentionally ignored.
-
-No review comments or requested changes.
-
-### #12 — Plan 12: structured Leptos web UI
-
-> Implements Plan 12 as a stacked change on Plan 11.
->
-> Includes a pure Rust/Leptos CSR administrative UI with full structured manifest forms, plan/apply/delete previews, conflict recovery, live operation/build/runtime streams, write-only secret controls, state transfer, accessible responsive states, hardened daemon SPA serving, and fingerprinted production UI assets in the Nix package. Two review passes added the public delete-plan contract, corrected typed plans/form roundtrips, hardened CSP/assets/SSE/conflicts/secret memory, and expanded accessibility/security contracts.
->
-> Validation: full workspace tests, native and wasm32 strict clippy, production Trunk release with fingerprinted asset/canary scan, and full nix flake/package checks. Real browser automation could not run because both product-native preview status/open returned an external Auth-required transport error; no browser evidence is claimed, and the documented desktop/390px interactive matrix remains for an authenticated preview environment.
-
-No review comments or requested changes.
-
-### #13 — Plan 13: NixOS security and operations
-
-The captured body states that it adds production authentication, listener limits,
-health/readiness, metrics, distinct daemon/CLI/UI packaging, a hardened NixOS
-module with systemd credentials, safe Swarm/registry wiring, durable recovery,
-and operator/security/recovery/NixOS documentation. It records full Cargo and
-NixOS VM validation, with three privileged Docker tests isolated, and says no
-host Docker daemon was accessed.
-
-No review comments or requested changes.
-
-### #14 — Plan 14: Qualification, CI, and prototype handoff
-
-The captured body states that it adds layered Rust/WASM/Chromium/NixOS/Docker CI,
-reproducible release packaging and checksums, expanded Docker acceptance tests,
-fixtures and a 20-criterion runbook, and final operator/architecture/security/
-release/troubleshooting/contributor documentation. It explicitly leaves external
-Cloudflare, real operator HTTPS Git, full interactive browser, privileged runtime
-CI, and operator-recorded failure-injection evidence unsigned until those real
-environments execute them.
-
-No review comments or requested changes.
-
-## Captured old CI state
-
-Workflow-run queries were against the exact old heads above.
-
-| PR | Workflow runs | Commit statuses |
-|---:|---|---|
-| 7 | none | CodeRabbit success |
-| 8 | none | none |
-| 9 | none | none |
-| 10 | none | none |
-| 11 | none | none |
-| 12 | none | none |
-| 13 | none | none |
-| 14 | run `31516093384` failed; run `31516092805` cancelled | none |
-
-## Capability migration ledger
-
-Old merge commits and obsolete conflict-resolution merges are intentionally not
-ported. The feature/fix commits map as follows:
-
-| Old capability or follow-up | Old evidence | Rebuilt target and treatment |
-|---|---|---|
-| Encrypted logical secrets, key permissions, metadata-only API/client, Docker secret delivery and rotation | #7 `cbb092f`, `cdded1f` | #7 rebuilt as `48a298c`; current schema/API/client/CLI paths only |
-| Removed abandoned SQLx/scaffolding from the secret transplant | #7 `0183cd3` | #7 preserved Plan 06A simplification; no old scaffolding restored |
-| Secret generation lookup correction | #7 `1115384` | #7 rebuilt lookup against current store |
-| Restart/reconcile secret recovery | #7 `ed49a1d` | #7 rebuilt recovery scan and durable replacement |
-| Deployed-state barrier before secret pruning/rotation | #7 `4a4df25` | #7 rebuilt deployed snapshot and barrier |
-| Retired-generation pruning | #7 `7d5eb1c` | #7 rebuilt post-deploy pruning |
-| Secret metadata pagination | #7 `d5cb30a` | #7 rebuilt bounded cursor pagination |
-| Git resolution, deterministic context, BuildKit, registry digest verification, build persistence | #8 `50839c6`, `f0eae59` | #8 rebuilt from latest #7 as `0321107`; fresh migration 0003 and one build-concurrency owner |
-| Build credential scope, context TOCTOU, atomic verified-artifact publication and recovery | #8 `f0eae59` | #8 rebuilt durable build service/planner/action and verified-only deployment |
-| Routes/ports, owned Traefik, runtime status, bounded logs and events | #9 `6c72270`, `1316fa1` | #9 rebuilt as `f79994b`; shared cursor/reconnection SSE design |
-| Canonical app export, deterministic portable/encrypted archives, strict validation, digest confirmation, maintenance gate, transactional import/audit and dependencies | #10 `1ec606a`, `4125d7d` | #10 rebuilt from `f79994b` as `4f92d0b072a04a081c0b706c5588e59c66633edd`; fresh migration 0004, API/client/CLI/docs/tests together |
-| Complete advanced CLI surface | #11 `b45b426`, `ab1b68e` | #11 rebuilt from actual #10 as `6916091076de717d21860713d54d44701b63c90a`; grouped application/secret/operation/state commands extend Plan 06B and preserve #10 transfer commands |
-| Operation watch endpoint required by the rebuilt CLI | #11 `b45b426` (old #9 did not carry the operation-events route) | Moved into #11 on top of #9's shared cursor/reconnection primitive; server OpenAPI, transport-neutral client, Last-Event-ID handling, deduplication, stream fallback, and focused API coverage move together |
-| Protected profile/token/secret inputs, stable output and exit categories, binary output safety, retry/timeout/error redaction | #11 `ab1b68e` | Rebuilt against the current public client; uses protected `openat2` reads, zeroized token/body buffers, atomic private outputs, profile precedence, stable envelopes, and no plaintext CLI arguments |
-| Dependency license policy needed by the existing rustls/gix graph | cumulative #8 dependency graph; discovered during #11 full validation | Added only `ISC`, `MIT-0`, and `CDLA-Permissive-2.0` to `deny.toml`; `cargo deny check` and full `just` now pass, with duplicate-version warnings retained |
-| Structured UI and packaged assets | #12 `24a36dc`, `d845f04` | #12 rebuilt as `0e71c2d`; extended the Plan 06C dashboard with typed structured forms, reviewed mutations, observability, write-only secrets, state transfer, and hardened same-origin asset serving; did not restore the old dashboard/state tree; follow-up clarified action copy and removed nested main/duplicate footer markup |
-| Public delete-plan and generation overflow guard | #12 follow-up review intent; current old branch did not have a usable current-stack contract | #12 added `POST /api/v1/applications/{id}/delete-plan`, typed client support, checked generation increment, OpenAPI, and API contract coverage |
-| Conflict-preserving editor and user-visible validation | #12 `24a36dc` | #12 retains local manifests across optimistic-concurrency conflicts, offers explicit server reload, maps safe field errors, and invalidates stale previews before apply |
-| Live operation/build/runtime views | #12 `24a36dc` | #12 uses the rebuilt operation SSE cursor/reconnect contract, bounded `LogBuffer`, typed operation/build/status/log DTOs, browser EventSource cleanup, bounded reconnect attempts, and typed polling fallback; build output intentionally polls because no build SSE route exists in the rebuilt API |
-| Write-only browser secret controls | #12 `24a36dc` | #12 uses wasm typed binary secret methods, clears input/drafts after success and component cleanup, zeroizes Rust and JS body buffers, and never reveals or persists plaintext |
-| Browser state transfer and application export | #12 `24a36dc` | #12 uses wasm typed transfer methods, 32 MiB bound, explicit phrase, SHA-256 digest-bound single-use confirmation, zeroized confirmation/archive buffers, dependency report, and in-memory downloads |
-| Hardened SPA fallback and packaged UI documentation | #12 `d845f04` | #12 moved descriptor-relative symlink-safe serving into `api/ui.rs`, added CSP/security headers, HEAD/range/content-type/cache behavior, 16 MiB asset bound, and updated API/UI docs; Nix/Trunk packaging already existed in the frozen Plan 06C base |
-| Production authentication, listener bounds, CORS/origin policy, trusted-proxy identity, shared backpressure, timeouts, and sanitized errors | #13 `3254200`, `6a7d09c` | #13 rebuilt as `8322df1965be3382cd86b95bc5612f34bfe85d96`; one transport-neutral policy wraps both real listeners, with fail-closed TCP identity and bounded request bodies/headers |
-| Health, readiness, metrics, Docker/Swarm/registry/ingress probes, and recovery-oriented operational status | #13 `3254200`, `6a7d09c` | #13 added versioned typed client/API/OpenAPI contracts, optional low-cardinality metrics, bounded SQLite probes, runtime readiness, loopback Swarm initialization, build-source readiness, and structured recovery logs |
-| NixOS packaging, split daemon/CLI/UI outputs, systemd credentials, service hardening, private registry wiring, and safe path assertions | #13 `3254200`, `6a7d09c` | #13 rebuilt against the Plan 06C binary and immutable UI layout in `nix/module.nix`/`flake.nix`; no abandoned Plan 06 scaffolding or old package tree restored |
-| Security, recovery, backup, deployment, proxy-boundary, readiness, metrics, and operator documentation | #13 `3254200`, `6a7d09c` | #13 updated `README.md`, `docs/api.md`, `docs/web-ui.md`, and added `docs/operations.md` for the rebuilt API, credentials, NixOS unit, private access, and recovery model |
-| Layered qualification CI, reproducible release packaging, fixtures, acceptance runbook, and final operator/developer docs | #14 `22bbb1a`, `5d38829` | #14 rebuilt as `deb09b3`, with current `just`/qualification entry points, pinned CI actions/toolchains, clean release output, Docker fixtures, NixOS VM check, and a 20-criterion runbook |
-| Docker 29 service-update race, default canonicalization, BuildKit session, and Swarm healthcheck fixes | #14 `a2990f8` plus disposable qualification findings | #14 rebuilt through `d411aeb`, `b790c0d`, `58cd800`, and `316b5b8`; exact transient update retry, proxy canonicalization, Bollard's supported BuildKit session/provider path, complete typed service inspection, and the narrow `HealthCheck`/`Healthcheck` Unix-socket normalization are retained. The temporary diagnostic commit `cce0018` was removed and is not a capability commit |
-| Nix recovery qualification and restart-oriented checks | #14 `38cf58d` | #14 rebuilt in `deb09b3` through the NixOS VM boot/readiness/credential/package checks and durable operation/build recovery coverage inherited from #7–13; crash-injection during every external operation remains an operator-run qualification item |
-| Removal of the obsolete offline SQLx cache | #14 `a1d0f36` | Deliberately not copied: the rebuilt stack has one checked-in SQLx query-metadata file and `build.rs` as the current compile-time contract; deleting it would break fresh offline builds rather than simplify the product |
-
-## Rebuilt heads so far
-
-| Rebuilt increment | Local branch | Head |
-|---:|---|---|
-| 7 | `rebuild/07-secret-lifecycle` | `48a298c` (`feat(secrets): rebuild logical secret lifecycle on product stack`) |
-| 8 | `rebuild/08-build-and-registry` | `0321107` (`feat(build): rebuild Git source pipeline on product stack`) |
-| 9 | `rebuild/09-traefik-status-and-logs` | `f79994b` (`feat(ingress): rebuild status and logs on product stack`) |
-| 10 | `rebuild/10-import-export` | `4f92d0b072a04a081c0b706c5588e59c66633edd` (`feat(transfer): rebuild state import and export on product stack`) |
-| 11 | `rebuild/11-cli` | `6916091076de717d21860713d54d44701b63c90a` (`feat(cli): rebuild advanced operator workflow on product stack`) |
-| 12 | `rebuild/12-web-ui` | `0e71c2d` (`fix(web): clarify dashboard structure and actions`; feature base `ae45d9e3d4c7c5f704cf3978a77182639ceffad9`) |
-| 13 | `rebuild/13-nixos-security-and-operations` | `8322df1965be3382cd86b95bc5612f34bfe85d96` (`feat(ops): rebuild security and NixOS operations`; ledger top `bd91ead879094f59f75ddcae04941c41fb2b26db`) |
-| 14 | `rebuild/14-qualification-ci-and-docs` | `316b5b8` (`fix(docker): preserve Swarm healthchecks across service reconciliation`; qualification base `deb09b3`, final code correction after `d411aeb`, `b790c0d`, and `58cd800`) |
-
-## Local #10 validation at ledger checkpoint
-
-Passed:
-
-- `cargo fmt --all`
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `cargo check --workspace --all-targets`
-- `cargo test --workspace --no-run`
-- focused transfer unit tests (4)
-- in-process transfer API contract (binary content type, app export, exact digest confirmation, single-use replay rejection)
-- fake Docker tests (2)
-- persistence tests (3)
-- SQLx fresh migration test
-- generated OpenAPI `--check`
-- `git diff --check`
-
-Listener-based TCP/Unix tests need an elevated execution environment because the
-managed sandbox denies local socket binds; they are not treated as product
-failures. Full `just`, no-default-feature, cargo-deny, Nix, WASM/Trunk, browser,
-and privileged Docker validation remain cumulative gates before remote rewrites.
-
-## Local #11 validation at ledger checkpoint
-
-Passed on `6916091076de717d21860713d54d44701b63c90a`:
-
-- `just` (full workspace check, tests, doc-tests, cargo-deny, OpenAPI check, and dependency boundary script)
-- strict workspace Clippy and formatting checks
-- black-box CLI integration over Unix and TCP with stable JSON, auth canaries, grouped commands, secret input, state transfer safeguards, and refusal paths
-- operation SSE API/client contract, including typed event decoding
-- workspace API, persistence, migration, fake-runtime, manifest, and UI tests
-
-The privileged Swarm/Docker acceptance test remains ignored by design. WASM,
-Trunk release, NixOS VM, browser, and privileged Docker validation remain
-cumulative gates for their owning rebuilt PRs.
-
-## Local #12 validation at ledger checkpoint
-
-Passed on `0e71c2d` (feature base `ae45d9e3d4c7c5f704cf3978a77182639ceffad9`):
-
-- `just` (workspace format, strict native Clippy, workspace checks/tests,
-  doc-tests, cargo-deny, generated OpenAPI check, and dependency boundaries)
-- elevated TCP/Unix API contract coverage, including delete-plan, operation
-  SSE, state transfer, SPA route precedence, CSP/security headers, byte ranges,
-  and encoded-path rejection
-- `cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui`
-- `cargo clippy --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
-  --lib -- -D warnings`
-- UI state unit tests and strict dependency-boundary checks
-
-Unavailable in this checkout: `trunk` is not installed, so `just ui-build`
-could not run; no release asset canary or Nix package/VM evidence is claimed.
-The T3 collaborative preview reported no automation host after both status and
-open attempts, so no browser interaction evidence is claimed. The privileged
-Docker acceptance test remains intentionally ignored.
-
-## Local #13 validation at ledger checkpoint
-
-Passed on `8322df1965be3382cd86b95bc5612f34bfe85d96`:
-
-- `just` (format, strict workspace Clippy, workspace checks/tests, doc-tests,
-  cargo-deny, generated OpenAPI check, and dependency boundaries)
-- Plan 13 daemon unit tests, including fail-closed TCP authentication, duplicate
-  security headers/origin rejection, protected credential files, config policy,
-  readiness, and metrics contracts
-- elevated typed API contract tests for versioned health/readiness/metrics,
-  authenticated boundaries, and the cumulative #12 state/UI behavior
-- `git diff --check`, `cargo fmt --all`, and the full workspace Clippy command
-- `just nix-check`: all six x86_64 flake checks passed, including NixOS module
-  evaluation, split daemon/CLI/UI package derivations, formatting, dependency
-  boundaries, and the release package/UI build; aarch64 was omitted by the
-  host check
-
-The privileged Docker/Swarm acceptance test remains intentionally ignored. A
-NixOS VM qualification was not available in this checkout, and the T3 preview
-has no automation host, so no browser or VM evidence is claimed.
-
-## #13 range-diff findings
-
-Compared with the old feature range
-`3d3e46e9422794877a9eec6d3ad8a33af811d4f6..3f01d57de6be6c3b1ab8ef682b9edc1631b7e14f`,
-`git range-diff` shows the two substantive old commits (`3254200`, `6a7d09c`)
-were intentionally replaced by one coherent `8322df1` increment. The old
-merge-only commits were not ported. The rebuilt increment preserves the
-security and operations intent while adapting it to the current API/router,
-typed client, runtime, immutable UI package, fresh SQLx query metadata, and
-Plan 06A simplifications; it adds explicit auth/readiness/metrics contracts and
-does not restore the old binary or dashboard trees.
-
-## Local #14 validation at ledger checkpoint
-
-Passed on the final code head `316b5b8` (qualification implementation `deb09b3`,
-Docker retry/canonicalization `d411aeb`, supported BuildKit session path
-`b790c0d`, complete typed inspection `58cd800`, and final healthcheck wire fix):
-
-- `cargo fmt --all`, `cargo check -p piqueld --test docker_integration --features docker-integration`, and `cargo test -p piqueld --lib` (34/34)
-- focused Docker engine regression tests for exact transient update errors and bidirectional `HealthCheck`/`Healthcheck` wire normalization
-- full elevated `just`, including workspace tests, doc-tests, strict Clippy, cargo-deny, OpenAPI, and dependency boundaries; the non-elevated attempt was blocked only by the sandbox's TCP listener permission
-- `cargo nextest run --workspace`: 91/91 passed before the final wire-only correction; the final `just` rerun passed after it
-- `cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui` and strict WASM Clippy
-- `just nix-check`: all six x86_64 flake checks passed, including the NixOS VM qualification with a deterministic local Traefik stub; the check omitted incompatible `aarch64-linux`
-- `nix build .#release --no-update-lock-file` and two clean `package-release.sh` runs produced byte-identical tarballs, metadata, and checksums; the final x86_64 archive SHA-256 was `15dfde301711cd6f7ddcf37d8631afa8d92bbccf60dd5e5add7984cfd2d29281`
-- feature-gated Docker qualification compiled locally; the final disposable GitHub Docker job passed against Docker Engine 28.0.4 with the loopback registry
-- final remote qualification run `32232166988`: Rust/contract job `96004243537`, Docker job `96004243079`, and NixOS VM job `96004243307` passed; the WASM/Chromium job `96004243468` timed out after 30m22s while installing headless Chromium, before the production bundle or browser smoke steps ran
-
-The earlier disposable diagnosis run `32231079482` exposed the exact healthcheck
-field mismatch and was superseded by the final correction. Local browser
-automation remains unavailable: `trunk` and Chromium are not installed and the
-T3 preview reported no automation host after status/open attempts. No local
-privileged Docker daemon was used.
-
-## #14 range-diff findings
-
-Compared with the old feature range
-`3f01d57de6be6c3b1ab8ef682b9edc1631b7e14f..b129bafd102cf2fb461ed776f3808f110a451b5e`,
-the five substantive old commits (`22bbb1a`, `5d38829`, `a2990f8`, `38cf58d`,
-`a1d0f36`) were semantically rebuilt across the qualification implementation
-`deb09b3`, focused Docker retry/canonicalization `d411aeb`, supported BuildKit
-session correction `b790c0d`, complete service inspection `58cd800`, and final
-healthcheck wire correction `316b5b8` (rebuilt code range
-`bd91ead879094f59f75ddcae04941c41fb2b26db..316b5b8`). The diagnostic-only
-`cce0018` commit is intentionally omitted from the capability count. Old
-merge-only commits were not ported. The qualification behavior is retained
-through current feature-gated Docker tests, NixOS VM checks, release/CI scripts,
-fixtures, documentation, and the typed Docker boundary. The only remaining
-architecture-specific deviation in this area is the offline-cache deletion;
-the service wire normalization is now a deliberate, narrowly scoped transport
-fix rather than a restoration of the old branch tree.
-
-The local rebuild is complete and PR branches #7–#14 have been rewritten with
-explicit `--force-with-lease` pushes; PR #7's base metadata remains blocked by
-GitHub's stacked-PR restriction.
-
-## Final range-diff summary
-
-The range-diffs were run against each old feature increment and the actual new
-feature increment, excluding inherited ledger commits:
-
-| PR | Old substantive commits | Rebuilt feature commits | Result |
-|---:|---:|---:|---|
-| 7 | 8 | 1 | Consolidated secret lifecycle and all lookup/recovery/barrier/pruning/pagination fixes on the current schema/API |
-| 8 | 2 | 1 | The first old build commit partially matched with a large semantic rewrite; the durable follow-up was folded into the current one-owner build service |
-| 9 | 2 | 1 | Consolidated ingress, runtime status, logs, and one shared cursor/reconnection model |
-| 10 | 2 | 1 | Consolidated transfer archive, transaction, confirmation, dependency, API/client, CLI, and test behavior |
-| 11 | 2 | 1 | Consolidated advanced CLI behavior while extending Plan 06B rather than restoring the old CLI tree |
-| 12 | 2 | 2 | Feature plus focused dashboard-structure cleanup; both are based on the rebuilt #11 branch |
-| 13 | 2 | 1 | Consolidated security, operations, packaging, recovery, and documentation on the rebuilt UI/client stack |
-| 14 | 5 | 5 | Qualification/docs plus focused Docker retry, BuildKit, complete-inspection, and healthcheck-wire corrections; diagnostic-only commit and old merge-only commits omitted |
-
-## Remote rewrite checkpoint
-
-The implementation pushes were serialized from the bottom of the stack and
-used an exact `--force-with-lease` for every branch. At the final code push,
-the remote heads were:
-
-| PR | Remote branch head after semantic rebuild | Intended base | GitHub-reported base |
+### Stabilization generation `20260819-180607`
+
+```text
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/plan-06a-simplification -> 808dbc4faeacfc027d9423ad3aab8a278b786279
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/plan-06b-cli -> c1f69449165868ce6478d328eb431ecc291f99e0
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/plan-06c-basic-web-ui -> bffabb307f9fe12bfbb49c91da050ddcd165c02c
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/pr-07-secret-lifecycle -> 004ced097d292b8dc66366c59cf822f05f913fd0
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/pr-08-build-and-registry -> 9b8d27ce099390e056be8cb72e64a8ed630c798e
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/pr-09-traefik-status-and-logs -> 91b6dba60f2474a08718b2fd3e6207d0bcc658c9
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/pr-10-import-export -> 76afc92a2a32111144734fbf8cbbe697b3542b60
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/pr-11-cli -> 7504afe6e8f8513548561e5c657590836713620e
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/pr-12-web-ui -> 56d25b4c65c97dd6e4832ea42a30b33c41ca2be7
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/pr-13-nixos-security-and-operations -> 35b26cebf1d4a2620b2d82378a9bee813b119506
+refs/backup/stabilize-usable-product-stack/20260819-180607/pre/pr-14-qualification-ci-and-docs -> ccb911d6e8061f75eefb64b98b96ec43fd3331ab
+
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/plan-06a-simplification -> d422de79a5cc30b1e7d367af348d5cb248864ca6
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/plan-06b-cli -> 3488b68aab91bfa7c5d492182d52c4bd08fff425
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/plan-06c-basic-web-ui -> 6652b1eed3449d0f7300fd9e15a41b7b38186050
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-07-secret-lifecycle -> 653feba0a96c3119d35b4a653c608c71a44b187f
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-08-build-and-registry -> 7a253057775fb2e5ac375ab591e7282e4a515f96
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-09-traefik-status-and-logs -> 406fe739e1277e08ef792c07bbda94344fe9e724
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-10-import-export -> cdbb35bd9d1f4678d2e4fb03c80f392a7fedf60d
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-11-cli -> 48bd4d0a5ad8944663780da261f2fe8e126330ca
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-12-web-ui -> ae1e97a1ba58b3632b811123cb32358d1242b964
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-13-nixos-security-and-operations -> b37478da71610745166cc425c2251a49509c0832
+refs/backup/stabilize-usable-product-stack/20260819-180607/corrected/pr-14-qualification-ci-and-docs -> 6213e58a43a9195422d24d484c3f07754d648779
+```
+
+## Exact pre-rewrite PR metadata
+
+These were captured from GitHub after fetching and before publication. Every PR
+was open, draft, and mergeable; no reviewers were requested.
+
+| PR | Branch | Exact old base SHA | Exact old head SHA |
 |---:|---|---|---|
-| 7 | `48a298cd75d07b441b8bc5ef3205b1d02bad8a72` | `plan/06c-basic-web-ui` (`e6df8821d5a63b9b121dec6781602348879ddea2`) | `plan/06-docker-reconciliation` (retarget rejected: stacked-PR restriction) |
-| 8 | `032110766ecc489c9776a12bb3a5ba59d1afb57e` | `plan/07-secret-lifecycle` | `plan/07-secret-lifecycle` |
-| 9 | `f79994ba476f99daf8f59d9783d546d32f862ccd` | `plan/08-build-and-registry` | `plan/08-build-and-registry` |
-| 10 | `4f92d0b072a04a081c0b706c5588e59c66633edd` | `plan/09-traefik-status-and-logs` | `plan/09-traefik-status-and-logs` |
-| 11 | `b4faf32263f4d36560521546941f360465192104` | `plan/10-import-export` | `plan/10-import-export` |
-| 12 | `a887c2b0e3b9118bcf4822563141d9caae251205` | `plan/11-cli` | `plan/11-cli` |
-| 13 | `bd91ead879094f59f75ddcae04941c41fb2b26db` | `plan/12-web-ui` | `plan/12-web-ui` |
-| 14 | `316b5b8e1b20959c024b6600697a25b48f9b6287` | `plan/13-nixos-security-and-operations` | `plan/13-nixos-security-and-operations` |
+| #19 | `plan/06a-simplification` | `586b3abcf9b0df6f615ff2e3e335a83f6bb7e5e6` | `808dbc4faeacfc027d9423ad3aab8a278b786279` |
+| #20 | `plan/06b-cli` | `3edec14eaf3cff570ce9afaffdc12d5473decbbd` | `c1f69449165868ce6478d328eb431ecc291f99e0` |
+| #21 | `plan/06c-basic-web-ui` | `c1f69449165868ce6478d328eb431ecc291f99e0` | `bffabb307f9fe12bfbb49c91da050ddcd165c02c` |
+| #7 | `plan/07-secret-lifecycle` | `bffabb307f9fe12bfbb49c91da050ddcd165c02c` | `004ced097d292b8dc66366c59cf822f05f913fd0` |
+| #8 | `plan/08-build-and-registry` | `004ced097d292b8dc66366c59cf822f05f913fd0` | `9b8d27ce099390e056be8cb72e64a8ed630c798e` |
+| #9 | `plan/09-traefik-status-and-logs` | `9b8d27ce099390e056be8cb72e64a8ed630c798e` | `91b6dba60f2474a08718b2fd3e6207d0bcc658c9` |
+| #10 | `plan/10-import-export` | `91b6dba60f2474a08718b2fd3e6207d0bcc658c9` | `76afc92a2a32111144734fbf8cbbe697b3542b60` |
+| #11 | `plan/11-cli` | `76afc92a2a32111144734fbf8cbbe697b3542b60` | `7504afe6e8f8513548561e5c657590836713620e` |
+| #12 | `plan/12-web-ui` | `7504afe6e8f8513548561e5c657590836713620e` | `56d25b4c65c97dd6e4832ea42a30b33c41ca2be7` |
+| #13 | `plan/13-nixos-security-and-operations` | `56d25b4c65c97dd6e4832ea42a30b33c41ca2be7` | `35b26cebf1d4a2620b2d82378a9bee813b119506` |
+| #14 | `plan/14-qualification-ci-and-docs` | `35b26cebf1d4a2620b2d82378a9bee813b119506` | `ccb911d6e8061f75eefb64b98b96ec43fd3331ab` |
 
-The final ledger-only documentation commit may move #14's branch head without
-changing its implementation. The exact post-ledger head is reported in the
-handoff accompanying this file.
+The recorded old base is also the old increment merge base in each case. The
+notable ancestry defect was #20's old base: it pointed at `3edec14`, not the
+then-current #19 head. The corrected stack uses the actual immediately
+preceding corrected head at every layer.
+
+### Review state preserved
+
+The review queries found no submitted reviews and no inline review threads on
+#19–#21 or #7–#14. The discussion timelines contained only non-actionable
+CodeRabbit “Review skipped — Draft detected” comments. Bodies were replaced
+after publication; comments, reviews, and threads were not deleted.
+
+The captured pre-stabilization #14 workflow was run `32262266266`, with these
+successful jobs: Rust/contracts `96098087000`, production WASM/browser
+`96098087027`, disposable Docker `96098087128`, and Nix packages/NixOS VM
+`96098086815`.
+
+## Moved behavior and capability ownership
+
+### PR #19 / Plan 06A
+
+- Ported the base Docker behavior stranded in old #14: bounded retry only for
+  Docker’s exact “update out of sequence” response (`7725ee6`), complete typed
+  service inspection before comparison/observation (`e6e8f11`), and the narrow
+  `HealthCheck`/`Healthcheck` service-wire normalization (`f4f9128`).
+- Kept typed desired/observed models, sanitized public errors, and focused
+  Docker regressions beside the owning adapter.
+- Extended the isolated lifecycle with health checks, repeated idempotent
+  reconciliation, updates, drift repair, recovery, ownership refusal,
+  deletion, and retained-volume assertions.
+- Removed `DaemonConfig::data_dir`; `database.path` is authoritative. Missing
+  database parents are created safely without changing existing parent modes.
+  The obsolete `migrations/.gitkeep` and future-feature baseline schema were
+  not restored.
+
+### PR #20 / Plan 06B
+
+- Added real clap `--help`, `--version`, and `--config PATH` behavior with
+  contextual errors for explicitly missing files.
+- Kept validated built-in defaults when `/etc/piqueld/config.toml` is absent
+  and explains the shipped example path for non-root development.
+- Added `daemon_version` through API/OpenAPI/native DTO/WASM DTO/status JSON,
+  and completed the essential status/list/show/plan/apply/operation/delete
+  workflow over Unix and TCP.
+- Added the complete package/build-to-delete quickstart without introducing a
+  dynamic capability framework.
+
+### PR #21 / Plan 06C
+
+- Rebuilt the basic read-only Leptos/WASM dashboard with daemon version,
+  same-origin API access, package-local UI discovery, explicit `server.ui_dir`,
+  bounded single-flight polling, hidden-tab pausing, stale-data retention,
+  accessibility, and no browser persistence or telemetry.
+- Detects repeated pagination cursors and visibly marks results incomplete when
+  the 20-page bound truncates them.
+- The normal package installs only `piqueld`, `piquelctl`, the example config,
+  and fingerprinted UI assets. `generate_openapi` and the native UI placeholder
+  are excluded.
+
+### PR #7
+
+- Rebuilt the complete secret lifecycle: encrypted storage, protected key/file
+  inputs, metadata-only APIs, Docker secret reconciliation, lookup/recovery,
+  deployed-state barriers, pruning, and pagination.
+- Added only the minimal CLI commands required here: metadata list, protected
+  stdin/file set-or-replace, and safe delete. Plaintext is never a command
+  argument or browser value.
+
+### PR #8
+
+- Preserved the one-owner durable Git/BuildKit/registry pipeline, fresh build
+  migration, verified artifact publication, digest-only deployment, and
+  credential scope.
+- Moved the required BuildKit correction into this owner: Bollard’s supported
+  BuildKit session/provider path is supplied rather than leaving builds without
+  a session.
+- Added only minimal build visibility for the application/operation association;
+  the advanced CLI remains in #11.
+
+### PR #9
+
+- Preserved owned Traefik, routes, runtime status, bounded logs, and one shared
+  cursor/reconnect stream model.
+- Added a minimal bounded historical `piquelctl logs` command. Follow/watch and
+  profiling remain in #11.
+
+### PR #10
+
+- Preserved the feature-owned transfer implementation: bounded binary archives,
+  confirmation, transactionality, dependency reporting, and API/client support.
+
+### PR #11
+
+- Added only the advanced grouped CLI layer: profiles/authentication, stable
+  automation output and exit categories, watch/follow, and accepted Plan 11
+  behavior.
+- Secret, build, log, and transfer implementations remain owned by #7–#10;
+  no duplicate command or DTO trees were introduced.
+
+### PR #12
+
+- Extended the corrected basic dashboard with Plan 12 structured forms,
+  conflict recovery, operation/build/runtime views, write-only secret controls,
+  state transfer, and accessible responsive states without replacing the Plan
+  06C DTO/state architecture.
+
+### PR #13
+
+- Preserved security policy, fail-closed TCP authentication, listener limits,
+  health/readiness/metrics, NixOS credentials and hardening, split packaging,
+  recovery policy, and operational documentation.
+- The NixOS module was corrected on #14 to stop emitting the removed
+  `data_dir` field; this is a compatibility fix to the inherited #13 module,
+  not a new feature layer.
+
+### PR #14
+
+- Contains qualification, CI, release packaging, fixtures, acceptance
+  scenarios, and final documentation only.
+- The Docker retry/inspection/health-wire behavior is inherited from #19;
+  BuildKit session behavior from #8; secret logical-name matching and lifecycle
+  behavior from #7. The old #14 fix commits were intentionally not reintroduced
+  as first implementations here.
+
+## Range-diff record
+
+Each comparison was run with:
+
+```text
+git range-diff --no-dual-color <old-base>..<old-head> <new-base>..<new-head>
+```
+
+| PR | Old range | Corrected range | Result |
+|---:|---|---|---|
+| #19 | `586b3ab..808dbc4` | `586b3ab..d422de7` | Old simplification commits match; corrected Docker/storage fixes are additional. |
+| #20 | `3edec14..c1f6944` | `d422de7..3488b68` | Old CLI increment is replaced by the two coherent Plan 06B commits on #19. |
+| #21 | `c1f6944..bffabb3` | `3488b68..6652b1e` | Basic UI increment is replaced by the packaged/read-only Plan 06C implementation. |
+| #7 | `bffabb3..004ced0` | `6652b1e..653feba` | Secret increment is semantically rebuilt in three focused commits. |
+| #8 | `004ced0..9b8d27c` | `653feba..7a25305` | Build increment is semantically rebuilt; BuildKit correction and minimal visibility are explicit. |
+| #9 | `9b8d27c..91b6dba` | `7a25305..406fe73` | Ingress/status/log behavior is rebuilt with the bounded historical CLI increment. |
+| #10 | `91b6dba..76afc92` | `406fe73..cdbb35b` | Transfer behavior is rebuilt as a feature-owned increment. |
+| #11 | `76afc92..7504afe` | `cdbb35b..48bd4d0` | Advanced CLI behavior is rebuilt without duplicating lower feature commands. |
+| #12 | `7504afe..56d25b4` | `48bd4d0..ae1e97a` | UI feature commits are rebuilt on the single Plan 06C client/state architecture. |
+| #13 | `56d25b4..35b26ce` | `ae1e97a..b37478d` | Security/NixOS operations are rebuilt against the corrected API and package. |
+| #14 | `35b26ce..ccb911d` | `b37478d..6213e58` | Qualification/docs are rebuilt; lower fixes are inherited rather than duplicated. |
+
+The abbreviated ranges above are unambiguous in this repository; the exact
+full SHAs are in the metadata tables and backup refs.
+
+## Plan 06C standalone qualification
+
+The exact Plan 06C head was gated before rebuilding #7:
+
+- `just` passed, including formatting, strict native Clippy, workspace checks
+  and tests, docs, cargo-deny, OpenAPI, and dependency boundaries.
+- `just ui-check` passed.
+- Strict WASM Clippy passed with
+  `cargo clippy --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui -- -D warnings`.
+- The isolated Docker lifecycle passed health checks, repeated idempotent
+  reconcile, update, drift repair, recovery, ownership refusal, deletion, and
+  retained-volume assertions.
+- The production package built and contained only operator-facing binaries,
+  the example TOML, and packaged UI assets; no `generate_openapi` or native UI
+  placeholder was present.
+- Help/version, explicit config, missing explicit config, default-config
+  fallback, clean state-directory startup, Unix status, TCP status, API route,
+  and static dashboard route smoke passed on the Plan 06C package.
+- The essential Unix/TCP `piquelctl` workflow and the documented quickstart
+  were exercised.
+- T3 preview status/open reported no automation-capable host. API/static smoke
+  passed, but no local interactive desktop or narrow browser claim is made.
+
+## Final cumulative validation
+
+Passed on the corrected #14 checkout:
+
+- `just`
+- `just ui-check`
+- strict WASM Clippy as above
+- `cargo test --workspace` through the `just` workspace test step
+- `cargo check -p piqueld --test docker_integration --features docker-integration`
+- `just docker-test`: the local foundational Plan 06C lifecycle passed in
+  69.97 seconds with the feature gate and disposable flag enabled. The local
+  engine has no disposable registry/origin, so the full future three-test
+  registry/Traefik suite is intentionally exercised by CI instead.
+- `just nix-check`: all six x86_64 checks passed, including the NixOS VM;
+  incompatible `aarch64-linux` was omitted by the host check.
+- Production package build:
+  `nix build --no-update-lock-file --out-link /tmp/piqueld-package-final-20260819-v2 --print-out-paths .#default`
+  produced `/nix/store/5yym0nhjg625kmvmd4gppbkaj0zpwpwy-piqueld-0.1.0`.
+
+The final package contents were:
+
+```text
+bin/.piqueld-wrapped
+bin/piquelctl
+bin/piqueld
+share/piqueld/piqueld.example.toml
+share/piqueld/ui/index.html
+share/piqueld/ui/piqueld-ui-7974bac830cef0b.js
+share/piqueld/ui/piqueld-ui-7974bac830cef0b_bg.wasm
+share/piqueld/ui/style-ae7cd8f6b5ab68c2.css
+```
+
+The package wrapper supplies its own Nix-output UI directory. The final
+package help/version checks passed. A fresh future-stack daemon smoke was
+blocked by an existing host-managed `piqueld-traefik` service owned by a
+different instance; the adapter correctly refused adoption. That service and
+its application were inventoried by label and left untouched. The lower Plan
+06C package daemon smoke and the disposable NixOS VM remain successful startup
+evidence; the final remote CI is the authoritative future-stack package/VM
+gate.
+
+## Publication status
+
+Before publication, the remote PR metadata above was verified. The intended
+bottom-up bases are:
+
+```text
+#19 base plan/06-docker-reconciliation
+#20 base plan/06a-simplification
+#21 base plan/06b-cli
+#7  base plan/06c-basic-web-ui
+#8  base plan/07-secret-lifecycle
+#9  base plan/08-build-and-registry
+#10 base plan/09-traefik-status-and-logs
+#11 base plan/10-import-export
+#12 base plan/11-cli
+#13 base plan/12-web-ui
+#14 base plan/13-nixos-security-and-operations
+```
+
+Each branch will be pushed only with an exact `--force-with-lease` expectation
+read immediately before that push. A lease failure requires stopping and
+re-inventorying; backup refs are never deleted.
+
+Final GitHub heads, PR body metadata, workflow runs, and job results are added
+below after the bottom-up publication completes.
