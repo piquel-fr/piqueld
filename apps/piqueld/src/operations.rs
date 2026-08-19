@@ -1,8 +1,6 @@
 //! Bounded, cancellation-aware scheduling for durable operations.
 
-use crate::store::{
-    MAX_PAGE_SIZE, Operation, OperationKind, OperationRepository, StoreError, WorkState,
-};
+use crate::store::{MAX_PAGE_SIZE, Operation, SqliteStore, StoreError, WorkState};
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
@@ -29,9 +27,6 @@ pub enum OperationError {
     /// A runtime resource is not safely owned by the application.
     #[error("a Docker resource is not safely owned by this application")]
     OwnershipConflict,
-    /// The application has no compiled runtime state.
-    #[error("resolved application state is unavailable")]
-    ResolvedStateMissing,
     /// An immutable Docker resource differs from the desired configuration.
     #[error("Docker resource configuration cannot be reconciled safely in place")]
     DockerConfigurationConflict,
@@ -50,12 +45,6 @@ pub enum OperationError {
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     DockerRequestFailed(&'static str),
-    /// Secret deployment has not been implemented yet.
-    #[error("secret deployment is unavailable until Plan 07")]
-    SecretLifecycleUnavailable,
-    /// Git image builds have not been implemented yet.
-    #[error("image builds are unavailable until Plan 08")]
-    BuildPipelineUnavailable,
     /// A service update failed in Docker.
     #[error("service update paused after task failure; the previous healthy task is retained")]
     ServiceUpdateFailed,
@@ -77,15 +66,12 @@ impl OperationError {
             Self::Cancelled => "cancelled",
             Self::Superseded => "superseded",
             Self::OwnershipConflict => "ownership_conflict",
-            Self::ResolvedStateMissing => "resolved_state_missing",
             Self::DockerConfigurationConflict => "docker_configuration_conflict",
             Self::SwarmManagerUnavailable => "swarm_manager_unavailable",
             Self::SwarmTopologyUnsupported => "swarm_topology_unsupported",
             Self::DockerUnavailable(_) => "docker_unavailable",
             Self::ImageResolutionFailed(_) => "image_resolution_failed",
             Self::DockerRequestFailed(_) => "docker_request_failed",
-            Self::SecretLifecycleUnavailable => "secret_lifecycle_unavailable",
-            Self::BuildPipelineUnavailable => "build_pipeline_unavailable",
             Self::ServiceUpdateFailed => "service_update_failed",
             Self::ConvergenceTimeout => "convergence_timeout",
             Self::DeletionNotConverged => "deletion_not_converged",
@@ -147,22 +133,20 @@ pub enum SchedulerError {
     Semaphore(#[source] tokio::sync::AcquireError),
 }
 
-/// In-process dispatcher with global, build-specific, and per-application bounds.
-pub struct OperationScheduler<R, H> {
-    repository: Arc<R>,
+/// In-process dispatcher with global and per-application bounds.
+pub struct OperationScheduler<H> {
+    repository: Arc<SqliteStore>,
     handler: Arc<H>,
     global: Arc<Semaphore>,
-    builds: Arc<Semaphore>,
     applications: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
-impl<R, H> OperationScheduler<R, H>
+impl<H> OperationScheduler<H>
 where
-    R: OperationRepository + 'static,
     H: OperationHandler,
 {
     async fn execute_claimed(
-        repository: &R,
+        repository: &SqliteStore,
         handler: &H,
         operation_id: &str,
         token: &CancellationToken,
@@ -172,7 +156,7 @@ where
     }
 
     async fn finish_claimed(
-        repository: &R,
+        repository: &SqliteStore,
         operation_id: &str,
         result: Result<(), OperationError>,
     ) -> Result<(), StoreError> {
@@ -210,26 +194,17 @@ where
         }
     }
 
-    /// Creates a scheduler. Both concurrency limits must be non-zero.
+    /// Creates a scheduler. The concurrency limit must be non-zero.
     ///
     /// # Panics
-    /// Panics when either concurrency limit is zero.
+    /// Panics when the concurrency limit is zero.
     #[must_use]
-    pub fn new(
-        repository: Arc<R>,
-        handler: Arc<H>,
-        max_operations: usize,
-        max_builds: usize,
-    ) -> Self {
-        assert!(
-            max_operations > 0 && max_builds > 0,
-            "scheduler limits must be positive"
-        );
+    pub fn new(repository: Arc<SqliteStore>, handler: Arc<H>, max_operations: usize) -> Self {
+        assert!(max_operations > 0, "scheduler limits must be positive");
         Self {
             repository,
             handler,
             global: Arc::new(Semaphore::new(max_operations)),
-            builds: Arc::new(Semaphore::new(max_builds)),
             applications: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -269,7 +244,6 @@ where
                 let repository = Arc::clone(&self.repository);
                 let handler = Arc::clone(&self.handler);
                 let global = Arc::clone(&self.global);
-                let builds = Arc::clone(&self.builds);
                 let applications = Arc::clone(&self.applications);
                 let token = cancellation.child_token();
                 tasks.spawn(async move {
@@ -285,15 +259,6 @@ where
                         biased;
                         () = token.cancelled() => return Ok(()),
                         permit = global.acquire_owned() => permit.map_err(SchedulerError::Semaphore)?,
-                    };
-                    let _build = if operation.kind == OperationKind::Build {
-                        Some(tokio::select! {
-                            biased;
-                            () = token.cancelled() => return Ok(()),
-                            permit = builds.acquire_owned() => permit.map_err(SchedulerError::Semaphore)?,
-                        })
-                    } else {
-                        None
                     };
                     let _application = tokio::select! {
                         biased;

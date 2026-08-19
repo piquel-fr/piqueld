@@ -29,7 +29,6 @@ impl ServiceRuntimePolicy {
             && Self::environment(container)
             && Self::networks(task)
             && Self::health(container)
-            && Self::endpoint(spec)
             && Self::container_configuration(container)
             && Self::task_configuration(spec, task)
     }
@@ -110,43 +109,6 @@ impl ServiceRuntimePolicy {
             .is_none_or(Self::supported_health_config)
     }
 
-    fn endpoint(spec: &ServiceSpec) -> bool {
-        let supported_ports = spec
-            .endpoint_spec
-            .as_ref()
-            .and_then(|endpoint| endpoint.ports.as_ref())
-            .is_none_or(|ports| {
-                ports.iter().all(|port| {
-                    port.name.as_deref().is_none_or(str::is_empty)
-                        && port.protocol.is_none_or(|protocol| {
-                            matches!(
-                                protocol,
-                                bollard::models::EndpointPortConfigProtocolEnum::EMPTY
-                                    | bollard::models::EndpointPortConfigProtocolEnum::TCP
-                            )
-                        })
-                        && port.target_port.is_some_and(|target| target > 0)
-                        && port.published_port.is_none()
-                        && port.publish_mode.is_none_or(|mode| {
-                            matches!(
-                                mode,
-                                bollard::models::EndpointPortConfigPublishModeEnum::EMPTY
-                            )
-                        })
-                })
-            });
-        let supported_mode = spec.endpoint_spec.as_ref().is_none_or(|endpoint| {
-            endpoint.mode.is_none_or(|mode| {
-                matches!(
-                    mode,
-                    bollard::models::EndpointSpecModeEnum::EMPTY
-                        | bollard::models::EndpointSpecModeEnum::VIP
-                )
-            })
-        });
-        supported_ports && supported_mode
-    }
-
     fn container_configuration(container: &TaskSpecContainerSpec) -> bool {
         container.labels.as_ref().is_none_or(HashMap::is_empty)
             && container.hostname.as_deref().is_none_or(str::is_empty)
@@ -163,7 +125,6 @@ impl ServiceRuntimePolicy {
                 .is_none_or(|value| value == STOP_GRACE_PERIOD)
             && container.hosts.as_ref().is_none_or(Vec::is_empty)
             && container.dns_config.as_ref().is_none_or(Self::is_default)
-            && container.secrets.as_ref().is_none_or(Vec::is_empty)
             && container.oom_score_adj.is_none_or(|value| value == 0)
             && container.configs.as_ref().is_none_or(Vec::is_empty)
             && container.isolation.is_none_or(|value| {

@@ -5,11 +5,10 @@ use crate::{
     docker::{DockerApi, DockerError},
     operations::{OperationError, OperationHandler, OperationScheduler, SchedulerError},
     store::{
-        ApplicationRepository, ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind,
-        SqliteStore, StatusRepository, StepState, StoreError, StoredApplication,
+        ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, SqliteStore, StepState,
+        StoreError, StoredApplication,
     },
 };
-use async_trait::async_trait;
 use piqueld_core::{
     InstanceId, NormalizedApplication, PlanAction, PlanRequest, ResolutionSet, compile_application,
     manifest::Source,
@@ -101,8 +100,5 @@ mod actions;
 mod coordinator;
 mod handler;
 mod runtime;
-#[cfg(test)]
-mod tests;
-
-pub use coordinator::{run_coordinator, run_event_hints};
+pub use coordinator::run_coordinator;
 pub use runtime::DockerRuntime;

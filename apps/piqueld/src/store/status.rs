@@ -1,13 +1,18 @@
 //! Status repository implementation.
 
 use super::{
-    ApplicationId, ApplicationState, ApplicationStatus, SqliteStore, StatusRepository, StoreError,
-    async_trait, generation_i64, now_ms, valid_bounded_text,
+    ApplicationId, ApplicationState, ApplicationStatus, SqliteStore, StoreError, generation_i64,
+    now_ms, valid_bounded_text,
 };
 
-#[async_trait]
-impl StatusRepository for SqliteStore {
-    async fn status(&self, id: &ApplicationId) -> Result<ApplicationStatus, StoreError> {
+impl SqliteStore {
+    /// Reads the durable lifecycle status for one application.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the status is missing, malformed, or the
+    /// database cannot be read.
+    pub async fn status(&self, id: &ApplicationId) -> Result<ApplicationStatus, StoreError> {
         let id_value = id.as_str();
         let row = sqlx::query!(
             r#"SELECT s.state AS "state!",s.observed_generation,s.message,s.updated_at_ms AS "updated_at_ms!" FROM application_status s JOIN applications a ON a.id=s.application_id WHERE s.application_id=?1 AND a.deleted_at_ms IS NULL"#,
@@ -30,7 +35,7 @@ impl StatusRepository for SqliteStore {
         })
     }
 
-    async fn set_status(
+    pub(crate) async fn set_status(
         &self,
         id: &ApplicationId,
         from: ApplicationState,

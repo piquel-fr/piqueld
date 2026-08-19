@@ -36,3 +36,7 @@ fixed, embedded migration index. Every production query is compile-time checked.
 - Building the daemon provisions a disposable migrated SQLite database before its
   SQLx query macros are compiled.
 - No second SQLite-family driver is linked or allowed to write the database.
+
+The current baseline is pre-deployment and may be consolidated as the supported
+product model is simplified. Once the daemon is deployed, subsequent schema
+changes must use forward migrations.

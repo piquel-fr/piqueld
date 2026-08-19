@@ -1,4 +1,4 @@
-//! Versioned HTTP/JSON API and streaming event boundary.
+//! Versioned HTTP/JSON API boundary.
 
 use async_trait::async_trait;
 use axum::{
@@ -7,9 +7,8 @@ use axum::{
     extract::Request,
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response, sse::Event},
+    response::{IntoResponse, Response},
 };
-use futures_util::{Stream, stream};
 use piqueld_client::{
     AcceptedOperation, CreateApplicationRequest, Envelope, ErrorBody, PlanApplicationRequest,
     ReplaceApplicationRequest,
@@ -21,7 +20,7 @@ use piqueld_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::sync::Arc;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
@@ -32,9 +31,6 @@ use crate::{
     docker::DockerError,
     store::{SqliteStore, StoreError, StoredApplication},
 };
-
-#[cfg(test)]
-mod tests;
 
 mod applications;
 mod openapi;
@@ -64,15 +60,12 @@ pub enum BoundaryError {
     /// Resolved inputs could not be compiled into desired runtime resources.
     #[error("application compilation failed")]
     Compilation(Vec<CompileError>),
-    /// The requested runtime capability is not available.
-    #[error("runtime capability is not implemented yet")]
-    Capability(&'static str),
 }
 
 /// Source resolution, runtime observation, and execution seam supplied by Plan 06.
 #[async_trait]
 pub trait RuntimeBoundary: Send + Sync + 'static {
-    /// Wakes the reconciler after a runtime event changes observation.
+    /// Wakes the reconciler after a mutation requests an immediate scan.
     fn trigger_reconciliation(&self) {}
     /// Resolves mutable inputs and captures an initial runtime observation.
     async fn prepare(
@@ -164,12 +157,6 @@ impl From<StoreError> for ApiError {
                 "the application was modified by another client",
             )
             .details(json!({"expected_generation": expected, "current_generation": actual})),
-            StoreError::MissingSecrets(names) => Self::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "logical_secret_missing",
-                "one or more referenced logical secrets do not exist",
-            )
-            .details(json!({"names": names})),
             StoreError::IllegalTransition => Self::new(
                 StatusCode::CONFLICT,
                 "application_state_conflict",
@@ -201,19 +188,12 @@ impl From<StoreError> for ApiError {
 
 impl From<BoundaryError> for ApiError {
     fn from(value: BoundaryError) -> Self {
-        if !matches!(&value, BoundaryError::Capability(_)) {
-            tracing::error!(error = ?value, "runtime boundary request failed");
-        }
+        tracing::error!(error = ?value, "runtime boundary request failed");
         match value {
             BoundaryError::Runtime(_) | BoundaryError::Compilation(_) => Self::new(
                 StatusCode::BAD_GATEWAY,
                 "runtime_request_failed",
                 "runtime request failed",
-            ),
-            BoundaryError::Capability(code) => Self::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                code,
-                "the application requires a runtime capability that is not available yet",
             ),
         }
     }
@@ -270,7 +250,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Builds the complete Plan 05 router. No later-plan endpoints are published.
+/// Builds the Plan 06A HTTP router.
 pub fn router(state: ApiState) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     let (router, openapi) = documented_router().split_for_parts();
@@ -301,9 +281,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::plan_replace))
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::status))
-        .routes(routes!(applications::events))
         .routes(routes!(operations::get))
-        .routes(routes!(operations::events))
 }
 
 async fn bind_error_request_id(request: Request, next: Next) -> Response {
@@ -339,52 +317,6 @@ async fn bind_error_request_id(request: Request, next: Next) -> Response {
     }
     let bytes = serde_json::to_vec(&error).unwrap_or_else(|_| b"{}".to_vec());
     Response::from_parts(parts, Body::from(bytes))
-}
-
-type EventStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
-
-struct StateEventSnapshot {
-    data: String,
-    event: &'static str,
-    terminal: bool,
-}
-
-fn current_state_stream<F, Fut>(kind: &'static str, last: Option<String>, fetch: F) -> EventStream
-where
-    F: Fn() -> Fut + Send + 'static,
-    Fut: Future<Output = Option<StateEventSnapshot>> + Send,
-{
-    Box::pin(stream::unfold(
-        (fetch, last, false, true),
-        move |(fetch, last, done, reconnect)| async move {
-            if done {
-                return None;
-            }
-            loop {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                let snapshot = fetch().await?;
-                let event_id = current_state_event_id(kind, &snapshot.data);
-                if last.as_deref() == Some(event_id.as_str()) {
-                    if snapshot.terminal {
-                        return None;
-                    }
-                    continue;
-                }
-                if reconnect && last.is_some() {
-                    let reset = Event::default()
-                        .id(format!("reset:{event_id}"))
-                        .event("replay_reset")
-                        .data("{\"reason\":\"bounded_replay_exhausted\"}");
-                    return Some((Ok(reset), (fetch, None, false, false)));
-                }
-                let event = Event::default()
-                    .id(event_id.clone())
-                    .event(snapshot.event)
-                    .data(snapshot.data);
-                return Some((Ok(event), (fetch, Some(event_id), snapshot.terminal, false)));
-            }
-        },
-    ))
 }
 
 async fn fallback(method: Method) -> ApiError {
@@ -567,10 +499,6 @@ fn idempotent_application_id(key: &str) -> ApplicationId {
 fn idempotency_key_hash(key: &str) -> String {
     format!("sha256:{}", hex(&Sha256::digest(key.as_bytes())))
 }
-fn current_state_event_id(kind: &str, data: &str) -> String {
-    let digest = Sha256::digest(format!("piqueld-sse/v1\0{kind}\0{data}").as_bytes());
-    format!("current:{}", hex(&digest[..16]))
-}
 fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut value = String::with_capacity(bytes.len() * 2);
@@ -579,7 +507,4 @@ fn hex(bytes: &[u8]) -> String {
         value.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     value
-}
-fn last_event_id(headers: &HeaderMap) -> Option<String> {
-    header_text(headers, "last-event-id").map(str::to_owned)
 }

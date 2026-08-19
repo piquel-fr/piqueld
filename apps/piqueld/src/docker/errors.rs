@@ -70,50 +70,6 @@ impl DockerError {
     }
 }
 
-impl PartialEq for DockerError {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::Unavailable(left)
-                | Self::UnavailableSource {
-                    operation: left, ..
-                },
-                Self::Unavailable(right)
-                | Self::UnavailableSource {
-                    operation: right, ..
-                },
-            )
-            | (
-                Self::ImageResolution(left)
-                | Self::ImageResolutionSource {
-                    operation: left, ..
-                },
-                Self::ImageResolution(right)
-                | Self::ImageResolutionSource {
-                    operation: right, ..
-                },
-            )
-            | (
-                Self::Request(left)
-                | Self::RequestSource {
-                    operation: left, ..
-                },
-                Self::Request(right)
-                | Self::RequestSource {
-                    operation: right, ..
-                },
-            ) => left == right,
-            (Self::NotManager, Self::NotManager)
-            | (Self::IncompatibleSwarm, Self::IncompatibleSwarm)
-            | (Self::OwnershipConflict, Self::OwnershipConflict)
-            | (Self::ConfigurationConflict, Self::ConfigurationConflict) => true,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for DockerError {}
-
 impl From<DockerError> for OperationError {
     fn from(error: DockerError) -> Self {
         match error {

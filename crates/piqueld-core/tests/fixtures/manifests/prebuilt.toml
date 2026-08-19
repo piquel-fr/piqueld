@@ -6,13 +6,14 @@ name = "notes"
 
 [[spec.services]]
 name = "web"
-ports = [3000]
 
 [spec.services.source]
 type = "image"
 image = "ghcr.io/example/notes:1.4.0"
 
-[[spec.routes]]
-host = "notes.example.com"
-service = "web"
-port = 3000
+[[spec.volumes]]
+name = "data"
+
+[[spec.services.mounts]]
+volume = "data"
+target = "/var/lib/notes"

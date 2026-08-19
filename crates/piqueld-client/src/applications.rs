@@ -4,7 +4,7 @@ use piqueld_core::{NormalizedApplication, Plan};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{Client, ClientError, Page, SseEvent, path_segment};
+use crate::{Client, ClientError, Page, path_segment};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Public application state returned by the API.
@@ -379,19 +379,5 @@ impl Client {
             ],
         )
         .await
-    }
-
-    /// Watches application operation events until the receiver is dropped.
-    /// Watches application operation events until the receiver is dropped.
-    #[must_use]
-    pub fn watch_application(
-        &self,
-        id: &str,
-        last_event_id: Option<&str>,
-    ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
-        self.watch_events(
-            format!("/api/v1/applications/{}/events", path_segment(id)),
-            last_event_id,
-        )
     }
 }

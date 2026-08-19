@@ -2,7 +2,7 @@ use http::Method;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{Client, ClientError, SseEvent, path_segment};
+use crate::{Client, ClientError, path_segment};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// One step in an asynchronous operation.
@@ -68,18 +68,5 @@ impl Client {
             &[],
         )
         .await
-    }
-
-    /// Watches operation progress. Dropping the receiver cancels socket reading and closes the connection.
-    #[must_use]
-    pub fn watch_operation(
-        &self,
-        id: &str,
-        last_event_id: Option<&str>,
-    ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
-        self.watch_events(
-            format!("/api/v1/operations/{}/events", path_segment(id)),
-            last_event_id,
-        )
     }
 }

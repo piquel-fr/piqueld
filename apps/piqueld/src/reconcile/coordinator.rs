@@ -1,18 +1,17 @@
 use super::{
-    ActionKind, ApplicationRepository, ApplicationState, Arc, CancellationToken, DockerApi,
-    Duration, MAX_PAGE_SIZE, Notify, OperationScheduler, PlanAction, PlanRequest, ReconcileHandler,
-    SchedulerError, SqliteStore, StatusRepository, StoreError, StoredApplication,
-    blocked_plan_message, plan,
+    ActionKind, ApplicationState, Arc, CancellationToken, DockerApi, Duration, MAX_PAGE_SIZE,
+    Notify, OperationScheduler, PlanAction, PlanRequest, ReconcileHandler, SchedulerError,
+    SqliteStore, StoreError, StoredApplication, plan,
 };
 
 /// Runs startup recovery, apply/delete wakes, and periodic full scans. Multiple
-/// wakes collapse through `Notify`, preventing Docker-event feedback storms.
+/// wakes collapse through `Notify`, keeping polling work bounded.
 ///
 /// # Errors
 /// Returns only when cancellation is requested; transient scheduler/store failures
 /// are logged and retried so the controller remains alive.
 pub async fn run_coordinator<D: DockerApi>(
-    scheduler: Arc<OperationScheduler<SqliteStore, ReconcileHandler<D>>>,
+    scheduler: Arc<OperationScheduler<ReconcileHandler<D>>>,
     store: Arc<SqliteStore>,
     docker: Arc<D>,
     wake: Arc<Notify>,
@@ -44,7 +43,7 @@ pub async fn run_coordinator<D: DockerApi>(
 }
 
 async fn run_scan_until_success<D: DockerApi>(
-    scheduler: &OperationScheduler<SqliteStore, ReconcileHandler<D>>,
+    scheduler: &OperationScheduler<ReconcileHandler<D>>,
     store: &SqliteStore,
     docker: &D,
     cancellation: &CancellationToken,
@@ -64,7 +63,7 @@ async fn run_scan_until_success<D: DockerApi>(
 }
 
 async fn scan_and_run<D: DockerApi>(
-    scheduler: &OperationScheduler<SqliteStore, ReconcileHandler<D>>,
+    scheduler: &OperationScheduler<ReconcileHandler<D>>,
     store: &SqliteStore,
     docker: &D,
     cancellation: &CancellationToken,
@@ -76,9 +75,6 @@ async fn scan_and_run<D: DockerApi>(
         for application in page.items {
             if cancellation.is_cancelled() {
                 return Ok(());
-            }
-            if application.resolved.is_none() {
-                continue;
             }
             if application.delete_intent {
                 retry_delete(store, docker, &application).await?;
@@ -104,7 +100,7 @@ async fn scan_and_run<D: DockerApi>(
             };
             let runtime_plan = plan(
                 &PlanRequest::Reconcile {
-                    desired: application.resolved.clone().expect("checked above"),
+                    desired: application.resolved.clone(),
                 },
                 &observed,
             );
@@ -117,7 +113,7 @@ async fn scan_and_run<D: DockerApi>(
                             ApplicationState::Ready,
                             ApplicationState::Degraded,
                             Some(application.generation),
-                            Some(blocked_plan_message(&runtime_plan)),
+                            Some("runtime reconciliation is blocked by an ownership conflict"),
                         )
                         .await?;
                 }
@@ -167,10 +163,7 @@ async fn retry_delete<D: DockerApi>(
     docker: &D,
     application: &StoredApplication,
 ) -> Result<(), SchedulerError> {
-    let resolved = application
-        .resolved
-        .as_ref()
-        .expect("delete retry requires resolved state");
+    let resolved = &application.resolved;
     let observed = match docker.observe(&application.application.id).await {
         Ok(observed) => observed,
         Err(error) => {
@@ -211,22 +204,4 @@ pub(super) fn plan_requires_execution(plan: &piqueld_core::Plan) -> bool {
     plan.actions
         .iter()
         .any(|action| !matches!(action.kind, ActionKind::RetainVolume { .. }))
-}
-
-/// Converts Docker's lossy event stream into coalesced reconciliation hints.
-pub async fn run_event_hints<D: DockerApi>(
-    docker: Arc<D>,
-    wake: Arc<Notify>,
-    cancellation: CancellationToken,
-) {
-    while !cancellation.is_cancelled() {
-        match docker.wait_for_event(&cancellation).await {
-            Ok(()) if !cancellation.is_cancelled() => wake.notify_one(),
-            Ok(()) => break,
-            Err(error) => {
-                tracing::warn!(%error, "Docker event stream failed; retrying");
-                tokio::select! {()=cancellation.cancelled()=>break,()=tokio::time::sleep(Duration::from_secs(1))=>{}}
-            }
-        }
-    }
 }

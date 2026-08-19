@@ -11,7 +11,7 @@ use super::{
 impl BollardDocker {
     /// Builds the complete Docker service specification from desired state.
     pub(super) fn service_spec(desired: &DesiredService) -> Result<ServiceSpec, DockerError> {
-        if !BollardDocker::valid_digest(&desired.image) || !desired.secrets.is_empty() {
+        if !BollardDocker::valid_digest(&desired.image) {
             return Err(DockerError::Request("build service specification"));
         }
         Ok(ServiceSpec {

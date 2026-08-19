@@ -1,11 +1,10 @@
 use super::blocked_plan_error;
 use super::coordinator::plan_requires_execution;
 use super::{
-    ApplicationRepository, ApplicationState, CancellationToken, DockerApi, Operation,
-    OperationError, OperationHandler, OperationKind, PlanRequest, ReconcileHandler,
-    StatusRepository, StepState, StoredApplication, async_trait, plan,
+    ApplicationState, CancellationToken, DockerApi, Operation, OperationError, OperationHandler,
+    OperationKind, PlanRequest, ReconcileHandler, StepState, StoredApplication, plan,
 };
-use crate::store::OperationRepository;
+use async_trait::async_trait;
 
 #[async_trait]
 impl<D: DockerApi> OperationHandler for ReconcileHandler<D> {
@@ -46,7 +45,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
         }
 
         self.start_deployment(operation).await?;
-        let request = request_for(operation, &application)?;
+        let request = request_for(operation, &application);
         let steps = self
             .store
             .operation_steps(&operation.id)
@@ -66,27 +65,16 @@ impl<D: DockerApi> ReconcileHandler<D> {
     }
 }
 
-fn request_for(
-    operation: &Operation,
-    app: &StoredApplication,
-) -> Result<PlanRequest, OperationError> {
+fn request_for(operation: &Operation, app: &StoredApplication) -> PlanRequest {
     if operation.kind == OperationKind::Delete {
-        let instance = app
-            .resolved
-            .as_ref()
-            .map(|r| r.instance_id.clone())
-            .ok_or(OperationError::ResolvedStateMissing)?;
-        Ok(PlanRequest::Delete {
+        PlanRequest::Delete {
             application_id: operation.application_id.clone(),
-            instance_id: instance,
-        })
+            instance_id: app.resolved.instance_id.clone(),
+        }
     } else {
-        Ok(PlanRequest::Reconcile {
-            desired: app
-                .resolved
-                .clone()
-                .ok_or(OperationError::ResolvedStateMissing)?,
-        })
+        PlanRequest::Reconcile {
+            desired: app.resolved.clone(),
+        }
     }
 }
 pub(super) fn journal_error(error: crate::store::StoreError) -> OperationError {

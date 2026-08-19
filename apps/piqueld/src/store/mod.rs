@@ -1,22 +1,16 @@
-//! Integrated `SQLx` `SQLite` persistence and repository contracts.
+//! Integrated `SQLx` `SQLite` persistence implementation.
 //!
 //! `SQLx` owns the production `SQLite` pool, transactions, migrations, and
 //! compile-time checked repository queries.
 
 mod application;
-mod build;
 mod operation;
 mod status;
 
 use crate::operations::OperationError;
-use async_trait::async_trait;
-use piqueld_client::{
-    ApplicationStatusView, ApplicationView, OperationStepView, OperationView, Page,
-};
 use piqueld_core::{
-    ApplicationId, ErrorCode, NormalizedApplication, PublicError, ResolutionSet,
-    compile_application,
-    resource::{INGRESS_NETWORK, ResolvedApplication, SecretGeneration},
+    ApplicationId, NormalizedApplication, ResolutionSet, compile_application,
+    resource::ResolvedApplication,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -25,7 +19,6 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::{
-    collections::BTreeMap,
     error::Error as StdError,
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -85,9 +78,6 @@ pub enum StoreError {
     /// Persisted state could not be decoded into its domain representation.
     #[error("stored application state is corrupt")]
     CorruptSource(#[source] Box<dyn StdError + Send + Sync>),
-    /// A manifest references logical secrets that do not exist.
-    #[error("one or more referenced logical secrets do not exist")]
-    MissingSecrets(Vec<String>),
     /// The requested durable state transition is illegal.
     #[error("illegal durable state transition")]
     IllegalTransition,
@@ -98,44 +88,6 @@ pub enum StoreError {
     #[error("repository input is invalid")]
     InvalidInputSource(#[source] Box<dyn StdError + Send + Sync>),
 }
-
-impl PartialEq for StoreError {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::Database | Self::DatabaseSource(_),
-                Self::Database | Self::DatabaseSource(_),
-            )
-            | (
-                Self::SchemaMismatch | Self::SchemaMismatchSource(_),
-                Self::SchemaMismatch | Self::SchemaMismatchSource(_),
-            )
-            | (Self::NotFound, Self::NotFound)
-            | (Self::AlreadyExists, Self::AlreadyExists)
-            | (Self::IdempotencyConflict, Self::IdempotencyConflict)
-            | (Self::Corrupt | Self::CorruptSource(_), Self::Corrupt | Self::CorruptSource(_))
-            | (Self::IllegalTransition, Self::IllegalTransition)
-            | (
-                Self::InvalidInput | Self::InvalidInputSource(_),
-                Self::InvalidInput | Self::InvalidInputSource(_),
-            ) => true,
-            (
-                Self::GenerationConflict {
-                    expected: left_expected,
-                    actual: left_actual,
-                },
-                Self::GenerationConflict {
-                    expected: right_expected,
-                    actual: right_actual,
-                },
-            ) => left_expected == right_expected && left_actual == right_actual,
-            (Self::MissingSecrets(left), Self::MissingSecrets(right)) => left == right,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for StoreError {}
 
 impl StoreError {
     fn database(source: sqlx::Error) -> Self {
@@ -153,44 +105,6 @@ impl StoreError {
     fn invalid_input(source: impl StdError + Send + Sync + 'static) -> Self {
         Self::InvalidInputSource(Box::new(source))
     }
-
-    /// Converts to the stable transport-neutral public contract without engine details.
-    #[must_use]
-    pub fn public(&self) -> PublicError {
-        let (code, message) = match self {
-            Self::NotFound => ("not_found", "resource was not found"),
-            Self::AlreadyExists => ("already_exists", "resource already exists"),
-            Self::IdempotencyConflict => (
-                "idempotency_key_reused",
-                "idempotency key was reused for a different request",
-            ),
-            Self::GenerationConflict { .. } => {
-                ("generation_conflict", "application generation is stale")
-            }
-            Self::SchemaMismatch | Self::SchemaMismatchSource(_) => {
-                ("schema_mismatch", "database schema is incompatible")
-            }
-            Self::Corrupt | Self::CorruptSource(_) => (
-                "stored_state_corrupt",
-                "stored application state is corrupt",
-            ),
-            Self::MissingSecrets(_) => (
-                "logical_secret_missing",
-                "one or more referenced logical secrets do not exist",
-            ),
-            Self::IllegalTransition => (
-                "illegal_state_transition",
-                "requested state transition is not allowed",
-            ),
-            Self::InvalidInput | Self::InvalidInputSource(_) => {
-                ("invalid_argument", "repository input is invalid")
-            }
-            Self::Database | Self::DatabaseSource(_) => {
-                ("storage_unavailable", "database operation failed")
-            }
-        };
-        PublicError::new(ErrorCode::new(code), message)
-    }
 }
 
 /// Current persisted application status.
@@ -199,10 +113,6 @@ impl StoreError {
 pub enum ApplicationState {
     /// Application has been accepted but not started.
     Pending,
-    /// Mutable inputs are being resolved.
-    Resolving,
-    /// An image is being built.
-    Building,
     /// Runtime resources are being reconciled.
     Deploying,
     /// Runtime state matches the desired generation.
@@ -220,8 +130,6 @@ impl ApplicationState {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
-            Self::Resolving => "resolving",
-            Self::Building => "building",
             Self::Deploying => "deploying",
             Self::Ready => "ready",
             Self::Degraded => "degraded",
@@ -232,8 +140,6 @@ impl ApplicationState {
     fn parse(value: &str) -> Result<Self, StoreError> {
         match value {
             "pending" => Ok(Self::Pending),
-            "resolving" => Ok(Self::Resolving),
-            "building" => Ok(Self::Building),
             "deploying" => Ok(Self::Deploying),
             "ready" => Ok(Self::Ready),
             "degraded" => Ok(Self::Degraded),
@@ -250,34 +156,14 @@ impl ApplicationState {
                 (self, next),
                 (
                     Self::Pending,
-                    Self::Resolving
-                        | Self::Building
-                        | Self::Deploying
-                        | Self::Deleting
-                        | Self::Failed
-                ) | (
-                    Self::Resolving,
-                    Self::Building
-                        | Self::Deploying
-                        | Self::Degraded
-                        | Self::Failed
-                        | Self::Deleting
-                ) | (
-                    Self::Building,
-                    Self::Deploying | Self::Degraded | Self::Failed | Self::Deleting
+                    Self::Deploying | Self::Deleting | Self::Failed
                 ) | (
                     Self::Deploying,
                     Self::Ready | Self::Degraded | Self::Failed | Self::Deleting
-                ) | (
-                    Self::Ready,
-                    Self::Pending | Self::Resolving | Self::Degraded | Self::Deleting
-                ) | (
-                    Self::Degraded,
-                    Self::Pending | Self::Resolving | Self::Ready | Self::Deleting
-                ) | (
-                    Self::Failed,
-                    Self::Pending | Self::Resolving | Self::Deleting
-                ) | (Self::Deleting, Self::Degraded | Self::Failed)
+                ) | (Self::Ready, Self::Pending | Self::Degraded | Self::Deleting)
+                    | (Self::Degraded, Self::Pending | Self::Ready | Self::Deleting)
+                    | (Self::Failed, Self::Pending | Self::Deleting)
+                    | (Self::Deleting, Self::Degraded | Self::Failed)
             )
     }
 }
@@ -294,10 +180,6 @@ pub enum OperationKind {
     Delete,
     /// Explicit reconciliation operation.
     Reconcile,
-    /// Image build operation.
-    Build,
-    /// Runtime deployment operation.
-    Deploy,
 }
 impl OperationKind {
     /// Returns the stable serialized operation name.
@@ -308,8 +190,6 @@ impl OperationKind {
             Self::Replace => "replace",
             Self::Delete => "delete",
             Self::Reconcile => "reconcile",
-            Self::Build => "build",
-            Self::Deploy => "deploy",
         }
     }
     fn parse(v: &str) -> Result<Self, StoreError> {
@@ -318,14 +198,12 @@ impl OperationKind {
             "replace" => Ok(Self::Replace),
             "delete" => Ok(Self::Delete),
             "reconcile" => Ok(Self::Reconcile),
-            "build" => Ok(Self::Build),
-            "deploy" => Ok(Self::Deploy),
             _ => Err(StoreError::Corrupt),
         }
     }
 }
 
-/// Durable operation/build lifecycle state.
+/// Durable operation lifecycle state.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkState {
@@ -366,7 +244,7 @@ impl WorkState {
             _ => Err(StoreError::Corrupt),
         }
     }
-    /// Whether an operation/build transition is valid.
+    /// Whether an operation transition is valid.
     #[must_use]
     pub fn can_transition_to(self, next: Self) -> bool {
         self == next
@@ -456,12 +334,12 @@ impl StepState {
 }
 
 /// Revalidated current application state.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredApplication {
     /// Validated application manifest.
     pub application: NormalizedApplication,
-    /// Immutable runtime resolution, when available.
-    pub resolved: Option<ResolvedApplication>,
+    /// Immutable runtime resolution persisted with the desired generation.
+    pub resolved: ResolvedApplication,
     /// Monotonic application generation.
     pub generation: u64,
     /// Hash of the normalized desired specification.
@@ -479,21 +357,6 @@ pub const DEFAULT_PAGE_SIZE: usize = 50;
 /// Maximum number of rows processed by one bounded repository query.
 pub const MAX_PAGE_SIZE: usize = 100;
 
-impl StoredApplication {
-    /// Converts the stored row to the public API view.
-    #[must_use]
-    pub fn view(self) -> ApplicationView {
-        ApplicationView {
-            application: self.application,
-            generation: self.generation,
-            spec_hash: self.spec_hash,
-            delete_intent: self.delete_intent,
-            created_at_ms: self.created_at_ms,
-            updated_at_ms: self.updated_at_ms,
-        }
-    }
-}
-
 /// Application status row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationStatus {
@@ -508,20 +371,6 @@ pub struct ApplicationStatus {
     /// Last update timestamp in Unix milliseconds.
     pub updated_at_ms: i64,
 }
-impl ApplicationStatus {
-    /// Converts the stored row to the public API view.
-    #[must_use]
-    pub fn view(self) -> ApplicationStatusView {
-        ApplicationStatusView {
-            application_id: self.application_id.to_string(),
-            state: self.state.as_str().into(),
-            observed_generation: self.observed_generation,
-            message: self.message,
-            updated_at_ms: self.updated_at_ms,
-        }
-    }
-}
-
 /// Durable operation row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Operation {
@@ -548,39 +397,6 @@ pub struct Operation {
     /// Completion timestamp in Unix milliseconds.
     pub finished_at_ms: Option<i64>,
 }
-impl Operation {
-    /// Converts the stored row and steps to the public API view.
-    #[must_use]
-    pub fn view(self, steps: Vec<OperationStep>) -> OperationView {
-        OperationView {
-            id: self.id,
-            application_id: self.application_id.to_string(),
-            generation: self.generation,
-            kind: self.kind.as_str().into(),
-            state: self.state.as_str().into(),
-            error_code: self.error_code,
-            error_message: self.error_message,
-            created_at_ms: self.created_at_ms,
-            updated_at_ms: self.updated_at_ms,
-            started_at_ms: self.started_at_ms,
-            finished_at_ms: self.finished_at_ms,
-            steps: steps
-                .into_iter()
-                .map(|s| OperationStepView {
-                    id: s.id,
-                    position: s.position,
-                    action: s.action,
-                    state: s.state.as_str().into(),
-                    attempt: s.attempt,
-                    error_code: s.error_code,
-                    error_message: s.error_message,
-                    updated_at_ms: s.updated_at_ms,
-                })
-                .collect(),
-        }
-    }
-}
-
 /// Durable operation step row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationStep {
@@ -610,37 +426,13 @@ pub struct OperationStep {
     pub finished_at_ms: Option<i64>,
 }
 
-/// Durable build row.
+/// A bounded page of internal application rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Build {
-    /// Stable build identifier.
-    pub id: String,
-    /// Owning operation identifier.
-    pub operation_id: String,
-    /// Stable application identifier.
-    pub application_id: ApplicationId,
-    /// Logical service being built.
-    pub service_name: String,
-    /// Current build state.
-    pub state: WorkState,
-    /// Resolved source commit, when available.
-    pub source_commit: Option<String>,
-    /// Registry image reference, when available.
-    pub image_reference: Option<String>,
-    /// Immutable image digest, when available.
-    pub image_digest: Option<String>,
-    /// Stable failure code, when present.
-    pub error_code: Option<String>,
-    /// Safe failure message, when present.
-    pub error_message: Option<String>,
-    /// Creation timestamp in Unix milliseconds.
-    pub created_at_ms: i64,
-    /// Last update timestamp in Unix milliseconds.
-    pub updated_at_ms: i64,
-    /// Start timestamp in Unix milliseconds.
-    pub started_at_ms: Option<i64>,
-    /// Completion timestamp in Unix milliseconds.
-    pub finished_at_ms: Option<i64>,
+pub struct ApplicationPage {
+    /// Rows in stable identifier order.
+    pub items: Vec<StoredApplication>,
+    /// Cursor for the next page, when more rows remain.
+    pub next_cursor: Option<String>,
 }
 /// Result of an atomic desired-state mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -649,163 +441,6 @@ pub struct MutationResult {
     pub generation: u64,
     /// Durable operation identifier.
     pub operation_id: String,
-}
-
-/// Application persistence contract used by later API/reconciliation layers.
-#[async_trait]
-pub trait ApplicationRepository: Send + Sync {
-    /// Atomically creates an application and its initial operation.
-    async fn create(
-        &self,
-        app: &NormalizedApplication,
-        resolved: Option<&ResolvedApplication>,
-        steps: &[String],
-    ) -> Result<MutationResult, StoreError>;
-    /// Atomically creates an application or returns the original create result
-    /// for a durable idempotency-key binding.
-    async fn create_idempotent(
-        &self,
-        app: &NormalizedApplication,
-        resolved: Option<&ResolvedApplication>,
-        steps: &[String],
-        key_hash: &str,
-        request_hash: &str,
-    ) -> Result<MutationResult, StoreError>;
-    /// Looks up an existing create key without invoking runtime preparation.
-    async fn create_idempotency(
-        &self,
-        app_id: &ApplicationId,
-        key_hash: &str,
-        request_hash: &str,
-    ) -> Result<Option<MutationResult>, StoreError>;
-    /// Replaces an application at an expected generation.
-    async fn replace(
-        &self,
-        app: &NormalizedApplication,
-        resolved: Option<&ResolvedApplication>,
-        expected_generation: u64,
-        steps: &[String],
-    ) -> Result<MutationResult, StoreError>;
-    /// Requests deletion at an expected generation.
-    async fn request_delete(
-        &self,
-        id: &ApplicationId,
-        expected_generation: u64,
-        steps: &[String],
-    ) -> Result<MutationResult, StoreError>;
-    /// Hides a successfully removed application while retaining its operation journal.
-    async fn finalize_delete(&self, id: &ApplicationId, generation: u64) -> Result<(), StoreError>;
-    /// Atomically creates, or returns, durable reconcile work for a generation.
-    async fn request_reconcile(
-        &self,
-        id: &ApplicationId,
-        expected_generation: u64,
-        steps: &[String],
-    ) -> Result<MutationResult, StoreError>;
-    /// Returns already-durable active reconcile work for a generation.
-    async fn active_reconcile(
-        &self,
-        id: &ApplicationId,
-        expected_generation: u64,
-    ) -> Result<Option<MutationResult>, StoreError>;
-    /// Fetches an application by identifier.
-    async fn get(&self, id: &ApplicationId) -> Result<StoredApplication, StoreError>;
-    /// Looks up an active application by user-facing name.
-    async fn find_by_name(&self, name: &str) -> Result<Option<StoredApplication>, StoreError>;
-    /// Lists active applications using a bounded cursor query.
-    async fn list(
-        &self,
-        cursor: Option<&str>,
-        limit: usize,
-    ) -> Result<Page<StoredApplication>, StoreError>;
-}
-/// Operation journal persistence contract.
-#[async_trait]
-pub trait OperationRepository: Send + Sync {
-    /// Fetches one durable operation.
-    async fn operation(&self, operation_id: &str) -> Result<Operation, StoreError>;
-    /// Fetches the ordered steps for an operation.
-    async fn operation_steps(&self, operation_id: &str) -> Result<Vec<OperationStep>, StoreError>;
-    /// Lists recent operations for an application.
-    async fn operations_for_application(
-        &self,
-        application_id: &ApplicationId,
-        limit: usize,
-    ) -> Result<Vec<Operation>, StoreError>;
-    /// Lists pending or recoverable operations.
-    async fn pending_operations(&self, limit: usize) -> Result<Vec<Operation>, StoreError>;
-    /// Applies a checked state transition to an operation.
-    async fn transition_operation(
-        &self,
-        operation_id: &str,
-        from: WorkState,
-        to: WorkState,
-        error: Option<OperationError>,
-    ) -> Result<(), StoreError>;
-    /// Applies a checked state transition to an operation step.
-    async fn transition_step(
-        &self,
-        step_id: &str,
-        from: StepState,
-        to: StepState,
-        error: Option<OperationError>,
-    ) -> Result<(), StoreError>;
-    /// Moves interrupted running work into recovery.
-    async fn recover_interrupted(&self) -> Result<u64, StoreError>;
-    /// Removes a bounded batch of old finished operations.
-    async fn prune_finished_operations_before(
-        &self,
-        cutoff_ms: i64,
-        limit: usize,
-    ) -> Result<u64, StoreError>;
-}
-/// Status persistence contract.
-#[async_trait]
-pub trait StatusRepository: Send + Sync {
-    /// Fetches the current status for an application.
-    async fn status(&self, id: &ApplicationId) -> Result<ApplicationStatus, StoreError>;
-    /// Applies a checked status transition.
-    async fn set_status(
-        &self,
-        id: &ApplicationId,
-        from: ApplicationState,
-        to: ApplicationState,
-        observed_generation: Option<u64>,
-        message: Option<&str>,
-    ) -> Result<(), StoreError>;
-}
-/// Build persistence and retention contract.
-#[async_trait]
-pub trait BuildRepository: Send + Sync {
-    /// Creates a build row for an operation.
-    async fn create_build(
-        &self,
-        operation_id: &str,
-        application_id: &ApplicationId,
-        service_name: &str,
-    ) -> Result<Build, StoreError>;
-    /// Fetches one build row.
-    async fn build(&self, id: &str) -> Result<Build, StoreError>;
-    /// Lists builds belonging to an operation.
-    async fn builds_for_operation(&self, operation_id: &str) -> Result<Vec<Build>, StoreError>;
-    /// Records immutable output produced by a build.
-    async fn record_build_output(
-        &self,
-        id: &str,
-        source_commit: &str,
-        image_reference: &str,
-        image_digest: &str,
-    ) -> Result<(), StoreError>;
-    /// Applies a checked state transition to a build.
-    async fn transition_build(
-        &self,
-        id: &str,
-        from: WorkState,
-        to: WorkState,
-        error: Option<OperationError>,
-    ) -> Result<(), StoreError>;
-    /// Removes a bounded batch of old finished builds.
-    async fn prune_finished_before(&self, cutoff_ms: i64, limit: usize) -> Result<u64, StoreError>;
 }
 
 /// Integrated `SQLx` `SQLite` repository implementation.
@@ -905,7 +540,7 @@ impl SqliteStore {
         version: usize,
     ) -> Result<(), StoreError> {
         let statement = format!("PRAGMA user_version = {version}");
-        // sqlc cant construct queries for this statement with bindings.
+        // SQLx cannot construct queries for this statement with bindings.
         sqlx::query(&statement)
             .execute(&mut **tx)
             .await
@@ -928,66 +563,6 @@ impl SqliteStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(StoreError::database)
-    }
-
-    /// Inserts logical-secret metadata for existence validation. Encryption lifecycle arrives in Plan 07.
-    ///
-    /// # Errors
-    /// Returns `AlreadyExists` for duplicate names or a sanitized storage error.
-    pub async fn declare_logical_secret(&self, name: &str) -> Result<(), StoreError> {
-        if !valid_logical_name(name) {
-            return Err(StoreError::InvalidInput);
-        }
-        let now = now_ms();
-        let id = new_id("secret");
-        let inserted = sqlx::query!(
-            "INSERT OR IGNORE INTO logical_secrets(id,name,generation,value_is_set,created_at_ms,updated_at_ms) VALUES(?1,?2,1,0,?3,?3)",
-            id,
-            name,
-            now
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if inserted != 1 {
-            return Err(StoreError::AlreadyExists);
-        }
-        Ok(())
-    }
-
-    async fn validate_secrets(
-        &self,
-        tx: &mut Transaction<'_, Sqlite>,
-        app: &NormalizedApplication,
-    ) -> Result<(), StoreError> {
-        let names: Vec<String> = app
-            .spec
-            .services
-            .iter()
-            .flat_map(|service| service.secrets.iter().map(|secret| secret.source.clone()))
-            .collect();
-        let mut missing = Vec::new();
-        for name in names {
-            let exists = sqlx::query_scalar!(
-                r#"SELECT 1 AS "present!: i64" FROM logical_secrets WHERE name=?1"#,
-                name
-            )
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(StoreError::database)?
-            .is_some();
-            if !exists {
-                missing.push(name);
-            }
-        }
-        if missing.is_empty() {
-            Ok(())
-        } else {
-            missing.sort();
-            missing.dedup();
-            Err(StoreError::MissingSecrets(missing))
-        }
     }
 
     async fn transition_miss(
@@ -1018,11 +593,6 @@ impl SqliteStore {
             )
             .fetch_optional(&mut *connection)
             .await,
-            "builds" => {
-                sqlx::query_scalar!(r#"SELECT 1 AS "present!: i64" FROM builds WHERE id=?1"#, id)
-                    .fetch_optional(&mut *connection)
-                    .await
-            }
             _ => return Err(StoreError::Database),
         }
         .map_err(StoreError::database)?
@@ -1101,17 +671,6 @@ fn generation_i64(value: u64) -> Result<i64, StoreError> {
 fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::now_v7().simple())
 }
-fn valid_logical_name(value: &str) -> bool {
-    (1..=63).contains(&value.len())
-        && value
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        && !value.ends_with('-')
-}
 fn valid_bounded_text(value: &str, max_len: usize) -> bool {
     !value.is_empty() && value.len() <= max_len && !value.chars().any(char::is_control)
 }
@@ -1148,60 +707,26 @@ fn validate_resolved(
     {
         return Err(StoreError::Corrupt);
     }
-    let ingress = resolved
-        .networks
-        .iter()
-        .filter(|network| network.ingress)
-        .map(|network| network.name.as_str())
-        .collect::<Vec<_>>();
-    let has_routes = !app.spec.routes.is_empty();
-    if ingress.len() != usize::from(has_routes) {
-        return Err(StoreError::Corrupt);
-    }
     let resolutions = ResolutionSet {
         sources: resolved
             .services
             .iter()
             .map(|service| (service.logical_name.clone(), service.source.clone()))
             .collect(),
-        secrets: resolved
-            .secrets
-            .iter()
-            .map(|secret| {
-                (
-                    secret.logical_name.clone(),
-                    SecretGeneration {
-                        logical_name: secret.logical_name.clone(),
-                        generation: secret.generation.clone(),
-                        swarm_name: secret.name.clone(),
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>(),
     };
-    let ingress_name = ingress.first().copied().unwrap_or(INGRESS_NETWORK);
-    let rebuilt = compile_application(
-        app,
-        resolved.instance_id.clone(),
-        ingress_name,
-        &resolutions,
-    )
-    .map_err(|errors| StoreError::corrupt(CompilationErrors(errors)))?;
+    let rebuilt = compile_application(app, resolved.instance_id.clone(), &resolutions)
+        .map_err(|errors| StoreError::corrupt(CompilationErrors(errors)))?;
     (rebuilt == *resolved)
         .then_some(())
         .ok_or(StoreError::Corrupt)
 }
 fn canonical_resolved(
     app: &NormalizedApplication,
-    value: Option<&ResolvedApplication>,
+    value: &ResolvedApplication,
     instance_id: &str,
-) -> Result<Option<String>, StoreError> {
-    value
-        .map(|resolved| {
-            validate_resolved(app, resolved, instance_id)?;
-            serde_json::to_string(resolved).map_err(StoreError::corrupt)
-        })
-        .transpose()
+) -> Result<String, StoreError> {
+    validate_resolved(app, value, instance_id)?;
+    serde_json::to_string(value).map_err(StoreError::corrupt)
 }
 fn decode_application(
     json: &str,
@@ -1225,7 +750,7 @@ struct ApplicationRow {
     id: String,
     name: String,
     desired_json: String,
-    resolved_json: Option<String>,
+    resolved_json: String,
     generation: i64,
     spec_hash: String,
     delete_intent: i64,
@@ -1239,20 +764,14 @@ impl ApplicationRow {
         if application.id.as_str() != self.id || application.metadata.name.as_str() != self.name {
             return Err(StoreError::Corrupt);
         }
-        let resolved: Option<ResolvedApplication> = self
-            .resolved_json
-            .map(|json| {
-                let decoded = serde_json::from_str(&json).map_err(StoreError::corrupt)?;
-                validate_resolved(&application, &decoded, instance_id)?;
-                if serde_json::to_string(&decoded).map_err(StoreError::corrupt)? != json {
-                    return Err(StoreError::Corrupt);
-                }
-                Ok(decoded)
-            })
-            .transpose()?;
+        let decoded = serde_json::from_str(&self.resolved_json).map_err(StoreError::corrupt)?;
+        validate_resolved(&application, &decoded, instance_id)?;
+        if serde_json::to_string(&decoded).map_err(StoreError::corrupt)? != self.resolved_json {
+            return Err(StoreError::Corrupt);
+        }
         Ok(StoredApplication {
             application,
-            resolved,
+            resolved: decoded,
             generation: u64::try_from(self.generation).map_err(StoreError::corrupt)?,
             spec_hash: self.spec_hash,
             delete_intent: self.delete_intent == 1,

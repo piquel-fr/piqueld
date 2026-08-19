@@ -1,34 +1,29 @@
 # Database migrations
 
-`piqueld` uses SQLx's integrated SQLite driver as its sole database engine.
-Forward-only SQL files live in `migrations/` and use a zero-padded numeric prefix.
-Never edit a migration after it has shipped; append the next numbered file instead.
+`piqueld` uses SQLx's SQLite driver as its sole persistence engine. The current
+product has one baseline migration, `migrations/0001_control_plane.sql`, which
+creates the fresh Plan 06A schema: instance metadata, applications, application
+status, durable operations, operation steps, and create idempotency bindings.
 
-On startup the daemon reads `PRAGMA user_version`, rejects schemas newer than this
-binary, and applies each missing migration in its own transaction. The singleton
-instance metadata row records the stable instance ID and expected schema version.
-There are intentionally no application revision or rollback tables in prototype 1.
+The product has never been deployed. The baseline may therefore be edited or
+consolidated while this branch is finalized; no compatibility migrations are
+needed for the abandoned internal schemas. After deployment, normal forward
+migration discipline applies.
 
-For development, create a disposable database by starting `piqueld` against a path
-inside a temporary directory, or apply the files in numeric order with a SQLite-
-compatible tool. Run `cargo test -p piqueld --test persistence` to exercise fresh,
-incremental, incompatible, and corrupt databases. Production repository queries use
-SQLx compile-time macros checked against a provisioned database.
+The applications table requires canonical desired JSON, resolved runtime JSON,
+the specification hash, generation, deletion intent, and a tombstone timestamp.
+The schema contains no build, source, registry, secret, route, or published-port
+tables. Operation and status diagnostics are bounded safe strings and never raw
+backend errors.
 
-The `piqueld` build script creates a disposable database under Cargo's build output
-directory and applies every file in `migrations/` before compiling repository query
-macros. Consequently `cargo check`, `cargo build`, `cargo test`, CI, and Nix builds
-all validate queries directly against the current migrated schema. No `DATABASE_URL`
-or SQLx offline cache is needed, and the provisioned database cannot be an operator
-database.
+On startup the daemon reads `PRAGMA user_version`, rejects a newer schema, applies
+missing embedded migrations, and verifies the singleton instance metadata row.
+The build script provisions a disposable migrated SQLite database before SQLx
+compile-time queries are checked. It never opens an operator database.
 
-Migration reviews must check constraints, indexes, forward compatibility, and that
-no secret fixture or plaintext is present in SQL, diagnostics, snapshots, or logs.
-Create idempotency records retain only SHA-256 key/request hashes and stable resource
-identities. Their referenced create operations are excluded from ordinary operation
-retention so a lost-response retry remains durable.
+Run the focused fresh-database coverage with:
 
-Migration 0004 adds deletion tombstones. Completed applications disappear from the
-live repository and release their logical name, while the row remains as the parent
-of its durable operation journal. Retained Docker volumes are independent of this
-control-plane tombstone.
+```console
+cargo test -p piqueld --test persistence
+cargo test -p piqueld --test sqlx_stack
+```

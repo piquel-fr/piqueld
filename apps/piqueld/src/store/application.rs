@@ -1,24 +1,26 @@
 //! Application repository implementation.
 
-use piqueld_client::Page;
-
 use super::{
-    ApplicationId, ApplicationRepository, ApplicationRow, MutationResult, NormalizedApplication,
+    ApplicationId, ApplicationPage, ApplicationRow, MutationResult, NormalizedApplication,
     OperationKind, ResolvedApplication, Sqlite, SqliteStore, StoreError, StoredApplication,
-    Transaction, async_trait, canonical_resolved, generation_i64, now_ms, page_limit, valid_sha256,
+    Transaction, canonical_resolved, generation_i64, now_ms, page_limit, valid_sha256,
     validate_operation_steps,
 };
 
-#[async_trait]
-impl ApplicationRepository for SqliteStore {
-    async fn create(
+impl SqliteStore {
+    /// Creates an application, its initial status row, and a durable operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when validation fails, the application already
+    /// exists, or the transaction cannot be committed.
+    pub async fn create(
         &self,
         app: &NormalizedApplication,
-        resolved: Option<&ResolvedApplication>,
+        resolved: &ResolvedApplication,
         steps: &[String],
     ) -> Result<MutationResult, StoreError> {
         let mut tx = self.begin_immediate().await?;
-        self.validate_secrets(&mut tx, app).await?;
         let desired = app.canonical_json().map_err(StoreError::corrupt)?;
         let resolved = canonical_resolved(app, resolved, &self.instance_id)?;
         let hash = app.spec_hash();
@@ -58,10 +60,16 @@ impl ApplicationRepository for SqliteStore {
         })
     }
 
-    async fn create_idempotent(
+    /// Creates an application and binds the first request to an idempotency key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the key is invalid, its binding conflicts, or
+    /// the transaction cannot be committed.
+    pub async fn create_idempotent(
         &self,
         app: &NormalizedApplication,
-        resolved: Option<&ResolvedApplication>,
+        resolved: &ResolvedApplication,
         steps: &[String],
         key_hash: &str,
         request_hash: &str,
@@ -92,7 +100,6 @@ impl ApplicationRepository for SqliteStore {
             });
         }
 
-        self.validate_secrets(&mut tx, app).await?;
         let desired = app.canonical_json().map_err(StoreError::corrupt)?;
         let resolved = canonical_resolved(app, resolved, &self.instance_id)?;
         let hash = app.spec_hash();
@@ -143,7 +150,13 @@ impl ApplicationRepository for SqliteStore {
         })
     }
 
-    async fn create_idempotency(
+    /// Looks up an existing create request by its hashed idempotency key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the hashes are invalid, the binding conflicts,
+    /// or the database cannot be read.
+    pub async fn create_idempotency(
         &self,
         app_id: &ApplicationId,
         key_hash: &str,
@@ -175,15 +188,20 @@ impl ApplicationRepository for SqliteStore {
         }))
     }
 
-    async fn replace(
+    /// Replaces an application generation and records the replacement operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] for stale generations, invalid state, corrupt
+    /// persisted data, or a failed transaction.
+    pub async fn replace(
         &self,
         app: &NormalizedApplication,
-        resolved: Option<&ResolvedApplication>,
+        resolved: &ResolvedApplication,
         expected_generation: u64,
         steps: &[String],
     ) -> Result<MutationResult, StoreError> {
         let mut tx = self.begin_immediate().await?;
-        self.validate_secrets(&mut tx, app).await?;
         let generation = expected_generation
             .checked_add(1)
             .ok_or(StoreError::Corrupt)?;
@@ -259,7 +277,13 @@ impl ApplicationRepository for SqliteStore {
         })
     }
 
-    async fn request_reconcile(
+    /// Queues an explicit reconciliation for the current application generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] for a stale generation, deleting application, or
+    /// failed durable write.
+    pub async fn request_reconcile(
         &self,
         id: &ApplicationId,
         expected_generation: u64,
@@ -330,7 +354,13 @@ impl ApplicationRepository for SqliteStore {
         })
     }
 
-    async fn active_reconcile(
+    /// Returns the active reconciliation for a generation, when one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the generation is not representable or the
+    /// journal cannot be read.
+    pub async fn active_reconcile(
         &self,
         id: &ApplicationId,
         expected_generation: u64,
@@ -351,7 +381,13 @@ impl ApplicationRepository for SqliteStore {
         }))
     }
 
-    async fn request_delete(
+    /// Marks an application for deletion and records its delete operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] for a stale generation, illegal lifecycle state, or
+    /// failed durable write.
+    pub async fn request_delete(
         &self,
         id: &ApplicationId,
         expected_generation: u64,
@@ -438,7 +474,17 @@ impl ApplicationRepository for SqliteStore {
         })
     }
 
-    async fn finalize_delete(&self, id: &ApplicationId, generation: u64) -> Result<(), StoreError> {
+    /// Tombstones an application after its owned runtime resources are gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the generation is invalid, the application is
+    /// not deleting, or the tombstone cannot be written.
+    pub async fn finalize_delete(
+        &self,
+        id: &ApplicationId,
+        generation: u64,
+    ) -> Result<(), StoreError> {
         let now = now_ms();
         let tombstone_name = format!("deleted-{}-{now}", id.as_str());
         let id_value = id.as_str();
@@ -461,11 +507,17 @@ impl ApplicationRepository for SqliteStore {
         }
     }
 
-    async fn get(&self, id: &ApplicationId) -> Result<StoredApplication, StoreError> {
+    /// Reads one live application and revalidates its persisted state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotFound`] for an absent or tombstoned application,
+    /// or another store error when persisted state fails validation.
+    pub async fn get(&self, id: &ApplicationId) -> Result<StoredApplication, StoreError> {
         let id_value = id.as_str();
         let row = sqlx::query_as!(
             ApplicationRow,
-            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE id=?1 AND deleted_at_ms IS NULL"#,
+            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE id=?1 AND deleted_at_ms IS NULL"#,
             id_value
         )
         .fetch_optional(&self.pool)
@@ -479,10 +531,15 @@ impl ApplicationRepository for SqliteStore {
         Ok(stored)
     }
 
-    async fn find_by_name(&self, name: &str) -> Result<Option<StoredApplication>, StoreError> {
+    /// Finds one live application by its user-facing name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the row cannot be read or revalidated.
+    pub async fn find_by_name(&self, name: &str) -> Result<Option<StoredApplication>, StoreError> {
         let row = sqlx::query_as!(
             ApplicationRow,
-            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE name=?1 AND deleted_at_ms IS NULL"#,
+            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE name=?1 AND deleted_at_ms IS NULL"#,
             name
         )
         .fetch_optional(&self.pool)
@@ -491,11 +548,22 @@ impl ApplicationRepository for SqliteStore {
         row.map(|row| row.decode(&self.instance_id)).transpose()
     }
 
-    async fn list(
+    /// Lists live applications in stable identifier order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when pagination is invalid or rows cannot be read
+    /// and revalidated.
+    ///
+    /// # Panics
+    ///
+    /// This method cannot produce an empty page cursor; the internal assertion
+    /// would indicate a database/query invariant violation.
+    pub async fn list(
         &self,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<Page<StoredApplication>, StoreError> {
+    ) -> Result<ApplicationPage, StoreError> {
         let fetch_limit = page_limit(limit)? + 1;
         let after = cursor
             .map(|cursor| {
@@ -509,7 +577,7 @@ impl ApplicationRepository for SqliteStore {
             let after = after.as_str();
             sqlx::query_as!(
                 ApplicationRow,
-                r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE id > ?1 AND deleted_at_ms IS NULL ORDER BY id LIMIT ?2"#,
+                r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE id > ?1 AND deleted_at_ms IS NULL ORDER BY id LIMIT ?2"#,
                 after,
                 fetch_limit
             )
@@ -518,7 +586,7 @@ impl ApplicationRepository for SqliteStore {
         } else {
             sqlx::query_as!(
                 ApplicationRow,
-                r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE deleted_at_ms IS NULL ORDER BY id LIMIT ?1"#,
+                r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE deleted_at_ms IS NULL ORDER BY id LIMIT ?1"#,
                 fetch_limit
             )
             .fetch_all(&self.pool)
@@ -541,7 +609,7 @@ impl ApplicationRepository for SqliteStore {
                     .id
             )
         });
-        Ok(Page { items, next_cursor })
+        Ok(ApplicationPage { items, next_cursor })
     }
 }
 

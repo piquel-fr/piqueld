@@ -48,7 +48,6 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
     ]);
     let network = DesiredNetwork {
         name: docker_resource_name(&app, ResourceKind::Network, None),
-        ingress: false,
         labels: labels.clone(),
     };
     let volume = DesiredVolume {
@@ -73,9 +72,7 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
         environment: BTreeMap::new(),
         command: vec!["/bin/sh".into()],
         arguments: vec!["-c".into(), "while true; do sleep 5; done".into()],
-        ports: vec![],
         mounts: vec![],
-        secrets: vec![],
         healthcheck: None,
         resources: None,
         networks: vec![network.name.clone()],

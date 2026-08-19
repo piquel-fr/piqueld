@@ -39,87 +39,17 @@
                 "type": "string"
               },
               "reference": {
-                "description": "Requested image reference.",
+                "description": "Requested mutable image reference.",
                 "type": "string"
               },
               "service": {
-                "description": "Logical service name.",
+                "description": "Service whose image must be resolved.",
                 "type": "string"
               }
             },
             "required": [
               "service",
               "reference",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "Resolve a Git source.",
-            "properties": {
-              "action": {
-                "enum": [
-                  "resolve_git"
-                ],
-                "type": "string"
-              },
-              "reference": {
-                "description": "Git reference.",
-                "type": "string"
-              },
-              "repository": {
-                "description": "Repository URL.",
-                "type": "string"
-              },
-              "service": {
-                "description": "Logical service name.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "service",
-              "repository",
-              "reference",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "Build an image from a resolved source.",
-            "properties": {
-              "action": {
-                "enum": [
-                  "build_image"
-                ],
-                "type": "string"
-              },
-              "service": {
-                "description": "Logical service name.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "service",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "Push a built image to its registry.",
-            "properties": {
-              "action": {
-                "enum": [
-                  "push_image"
-                ],
-                "type": "string"
-              },
-              "service": {
-                "description": "Logical service name.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "service",
               "action"
             ],
             "type": "object"
@@ -135,7 +65,7 @@
               },
               "network": {
                 "$ref": "#/components/schemas/DesiredNetwork",
-                "description": "Desired network state."
+                "description": "Network state to create or verify."
               }
             },
             "required": [
@@ -155,31 +85,11 @@
               },
               "volume": {
                 "$ref": "#/components/schemas/DesiredVolume",
-                "description": "Desired volume state."
+                "description": "Volume state to create or verify."
               }
             },
             "required": [
               "volume",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "Ensure a desired secret exists.",
-            "properties": {
-              "action": {
-                "enum": [
-                  "ensure_secret"
-                ],
-                "type": "string"
-              },
-              "secret": {
-                "$ref": "#/components/schemas/DesiredSecret",
-                "description": "Desired secret state."
-              }
-            },
-            "required": [
-              "secret",
               "action"
             ],
             "type": "object"
@@ -195,7 +105,7 @@
               },
               "service": {
                 "$ref": "#/components/schemas/DesiredService",
-                "description": "Desired service state."
+                "description": "Service state to create or verify."
               }
             },
             "required": [
@@ -214,7 +124,7 @@
                 "type": "string"
               },
               "service": {
-                "description": "Logical service name.",
+                "description": "Service whose convergence is awaited.",
                 "type": "string"
               }
             },
@@ -234,32 +144,12 @@
                 "type": "string"
               },
               "service": {
-                "description": "Logical service name.",
+                "description": "Service whose removal is awaited.",
                 "type": "string"
               }
             },
             "required": [
               "service",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "Wait until a secret is no longer in use.",
-            "properties": {
-              "action": {
-                "enum": [
-                  "wait_for_secret_unused"
-                ],
-                "type": "string"
-              },
-              "name": {
-                "description": "Docker secret name.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "name",
               "action"
             ],
             "type": "object"
@@ -274,7 +164,7 @@
                 "type": "string"
               },
               "name": {
-                "description": "Docker service name.",
+                "description": "Canonical service name to remove.",
                 "type": "string"
               }
             },
@@ -294,27 +184,7 @@
                 "type": "string"
               },
               "name": {
-                "description": "Docker network name.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "name",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "Remove a secret.",
-            "properties": {
-              "action": {
-                "enum": [
-                  "remove_secret"
-                ],
-                "type": "string"
-              },
-              "name": {
-                "description": "Docker secret name.",
+                "description": "Canonical network name to remove.",
                 "type": "string"
               }
             },
@@ -334,32 +204,12 @@
                 "type": "string"
               },
               "name": {
-                "description": "Docker volume name.",
+                "description": "Canonical volume name intentionally left in place.",
                 "type": "string"
               }
             },
             "required": [
               "name",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "Wait for a newly generated secret to be adopted.",
-            "properties": {
-              "action": {
-                "enum": [
-                  "await_secret_generation"
-                ],
-                "type": "string"
-              },
-              "logical_name": {
-                "description": "Logical secret name.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "logical_name",
               "action"
             ],
             "type": "object"
@@ -388,7 +238,7 @@
             "description": "The observed resource differs from desired state.",
             "properties": {
               "fields": {
-                "description": "Desired fields that differ from observation.",
+                "description": "Desired fields that differ from the observation.",
                 "items": {
                   "type": "string"
                 },
@@ -438,26 +288,11 @@
             "type": "object"
           },
           {
-            "description": "A mutable source still needs resolution.",
+            "description": "An image still needs immutable digest resolution.",
             "properties": {
               "reason": {
                 "enum": [
                   "resolution_required"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "reason"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "A secret generation changed.",
-            "properties": {
-              "reason": {
-                "enum": [
-                  "secret_generation_changed"
                 ],
                 "type": "string"
               }
@@ -515,7 +350,7 @@
       },
       "ApplicationManifest": {
         "additionalProperties": false,
-        "description": "Strict public application request and export shape.\nUser-declared application service.",
+        "description": "Strict public application request and export shape.",
         "properties": {
           "api_version": {
             "description": "API version string.",
@@ -546,13 +381,6 @@
         "additionalProperties": false,
         "description": "Canonical resource specification.",
         "properties": {
-          "routes": {
-            "description": "Canonical routes.",
-            "items": {
-              "$ref": "#/components/schemas/Route"
-            },
-            "type": "array"
-          },
           "services": {
             "description": "Canonical services.",
             "items": {
@@ -561,7 +389,7 @@
             "type": "array"
           },
           "volumes": {
-            "description": "Canonical volumes.",
+            "description": "Canonical named volumes.",
             "items": {
               "$ref": "#/components/schemas/Volume"
             },
@@ -570,8 +398,7 @@
         },
         "required": [
           "services",
-          "volumes",
-          "routes"
+          "volumes"
         ],
         "type": "object"
       },
@@ -579,14 +406,6 @@
         "additionalProperties": false,
         "description": "User-provided application resource lists.",
         "properties": {
-          "routes": {
-            "default": [],
-            "description": "Declared HTTP routes.",
-            "items": {
-              "$ref": "#/components/schemas/RouteInput"
-            },
-            "type": "array"
-          },
           "services": {
             "default": [],
             "description": "Declared services.",
@@ -597,7 +416,7 @@
           },
           "volumes": {
             "default": [],
-            "description": "Declared persistent volumes.",
+            "description": "Declared named volumes.",
             "items": {
               "$ref": "#/components/schemas/VolumeInput"
             },
@@ -727,11 +546,11 @@
             "type": "boolean"
           },
           "target": {
-            "description": "The container target path.",
+            "description": "Container target path.",
             "type": "string"
           },
           "volume_name": {
-            "description": "The canonical Docker volume name.",
+            "description": "Canonical Docker volume name.",
             "type": "string"
           }
         },
@@ -744,95 +563,26 @@
       },
       "DesiredNetwork": {
         "additionalProperties": false,
-        "description": "Desired overlay network state.",
+        "description": "Desired private overlay network state.",
         "properties": {
-          "ingress": {
-            "description": "Whether this is the shared ingress network.",
-            "type": "boolean"
-          },
           "labels": {
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Ownership labels expected on the resource.",
+            "description": "Expected ownership labels.",
             "propertyNames": {
               "type": "string"
             },
             "type": "object"
           },
           "name": {
-            "description": "The canonical Docker resource name.",
+            "description": "Canonical Docker resource name.",
             "type": "string"
           }
         },
         "required": [
           "name",
-          "ingress",
           "labels"
-        ],
-        "type": "object"
-      },
-      "DesiredSecret": {
-        "additionalProperties": false,
-        "description": "Desired Swarm secret state.",
-        "properties": {
-          "generation": {
-            "$ref": "#/components/schemas/Sha256Digest",
-            "description": "The desired secret content generation."
-          },
-          "labels": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "Ownership labels expected on the resource.",
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "logical_name": {
-            "description": "The manifest-level secret name.",
-            "type": "string"
-          },
-          "name": {
-            "description": "The canonical Docker Swarm secret name.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "logical_name",
-          "generation",
-          "name",
-          "labels"
-        ],
-        "type": "object"
-      },
-      "DesiredSecretMount": {
-        "additionalProperties": false,
-        "description": "Desired secret mount in a service.",
-        "properties": {
-          "logical_name": {
-            "description": "The manifest-level secret name.",
-            "type": "string"
-          },
-          "mode": {
-            "description": "The file mode presented in the container.",
-            "type": "string"
-          },
-          "swarm_name": {
-            "description": "The Docker Swarm secret name.",
-            "type": "string"
-          },
-          "target": {
-            "description": "The container target path.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "logical_name",
-          "swarm_name",
-          "target",
-          "mode"
         ],
         "type": "object"
       },
@@ -848,7 +598,7 @@
             "type": "array"
           },
           "command": {
-            "description": "The container entrypoint command.",
+            "description": "Container entrypoint command.",
             "items": {
               "type": "string"
             },
@@ -876,21 +626,21 @@
             ]
           },
           "image": {
-            "description": "The digest-pinned image reference.",
+            "description": "Digest-pinned image reference.",
             "type": "string"
           },
           "labels": {
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Ownership and routing labels.",
+            "description": "Ownership labels.",
             "propertyNames": {
               "type": "string"
             },
             "type": "object"
           },
           "logical_name": {
-            "description": "The manifest-level service name.",
+            "description": "Manifest-level service name.",
             "type": "string"
           },
           "mounts": {
@@ -901,27 +651,18 @@
             "type": "array"
           },
           "name": {
-            "description": "The canonical Docker service name.",
+            "description": "Canonical Docker service name.",
             "type": "string"
           },
           "networks": {
-            "description": "Canonical network names attached to the service.",
+            "description": "Canonical private network names attached to the service.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
-          "ports": {
-            "description": "Container ports exposed to the managed ingress controller.",
-            "items": {
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "type": "array"
-          },
           "replicas": {
-            "description": "The desired replica count.",
+            "description": "Desired replica count.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -937,16 +678,9 @@
               }
             ]
           },
-          "secrets": {
-            "description": "Swarm secret mounts.",
-            "items": {
-              "$ref": "#/components/schemas/DesiredSecretMount"
-            },
-            "type": "array"
-          },
           "source": {
             "$ref": "#/components/schemas/ResolvedSource",
-            "description": "The immutable source resolution used by this service."
+            "description": "Immutable source resolution used by the service."
           }
         },
         "required": [
@@ -958,9 +692,7 @@
           "environment",
           "command",
           "arguments",
-          "ports",
           "mounts",
-          "secrets",
           "networks",
           "labels"
         ],
@@ -974,18 +706,18 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Ownership labels expected on the resource.",
+            "description": "Expected ownership labels.",
             "propertyNames": {
               "type": "string"
             },
             "type": "object"
           },
           "logical_name": {
-            "description": "The manifest-level volume name.",
+            "description": "Manifest-level volume name.",
             "type": "string"
           },
           "name": {
-            "description": "The canonical Docker resource name.",
+            "description": "Canonical Docker resource name.",
             "type": "string"
           }
         },
@@ -1589,7 +1321,7 @@
       },
       "MetadataInput": {
         "additionalProperties": false,
-        "description": "User-provided application metadata.\nUser-declared persistent volume.",
+        "description": "User-provided application metadata.",
         "properties": {
           "name": {
             "description": "User-facing application name.",
@@ -1614,7 +1346,7 @@
             "type": "string"
           },
           "volume": {
-            "description": "Referenced volume name.",
+            "description": "Referenced logical volume name.",
             "type": "string"
           }
         },
@@ -2056,17 +1788,17 @@
         "type": "object"
       },
       "ResolvedSource": {
-        "description": "Immutable source resolution used by the runtime.",
+        "description": "Immutable image resolution used by the Docker runtime.",
         "oneOf": [
           {
-            "description": "An image already resolved to an immutable digest reference.",
+            "description": "A requested image resolved to an immutable repository digest.",
             "properties": {
               "digest_reference": {
                 "description": "The immutable image reference used at runtime.",
                 "type": "string"
               },
               "requested": {
-                "description": "The user-requested image reference.",
+                "description": "The image reference requested by the user.",
                 "type": "string"
               },
               "type": {
@@ -2078,56 +1810,6 @@
             },
             "required": [
               "requested",
-              "digest_reference",
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "A Git source resolved to a built and pushed image.",
-            "properties": {
-              "commit": {
-                "description": "The resolved commit identifier.",
-                "type": "string"
-              },
-              "context": {
-                "description": "The build context within the repository.",
-                "type": "string"
-              },
-              "digest_reference": {
-                "description": "The immutable image reference used at runtime.",
-                "type": "string"
-              },
-              "dockerfile": {
-                "description": "The Dockerfile path within the build context.",
-                "type": "string"
-              },
-              "registry_reference": {
-                "description": "The registry reference produced by the build pipeline.",
-                "type": "string"
-              },
-              "repository": {
-                "description": "The source repository.",
-                "type": "string"
-              },
-              "requested_reference": {
-                "description": "The user-requested Git reference.",
-                "type": "string"
-              },
-              "type": {
-                "enum": [
-                  "git"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository",
-              "requested_reference",
-              "commit",
-              "context",
-              "dockerfile",
-              "registry_reference",
               "digest_reference",
               "type"
             ],
@@ -2187,107 +1869,6 @@
         },
         "type": "object"
       },
-      "Route": {
-        "additionalProperties": false,
-        "description": "Canonical HTTP route.",
-        "properties": {
-          "host": {
-            "description": "Hostname matched by the route.",
-            "type": "string"
-          },
-          "port": {
-            "description": "Container port receiving the route.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "service": {
-            "description": "Logical service receiving the route.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "host",
-          "service",
-          "port"
-        ],
-        "type": "object"
-      },
-      "RouteInput": {
-        "additionalProperties": false,
-        "description": "User-declared HTTP route.",
-        "properties": {
-          "host": {
-            "description": "Hostname matched by the route.",
-            "type": "string"
-          },
-          "port": {
-            "description": "Container port receiving the route.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "service": {
-            "description": "Logical service receiving the route.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "host",
-          "service",
-          "port"
-        ],
-        "type": "object"
-      },
-      "SecretReference": {
-        "additionalProperties": false,
-        "description": "Canonical secret mount.",
-        "properties": {
-          "mode": {
-            "description": "File mode expressed as an octal string.",
-            "type": "string"
-          },
-          "source": {
-            "description": "Logical secret name.",
-            "type": "string"
-          },
-          "target": {
-            "description": "Container target path.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source",
-          "target",
-          "mode"
-        ],
-        "type": "object"
-      },
-      "SecretReferenceInput": {
-        "additionalProperties": false,
-        "description": "User-declared logical secret mount.",
-        "properties": {
-          "mode": {
-            "description": "File mode expressed as an octal string.",
-            "type": "string"
-          },
-          "source": {
-            "description": "Logical secret name.",
-            "type": "string"
-          },
-          "target": {
-            "description": "Optional container target path.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "source"
-        ],
-        "type": "object"
-      },
       "Service": {
         "additionalProperties": false,
         "description": "Canonical service definition.",
@@ -2338,15 +1919,6 @@
             "description": "Logical service name.",
             "type": "string"
           },
-          "ports": {
-            "description": "Container ports exposed to the managed ingress controller.",
-            "items": {
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "type": "array"
-          },
           "replicas": {
             "description": "Desired replica count.",
             "format": "int32",
@@ -2360,20 +1932,13 @@
               },
               {
                 "$ref": "#/components/schemas/ResourceLimits",
-                "description": "Optional resource limits."
+                "description": "Optional CPU and memory limits."
               }
             ]
           },
-          "secrets": {
-            "description": "Logical secret mounts.",
-            "items": {
-              "$ref": "#/components/schemas/SecretReference"
-            },
-            "type": "array"
-          },
           "source": {
             "$ref": "#/components/schemas/Source",
-            "description": "Resolved source description."
+            "description": "Prebuilt image source."
           }
         },
         "required": [
@@ -2383,15 +1948,13 @@
           "environment",
           "command",
           "arguments",
-          "ports",
-          "mounts",
-          "secrets"
+          "mounts"
         ],
         "type": "object"
       },
       "ServiceInput": {
         "additionalProperties": false,
-        "description": "User-declared logical secret mount.",
+        "description": "User-declared service.",
         "properties": {
           "arguments": {
             "description": "Arguments passed to the command.",
@@ -2439,15 +2002,6 @@
             "description": "Logical service name.",
             "type": "string"
           },
-          "ports": {
-            "description": "Container ports exposed to the managed ingress controller.",
-            "items": {
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "type": "array"
-          },
           "replicas": {
             "description": "Desired replica count.",
             "format": "int32",
@@ -2461,20 +2015,13 @@
               },
               {
                 "$ref": "#/components/schemas/ResourceLimitsInput",
-                "description": "Optional resource limits."
+                "description": "Optional CPU and memory limits."
               }
             ]
           },
-          "secrets": {
-            "description": "Logical secret mounts.",
-            "items": {
-              "$ref": "#/components/schemas/SecretReferenceInput"
-            },
-            "type": "array"
-          },
           "source": {
             "$ref": "#/components/schemas/SourceInput",
-            "description": "Image or Git source."
+            "description": "Prebuilt container image source."
           }
         },
         "required": [
@@ -2483,18 +2030,14 @@
         ],
         "type": "object"
       },
-      "Sha256Digest": {
-        "description": "Explicitly tagged lowercase SHA-256 digest.",
-        "type": "string"
-      },
       "Source": {
-        "description": "Canonical service source.",
+        "description": "Canonical prebuilt image source.",
         "oneOf": [
           {
-            "description": "An image reference.",
+            "description": "An image reference resolved by the Docker adapter before persistence.",
             "properties": {
               "image": {
-                "description": "Immutable or requested image reference.",
+                "description": "Image reference requested by the user.",
                 "type": "string"
               },
               "type": {
@@ -2509,49 +2052,14 @@
               "type"
             ],
             "type": "object"
-          },
-          {
-            "description": "A resolved Git source.",
-            "properties": {
-              "context": {
-                "description": "Build context path.",
-                "type": "string"
-              },
-              "dockerfile": {
-                "description": "Dockerfile path.",
-                "type": "string"
-              },
-              "reference": {
-                "description": "Resolved Git reference.",
-                "type": "string"
-              },
-              "repository": {
-                "description": "Repository URL.",
-                "type": "string"
-              },
-              "type": {
-                "enum": [
-                  "git"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository",
-              "reference",
-              "context",
-              "dockerfile",
-              "type"
-            ],
-            "type": "object"
           }
         ]
       },
       "SourceInput": {
-        "description": "Exactly one supported service source. The tag makes image/Git exhaustive.\nUser-declared HTTP route.",
+        "description": "The exhaustive set of deployable service sources.",
         "oneOf": [
           {
-            "description": "Pull an image from a registry.",
+            "description": "Pull a prebuilt image from a registry.",
             "properties": {
               "image": {
                 "description": "Image reference.",
@@ -2566,38 +2074,6 @@
             },
             "required": [
               "image",
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "Build an image from a Git repository.",
-            "properties": {
-              "context": {
-                "description": "Build context path.",
-                "type": "string"
-              },
-              "dockerfile": {
-                "description": "Dockerfile path.",
-                "type": "string"
-              },
-              "reference": {
-                "description": "Git reference to build.",
-                "type": "string"
-              },
-              "repository": {
-                "description": "Repository URL.",
-                "type": "string"
-              },
-              "type": {
-                "enum": [
-                  "git"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository",
               "type"
             ],
             "type": "object"
@@ -2629,7 +2105,7 @@
       },
       "Volume": {
         "additionalProperties": false,
-        "description": "Canonical persistent volume.",
+        "description": "Canonical named volume.",
         "properties": {
           "name": {
             "description": "Logical volume name.",
@@ -2643,7 +2119,7 @@
       },
       "VolumeInput": {
         "additionalProperties": false,
-        "description": "User-declared persistent volume.",
+        "description": "User-declared named volume.",
         "properties": {
           "name": {
             "description": "Logical volume name.",
@@ -3310,86 +2786,6 @@
         "summary": "Replace an application"
       }
     },
-    "/api/v1/applications/{id}/events": {
-      "get": {
-        "operationId": "watchApplication",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 8,
-              "type": "string"
-            }
-          },
-          {
-            "description": "Last durable/current-state event ID received by the client.",
-            "in": "header",
-            "name": "Last-Event-ID",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/event-stream": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Server-Sent Events with durable/current-state IDs and bounded replay reset events."
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Watch application status events",
-        "x-sse-keepalive-seconds": 15
-      }
-    },
     "/api/v1/applications/{id}/plan": {
       "post": {
         "operationId": "planApplicationReplace",
@@ -3758,7 +3154,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "maxLength": 64,
+              "maxLength": 128,
               "minLength": 8,
               "type": "string"
             }
@@ -3807,77 +3203,6 @@
           }
         },
         "summary": "Get an operation"
-      }
-    },
-    "/api/v1/operations/{id}/events": {
-      "get": {
-        "operationId": "watchOperation",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 8,
-              "type": "string"
-            }
-          },
-          {
-            "description": "Last durable/current-state event ID received by the client.",
-            "in": "header",
-            "name": "Last-Event-ID",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/event-stream": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Server-Sent Events with durable/current-state IDs and bounded replay reset events."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Watch operation events",
-        "x-sse-keepalive-seconds": 15,
-        "x-sse-terminal-closes": true
       }
     },
     "/api/v1/system/status": {

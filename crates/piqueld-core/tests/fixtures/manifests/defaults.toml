@@ -5,5 +5,5 @@ name = "defaults"
 [[spec.services]]
 name = "web"
 [spec.services.source]
-type = "git"
-repository = "https://example.com/defaults.git"
+type = "image"
+image = "nginx:1.27"

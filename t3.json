@@ -24,7 +24,7 @@
     },
     {
       "name": "Lint Workspace",
-      "command": "cargo clippy --workspace --all-targets",
+      "command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
       "icon": "lint"
     },
     {
@@ -34,7 +34,7 @@
     },
     {
       "name": "Test Workspace",
-      "command": "cargo nextest run --workspace",
+      "command": "cargo test --workspace",
       "icon": "test"
     },
     {

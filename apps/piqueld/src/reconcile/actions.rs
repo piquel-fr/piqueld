@@ -1,7 +1,7 @@
 use super::handler::journal_error;
 use super::{
-    ActionKind, ApplicationRepository, CancellationToken, Convergence, DockerApi, DockerError,
-    Duration, OperationError, PlanAction, ReconcileHandler,
+    ActionKind, CancellationToken, Convergence, DockerApi, DockerError, Duration, OperationError,
+    PlanAction, ReconcileHandler,
 };
 
 impl<D: DockerApi> ReconcileHandler<D> {
@@ -41,15 +41,6 @@ impl<D: DockerApi> ReconcileHandler<D> {
                 self.wait_service(app, service, true, cancellation).await
             }
             ActionKind::RetainVolume { .. } | ActionKind::ResolveImage { .. } => Ok(()),
-            ActionKind::EnsureSecret { .. }
-            | ActionKind::RemoveSecret { .. }
-            | ActionKind::WaitForSecretUnused { .. }
-            | ActionKind::AwaitSecretGeneration { .. } => {
-                Err(OperationError::SecretLifecycleUnavailable)
-            }
-            ActionKind::ResolveGit { .. }
-            | ActionKind::BuildImage { .. }
-            | ActionKind::PushImage { .. } => Err(OperationError::BuildPipelineUnavailable),
         }
     }
     pub(super) async fn ownership_labels(
@@ -57,14 +48,11 @@ impl<D: DockerApi> ReconcileHandler<D> {
         app: &piqueld_core::ApplicationId,
     ) -> Result<std::collections::BTreeMap<String, String>, OperationError> {
         let stored = self.store.get(app).await.map_err(journal_error)?;
-        let resolved = stored
-            .resolved
-            .ok_or(OperationError::ResolvedStateMissing)?;
         Ok(std::collections::BTreeMap::from([
             ("io.piqueld.managed".into(), "true".into()),
             (
                 "io.piqueld.instance".into(),
-                resolved.instance_id.to_string(),
+                stored.resolved.instance_id.to_string(),
             ),
             ("io.piqueld.application".into(), app.to_string()),
         ]))

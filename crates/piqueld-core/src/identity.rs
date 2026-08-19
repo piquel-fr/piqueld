@@ -76,14 +76,12 @@ impl FromStr for ApplicationId {
 /// Managed Docker resource category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceKind {
-    /// A private or ingress overlay network.
+    /// A private overlay network.
     Network,
     /// A Swarm service.
     Service,
     /// A persistent Docker volume.
     Volume,
-    /// A Swarm secret.
-    Secret,
 }
 
 impl ResourceKind {
@@ -92,7 +90,6 @@ impl ResourceKind {
             Self::Network => "network",
             Self::Service => "service",
             Self::Volume => "volume",
-            Self::Secret => "secret",
         }
     }
 }
@@ -107,16 +104,6 @@ pub fn docker_resource_name(
     bounded_name(
         "piqueld",
         &[id.as_str(), kind.token(), logical_name.unwrap_or("")],
-        63,
-    )
-}
-
-/// Produces a stable Traefik router name no longer than 63 bytes.
-#[must_use]
-pub fn router_name(id: &ApplicationId, host: &str, service: &str, port: u16) -> String {
-    bounded_name(
-        "piqueld-router",
-        &[id.as_str(), host, service, &port.to_string()],
         63,
     )
 }

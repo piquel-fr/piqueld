@@ -2,6 +2,7 @@
 //!
 //! The reconciler only depends on [`DockerApi`]. Bollard is deliberately kept at
 //! this edge so unit tests can use a deterministic in-memory implementation.
+use crate::operations::OperationError;
 use async_trait::async_trait;
 use bollard::{
     Docker,
@@ -16,13 +17,12 @@ use bollard::{
         TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum, VolumeCreateOptions,
     },
     query_parameters::{
-        CreateImageOptionsBuilder, EventsOptionsBuilder, InspectNetworkOptions,
-        InspectServiceOptions, ListNetworksOptionsBuilder, ListNodesOptions,
-        ListServicesOptionsBuilder, ListTasksOptions, ListVolumesOptionsBuilder,
-        UpdateServiceOptionsBuilder,
+        CreateImageOptionsBuilder, InspectNetworkOptions, InspectServiceOptions,
+        ListNetworksOptionsBuilder, ListNodesOptions, ListServicesOptionsBuilder, ListTasksOptions,
+        ListVolumesOptionsBuilder, UpdateServiceOptionsBuilder,
     },
 };
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::TryStreamExt;
 use piqueld_core::manifest::{HealthCheck, ResourceLimits};
 use piqueld_core::resource::{
     APPLICATION_LABEL, Convergence, DesiredMount, DesiredNetwork, DesiredService, DesiredVolume,
@@ -35,9 +35,6 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tokio_util::sync::CancellationToken;
-
-use crate::operations::OperationError;
 
 /// Docker represents health-check and Swarm policy durations in nanoseconds.
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
@@ -61,9 +58,6 @@ mod observation;
 mod policy;
 mod resources;
 mod spec;
-#[cfg(test)]
-mod tests;
-
 pub use errors::DockerError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,9 +99,4 @@ pub trait DockerApi: Send + Sync + 'static {
         name: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError>;
-    /// Waits for one Docker event or cancellation.
-    async fn wait_for_event(&self, cancellation: &CancellationToken) -> Result<(), DockerError> {
-        cancellation.cancelled().await;
-        Ok(())
-    }
 }

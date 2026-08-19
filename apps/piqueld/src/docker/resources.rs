@@ -1,11 +1,10 @@
 use super::{
-    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CancellationToken,
-    CreateImageOptionsBuilder, DesiredNetwork, DesiredService, DesiredVolume, DockerApi,
-    DockerError, EventsOptionsBuilder, HashMap, INGRESS_NETWORK, InspectNetworkOptions,
+    ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder, DesiredNetwork,
+    DesiredService, DesiredVolume, DockerApi, DockerError, HashMap, InspectNetworkOptions,
     InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
     ListTasksOptions, ListVolumesOptionsBuilder, NetworkCreateRequest, ObservedApplication,
-    ObservedNetwork, ObservedVolume, SERVICE_LABEL, SPEC_HASH_LABEL, StreamExt, SwarmInitRequest,
-    SwarmState, TryStreamExt, UpdateServiceOptionsBuilder, VolumeCreateOptions, async_trait,
+    ObservedNetwork, ObservedVolume, SERVICE_LABEL, SwarmInitRequest, SwarmState, TryStreamExt,
+    UpdateServiceOptionsBuilder, VolumeCreateOptions, async_trait,
 };
 
 #[async_trait]
@@ -30,7 +29,7 @@ impl DockerApi for BollardDocker {
             "initialize Docker Swarm",
             self.docker
                 .init_swarm(SwarmInitRequest {
-                    listen_addr: Some("127.0.0.1:2377".into()),
+                    listen_addr: Some("0.0.0.0:2377".into()),
                     advertise_addr: Some(String::new()),
                     ..Default::default()
                 })
@@ -51,8 +50,8 @@ impl DockerApi for BollardDocker {
     }
 
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
-        // Pulling through the Engine performs registry authentication/challenge handling and
-        // records RepoDigests. Stream details are intentionally discarded to avoid leaks.
+        // Pulling through the Engine records RepoDigests. Stream details are intentionally
+        // discarded because image-pull progress is not part of the durable API contract.
         let pull = self.docker.create_image(
             Some(
                 CreateImageOptionsBuilder::default()
@@ -102,10 +101,8 @@ impl DockerApi for BollardDocker {
             .filter_map(|network| {
                 let runtime_configuration_matches = Self::network_configuration_matches(&network);
                 let name = network.name?;
-                let ingress = name == INGRESS_NETWORK;
                 Some(ObservedNetwork {
                     name,
-                    ingress,
                     runtime_configuration_matches,
                     labels: network.labels.unwrap_or_default().into_iter().collect(),
                 })
@@ -180,7 +177,6 @@ impl DockerApi for BollardDocker {
         Ok(ObservedApplication {
             networks,
             volumes,
-            secrets: Vec::new(),
             services,
         })
     }
@@ -209,10 +205,7 @@ impl DockerApi for BollardDocker {
                 .unwrap_or_default()
                 .into_iter()
                 .collect::<BTreeMap<_, _>>();
-            let wrong_resource_role = labels.contains_key(SERVICE_LABEL)
-                || (desired.ingress
-                    && (labels.contains_key(APPLICATION_LABEL)
-                        || labels.contains_key(SPEC_HASH_LABEL)));
+            let wrong_resource_role = labels.contains_key(SERVICE_LABEL);
             if !Self::owns(&labels, &desired.labels) || wrong_resource_role {
                 return Err(DockerError::OwnershipConflict);
             }
@@ -444,24 +437,6 @@ impl DockerApi for BollardDocker {
                 status_code: 404, ..
             }) => Ok(()),
             Err(error) => Err(DockerError::request("delete network", error)),
-        }
-    }
-    async fn wait_for_event(&self, cancellation: &CancellationToken) -> Result<(), DockerError> {
-        let mut events = self.docker.events(Some(
-            EventsOptionsBuilder::default()
-                .filters(&HashMap::from([(
-                    "type",
-                    vec!["service", "network", "volume", "image"],
-                )]))
-                .build(),
-        ));
-        tokio::select! {
-            () = cancellation.cancelled() => Ok(()),
-            event = events.next() => match event {
-                Some(Ok(_)) => Ok(()),
-                Some(Err(error)) => Err(DockerError::request("read Docker events", error)),
-                None => Err(DockerError::Request("read Docker events")),
-            },
         }
     }
 }

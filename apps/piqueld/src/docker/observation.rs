@@ -75,18 +75,6 @@ impl BollardDocker {
             .collect();
         let runtime_configuration_matches = ServiceRuntimePolicy::matches(spec);
         let convergence = BollardDocker::convergence(&tasks, replicas, update);
-        let mut ports = spec
-            .endpoint_spec
-            .as_ref()
-            .and_then(|endpoint| endpoint.ports.as_ref())
-            .map_or_else(Vec::new, |ports| {
-                ports
-                    .iter()
-                    .filter_map(|port| port.target_port)
-                    .filter_map(|port| u16::try_from(port).ok())
-                    .collect()
-            });
-        ports.sort_unstable();
         Ok(ObservedService {
             name,
             image: container.image.clone().unwrap_or_default(),
@@ -94,9 +82,7 @@ impl BollardDocker {
             environment: BollardDocker::observed_environment(container),
             command: container.command.clone().unwrap_or_default(),
             arguments: container.args.clone().unwrap_or_default(),
-            ports,
             mounts: BollardDocker::observed_mounts(container),
-            secrets: Vec::new(),
             healthcheck: container
                 .health_check
                 .as_ref()

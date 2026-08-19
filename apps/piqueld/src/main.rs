@@ -5,10 +5,14 @@ use piqueld::api::ApiState;
 use piqueld::config::DaemonConfig;
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::operations::OperationScheduler;
-use piqueld::reconcile::{DockerRuntime, ReconcileHandler, run_coordinator, run_event_hints};
+use piqueld::reconcile::{DockerRuntime, ReconcileHandler, run_coordinator};
 use piqueld::store::SqliteStore;
 use piqueld_core::InstanceId;
-use std::{os::unix::fs::FileTypeExt, path::PathBuf, sync::Arc};
+use std::{
+    os::unix::fs::{FileTypeExt, PermissionsExt},
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 
@@ -69,7 +73,6 @@ async fn main() -> Result<()> {
         Arc::clone(&store),
         handler,
         config.reconciliation.max_parallel_operations,
-        config.reconciliation.max_parallel_builds,
     ));
 
     let state = ApiState::new(Arc::clone(&store), runtime);
@@ -85,13 +88,6 @@ async fn main() -> Result<()> {
         Arc::clone(&docker),
         Arc::clone(&wake),
         scan_interval,
-        cancellation.child_token(),
-    ));
-
-    // wakes on docker events
-    let event_task = tokio::spawn(run_event_hints(
-        Arc::clone(&docker),
-        wake,
         cancellation.child_token(),
     ));
 
@@ -122,7 +118,6 @@ async fn main() -> Result<()> {
         .await
         .context("reconciliation controller failed")?
         .context("reconciliation controller stopped unexpectedly")?;
-    event_task.await.context("Docker event listener failed")?;
     Ok(())
 }
 
@@ -161,7 +156,10 @@ async fn spawn_unix_api(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).context("failed to inspect Unix API path"),
     }
-    let listener = UnixListener::bind(path).context("failed to bind Unix API")?;
+    let listener = UnixListener::bind(&path).context("failed to bind Unix API")?;
+    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))
+        .await
+        .context("failed to restrict Unix API socket permissions")?;
     Ok(tokio::spawn(async move {
         axum::serve(listener, piqueld::api::router(state))
             .with_graceful_shutdown(async move { cancellation.cancelled().await })

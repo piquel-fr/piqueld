@@ -1,19 +1,14 @@
-//! Backend-neutral desired, resolved, and observed resource contracts.
+//! Backend-neutral desired, resolved, and observed Docker resource contracts.
 
 use crate::{
     ApplicationId, ResourceKind, docker_resource_name,
     manifest::{
-        HealthCheck, Mount, NormalizedApplication, ResourceLimits, SecretReference, Service,
-        Source, valid_image_reference,
+        HealthCheck, Mount, NormalizedApplication, ResourceLimits, Service, Source,
+        valid_image_reference,
     },
-    router_name,
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-    str::FromStr,
-};
+use std::{collections::BTreeMap, fmt, str::FromStr};
 use thiserror::Error;
 use utoipa::ToSchema;
 
@@ -27,12 +22,10 @@ pub const APPLICATION_LABEL: &str = "io.piqueld.application";
 pub const SERVICE_LABEL: &str = "io.piqueld.service";
 /// Label carrying the normalized application spec hash.
 pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
-/// Canonical name for the shared application ingress network.
-pub const INGRESS_NETWORK: &str = "piqueld-ingress";
 
+/// Error returned when an instance identifier violates its storage invariant.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("instance IDs must be 1-64 lowercase ASCII letters, digits, or internal hyphens")]
-/// Error returned when an instance identifier violates its storage invariant.
 pub struct InstanceIdError;
 
 /// Stable control-plane instance identity.
@@ -44,33 +37,37 @@ impl InstanceId {
     /// Parses a safe, stable control-plane instance identifier.
     ///
     /// # Errors
-    /// Returns an error when the identifier is outside the safe label alphabet.
+    ///
+    /// Returns [`InstanceIdError`] when the value is empty, malformed, or
+    /// outside the bounded identifier format.
     pub fn parse(value: impl Into<String>) -> Result<Self, InstanceIdError> {
         let value = value.into();
         if (1..=64).contains(&value.len())
             && value
                 .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
             && value
                 .bytes()
                 .next()
-                .is_some_and(|c| c.is_ascii_alphanumeric())
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
             && value
                 .bytes()
                 .last()
-                .is_some_and(|c| c.is_ascii_alphanumeric())
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
         {
             Ok(Self(value))
         } else {
             Err(InstanceIdError)
         }
     }
-    /// Returns the persisted wire representation.
+
+    /// Returns the persisted representation.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
+
 impl<'de> Deserialize<'de> for InstanceId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -80,21 +77,23 @@ impl<'de> Deserialize<'de> for InstanceId {
         Self::parse(value).map_err(de::Error::custom)
     }
 }
+
 impl fmt::Display for InstanceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl FromStr for InstanceId {
-    type Err = InstanceIdError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
     }
 }
 
+impl FromStr for InstanceId {
+    type Err = InstanceIdError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+/// Error returned when a digest is malformed.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 #[error("SHA-256 digests must use the sha256:<64 lowercase hexadecimal digits> format")]
-/// Error returned when a digest is malformed.
 pub struct Sha256DigestError;
 
 /// Explicitly tagged lowercase SHA-256 digest.
@@ -106,7 +105,9 @@ impl Sha256Digest {
     /// Parses an explicitly tagged lowercase SHA-256 digest.
     ///
     /// # Errors
-    /// Returns an error unless the value is `sha256:` followed by 64 lowercase hex digits.
+    ///
+    /// Returns [`Sha256DigestError`] when the value is not a lowercase
+    /// `sha256:` digest with exactly 64 hexadecimal digits.
     pub fn parse(value: impl Into<String>) -> Result<Self, Sha256DigestError> {
         let value = value.into();
         if valid_sha256(&value) {
@@ -116,12 +117,13 @@ impl Sha256Digest {
         }
     }
 
-    /// Returns the persisted wire representation.
+    /// Returns the persisted representation.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
+
 impl<'de> Deserialize<'de> for Sha256Digest {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -131,73 +133,43 @@ impl<'de> Deserialize<'de> for Sha256Digest {
         Self::parse(value).map_err(de::Error::custom)
     }
 }
+
 impl fmt::Display for Sha256Digest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
     }
 }
+
 impl FromStr for Sha256Digest {
     type Err = Sha256DigestError;
-
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::parse(value)
     }
 }
 
-/// Immutable source resolution used by the runtime.
+/// Immutable image resolution used by the Docker runtime.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResolvedSource {
-    /// An image already resolved to an immutable digest reference.
+    /// A requested image resolved to an immutable repository digest.
     Image {
-        /// The user-requested image reference.
+        /// The image reference requested by the user.
         requested: String,
         /// The immutable image reference used at runtime.
         digest_reference: String,
     },
-    /// A Git source resolved to a built and pushed image.
-    Git {
-        /// The source repository.
-        repository: String,
-        /// The user-requested Git reference.
-        requested_reference: String,
-        /// The resolved commit identifier.
-        commit: String,
-        /// The build context within the repository.
-        context: String,
-        /// The Dockerfile path within the build context.
-        dockerfile: String,
-        /// The registry reference produced by the build pipeline.
-        registry_reference: String,
-        /// The immutable image reference used at runtime.
-        digest_reference: String,
-    },
 }
+
 impl ResolvedSource {
-    /// Returns the immutable image reference for this source.
+    /// Returns the immutable image reference used by Docker.
     #[must_use]
     pub fn digest_reference(&self) -> &str {
         match self {
             Self::Image {
                 digest_reference, ..
-            }
-            | Self::Git {
-                digest_reference, ..
             } => digest_reference,
         }
     }
-}
-
-/// Immutable content generation for a logical secret.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SecretGeneration {
-    /// The manifest-level secret name.
-    pub logical_name: String,
-    /// The content generation digest.
-    pub generation: Sha256Digest,
-    /// The Docker Swarm secret name.
-    pub swarm_name: String,
 }
 
 /// Immutable resolutions supplied to application compilation.
@@ -206,8 +178,6 @@ pub struct SecretGeneration {
 pub struct ResolutionSet {
     /// Resolved service sources keyed by logical service name.
     pub sources: BTreeMap<String, ResolvedSource>,
-    /// Resolved secret generations keyed by logical secret name.
-    pub secrets: BTreeMap<String, SecretGeneration>,
 }
 
 /// Resolution work still required before compilation.
@@ -216,71 +186,34 @@ pub struct ResolutionSet {
 pub enum ResolutionRequirement {
     /// Resolve an image source to an immutable digest.
     ResolveImage {
-        /// The logical service requesting resolution.
+        /// Logical service requesting resolution.
         service: String,
-        /// The requested image reference.
+        /// Requested image reference.
         reference: String,
-    },
-    /// Resolve a Git source to a built image.
-    ResolveGit {
-        /// The logical service requesting resolution.
-        service: String,
-        /// The source repository.
-        repository: String,
-        /// The requested Git reference.
-        reference: String,
-    },
-    /// Build and push the image for a resolved Git source.
-    BuildAndPush {
-        /// The logical service requesting the build.
-        service: String,
-    },
-    /// Provide a generation for a referenced logical secret.
-    ProvideSecretGeneration {
-        /// The logical secret name.
-        logical_name: String,
     },
 }
 
-/// Returns the immutable resolutions still needed before compilation.
+/// Returns the image resolutions still needed before compilation.
 #[must_use]
 pub fn preview_resolution(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
 ) -> Vec<ResolutionRequirement> {
-    let mut requirements = Vec::new();
-    for service in &app.spec.services {
-        if !resolutions.sources.contains_key(&service.name) {
-            match &service.source {
-                Source::Image { image } => requirements.push(ResolutionRequirement::ResolveImage {
+    app.spec
+        .services
+        .iter()
+        .filter_map(|service| {
+            if resolutions.sources.contains_key(&service.name) {
+                None
+            } else {
+                let Source::Image { image } = &service.source;
+                Some(ResolutionRequirement::ResolveImage {
                     service: service.name.clone(),
                     reference: image.clone(),
-                }),
-                Source::Git {
-                    repository,
-                    reference,
-                    ..
-                } => {
-                    requirements.push(ResolutionRequirement::ResolveGit {
-                        service: service.name.clone(),
-                        repository: repository.clone(),
-                        reference: reference.clone(),
-                    });
-                    requirements.push(ResolutionRequirement::BuildAndPush {
-                        service: service.name.clone(),
-                    });
-                }
+                })
             }
-        }
-        for secret in &service.secrets {
-            if !resolutions.secrets.contains_key(&secret.source)
-                && !requirements.iter().any(|r| matches!(r, ResolutionRequirement::ProvideSecretGeneration { logical_name } if logical_name == &secret.source))
-            {
-                requirements.push(ResolutionRequirement::ProvideSecretGeneration { logical_name: secret.source.clone() });
-            }
-        }
-    }
-    requirements
+        })
+        .collect()
 }
 
 /// Ownership metadata used to label runtime resources.
@@ -291,13 +224,14 @@ pub struct Ownership {
     pub instance_id: InstanceId,
     /// The application that owns the resource.
     pub application_id: ApplicationId,
-    /// The logical service name, when the resource belongs to one service.
+    /// Logical service name when the resource belongs to one service.
     pub service: Option<String>,
-    /// The normalized application spec hash.
+    /// Normalized application spec hash.
     pub spec_hash: String,
 }
+
 impl Ownership {
-    /// Produces the labels used to identify the owned resource in Docker.
+    /// Produces the labels used to identify an owned Docker resource.
     #[must_use]
     pub fn labels(&self) -> BTreeMap<String, String> {
         let mut labels = BTreeMap::from([
@@ -313,33 +247,20 @@ impl Ownership {
     }
 }
 
-/// Desired overlay network state.
+/// Desired private overlay network state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredNetwork {
-    /// The canonical Docker resource name.
+    /// Canonical Docker resource name.
     pub name: String,
-    /// Whether this is the shared ingress network.
-    pub ingress: bool,
-    /// Ownership labels expected on the resource.
+    /// Expected ownership labels.
     pub labels: BTreeMap<String, String>,
 }
 
 impl DesiredNetwork {
-    /// Returns whether the desired network has a canonical name and identity.
+    /// Returns whether the network has a canonical name and identity.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
-        if self.ingress {
-            return self.name == INGRESS_NETWORK
-                && self.labels.get(MANAGED_LABEL).map(String::as_str) == Some("true")
-                && self
-                    .labels
-                    .get(INSTANCE_LABEL)
-                    .is_some_and(|instance| InstanceId::parse(instance.clone()).is_ok())
-                && !self.labels.contains_key(APPLICATION_LABEL)
-                && !self.labels.contains_key(SERVICE_LABEL)
-                && !self.labels.contains_key(SPEC_HASH_LABEL);
-        }
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
             return false;
         };
@@ -352,16 +273,16 @@ impl DesiredNetwork {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredVolume {
-    /// The manifest-level volume name.
+    /// Manifest-level volume name.
     pub logical_name: String,
-    /// The canonical Docker resource name.
+    /// Canonical Docker resource name.
     pub name: String,
-    /// Ownership labels expected on the resource.
+    /// Expected ownership labels.
     pub labels: BTreeMap<String, String>,
 }
 
 impl DesiredVolume {
-    /// Returns whether the desired volume has a canonical name and identity.
+    /// Returns whether the volume has a canonical name and identity.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
@@ -378,81 +299,52 @@ impl DesiredVolume {
     }
 }
 
-/// Desired Swarm secret state.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct DesiredSecret {
-    /// The manifest-level secret name.
-    pub logical_name: String,
-    /// The desired secret content generation.
-    pub generation: Sha256Digest,
-    /// The canonical Docker Swarm secret name.
-    pub name: String,
-    /// Ownership labels expected on the resource.
-    pub labels: BTreeMap<String, String>,
-}
-/// Desired secret mount in a service.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct DesiredSecretMount {
-    /// The manifest-level secret name.
-    pub logical_name: String,
-    /// The Docker Swarm secret name.
-    pub swarm_name: String,
-    /// The container target path.
-    pub target: String,
-    /// The file mode presented in the container.
-    pub mode: String,
-}
 /// Desired persistent volume mount in a service.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredMount {
-    /// The canonical Docker volume name.
+    /// Canonical Docker volume name.
     pub volume_name: String,
-    /// The container target path.
+    /// Container target path.
     pub target: String,
     /// Whether the mount is read-only.
     pub read_only: bool,
 }
+
 /// Desired Docker service state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredService {
-    /// The manifest-level service name.
+    /// Manifest-level service name.
     pub logical_name: String,
-    /// The canonical Docker service name.
+    /// Canonical Docker service name.
     pub name: String,
-    /// The immutable source resolution used by this service.
+    /// Immutable source resolution used by the service.
     pub source: ResolvedSource,
-    /// The digest-pinned image reference.
+    /// Digest-pinned image reference.
     pub image: String,
-    /// The desired replica count.
+    /// Desired replica count.
     pub replicas: u16,
     /// Environment variables keyed by name.
     pub environment: BTreeMap<String, String>,
-    /// The container entrypoint command.
+    /// Container entrypoint command.
     pub command: Vec<String>,
     /// Arguments passed to the command.
     pub arguments: Vec<String>,
-    /// Container ports exposed to the managed ingress controller.
-    pub ports: Vec<u16>,
     /// Persistent volume mounts.
     pub mounts: Vec<DesiredMount>,
-    /// Swarm secret mounts.
-    pub secrets: Vec<DesiredSecretMount>,
     /// Optional health check.
     pub healthcheck: Option<HealthCheck>,
     /// Optional CPU and memory limits.
     pub resources: Option<ResourceLimits>,
-    /// Canonical network names attached to the service.
+    /// Canonical private network names attached to the service.
     pub networks: Vec<String>,
-    /// Ownership and routing labels.
+    /// Ownership labels.
     pub labels: BTreeMap<String, String>,
 }
 
 impl DesiredService {
-    /// Returns whether the desired service has a canonical name and identity.
+    /// Returns whether the service has a canonical name and identity.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
@@ -474,23 +366,22 @@ impl DesiredService {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredApplication {
-    /// The stable application identity.
+    /// Stable application identity.
     pub id: ApplicationId,
-    /// The user-facing application name.
+    /// User-facing application name.
     pub name: String,
-    /// The current control-plane instance identity.
+    /// Current control-plane instance identity.
     pub instance_id: InstanceId,
-    /// The normalized application spec hash.
+    /// Normalized application spec hash.
     pub spec_hash: String,
-    /// Desired networks.
+    /// Desired private network.
     pub networks: Vec<DesiredNetwork>,
     /// Desired persistent volumes.
     pub volumes: Vec<DesiredVolume>,
-    /// Desired Swarm secrets.
-    pub secrets: Vec<DesiredSecret>,
     /// Desired services.
     pub services: Vec<DesiredService>,
 }
+
 /// Resolved application state used by the runtime reconciler.
 pub type ResolvedApplication = DesiredApplication;
 
@@ -535,14 +426,16 @@ pub struct CompileError {
     pub message: String,
 }
 
-/// Compiles normalized intent after all mutable inputs have immutable resolutions.
+/// Compiles normalized intent after all image references have immutable resolutions.
 ///
 /// # Errors
-/// Returns all missing source and secret-generation resolutions.
+///
+/// Returns bounded compilation diagnostics when a service has no matching image
+/// resolution or its resolved image is not an immutable reference to the
+/// requested repository.
 pub fn compile_application(
     app: &NormalizedApplication,
     instance_id: InstanceId,
-    ingress_network: impl Into<String>,
     resolutions: &ResolutionSet,
 ) -> Result<DesiredApplication, Vec<CompileError>> {
     let errors = validate_application(app, resolutions);
@@ -550,14 +443,6 @@ pub fn compile_application(
         return Err(errors);
     }
 
-    let ingress_network = ingress_network.into();
-    if !app.spec.routes.is_empty() && ingress_network != INGRESS_NETWORK {
-        return Err(vec![CompileError {
-            code: "ingress_network_invalid".into(),
-            resource: "spec.routes".into(),
-            message: "routed applications must use the canonical ingress network".into(),
-        }]);
-    }
     let spec_hash = app.spec_hash();
     let ownership = Ownership {
         instance_id: instance_id.clone(),
@@ -566,30 +451,30 @@ pub fn compile_application(
         spec_hash: spec_hash.clone(),
     };
     let private_network = docker_resource_name(&app.id, ResourceKind::Network, None);
-    let referenced_secrets = referenced_secrets(app);
-
     Ok(DesiredApplication {
         id: app.id.clone(),
         name: app.metadata.name.clone(),
         instance_id,
         spec_hash,
-        networks: compile_networks(app, &ingress_network, &private_network, &ownership),
-        volumes: compile_volumes(app, &ownership),
-        secrets: compile_secrets(resolutions, &referenced_secrets, &ownership),
+        networks: vec![DesiredNetwork {
+            name: private_network.clone(),
+            labels: ownership.labels(),
+        }],
+        volumes: app
+            .spec
+            .volumes
+            .iter()
+            .map(|volume| DesiredVolume {
+                logical_name: volume.name.clone(),
+                name: docker_resource_name(&app.id, ResourceKind::Volume, Some(&volume.name)),
+                labels: ownership.labels(),
+            })
+            .collect(),
         services: app
             .spec
             .services
             .iter()
-            .map(|service| {
-                compile_service(
-                    service,
-                    app,
-                    resolutions,
-                    &ownership,
-                    &private_network,
-                    &ingress_network,
-                )
-            })
+            .map(|service| compile_service(service, app, resolutions, &ownership, &private_network))
             .collect(),
     })
 }
@@ -599,36 +484,16 @@ fn validate_application(
     resolutions: &ResolutionSet,
 ) -> Vec<CompileError> {
     let mut errors = unresolved_errors(app, resolutions);
-    if !errors.is_empty() {
-        return errors;
-    }
-
     for service in &app.spec.services {
-        let resolved = &resolutions.sources[&service.name];
+        let Some(resolved) = resolutions.sources.get(&service.name) else {
+            continue;
+        };
         if !resolved_source_matches(&service.source, resolved) {
             errors.push(CompileError {
                 code: "source_resolution_mismatch".into(),
                 resource: service.name.clone(),
                 message: "resolved source does not immutably resolve the normalized service source"
                     .into(),
-            });
-        }
-    }
-
-    let referenced_secrets = referenced_secrets(app);
-    for (logical_name, secret) in resolutions
-        .secrets
-        .iter()
-        .filter(|(logical_name, _)| referenced_secrets.contains(logical_name.as_str()))
-    {
-        let generation_identity = format!("{logical_name}-{}", secret.generation);
-        let expected_name =
-            docker_resource_name(&app.id, ResourceKind::Secret, Some(&generation_identity));
-        if logical_name != &secret.logical_name || secret.swarm_name != expected_name {
-            errors.push(CompileError {
-                code: "secret_generation_invalid".into(),
-                resource: logical_name.clone(),
-                message: "secret generation metadata is inconsistent or its Swarm name is not the deterministic application-scoped name".into(),
             });
         }
     }
@@ -639,26 +504,14 @@ fn unresolved_errors(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
 ) -> Vec<CompileError> {
-    let mut seen = BTreeSet::new();
     preview_resolution(app, resolutions)
         .into_iter()
-        .filter_map(|requirement| {
-            let error = match requirement {
-                ResolutionRequirement::ResolveImage { service, .. }
-                | ResolutionRequirement::ResolveGit { service, .. }
-                | ResolutionRequirement::BuildAndPush { service } => CompileError {
-                    code: "source_unresolved".into(),
-                    resource: service,
-                    message: "service source has not been resolved to an immutable image".into(),
-                },
-                ResolutionRequirement::ProvideSecretGeneration { logical_name } => CompileError {
-                    code: "secret_generation_unresolved".into(),
-                    resource: logical_name,
-                    message: "logical secret has no current runtime generation".into(),
-                },
-            };
-            seen.insert((error.code.clone(), error.resource.clone()))
-                .then_some(error)
+        .map(|requirement| match requirement {
+            ResolutionRequirement::ResolveImage { service, .. } => CompileError {
+                code: "source_unresolved".into(),
+                resource: service,
+                message: "service image has not been resolved to an immutable digest".into(),
+            },
         })
         .collect()
 }
@@ -672,109 +525,11 @@ fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
                 digest_reference,
             },
         ) => {
-            requested == image
+            image == requested
                 && immutable_digest_reference(digest_reference)
                 && same_image_repository(image, digest_reference)
         }
-        (
-            Source::Git {
-                repository,
-                reference,
-                context,
-                dockerfile,
-            },
-            ResolvedSource::Git {
-                repository: resolved_repository,
-                requested_reference,
-                commit,
-                context: resolved_context,
-                dockerfile: resolved_dockerfile,
-                registry_reference,
-                digest_reference,
-            },
-        ) => {
-            repository == resolved_repository
-                && reference == requested_reference
-                && context == resolved_context
-                && dockerfile == resolved_dockerfile
-                && valid_commit(commit)
-                && mutable_image_reference(registry_reference)
-                && immutable_digest_reference(digest_reference)
-                && same_image_repository(registry_reference, digest_reference)
-        }
-        _ => false,
     }
-}
-
-fn referenced_secrets(app: &NormalizedApplication) -> BTreeSet<&str> {
-    app.spec
-        .services
-        .iter()
-        .flat_map(|service| service.secrets.iter().map(|secret| secret.source.as_str()))
-        .collect()
-}
-
-fn compile_networks(
-    app: &NormalizedApplication,
-    ingress_network: &str,
-    private_network: &str,
-    ownership: &Ownership,
-) -> Vec<DesiredNetwork> {
-    let private = DesiredNetwork {
-        name: private_network.into(),
-        ingress: false,
-        labels: ownership.labels(),
-    };
-    if app.spec.routes.is_empty() {
-        vec![private]
-    } else {
-        vec![
-            DesiredNetwork {
-                name: ingress_network.into(),
-                ingress: true,
-                labels: BTreeMap::from([
-                    (MANAGED_LABEL.into(), "true".into()),
-                    (INSTANCE_LABEL.into(), ownership.instance_id.to_string()),
-                ]),
-            },
-            private,
-        ]
-    }
-}
-
-fn compile_volumes(app: &NormalizedApplication, ownership: &Ownership) -> Vec<DesiredVolume> {
-    app.spec
-        .volumes
-        .iter()
-        .map(|volume| DesiredVolume {
-            logical_name: volume.name.clone(),
-            name: docker_resource_name(&app.id, ResourceKind::Volume, Some(&volume.name)),
-            labels: ownership.labels(),
-        })
-        .collect()
-}
-
-fn compile_secrets(
-    resolutions: &ResolutionSet,
-    referenced_secrets: &BTreeSet<&str>,
-    ownership: &Ownership,
-) -> Vec<DesiredSecret> {
-    let mut secrets = resolutions
-        .secrets
-        .values()
-        .filter(|secret| referenced_secrets.contains(secret.logical_name.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    secrets.sort_by(|a, b| a.logical_name.cmp(&b.logical_name));
-    secrets
-        .into_iter()
-        .map(|secret| DesiredSecret {
-            logical_name: secret.logical_name,
-            generation: secret.generation,
-            name: secret.swarm_name,
-            labels: ownership.labels(),
-        })
-        .collect()
 }
 
 fn compile_service(
@@ -783,23 +538,10 @@ fn compile_service(
     resolutions: &ResolutionSet,
     application_ownership: &Ownership,
     private_network: &str,
-    ingress_network: &str,
 ) -> DesiredService {
     let source = resolutions.sources[&service.name].clone();
-    let routed = app
-        .spec
-        .routes
-        .iter()
-        .any(|route| route.service == service.name);
-    let mut networks = vec![private_network.into()];
-    if routed {
-        networks.push(ingress_network.into());
-    }
     let mut ownership = application_ownership.clone();
     ownership.service = Some(service.name.clone());
-    let mut labels = ownership.labels();
-    compile_traefik_labels(app, &service.name, ingress_network, &mut labels);
-
     DesiredService {
         logical_name: service.name.clone(),
         name: docker_resource_name(&app.id, ResourceKind::Service, Some(&service.name)),
@@ -809,7 +551,6 @@ fn compile_service(
         environment: service.environment.clone(),
         command: service.command.clone(),
         arguments: service.arguments.clone(),
-        ports: service.ports.clone(),
         mounts: service
             .mounts
             .iter()
@@ -823,20 +564,10 @@ fn compile_service(
                 read_only: mount.read_only,
             })
             .collect(),
-        secrets: service
-            .secrets
-            .iter()
-            .map(|secret: &SecretReference| DesiredSecretMount {
-                logical_name: secret.source.clone(),
-                swarm_name: resolutions.secrets[&secret.source].swarm_name.clone(),
-                target: secret.target.clone(),
-                mode: secret.mode.clone(),
-            })
-            .collect(),
         healthcheck: service.healthcheck.clone(),
         resources: service.resources.clone(),
-        networks,
-        labels,
+        networks: vec![private_network.into()],
+        labels: ownership.labels(),
     }
 }
 
@@ -853,16 +584,10 @@ fn immutable_digest_reference(reference: &str) -> bool {
             })
 }
 
-fn mutable_image_reference(reference: &str) -> bool {
-    valid_image_reference(reference)
-        && !reference.contains('@')
-        && image_repository(reference).is_some()
-}
-
-fn same_image_repository(reference: &str, digest_reference: &str) -> bool {
-    image_repository(reference)
-        .zip(image_repository(digest_reference))
-        .is_some_and(|(requested, resolved)| requested == resolved)
+fn same_image_repository(requested: &str, resolved: &str) -> bool {
+    image_repository(requested)
+        .zip(image_repository(resolved))
+        .is_some_and(|(left, right)| left == right)
 }
 
 fn image_repository(reference: &str) -> Option<String> {
@@ -885,65 +610,17 @@ fn image_repository(reference: &str) -> Option<String> {
     let explicit_registry =
         repository.contains('/') && (first.contains(['.', ':']) || first == "localhost");
     if let Some(path) = repository.strip_prefix("docker.io/") {
-        return Some(if path.contains('/') {
+        Some(if path.contains('/') {
             repository.to_owned()
         } else {
             format!("docker.io/library/{path}")
-        });
-    }
-    if explicit_registry {
-        return Some(repository.to_owned());
-    }
-    if repository.contains('/') {
+        })
+    } else if explicit_registry {
+        Some(repository.to_owned())
+    } else if repository.contains('/') {
         Some(format!("docker.io/{repository}"))
     } else {
         Some(format!("docker.io/library/{repository}"))
-    }
-}
-
-fn valid_commit(commit: &str) -> bool {
-    matches!(commit.len(), 40 | 64)
-        && commit
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn compile_traefik_labels(
-    app: &NormalizedApplication,
-    service: &str,
-    ingress_network: &str,
-    labels: &mut BTreeMap<String, String>,
-) {
-    let service_routes = app
-        .spec
-        .routes
-        .iter()
-        .filter(|r| r.service == service)
-        .collect::<Vec<_>>();
-    if service_routes.is_empty() {
-        return;
-    }
-    labels.insert("traefik.enable".into(), "true".into());
-    labels.insert("traefik.swarm.network".into(), ingress_network.into());
-    for route in service_routes {
-        let router = router_name(&app.id, &route.host, service, route.port);
-        let backend = format!("{router}-backend");
-        labels.insert(
-            format!("traefik.http.routers.{router}.rule"),
-            format!("Host(`{}`)", route.host),
-        );
-        labels.insert(
-            format!("traefik.http.routers.{router}.entrypoints"),
-            "web".into(),
-        );
-        labels.insert(
-            format!("traefik.http.routers.{router}.service"),
-            backend.clone(),
-        );
-        labels.insert(
-            format!("traefik.http.services.{backend}.loadbalancer.server.port"),
-            route.port.to_string(),
-        );
     }
 }
 
@@ -977,6 +654,7 @@ pub enum TaskState {
     #[default]
     Unknown,
 }
+
 /// Sanitized observation of one Docker task.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -987,22 +665,23 @@ pub struct ObservedTask {
     pub healthy: Option<bool>,
     /// Whether the task is still desired by the service.
     pub desired_running: bool,
-    /// Sanitized task failure information. Raw daemon messages are deliberately
-    /// excluded because they can contain registry or runtime-provided data.
+    /// Sanitized task failure information.
     pub diagnostic: Option<TaskDiagnostic>,
 }
-/// Sanitized diagnostic for a task that failed to start or run.
+
+/// Sanitized diagnostic for a failed task.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskDiagnostic {
-    /// The container exited with the optional exit code.
+    /// The container exited with an optional exit code.
     Failed {
-        /// Process exit code when Docker reported one.
+        /// Exit code reported by Docker, when available.
         exit_code: Option<i64>,
     },
     /// Docker rejected the task before it could run.
     Rejected,
 }
+
 /// Aggregate health state derived from observed tasks.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1021,95 +700,71 @@ pub enum Convergence {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedNetwork {
-    /// The observed Docker network name.
+    /// Observed Docker network name.
     pub name: String,
-    /// Whether this is piqueld's shared ingress network role.
-    pub ingress: bool,
-    /// Whether backend-specific immutable network settings match piqueld's
-    /// private/ingress overlay-network contract.
+    /// Whether adapter-owned network settings remain canonical.
     pub runtime_configuration_matches: bool,
     /// Ownership labels observed on the network.
     pub labels: BTreeMap<String, String>,
 }
+
 impl ObservedNetwork {
-    /// Returns whether the network belongs to the desired application.
+    /// Returns whether ownership labels identify the desired network.
     #[must_use]
     pub fn matches_ownership(
         &self,
-        desired_network: &DesiredNetwork,
-        desired_application: &DesiredApplication,
+        desired: &DesiredNetwork,
+        application: &DesiredApplication,
     ) -> bool {
-        if desired_network.ingress {
-            self.labels.get(MANAGED_LABEL).map(String::as_str) == Some("true")
-                && self.labels.get(INSTANCE_LABEL).map(String::as_str)
-                    == Some(desired_application.instance_id.as_str())
-        } else {
-            OwnershipState::from_labels(
-                &self.labels,
-                &desired_application.instance_id,
-                &desired_application.id,
-            ) == OwnershipState::Owned
-        }
+        OwnershipState::from_labels(&self.labels, &application.instance_id, &application.id)
+            == OwnershipState::Owned
+            && self.name == desired.name
     }
 }
+
 /// Observed Docker volume state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedVolume {
-    /// The observed Docker volume name.
+    /// Observed Docker volume name.
     pub name: String,
     /// Whether the backend volume uses piqueld's supported local driver.
     pub runtime_configuration_matches: bool,
     /// Ownership labels observed on the volume.
     pub labels: BTreeMap<String, String>,
 }
-/// Observed Docker secret state.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ObservedSecret {
-    /// The observed Docker secret name.
-    pub name: String,
-    /// Ownership labels observed on the secret.
-    pub labels: BTreeMap<String, String>,
-    /// Whether a service currently references the secret.
-    pub in_use: bool,
-}
+
 /// Observed Docker service state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedService {
-    /// The observed Docker service name.
+    /// Observed Docker service name.
     pub name: String,
-    /// The observed digest-pinned image.
+    /// Observed digest-pinned image.
     pub image: String,
-    /// The observed replica count.
+    /// Observed replica count.
     pub replicas: u16,
     /// Environment variables observed in the container spec.
     pub environment: BTreeMap<String, String>,
-    /// The observed container command.
+    /// Observed container command.
     pub command: Vec<String>,
-    /// The observed command arguments.
+    /// Observed command arguments.
     pub arguments: Vec<String>,
-    /// Container ports exposed by the service endpoint.
-    pub ports: Vec<u16>,
     /// Persistent mounts observed on the service.
     pub mounts: Vec<DesiredMount>,
-    /// Secret mounts observed on the service.
-    pub secrets: Vec<DesiredSecretMount>,
-    /// The observed health check.
+    /// Observed health check.
     pub healthcheck: Option<HealthCheck>,
-    /// The observed resource limits.
+    /// Observed resource limits.
     pub resources: Option<ResourceLimits>,
     /// Networks attached to the service.
     pub networks: Vec<String>,
-    /// Ownership and routing labels.
+    /// Ownership labels observed on the service.
     pub labels: BTreeMap<String, String>,
-    /// Whether adapter-owned settings (replicated mode, restart/update policy,
-    /// and absence of unsupported runtime attachments) remain canonical.
+    /// Whether adapter-owned settings remain canonical.
     pub runtime_configuration_matches: bool,
     /// Task observations used to derive convergence.
     pub tasks: Vec<ObservedTask>,
-    /// Aggregate convergence state for the service.
+    /// Aggregate convergence state.
     pub convergence: Convergence,
 }
 
@@ -1128,9 +783,7 @@ impl ObservedService {
             && self.environment == desired.environment
             && self.command == desired.command
             && self.arguments == desired.arguments
-            && unordered_eq(&self.ports, &desired.ports)
             && unordered_eq(&self.mounts, &desired.mounts)
-            && unordered_eq(&self.secrets, &desired.secrets)
             && self.healthcheck == desired.healthcheck
             && self.resources == desired.resources
             && sorted(&self.networks) == sorted(&desired.networks)
@@ -1142,19 +795,17 @@ impl ObservedService {
     #[must_use]
     pub fn matches_ownership(
         &self,
-        desired_service: &DesiredService,
-        desired_application: &DesiredApplication,
+        desired: &DesiredService,
+        application: &DesiredApplication,
     ) -> bool {
-        OwnershipState::from_labels(
-            &self.labels,
-            &desired_application.instance_id,
-            &desired_application.id,
-        ) == OwnershipState::Owned
+        OwnershipState::from_labels(&self.labels, &application.instance_id, &application.id)
+            == OwnershipState::Owned
             && self.labels.get(SERVICE_LABEL).map(String::as_str)
-                == Some(desired_service.logical_name.as_str())
+                == Some(desired.logical_name.as_str())
+            && self.name == desired.name
     }
 
-    /// Returns whether ownership labels and the canonical name identify this service.
+    /// Returns whether labels and the canonical name identify this service.
     #[must_use]
     pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
         if OwnershipState::from_labels(&self.labels, instance, application) != OwnershipState::Owned
@@ -1171,30 +822,6 @@ impl ObservedService {
         self.name == docker_resource_name(application, ResourceKind::Service, Some(logical_name))
     }
 }
-fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
-    let mut observed = observed.iter().collect::<Vec<_>>();
-    let mut desired = desired.iter().collect::<Vec<_>>();
-    observed.sort_unstable();
-    desired.sort_unstable();
-    observed == desired
-}
-fn sorted(values: &[String]) -> Vec<&str> {
-    let mut v = values.iter().map(String::as_str).collect::<Vec<_>>();
-    v.sort_unstable();
-    v.dedup();
-    v
-}
-fn owned_label_subset(
-    observed: &BTreeMap<String, String>,
-    desired: &BTreeMap<String, String>,
-) -> bool {
-    let relevant = |key: &str| key.starts_with("io.piqueld.") || key.starts_with("traefik.");
-    desired.iter().all(|(k, v)| observed.get(k) == Some(v))
-        && observed
-            .iter()
-            .filter(|(k, _)| relevant(k))
-            .all(|(k, v)| desired.get(k) == Some(v))
-}
 
 /// Observed resources associated with an application.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -1204,8 +831,6 @@ pub struct ObservedApplication {
     pub networks: Vec<ObservedNetwork>,
     /// Volumes observed for the application.
     pub volumes: Vec<ObservedVolume>,
-    /// Secrets observed for the application.
-    pub secrets: Vec<ObservedSecret>,
     /// Services observed for the application.
     pub services: Vec<ObservedService>,
 }
@@ -1220,6 +845,7 @@ pub enum OwnershipState {
     /// Required ownership labels are missing or malformed.
     Invalid,
 }
+
 impl OwnershipState {
     /// Classifies ownership labels without exposing raw backend data.
     #[must_use]
@@ -1228,12 +854,10 @@ impl OwnershipState {
         instance: &InstanceId,
         application: &ApplicationId,
     ) -> Self {
-        if labels.get(MANAGED_LABEL).map(String::as_str) != Some("true") {
-            return Self::Invalid;
-        }
-        if !labels
-            .get(SPEC_HASH_LABEL)
-            .is_some_and(|hash| valid_sha256(hash))
+        if labels.get(MANAGED_LABEL).map(String::as_str) != Some("true")
+            || labels
+                .get(SPEC_HASH_LABEL)
+                .is_none_or(|hash| !valid_sha256(hash))
         {
             return Self::Invalid;
         }
@@ -1244,6 +868,34 @@ impl OwnershipState {
         }
         Self::Owned
     }
+}
+
+fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
+    let mut observed = observed.iter().collect::<Vec<_>>();
+    let mut desired = desired.iter().collect::<Vec<_>>();
+    observed.sort_unstable();
+    desired.sort_unstable();
+    observed == desired
+}
+
+fn sorted(values: &[String]) -> Vec<&str> {
+    let mut values = values.iter().map(String::as_str).collect::<Vec<_>>();
+    values.sort_unstable();
+    values.dedup();
+    values
+}
+
+fn owned_label_subset(
+    observed: &BTreeMap<String, String>,
+    desired: &BTreeMap<String, String>,
+) -> bool {
+    desired
+        .iter()
+        .all(|(key, value)| observed.get(key) == Some(value))
+        && observed
+            .iter()
+            .filter(|(key, _)| key.starts_with("io.piqueld."))
+            .all(|(key, value)| desired.get(key) == Some(value))
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -1260,17 +912,15 @@ mod tests {
     use super::{InstanceId, InstanceIdError, Sha256Digest, Sha256DigestError};
 
     #[test]
-    fn instance_ids_preserve_their_invariant_at_parse_and_deserialization_boundaries() {
+    fn identity_types_validate_at_boundaries() {
         assert_eq!(InstanceId::parse("UPPERCASE").unwrap_err(), InstanceIdError);
-        assert!(serde_json::from_str::<InstanceId>(r#""home-1""#).is_ok());
+        assert!(serde_json::from_str::<InstanceId>(r#""instance-1""#).is_ok());
         assert!(serde_json::from_str::<InstanceId>(r#""-invalid""#).is_err());
-    }
-
-    #[test]
-    fn sha256_digests_are_explicitly_typed_and_validated() {
-        let valid = format!("sha256:{}", "a".repeat(64));
-        assert_eq!(Sha256Digest::parse(&valid).unwrap().as_str(), valid);
-        assert_eq!(Sha256Digest::parse("g1").unwrap_err(), Sha256DigestError);
-        assert!(serde_json::from_str::<Sha256Digest>(r#""sha256:abc""#).is_err());
+        let digest = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(Sha256Digest::parse(&digest).unwrap().as_str(), digest);
+        assert_eq!(
+            Sha256Digest::parse("sha256:bad").unwrap_err(),
+            Sha256DigestError
+        );
     }
 }
