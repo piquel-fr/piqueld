@@ -489,6 +489,9 @@ impl BuildKit for BollardBuildKit {
             rm: true,
             forcerm: true,
             platform: platform.unwrap_or_default().to_owned(),
+            // The Docker Engine BuildKit endpoint requires a session even when
+            // this build has no credentials or auxiliary providers.
+            session: Some(uuid::Uuid::now_v7().to_string()),
             version: BuilderVersion::BuilderBuildKit,
             ..Default::default()
         };
