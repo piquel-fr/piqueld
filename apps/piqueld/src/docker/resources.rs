@@ -646,14 +646,13 @@ impl DockerApi for BollardDocker {
                 .map(|secret| (secret.swarm_name.clone(), secret.logical_name.clone()))
                 .collect::<BTreeMap<_, _>>();
             Self::apply_secret_logical_names(&mut observed, &logical_by_name);
-            if !observed.semantically_matches(desired) {
-                eprintln!(
-                    "Docker semantic mismatch for {}:\nobserved={observed:#?}\ndesired={desired:#?}",
-                    desired.name
-                );
-            } else {
+            if observed.semantically_matches(desired) {
                 return Ok(());
             }
+            eprintln!(
+                "Docker semantic mismatch for {}:\nobserved={observed:#?}\ndesired={desired:#?}",
+                desired.name
+            );
             let version = existing
                 .version
                 .and_then(|v| v.index)
