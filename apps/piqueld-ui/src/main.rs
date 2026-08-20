@@ -1,4 +1,4 @@
-//! Browser entry point for the piqueld read-only dashboard.
+//! Browser entry point for the piqueld operator dashboard.
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

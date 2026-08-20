@@ -4,7 +4,9 @@ use piqueld_core::{NormalizedApplication, Plan};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{Client, ClientError, OperationView, Page, SseEvent, path_segment};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::SseEvent;
+use crate::{Client, ClientError, OperationView, Page, path_segment};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Public application state returned by the API.
@@ -413,6 +415,24 @@ impl Client {
         self.send(
             Method::POST,
             &format!("/api/v1/applications/{}/plan", path_segment(id)),
+            Some(request),
+            &[],
+        )
+        .await
+    }
+
+    /// Plans deleting an application without changing desired state.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn plan_delete(
+        &self,
+        id: &str,
+        request: &DeleteApplicationRequest,
+    ) -> Result<PlanView, ClientError> {
+        self.send(
+            Method::POST,
+            &format!("/api/v1/applications/{}/delete-plan", path_segment(id)),
             Some(request),
             &[],
         )

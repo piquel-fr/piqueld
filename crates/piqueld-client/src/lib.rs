@@ -35,7 +35,9 @@ pub use transfer::{
 
 use http::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{fmt, future::Future, sync::Arc, time::Duration};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+use std::{fmt, future::Future, time::Duration};
 use thiserror::Error;
 use utoipa::ToSchema;
 
@@ -675,6 +677,17 @@ async fn decode_browser_response<T: DeserializeOwned>(
     serde_json::from_str::<Envelope<T>>(&payload)
         .map(|value| value.data)
         .map_err(|_| ClientError::Decode)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn decode_browser_error(response: gloo_net::http::Response) -> ClientError {
+    let status =
+        StatusCode::from_u16(response.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let payload = response.text().await.unwrap_or_default();
+    ClientError::Api {
+        status,
+        error: error_body(payload.as_bytes()),
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

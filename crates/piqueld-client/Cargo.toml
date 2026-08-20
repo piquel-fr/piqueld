@@ -27,6 +27,7 @@ tokio.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-net = { workspace = true, default-features = false, features = ["http", "json"] }
+js-sys.workspace = true
 web-sys = { workspace = true, features = ["RequestCache", "RequestCredentials", "RequestMode"] }
 
 [lints]

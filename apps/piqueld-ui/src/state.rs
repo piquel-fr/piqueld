@@ -1,6 +1,227 @@
-//! Small, transport-independent state helpers for the read-only dashboard.
+//! Small, transport-independent state helpers for the operator dashboard.
 
-use std::{collections::BTreeSet, time::Duration};
+use piqueld_core::manifest::{
+    ApplicationManifest, ApplicationSpecInput, MetadataInput, ServiceInput, SourceInput,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    time::Duration,
+};
+use zeroize::Zeroize;
+
+/// Maximum number of log lines retained by one live view.
+pub const MAX_LOG_LINES: usize = 1_000;
+
+/// Stable API prefix used by browser event streams.
+pub const API_PREFIX: &str = "/api/v1";
+
+/// Field-level validation messages grouped by their safe manifest paths.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FieldErrors(BTreeMap<String, Vec<String>>);
+
+impl FieldErrors {
+    /// Extracts public validation paths from an API error details value.
+    #[must_use]
+    pub fn from_details(details: &serde_json::Value) -> Self {
+        let mut fields = BTreeMap::new();
+        let values = details
+            .get("errors")
+            .and_then(serde_json::Value::as_array)
+            .or_else(|| details.as_array());
+        for error in values.into_iter().flatten() {
+            let Some(path) = error.get("path").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let message = error
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("invalid value");
+            fields
+                .entry(path.to_owned())
+                .or_insert_with(Vec::new)
+                .push(message.to_owned());
+        }
+        Self(fields)
+    }
+
+    /// Returns validation messages for an exact field path.
+    #[must_use]
+    pub fn messages(&self, path: &str) -> &[String] {
+        self.0.get(path).map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns all messages below a service or collection path.
+    #[must_use]
+    pub fn under(&self, prefix: &str) -> Vec<(String, String)> {
+        self.0
+            .iter()
+            .filter(|(path, _)| path.starts_with(prefix))
+            .flat_map(|(path, messages)| {
+                messages
+                    .iter()
+                    .map(|message| (path.clone(), message.clone()))
+            })
+            .collect()
+    }
+}
+
+/// Local form state retained when an optimistic-concurrency write conflicts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConflictState {
+    /// Generation currently stored by the daemon.
+    pub current_generation: u64,
+    /// The complete unsaved form that must remain editable.
+    pub local_manifest: ApplicationManifest,
+}
+
+/// Bounded reconnect cursor state for a browser event stream.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ReconnectState {
+    /// Number of consecutive reconnect attempts.
+    pub attempts: u8,
+    /// Last accepted event cursor.
+    pub last_event_id: Option<String>,
+}
+
+impl ReconnectState {
+    /// Records a disconnect and returns the next bounded backoff in seconds.
+    #[must_use]
+    pub fn disconnected(&mut self) -> Option<u32> {
+        self.attempts = self.attempts.saturating_add(1);
+        (self.attempts <= 10).then(|| 1_u32 << self.attempts.min(5))
+    }
+
+    /// Resets the backoff after a successful event.
+    pub const fn connected(&mut self) {
+        self.attempts = 0;
+    }
+
+    /// Stores a non-empty event cursor.
+    pub fn observed(&mut self, id: Option<String>) {
+        if id.is_some() {
+            self.last_event_id = id;
+        }
+    }
+}
+
+/// Bounded live-log state that keeps the displayed snapshot stable while paused.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LogBuffer {
+    lines: VecDeque<String>,
+    paused_snapshot: Option<VecDeque<String>>,
+    /// Whether newly received lines are hidden from the current display.
+    pub paused: bool,
+    /// Whether the event source should remain connected.
+    pub follow: bool,
+}
+
+impl LogBuffer {
+    /// Adds one already-sanitized line and evicts the oldest line at the bound.
+    pub fn push(&mut self, line: String) {
+        self.lines.push_back(line);
+        while self.lines.len() > MAX_LOG_LINES {
+            self.lines.pop_front();
+        }
+    }
+
+    /// Changes pause state, snapshotting the visible lines at the pause edge.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+        self.paused_snapshot = paused.then(|| self.lines.clone());
+    }
+
+    /// Returns the currently displayed bounded lines.
+    pub fn lines(&self) -> impl Iterator<Item = &str> {
+        self.paused_snapshot
+            .as_ref()
+            .unwrap_or(&self.lines)
+            .iter()
+            .map(String::as_str)
+    }
+}
+
+/// Write-only browser secret draft that zeroizes its backing bytes on clear/drop.
+#[derive(Default)]
+pub struct SecretDraft(Vec<u8>);
+
+impl SecretDraft {
+    /// Replaces the draft and clears the previous bytes first.
+    pub fn replace(&mut self, value: impl AsRef<[u8]>) {
+        self.0.zeroize();
+        self.0.extend_from_slice(value.as_ref());
+    }
+
+    /// Borrows the current plaintext only at the submission boundary.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Clears the plaintext draft.
+    pub fn clear(&mut self) {
+        self.0.zeroize();
+        self.0.clear();
+    }
+}
+
+impl Drop for SecretDraft {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+/// Creates the smallest valid editor form.
+#[must_use]
+pub fn blank_manifest() -> ApplicationManifest {
+    ApplicationManifest {
+        api_version: "piqueld.dev/v1alpha1".into(),
+        kind: "Application".into(),
+        metadata: MetadataInput {
+            name: String::new(),
+        },
+        spec: ApplicationSpecInput {
+            services: vec![blank_service()],
+            volumes: Vec::new(),
+            routes: Vec::new(),
+        },
+    }
+}
+
+/// Creates a service form with safe defaults and no inherited values.
+#[must_use]
+pub fn blank_service() -> ServiceInput {
+    ServiceInput {
+        name: "web".into(),
+        source: SourceInput::Image {
+            image: String::new(),
+        },
+        replicas: 1,
+        environment: BTreeMap::new(),
+        command: Vec::new(),
+        arguments: Vec::new(),
+        ports: Vec::new(),
+        mounts: Vec::new(),
+        secrets: Vec::new(),
+        healthcheck: None,
+        resources: None,
+    }
+}
+
+/// Switches a service source and clears fields from the previous source kind.
+pub fn set_source_kind(service: &mut ServiceInput, git: bool) {
+    service.source = if git {
+        SourceInput::Git {
+            repository: String::new(),
+            reference: "main".into(),
+            context: ".".into(),
+            dockerfile: "Dockerfile".into(),
+        }
+    } else {
+        SourceInput::Image {
+            image: String::new(),
+        }
+    };
+}
 
 /// Maximum number of applications requested per API page.
 pub const PAGE_LIMIT: u16 = 20;

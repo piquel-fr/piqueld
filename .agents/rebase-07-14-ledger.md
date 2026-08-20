@@ -183,7 +183,13 @@ ported. The feature/fix commits map as follows:
 | Operation watch endpoint required by the rebuilt CLI | #11 `b45b426` (old #9 did not carry the operation-events route) | Moved into #11 on top of #9's shared cursor/reconnection primitive; server OpenAPI, transport-neutral client, Last-Event-ID handling, deduplication, stream fallback, and focused API coverage move together |
 | Protected profile/token/secret inputs, stable output and exit categories, binary output safety, retry/timeout/error redaction | #11 `ab1b68e` | Rebuilt against the current public client; uses protected `openat2` reads, zeroized token/body buffers, atomic private outputs, profile precedence, stable envelopes, and no plaintext CLI arguments |
 | Dependency license policy needed by the existing rustls/gix graph | cumulative #8 dependency graph; discovered during #11 full validation | Added only `ISC`, `MIT-0`, and `CDLA-Permissive-2.0` to `deny.toml`; `cargo deny check` and full `just` now pass, with duplicate-version warnings retained |
-| Structured UI and packaged assets | #12 `24a36dc`, `d845f04` | #12 pending; extend Plan 06C rather than restore old tree |
+| Structured UI and packaged assets | #12 `24a36dc`, `d845f04` | #12 rebuilt as `0e71c2d`; extended the Plan 06C dashboard with typed structured forms, reviewed mutations, observability, write-only secrets, state transfer, and hardened same-origin asset serving; did not restore the old dashboard/state tree; follow-up clarified action copy and removed nested main/duplicate footer markup |
+| Public delete-plan and generation overflow guard | #12 follow-up review intent; current old branch did not have a usable current-stack contract | #12 added `POST /api/v1/applications/{id}/delete-plan`, typed client support, checked generation increment, OpenAPI, and API contract coverage |
+| Conflict-preserving editor and user-visible validation | #12 `24a36dc` | #12 retains local manifests across optimistic-concurrency conflicts, offers explicit server reload, maps safe field errors, and invalidates stale previews before apply |
+| Live operation/build/runtime views | #12 `24a36dc` | #12 uses the rebuilt operation SSE cursor/reconnect contract, bounded `LogBuffer`, typed operation/build/status/log DTOs, browser EventSource cleanup, bounded reconnect attempts, and typed polling fallback; build output intentionally polls because no build SSE route exists in the rebuilt API |
+| Write-only browser secret controls | #12 `24a36dc` | #12 uses wasm typed binary secret methods, clears input/drafts after success and component cleanup, zeroizes Rust and JS body buffers, and never reveals or persists plaintext |
+| Browser state transfer and application export | #12 `24a36dc` | #12 uses wasm typed transfer methods, 32 MiB bound, explicit phrase, SHA-256 digest-bound single-use confirmation, zeroized confirmation/archive buffers, dependency report, and in-memory downloads |
+| Hardened SPA fallback and packaged UI documentation | #12 `d845f04` | #12 moved descriptor-relative symlink-safe serving into `api/ui.rs`, added CSP/security headers, HEAD/range/content-type/cache behavior, 16 MiB asset bound, and updated API/UI docs; Nix/Trunk packaging already existed in the frozen Plan 06C base |
 | NixOS/security/operations and recovery | #13 `3254200`, `6a7d09c` | #13 pending; adapt to rebuilt binary/assets |
 | Qualification CI, release, acceptance, docs and Rust compatibility fixes | #14 `22bbb1a`, `5d38829`, `a2990f8`, `38cf58d`, `a1d0f36` | #14 pending; consolidate against cumulative rebuilt stack |
 
@@ -196,6 +202,7 @@ ported. The feature/fix commits map as follows:
 | 9 | `rebuild/09-traefik-status-and-logs` | `f79994b` (`feat(ingress): rebuild status and logs on product stack`) |
 | 10 | `rebuild/10-import-export` | `4f92d0b072a04a081c0b706c5588e59c66633edd` (`feat(transfer): rebuild state import and export on product stack`) |
 | 11 | `rebuild/11-cli` | `6916091076de717d21860713d54d44701b63c90a` (`feat(cli): rebuild advanced operator workflow on product stack`) |
+| 12 | `rebuild/12-web-ui` | `0e71c2d` (`fix(web): clarify dashboard structure and actions`; feature base `ae45d9e3d4c7c5f704cf3978a77182639ceffad9`) |
 
 ## Local #10 validation at ledger checkpoint
 
@@ -231,3 +238,23 @@ Passed on `6916091076de717d21860713d54d44701b63c90a`:
 The privileged Swarm/Docker acceptance test remains ignored by design. WASM,
 Trunk release, NixOS VM, browser, and privileged Docker validation remain
 cumulative gates for their owning rebuilt PRs.
+
+## Local #12 validation at ledger checkpoint
+
+Passed on `0e71c2d` (feature base `ae45d9e3d4c7c5f704cf3978a77182639ceffad9`):
+
+- `just` (workspace format, strict native Clippy, workspace checks/tests,
+  doc-tests, cargo-deny, generated OpenAPI check, and dependency boundaries)
+- elevated TCP/Unix API contract coverage, including delete-plan, operation
+  SSE, state transfer, SPA route precedence, CSP/security headers, byte ranges,
+  and encoded-path rejection
+- `cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui`
+- `cargo clippy --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
+  --lib -- -D warnings`
+- UI state unit tests and strict dependency-boundary checks
+
+Unavailable in this checkout: `trunk` is not installed, so `just ui-build`
+could not run; no release asset canary or Nix package/VM evidence is claimed.
+The T3 collaborative preview reported no automation host after both status and
+open attempts, so no browser interaction evidence is claimed. The privileged
+Docker acceptance test remains intentionally ignored.

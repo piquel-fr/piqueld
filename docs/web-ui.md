@@ -1,16 +1,32 @@
-# Read-only web dashboard
+# Web control-plane dashboard
 
-Plan 06C adds a small client-side-rendered Leptos dashboard. It answers four
-questions: whether the daemon is reachable, which applications exist, what
-their desired and observed state is, and whether each application is converged,
-degraded, or failed. It has no mutation controls; the visible operator
-direction is to use `piquelctl` for plan, apply, reconcile, and delete.
+The Leptos dashboard is the browser companion to the versioned API. It keeps
+the Plan 06C bounded polling model for the application list and adds the
+smallest complete operator workflows needed by the product stack:
 
-The browser bundle uses the transport-neutral DTOs in `piqueld-client` and
-fetches same-origin `/api/v1` resources. The daemon serves it only on the
-loopback TCP listener. The Unix socket is API-only, and the daemon does not add
-CORS, authentication, cookies, browser persistence, telemetry, or a public
-binding.
+- structured application editing for images, Git sources, services,
+  environment, ports, commands, mounts, secrets, health checks, resources,
+  volumes, and routes;
+- server-generated plan previews, generation-checked apply/delete operations,
+  reviewed deletion, and conflict recovery that preserves the local form;
+- operation progress, build-log polling, runtime status, bounded log buffers,
+  same-origin event streams, automatic browser reconnection, and polling
+  fallback;
+- write-only secret creation and rotation, with no reveal or browser storage;
+- portable/encrypted state export and digest-bound, phrase-confirmed,
+  transactional state replacement; and
+- accessible responsive navigation, live status regions, keyboard focus, and
+  bounded output throughout.
+
+The browser uses the transport-neutral DTOs and mutation methods in
+`piqueld-client`. EventSource is limited to the server's resumable operation
+and runtime-log streams; build output uses the typed build and log endpoints
+because the current API does not expose a separate build SSE route.
+
+The TCP listener serves the dashboard; the Unix socket remains API-only. The
+browser client uses same-origin requests with no cookies, browser persistence,
+telemetry, or CORS dependency. Authentication and public binding remain
+outside this loopback-oriented prototype's scope.
 
 ## Development
 
@@ -30,23 +46,11 @@ just ui-dev
 ```
 
 `trunk` serves the UI locally and proxies its `/api` requests to
-`http://127.0.0.1:7845`, so the browser still exercises same-origin-style API
-paths. A direct transport compile is available with:
+`http://127.0.0.1:7845`. A direct transport compile is available with:
 
 ```console
 just ui-check
 ```
-
-The production bundle has a dependency-free Chromium smoke covering desktop
-and narrow layouts, empty and populated states, detail selection ordering,
-refresh failure and recovery, keyboard focus, and the absence of mutations:
-
-```console
-just ui-browser-smoke
-```
-
-Set `PIQUELD_BROWSER` when Chromium is not available under its usual command
-name.
 
 ## Production assets
 
@@ -71,28 +75,25 @@ binaries, the example configuration, and the dashboard assets. The
 `generate_openapi` helper and the native `piqueld-ui` placeholder are not
 installed.
 
-The TCP router serves existing assets and uses `index.html` only for
-extensionless, non-reserved browser paths. API, health, OpenAPI, and unknown API
-paths never receive the SPA shell. If the bundle is absent, the browser route
-returns a clear 503 message and missing extensionful files remain 404s.
+The fallback serves only GET/HEAD. Extensionless, non-reserved routes receive
+the shell; API, health, OpenAPI, percent-encoded, and unknown extensionful
+paths never receive it. Assets are opened descriptor-relatively beneath the
+configured bundle directory with symlink and magic-link resolution disabled,
+bounded to 16 MiB, checked for metadata changes, and served with content types,
+HEAD support, single-range support, and explicit cache policy. Fingerprinted
+assets are immutable; the shell is revalidated. Responses include CSP,
+`nosniff`, frame, referrer, and permissions policies. If the bundle is absent,
+browser routes return a clear uncached 503 and extensionful files remain 404s.
 
-The dashboard performs one initial refresh, then bounded sequential pagination
-(20 items per page, at most 20 pages) and application status reads. Background
-polls run every 15 seconds after success and back off to at most 120 seconds
-after failures. Polls pause while the document is hidden, never overlap, and a
-manual refresh remains available. A failed refresh keeps the last successful
-view visible and marks it stale.
+The dashboard still performs bounded sequential pagination (20 items per page,
+at most 20 pages). Background list polls run every 15 seconds after success and
+back off to at most 120 seconds after failures; they pause while hidden, never
+overlap, and retain the last successful view after an error. Live buffers retain
+at most 1,000 lines per view.
 
-Accessibility coverage includes semantic headings and lists, a skip link,
-keyboard-operable buttons, visible focus, live status/error regions, responsive
-layouts for narrow widths, and light/dark color tokens with contrast-oriented
-status colors.
+## Supported browser baseline
 
-The supported browser baseline is a current evergreen Chromium, Firefox,
-Safari, or Edge release with WebAssembly, ES modules, Fetch, and standard CSS
+The supported baseline is a current evergreen Chromium, Firefox, Safari, or
+Edge release with WebAssembly, ES modules, Fetch, EventSource, and standard CSS
 media-query support. Internet Explorer, JavaScript-disabled browsing, and
 older browsers without those primitives are outside the support target.
-
-The advanced Plan 12 UI remains deferred: forms, mutation workflows, secrets,
-logs and streams, state transfer, authentication, persistence, global state
-machinery, and richer navigation are intentionally not part of this dashboard.

@@ -7,11 +7,11 @@ and a request ID. Internal database, parser, and Docker sources are logged for
 diagnostics but are not returned or persisted as raw messages.
 
 The daemon serves the API over loopback TCP and a Unix-domain socket. The
-read-only browser dashboard is served only by the loopback TCP listener; the
-Unix socket remains API-only. The typed client supports both native transports
-and a same-origin browser transport. The API is intentionally polling based:
-clients fetch application status and operation state instead of opening event
-streams.
+browser dashboard is served only by the loopback TCP listener; the Unix socket
+remains API-only. The typed client supports both native transports and a
+same-origin browser transport. Durable state is always available through
+bounded polling, while operation and application-log streams provide a
+resumable live view for clients that support Server-Sent Events.
 
 Supported resources and actions are:
 
@@ -25,7 +25,13 @@ Supported resources and actions are:
 - `POST /api/v1/applications/plan` and `POST /api/v1/applications/{id}/plan`
 - `POST /api/v1/applications/{id}/reconcile`
 - `GET /api/v1/applications/{id}/status`
+- `GET /api/v1/applications/{id}/logs` and `/events`
 - `GET /api/v1/operations/{id}`
+- `GET /api/v1/operations/{id}/events` and `/builds`
+- `GET /api/v1/builds/{id}` and `/logs`
+- `GET /api/v1/secrets`, `POST/PUT/DELETE /api/v1/secrets/{name}`
+- `GET /api/v1/state/export`, `POST /api/v1/state/import/confirm`, and
+  `POST /api/v1/state/import`
 
 Creation requires an `Idempotency-Key`; replacement and deletion accept one as
 well. Only the key's SHA-256 digest and the normalized request hash are stored;
@@ -40,16 +46,24 @@ Create, replace, and plan accept structured JSON or a complete TOML manifest wit
 image resolution requirements when the runtime cannot yet produce a concrete
 desired plan.
 
+`POST /api/v1/applications/{id}/delete-plan` accepts the same
+generation-bound deletion request as `DELETE`, observes runtime state, and
+returns the exact server-generated removal, wait, diagnostic, risk, and
+retain-volume actions without changing desired state.
+
 The public client contracts live in `piqueld-client`; persistence uses internal
 store rows and converts them to these DTOs at the API boundary. The detail DTO
 contains only sanitized, bounded runtime summaries and diagnostics, never raw
-Docker labels, environment, or daemon-internal errors. The essential CLI
-workflow is documented in [`docs/piquelctl.md`](piquelctl.md). Authentication,
-mutating browser controls, and additional transports are outside this product
-slice.
+Docker labels, environment, or daemon-internal errors. Secret endpoints return
+metadata and references only; plaintext values are accepted as bounded binary
+requests and are never returned. State replacement is transactional and bound
+to the exact archive digest through a single-use confirmation. The essential
+CLI workflow is documented in [`docs/piquelctl.md`](piquelctl.md).
 
 The TCP router gives exact API, health, and OpenAPI routes precedence over the
 static dashboard. Unknown `/api`, `/health`, and `/openapi` paths remain JSON
 errors; only non-reserved extensionless browser paths receive the dashboard
-shell. Missing extensionful assets remain 404s. The Unix router has no static
-fallback.
+shell. The asset reader rejects traversal and symlink resolution, enforces a
+16 MiB bound, supports HEAD and one byte range, caches only fingerprinted
+assets, and applies CSP plus browser hardening headers. Missing extensionful
+assets remain 404s. The Unix router has no static fallback.
