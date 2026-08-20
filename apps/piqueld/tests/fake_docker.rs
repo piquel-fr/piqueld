@@ -28,6 +28,26 @@ impl FakeDocker {
             observed: Arc::new(Mutex::new(observed)),
         }
     }
+
+    fn ownership_matches(
+        observed: &BTreeMap<String, String>,
+        expected: &BTreeMap<String, String>,
+    ) -> bool {
+        let labels_match = [
+            "io.piqueld.managed",
+            "io.piqueld.instance",
+            "io.piqueld.application",
+            "io.piqueld.service",
+        ]
+        .iter()
+        .filter_map(|key| expected.get(*key).map(|value| (*key, value)))
+        .all(|(key, value)| observed.get(key) == Some(value));
+        let spec_hash_valid = !expected.contains_key("io.piqueld.application")
+            || observed
+                .get("io.piqueld.spec-hash")
+                .is_some_and(|value| value.starts_with("sha256:"));
+        labels_match && spec_hash_valid
+    }
 }
 
 fn observed_service(desired: &DesiredService) -> ObservedService {
@@ -114,6 +134,14 @@ impl DockerApi for FakeDocker {
         desired: &piqueld_core::resource::DesiredService,
     ) -> Result<(), DockerError> {
         let mut observed = self.observed.lock().await;
+        if let Some(existing) = observed
+            .services
+            .iter()
+            .find(|service| service.name == desired.name)
+            && !Self::ownership_matches(&existing.labels, &desired.labels)
+        {
+            return Err(DockerError::OwnershipConflict);
+        }
         observed
             .services
             .retain(|service| service.name != desired.name);
@@ -124,26 +152,36 @@ impl DockerApi for FakeDocker {
     async fn remove_service(
         &self,
         name: &str,
-        _ownership: &BTreeMap<String, String>,
+        ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
-        self.observed
-            .lock()
-            .await
+        let mut observed = self.observed.lock().await;
+        if let Some(existing) = observed
             .services
-            .retain(|service| service.name != name);
+            .iter()
+            .find(|service| service.name == name)
+            && !Self::ownership_matches(&existing.labels, ownership)
+        {
+            return Err(DockerError::OwnershipConflict);
+        }
+        observed.services.retain(|service| service.name != name);
         Ok(())
     }
 
     async fn remove_network(
         &self,
         name: &str,
-        _ownership: &BTreeMap<String, String>,
+        ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
-        self.observed
-            .lock()
-            .await
+        let mut observed = self.observed.lock().await;
+        if let Some(existing) = observed
             .networks
-            .retain(|network| network.name != name);
+            .iter()
+            .find(|network| network.name == name)
+            && !Self::ownership_matches(&existing.labels, ownership)
+        {
+            return Err(DockerError::OwnershipConflict);
+        }
+        observed.networks.retain(|network| network.name != name);
         Ok(())
     }
 }

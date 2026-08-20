@@ -97,7 +97,11 @@ impl DockerApi for BollardDocker {
         let raw_networks = Self::map_request(
             "list networks",
             self.docker
-                .list_networks(Some(ListNetworksOptionsBuilder::default().build()))
+                .list_networks(Some(
+                    ListNetworksOptionsBuilder::default()
+                        .filters(&application_filter())
+                        .build(),
+                ))
                 .await,
         )?;
         let network_names = raw_networks

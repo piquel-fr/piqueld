@@ -1,6 +1,7 @@
 use super::{
     APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, INSTANCE_LABEL, MANAGED_LABEL,
-    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name, valid_logical_name,
+    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name,
+    docker_resource_readable_prefix, valid_logical_name,
 };
 
 impl BollardDocker {
@@ -13,8 +14,7 @@ impl BollardDocker {
         labels: &BTreeMap<String, String>,
         app: &ApplicationId,
     ) -> bool {
-        let readable_application = app.as_str().chars().take(42).collect::<String>();
-        let prefix = format!("piqueld-{readable_application}-");
+        let prefix = docker_resource_readable_prefix(app);
         name.starts_with(&prefix)
             || labels
                 .get(APPLICATION_LABEL)

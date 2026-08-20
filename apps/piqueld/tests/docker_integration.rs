@@ -222,7 +222,7 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
         .unwrap()
         .services
         .iter()
-        .any(|observed| observed.name == service.name)
+        .any(|observed| observed.name == service.name || observed.name == http_service.name)
     {
         assert!(tokio::time::Instant::now() < removal_deadline);
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -231,6 +231,18 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
         .remove_network(&network.name, &labels)
         .await
         .unwrap();
+    let network_removal_deadline = tokio::time::Instant::now() + Duration::from_mins(1);
+    while restarted
+        .observe(&app)
+        .await
+        .unwrap()
+        .networks
+        .iter()
+        .any(|observed| observed.name == network.name)
+    {
+        assert!(tokio::time::Instant::now() < network_removal_deadline);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
     let retained = restarted.observe(&app).await.unwrap();
     assert!(retained.volumes.iter().any(|v| v.name == volume.name));
     raw.remove_volume(

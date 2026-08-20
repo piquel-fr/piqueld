@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::net::UnixStream;
 
 const MAX_SERVICE_RESPONSE_BYTES: usize = 1024 * 1024;
+const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 enum ServiceWireError {
@@ -63,56 +64,75 @@ impl BollardDocker {
             Vec::new()
         };
 
-        let stream = UnixStream::connect(self.socket.as_ref())
+        let deadline = tokio::time::Instant::now() + SERVICE_REQUEST_TIMEOUT;
+        let stream = tokio::time::timeout_at(deadline, UnixStream::connect(self.socket.as_ref()))
             .await
             .map_err(|_| {
                 ServiceWireError::Public(DockerError::Unavailable("connect to Docker Engine"))
-            })?;
-        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-            .await
+            })?
             .map_err(|_| {
-                ServiceWireError::Public(DockerError::Request("open Docker service connection"))
+                ServiceWireError::Public(DockerError::Unavailable("connect to Docker Engine"))
             })?;
+        let (mut sender, connection) = tokio::time::timeout_at(
+            deadline,
+            hyper::client::conn::http1::handshake(TokioIo::new(stream)),
+        )
+        .await
+        .map_err(|_| {
+            ServiceWireError::Public(DockerError::Request("open Docker service connection"))
+        })?
+        .map_err(|_| {
+            ServiceWireError::Public(DockerError::Request("open Docker service connection"))
+        })?;
         // Hyper returns a connection driver separately from the request sender;
-        // it must run concurrently for the sender to make progress.
-        tokio::spawn(async move {
+        // it must run concurrently for the sender to make progress. Always
+        // abort and join it after the request so no driver survives a timeout.
+        let driver = tokio::spawn(async move {
             let _ = connection.await;
         });
-        let request = Request::builder()
-            .method(method)
-            .uri(path)
-            .header(header::HOST, "localhost")
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::CONNECTION, "close")
-            .body(Full::new(Bytes::from(body)))
-            .map_err(|_| {
-                ServiceWireError::Public(DockerError::Request("build Docker service request"))
+        let result = tokio::time::timeout_at(deadline, async {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, "localhost")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CONNECTION, "close")
+                .body(Full::new(Bytes::from(body)))
+                .map_err(|_| {
+                    ServiceWireError::Public(DockerError::Request("build Docker service request"))
+                })?;
+            let response = sender.send_request(request).await.map_err(|_| {
+                ServiceWireError::Public(DockerError::Request("send Docker service request"))
             })?;
-        let response = sender.send_request(request).await.map_err(|_| {
-            ServiceWireError::Public(DockerError::Request("send Docker service request"))
-        })?;
-        let status = response.status();
-        let mut response = response.into_body();
-        let mut body = Vec::new();
-        while let Some(frame) = response.frame().await {
-            let frame = frame.map_err(|_| {
-                ServiceWireError::Public(DockerError::Request("read Docker service response"))
-            })?;
-            let Ok(data) = frame.into_data() else {
-                continue;
-            };
-            if body.len().saturating_add(data.len()) > MAX_SERVICE_RESPONSE_BYTES {
-                return Err(ServiceWireError::Public(DockerError::Request(
-                    "read Docker service response",
-                )));
+            let status = response.status();
+            let mut response = response.into_body();
+            let mut body = Vec::new();
+            while let Some(frame) = response.frame().await {
+                let frame = frame.map_err(|_| {
+                    ServiceWireError::Public(DockerError::Request("read Docker service response"))
+                })?;
+                let Ok(data) = frame.into_data() else {
+                    continue;
+                };
+                if body.len().saturating_add(data.len()) > MAX_SERVICE_RESPONSE_BYTES {
+                    return Err(ServiceWireError::Public(DockerError::Request(
+                        "read Docker service response",
+                    )));
+                }
+                body.extend_from_slice(&data);
             }
-            body.extend_from_slice(&data);
-        }
-        if status.is_success() {
-            Ok(body)
-        } else {
-            Err(ServiceWireError::Response { status, body })
-        }
+            if status.is_success() {
+                Ok(body)
+            } else {
+                Err(ServiceWireError::Response { status, body })
+            }
+        })
+        .await;
+        driver.abort();
+        let _ = driver.await;
+        result.map_err(|_| {
+            ServiceWireError::Public(DockerError::Unavailable("request Docker service"))
+        })?
     }
 
     /// Inspects the complete service representation, restoring Bollard's

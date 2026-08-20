@@ -1,8 +1,8 @@
 use super::{
     BollardDocker, DesiredService, DockerError, HEALTH_RETRIES, HealthCheck, HealthConfig, Limit,
-    Mount, MountTypeEnum, NANOSECONDS_PER_MILLISECOND, NANOSECONDS_PER_SECOND,
-    NetworkAttachmentConfig, RESTART_DELAY, ResourceLimits, ServiceSpec, ServiceSpecMode,
-    ServiceSpecModeReplicated, ServiceSpecUpdateConfig, ServiceSpecUpdateConfigFailureActionEnum,
+    Mount, MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND, NetworkAttachmentConfig,
+    RESTART_DELAY, ResourceLimits, ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated,
+    ServiceSpecUpdateConfig, ServiceSpecUpdateConfigFailureActionEnum,
     ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec, TaskSpecResources,
     TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
 };
@@ -136,7 +136,7 @@ impl BollardDocker {
             limits: Some(Limit {
                 nano_cpus: limits
                     .cpu_millis
-                    .map(|millis| i64::from(millis) * NANOSECONDS_PER_MILLISECOND),
+                    .map(|millis| i64::from(millis) * NANO_CPUS_PER_MILLICORE),
                 memory_bytes,
                 pids: None,
             }),

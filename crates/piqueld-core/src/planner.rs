@@ -3,6 +3,7 @@
 use crate::resource::{
     Convergence, DesiredApplication, DesiredNetwork, DesiredService, DesiredVolume,
     ObservedApplication, ObservedService, OwnershipState, ResolutionRequirement,
+    owned_label_subset, unordered_eq,
 };
 use crate::{ApplicationId, InstanceId};
 use serde::{Deserialize, Serialize};
@@ -771,14 +772,6 @@ where
     values
 }
 
-fn unordered_eq<T: Ord>(left: &[T], right: &[T]) -> bool {
-    let mut left = left.iter().collect::<Vec<_>>();
-    let mut right = right.iter().collect::<Vec<_>>();
-    left.sort_unstable();
-    right.sort_unstable();
-    left == right
-}
-
 fn relevant_network_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
     labels
         .iter()
@@ -820,7 +813,7 @@ fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<Strin
     if !found.runtime_configuration_matches {
         fields.push("runtime_policy".into());
     }
-    if found.labels != desired.labels {
+    if !owned_label_subset(&found.labels, &desired.labels) {
         fields.push("labels".into());
     }
     fields

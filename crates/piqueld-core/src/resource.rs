@@ -609,6 +609,9 @@ pub fn image_repository(reference: &str) -> Option<String> {
     if repository.is_empty() {
         return None;
     }
+    let repository = repository
+        .strip_prefix("index.docker.io/")
+        .unwrap_or(repository);
     let mut components = repository.split('/');
     let first = components.next()?;
     let explicit_registry =
@@ -868,7 +871,7 @@ impl OwnershipState {
     }
 }
 
-fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
+pub(crate) fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
     let mut observed = observed.iter().collect::<Vec<_>>();
     let mut desired = desired.iter().collect::<Vec<_>>();
     observed.sort_unstable();
@@ -883,7 +886,7 @@ fn sorted(values: &[String]) -> Vec<&str> {
     values
 }
 
-fn owned_label_subset(
+pub(crate) fn owned_label_subset(
     observed: &BTreeMap<String, String>,
     desired: &BTreeMap<String, String>,
 ) -> bool {

@@ -1,8 +1,8 @@
 use super::policy::ServiceRuntimePolicy;
 use super::{
     BTreeMap, BollardDocker, Convergence, DesiredMount, DockerError, HealthCheck, HealthConfig,
-    MountTypeEnum, NANOSECONDS_PER_MILLISECOND, NANOSECONDS_PER_SECOND, ObservedService,
-    ObservedTask, ResourceLimits, ServiceSpec, TaskDiagnostic, TaskSpecContainerSpec, TaskState,
+    MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND, ObservedService, ObservedTask,
+    ResourceLimits, ServiceSpec, TaskDiagnostic, TaskSpecContainerSpec, TaskState,
 };
 
 impl BollardDocker {
@@ -137,7 +137,7 @@ impl BollardDocker {
             .map(|limits| ResourceLimits {
                 cpu_millis: limits
                     .nano_cpus
-                    .and_then(|nanos| u32::try_from(nanos / NANOSECONDS_PER_MILLISECOND).ok()),
+                    .and_then(|nano_cpus| u32::try_from(nano_cpus / NANO_CPUS_PER_MILLICORE).ok()),
                 memory_bytes: limits
                     .memory_bytes
                     .and_then(|bytes| u64::try_from(bytes).ok()),

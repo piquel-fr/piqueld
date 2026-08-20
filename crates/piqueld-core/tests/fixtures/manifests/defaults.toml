@@ -1,9 +1,0 @@
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "defaults"
-[[spec.services]]
-name = "web"
-[spec.services.source]
-type = "image"
-image = "nginx:1.27"

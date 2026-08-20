@@ -4,7 +4,7 @@ use piqueld_core::planner::{ActionKind, PlanRequest};
 use piqueld_core::resource::{
     Convergence, ObservedApplication, ObservedNetwork, ObservedService, ObservedTask,
     ObservedVolume, ResolutionRequirement, ResolutionSet, ResolvedSource, TaskState,
-    compile_application, preview_resolution,
+    compile_application, image_repository, preview_resolution,
 };
 use piqueld_core::{ApplicationId, InstanceId, Plan, parse_toml};
 
@@ -96,6 +96,14 @@ fn image_resolution_is_the_only_pending_compilation_input() {
 }
 
 #[test]
+fn docker_registry_aliases_are_canonicalized() {
+    assert_eq!(
+        image_repository("index.docker.io/library/alpine:3"),
+        image_repository("docker.io/library/alpine:3")
+    );
+}
+
+#[test]
 fn planner_creates_only_supported_runtime_actions() {
     let app = application();
     let desired = compile_application(&app, instance(), &resolutions()).unwrap();
@@ -146,5 +154,38 @@ fn converged_services_need_no_work_and_delete_retains_volumes() {
             .actions
             .iter()
             .any(|action| matches!(action.kind, ActionKind::RetainVolume { .. }))
+    );
+
+    let mut drifted = observed.clone();
+    drifted.services[0].runtime_configuration_matches = false;
+    let drift_plan = Plan::from_request(
+        &PlanRequest::Reconcile {
+            desired: desired.clone(),
+        },
+        &drifted,
+    );
+    assert!(
+        drift_plan
+            .actions
+            .iter()
+            .any(|action| { matches!(action.kind, ActionKind::EnsureService { .. }) })
+    );
+
+    let mut foreign = observed;
+    foreign.services[0]
+        .labels
+        .insert("io.piqueld.instance".into(), "other-instance".into());
+    let foreign_deletion = Plan::from_request(
+        &PlanRequest::Delete {
+            application_id: desired.id,
+            instance_id: desired.instance_id,
+        },
+        &foreign,
+    );
+    assert!(
+        !foreign_deletion
+            .actions
+            .iter()
+            .any(|action| { matches!(action.kind, ActionKind::RemoveService { .. }) })
     );
 }

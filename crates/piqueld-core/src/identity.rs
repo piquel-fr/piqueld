@@ -108,6 +108,20 @@ pub fn docker_resource_name(
     )
 }
 
+/// Returns the readable name prefix shared by all resources of an application.
+#[must_use]
+pub fn docker_resource_readable_prefix(id: &ApplicationId) -> String {
+    let head_len = 63usize.saturating_sub("piqueld".len() + 12 + 2);
+    let mut head = sanitize(id.as_str())
+        .chars()
+        .take(head_len)
+        .collect::<String>();
+    while head.ends_with('-') {
+        head.pop();
+    }
+    format!("piqueld-{head}-")
+}
+
 fn bounded_name(prefix: &str, parts: &[&str], limit: usize) -> String {
     let identity = parts.join("\0");
     let suffix = format!("{:x}", Sha256::digest(identity.as_bytes()));
@@ -162,6 +176,13 @@ mod tests {
                 && a.bytes()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
         );
+    }
+
+    #[test]
+    fn readable_prefix_matches_names_with_a_trailing_hyphen_at_the_limit() {
+        let id = ApplicationId::parse(format!("{}-a", "a".repeat(41))).unwrap();
+        let name = docker_resource_name(&id, ResourceKind::Network, None);
+        assert!(name.starts_with(&docker_resource_readable_prefix(&id)));
     }
 
     #[test]
