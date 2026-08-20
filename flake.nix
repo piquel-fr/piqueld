@@ -119,11 +119,28 @@
             else
               pkgs.runCommand "piqueld-ci"
                 {
-                  nativeBuildInputs = [ pkgs.makeWrapper ];
+                  nativeBuildInputs = [
+                    pkgs.makeWrapper
+                    pkgs.patchelf
+                  ];
                 }
                 ''
                   install -Dm755 ${ciArtifacts}/piqueld "$out/bin/piqueld"
                   install -Dm755 ${ciArtifacts}/piquelctl "$out/bin/piquelctl"
+                  # Rust validation runs on Ubuntu, while the VM runs NixOS.
+                  # Normalize the host-built ELF binaries before putting them
+                  # in the Nix store so they use Nix's runtime libraries.
+                  for binary in "$out/bin/piqueld" "$out/bin/piquelctl"; do
+                    patchelf \
+                      --set-interpreter "${pkgs.stdenv.cc.bintools.dynamicLinker}" \
+                      --set-rpath "${
+                        pkgs.lib.makeLibraryPath [
+                          pkgs.glibc
+                          pkgs.gcc.cc.lib
+                        ]
+                      }" \
+                      "$binary"
+                  done
                   install -Dm644 ${self}/config/piqueld.example.toml \
                     "$out/share/piqueld/piqueld.example.toml"
                   mkdir -p "$out/share/piqueld/ui"
