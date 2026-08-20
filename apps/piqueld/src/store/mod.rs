@@ -168,10 +168,14 @@ impl ApplicationState {
                 ) | (
                     Self::Deploying,
                     Self::Ready | Self::Degraded | Self::Failed | Self::Deleting
-                ) | (Self::Ready, Self::Pending | Self::Degraded | Self::Deleting)
-                    | (Self::Degraded, Self::Pending | Self::Ready | Self::Deleting)
-                    | (Self::Failed, Self::Pending | Self::Deleting)
-                    | (Self::Deleting, Self::Degraded | Self::Failed)
+                ) | (
+                    Self::Ready,
+                    Self::Pending | Self::Degraded | Self::Deleting | Self::Failed,
+                ) | (
+                    Self::Degraded,
+                    Self::Pending | Self::Ready | Self::Deleting | Self::Failed,
+                ) | (Self::Failed, Self::Pending | Self::Deleting)
+                | (Self::Deleting, Self::Degraded | Self::Failed)
             )
     }
 }

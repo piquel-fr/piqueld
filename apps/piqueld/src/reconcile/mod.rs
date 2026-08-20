@@ -14,7 +14,9 @@ use piqueld_core::{
     compile_application,
     manifest::Source,
     planner::ActionKind,
-    resource::{Convergence, ResolvedSource},
+    resource::{
+        APPLICATION_LABEL, Convergence, INSTANCE_LABEL, MANAGED_LABEL, ResolvedSource,
+    },
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
@@ -40,13 +42,20 @@ impl<D> ReconcileHandler<D> {
 
     /// Replaces the retry policy used by this handler.
     #[must_use]
+    ///
+    /// # Panics
+    /// Panics when the policy has no attempts or its initial delay exceeds its
+    /// maximum delay.
     pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
+        if let Err(error) = retry.validate() {
+            panic!("invalid retry policy: {error}");
+        }
         self.retry = retry;
         self
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 /// Retry and convergence timing for operation execution.
 pub struct RetryPolicy {
     /// Maximum number of attempts for a retryable action.
@@ -57,6 +66,34 @@ pub struct RetryPolicy {
     pub max_delay: Duration,
     /// Maximum time spent waiting for runtime convergence.
     pub convergence_timeout: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+/// Invalid retry-policy configuration.
+pub enum RetryPolicyError {
+    /// At least one operation attempt is required.
+    #[error("retry policy attempts must be greater than zero")]
+    ZeroAttempts,
+    /// The first retry delay cannot exceed the configured maximum delay.
+    #[error("retry policy initial_delay must not exceed max_delay")]
+    InitialDelayExceedsMax,
+}
+
+impl RetryPolicy {
+    /// Validates the policy before it is installed on a reconciler.
+    ///
+    /// # Errors
+    /// Returns an error when no attempts are configured or the initial delay
+    /// exceeds the maximum delay.
+    pub fn validate(self) -> Result<(), RetryPolicyError> {
+        if self.attempts == 0 {
+            return Err(RetryPolicyError::ZeroAttempts);
+        }
+        if self.initial_delay > self.max_delay {
+            return Err(RetryPolicyError::InitialDelayExceedsMax);
+        }
+        Ok(())
+    }
 }
 
 impl Default for RetryPolicy {
@@ -83,6 +120,16 @@ pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
         OperationError::DockerConfigurationConflict
     } else {
         OperationError::OwnershipConflict
+    }
+}
+
+pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
+    if has_diagnostic(plan, "unowned_name_collision") {
+        "runtime reconciliation is blocked by an ownership conflict"
+    } else if has_diagnostic(plan, "immutable_configuration_drift") {
+        "runtime reconciliation is blocked by immutable Docker configuration"
+    } else {
+        "runtime reconciliation is blocked by an ownership conflict"
     }
 }
 

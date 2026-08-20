@@ -175,7 +175,7 @@ where
                     )
                     .await
             }
-            Err(OperationError::Superseded) => {
+            Err(OperationError::Cancelled | OperationError::Superseded) => {
                 repository
                     .transition_operation(
                         operation_id,

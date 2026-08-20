@@ -1,14 +1,15 @@
-use super::handler::journal_error;
 use super::{
     ActionKind, CancellationToken, Convergence, DockerApi, DockerError, Duration, OperationError,
     PlanAction, ReconcileHandler,
 };
+use piqueld_core::ApplicationId;
 
 impl<D: DockerApi> ReconcileHandler<D> {
     pub(super) async fn execute_action(
         &self,
         action: &PlanAction,
-        app: &piqueld_core::ApplicationId,
+        app: &ApplicationId,
+        ownership: &std::collections::BTreeMap<String, String>,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         match &action.kind {
@@ -25,13 +26,11 @@ impl<D: DockerApi> ReconcileHandler<D> {
                     .await
             }
             ActionKind::RemoveService { name } => {
-                let labels = self.ownership_labels(app).await?;
-                self.retry(cancellation, || self.docker.remove_service(name, &labels))
+                self.retry(cancellation, || self.docker.remove_service(name, ownership))
                     .await
             }
             ActionKind::RemoveNetwork { name } => {
-                let labels = self.ownership_labels(app).await?;
-                self.retry(cancellation, || self.docker.remove_network(name, &labels))
+                self.retry(cancellation, || self.docker.remove_network(name, ownership))
                     .await
             }
             ActionKind::WaitForService { service } => {
@@ -43,19 +42,21 @@ impl<D: DockerApi> ReconcileHandler<D> {
             ActionKind::RetainVolume { .. } | ActionKind::ResolveImage { .. } => Ok(()),
         }
     }
-    pub(super) async fn ownership_labels(
-        &self,
-        app: &piqueld_core::ApplicationId,
-    ) -> Result<std::collections::BTreeMap<String, String>, OperationError> {
-        let stored = self.store.get(app).await.map_err(journal_error)?;
-        Ok(std::collections::BTreeMap::from([
-            ("io.piqueld.managed".into(), "true".into()),
+    pub(super) fn ownership_labels(
+        application: &crate::store::StoredApplication,
+    ) -> std::collections::BTreeMap<String, String> {
+        let resolved = &application.resolved;
+        std::collections::BTreeMap::from([
+            (super::MANAGED_LABEL.into(), "true".into()),
             (
-                "io.piqueld.instance".into(),
-                stored.resolved.instance_id.to_string(),
+                super::INSTANCE_LABEL.into(),
+                resolved.instance_id.to_string(),
             ),
-            ("io.piqueld.application".into(), app.to_string()),
-        ]))
+            (
+                super::APPLICATION_LABEL.into(),
+                application.application.id.to_string(),
+            ),
+        ])
     }
     pub(super) async fn retry<F, Fut>(
         &self,
@@ -66,8 +67,9 @@ impl<D: DockerApi> ReconcileHandler<D> {
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<(), DockerError>>,
     {
+        let attempts = self.retry.attempts.max(1);
         let mut delay = self.retry.initial_delay;
-        for attempt in 0..self.retry.attempts {
+        for attempt in 0..attempts {
             if cancellation.is_cancelled() {
                 return Err(OperationError::Cancelled);
             }
@@ -79,21 +81,21 @@ impl<D: DockerApi> ReconcileHandler<D> {
                     | DockerError::NotManager
                     | DockerError::IncompatibleSwarm),
                 ) => {
-                    tracing::error!(error = ?error, "Docker operation rejected");
+                    tracing::error!(error = %error, "Docker operation rejected");
                     return Err(error.into());
                 }
-                Err(error) if attempt + 1 == self.retry.attempts => {
-                    tracing::error!(error = ?error, "Docker operation failed after retries");
+                Err(error) if attempt + 1 == attempts => {
+                    tracing::error!(error = %error, "Docker operation failed after retries");
                     return Err(error.into());
                 }
                 Err(error) => {
                     tracing::warn!(
-                        error = ?error,
+                        error = %error,
                         attempt = attempt + 1,
                         "Docker operation failed; retrying"
                     );
                     tokio::select! {()=cancellation.cancelled()=>return Err(OperationError::Cancelled),()=tokio::time::sleep(delay)=>{}}
-                    delay = (delay * 2).min(self.retry.max_delay);
+                    delay = delay.saturating_mul(2).min(self.retry.max_delay);
                 }
             }
         }
@@ -161,7 +163,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
                         () = cancellation.cancelled() => return Err(OperationError::Cancelled),
                         () = tokio::time::sleep(delay.min(remaining)) => {}
                     }
-                    delay = (delay * 2).min(self.retry.max_delay);
+                    delay = delay.saturating_mul(2).min(self.retry.max_delay);
                 }
             }
         }

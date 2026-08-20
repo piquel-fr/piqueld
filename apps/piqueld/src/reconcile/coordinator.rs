@@ -1,7 +1,7 @@
 use super::{
     ActionKind, ApplicationState, Arc, CancellationToken, DockerApi, Duration, MAX_PAGE_SIZE,
-    Notify, OperationScheduler, Plan, PlanAction, PlanRequest, ReconcileHandler, SchedulerError,
-    SqliteStore, StoreError, StoredApplication,
+    Notify, OperationScheduler, Plan, PlanAction, PlanRequest, ReconcileHandler, RetryPolicy,
+    SchedulerError, SqliteStore, StoreError, StoredApplication, blocked_plan_message,
 };
 
 /// Runs startup recovery, apply/delete wakes, and periodic full scans. Multiple
@@ -48,15 +48,24 @@ async fn run_scan_until_success<D: DockerApi>(
     docker: &D,
     cancellation: &CancellationToken,
 ) -> Result<(), SchedulerError> {
+    let retry = RetryPolicy::default();
+    let mut delay = retry.initial_delay;
+    let mut logged_failure = false;
     loop {
         match scan_and_run(scheduler, store, docker, cancellation).await {
             Ok(()) => return Ok(()),
             Err(error) => {
-                tracing::error!(%error, "coordinator scan failed; retrying");
+                if logged_failure {
+                    tracing::debug!(%error, "coordinator scan still failing; retrying");
+                } else {
+                    tracing::warn!(%error, "coordinator scan failed; retrying");
+                    logged_failure = true;
+                }
                 tokio::select! {
                     () = cancellation.cancelled() => return Ok(()),
-                    () = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    () = tokio::time::sleep(delay) => {},
                 }
+                delay = delay.saturating_mul(2).min(retry.max_delay);
             }
         }
     }
@@ -113,7 +122,7 @@ async fn scan_and_run<D: DockerApi>(
                             ApplicationState::Ready,
                             ApplicationState::Degraded,
                             Some(application.generation),
-                            Some("runtime reconciliation is blocked by an ownership conflict"),
+                            Some(blocked_plan_message(&runtime_plan)),
                         )
                         .await?;
                 }
@@ -183,6 +192,11 @@ async fn retry_delete<D: DockerApi>(
         &observed,
     );
     if deletion_plan.is_blocked() {
+        tracing::warn!(
+            application_id = %application.application.id,
+            diagnostics = ?deletion_plan.diagnostics,
+            "deletion reconciliation is blocked"
+        );
         return Ok(());
     }
     let steps = deletion_plan

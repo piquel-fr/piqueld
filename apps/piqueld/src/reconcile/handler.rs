@@ -20,8 +20,13 @@ impl<D: DockerApi> OperationHandler for ReconcileHandler<D> {
                 OperationError::Cancelled | OperationError::Superseded
             )
             && !cancellation.is_cancelled()
+            && let Err(recording_error) = self.record_operation_failure(operation, error).await
         {
-            self.record_operation_failure(operation, error).await?;
+            tracing::error!(
+                %recording_error,
+                operation_id = %operation.id,
+                "could not record operation failure"
+            );
         }
         result
     }
@@ -46,12 +51,13 @@ impl<D: DockerApi> ReconcileHandler<D> {
 
         self.start_deployment(operation).await?;
         let request = request_for(operation, &application);
+        let ownership = Self::ownership_labels(&application);
         let steps = self
             .store
             .operation_steps(&operation.id)
             .await
             .map_err(journal_error)?;
-        self.execute_steps(operation, &request, steps, cancellation)
+        self.execute_steps(operation, &request, steps, &ownership, cancellation)
             .await?;
         if operation.kind != OperationKind::Delete && !self.operation_is_current(operation).await? {
             self.skip_superseded_steps(operation).await?;
@@ -128,6 +134,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
         operation: &Operation,
         request: &PlanRequest,
         steps: Vec<crate::store::OperationStep>,
+        ownership: &std::collections::BTreeMap<String, String>,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         for step in steps {
@@ -143,7 +150,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
             if cancellation.is_cancelled() {
                 return Err(OperationError::Cancelled);
             }
-            self.execute_step(operation, request, &step, cancellation)
+            self.execute_step(operation, request, &step, ownership, cancellation)
                 .await?;
         }
         Ok(())
@@ -154,6 +161,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
         operation: &Operation,
         request: &PlanRequest,
         step: &crate::store::OperationStep,
+        ownership: &std::collections::BTreeMap<String, String>,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
@@ -181,7 +189,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
             .await
             .map_err(journal_error)?;
         match self
-            .execute_action(&action, &operation.application_id, cancellation)
+            .execute_action(&action, &operation.application_id, ownership, cancellation)
             .await
         {
             Ok(()) => {
@@ -251,6 +259,20 @@ impl<D: DockerApi> ReconcileHandler<D> {
                         &operation.application_id,
                         ApplicationState::Deploying,
                         ApplicationState::Degraded,
+                        Some(operation.generation),
+                        Some(&message),
+                    )
+                    .await
+                    .map_err(journal_error)?;
+            }
+            (_, ApplicationState::Ready | ApplicationState::Degraded)
+                if operation.kind != OperationKind::Delete =>
+            {
+                self.store
+                    .set_status(
+                        &operation.application_id,
+                        status.state,
+                        ApplicationState::Failed,
                         Some(operation.generation),
                         Some(&message),
                     )

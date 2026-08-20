@@ -3,6 +3,7 @@ use super::{
     ResolutionSet, ResolvedSource, RuntimeBoundary, Source, StoredApplication, compile_application,
 };
 use async_trait::async_trait;
+use futures_util::{StreamExt, TryStreamExt, stream};
 
 /// Runtime boundary backed by Docker.
 pub struct DockerRuntime<D> {
@@ -33,18 +34,36 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         &self,
         application: &NormalizedApplication,
     ) -> Result<PreparedApplication, BoundaryError> {
-        let mut resolutions = ResolutionSet::default();
-        for service in &application.spec.services {
-            let Source::Image { image } = &service.source;
-            let digest_reference = self.docker.resolve_image(image).await?;
-            resolutions.sources.insert(
-                service.name.clone(),
-                ResolvedSource::Image {
-                    requested: image.clone(),
-                    digest_reference,
-                },
-            );
-        }
+        let docker = Arc::clone(&self.docker);
+        let jobs = application
+            .spec
+            .services
+            .iter()
+            .map(|service| (service.name.clone(), service.source.clone()))
+            .collect::<Vec<_>>();
+        let sources = stream::iter(jobs.into_iter().map(|(name, source)| {
+            let docker = Arc::clone(&docker);
+            async move {
+                let Source::Image { image } = source;
+                let digest_reference = docker.resolve_image(&image).await?;
+                Ok::<_, BoundaryError>(
+                    (
+                        name,
+                        ResolvedSource::Image {
+                            requested: image,
+                            digest_reference,
+                        },
+                    ),
+                )
+            }
+        }))
+        .buffer_unordered(4)
+        .try_collect::<Vec<_>>()
+        .await?;
+        let resolutions = ResolutionSet {
+            sources: sources.into_iter().collect(),
+            ..Default::default()
+        };
         let resolved = compile_application(application, self.instance_id.clone(), &resolutions)
             .map_err(BoundaryError::Compilation)?;
         let observed = self.docker.observe(&application.id).await?;
