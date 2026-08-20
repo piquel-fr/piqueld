@@ -93,11 +93,16 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: piqueld-ui-${{ github.sha }}
-          path: artifacts/nix/ui
+          path: artifacts/nix/ui-source
       - name: Verify Nix VM artifacts
         run: |
           test -x artifacts/nix/piqueld
           test -x artifacts/nix/piquelctl
+          ui_index="$(find artifacts/nix/ui-source -type f -name index.html -print -quit)"
+          test -n "$ui_index"
+          ui_root="${ui_index%/index.html}"
+          mkdir -p artifacts/nix/ui
+          cp -R "$ui_root"/. artifacts/nix/ui/
           test -f artifacts/nix/ui/index.html
       - uses: DeterminateSystems/determinate-nix-action@c70cb8ae92d68c66953db28a26a63db1665bc837 # v3.21.5
       - uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
