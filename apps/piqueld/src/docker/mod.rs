@@ -17,8 +17,8 @@ use bollard::{
     },
     query_parameters::{
         CreateImageOptionsBuilder, InspectNetworkOptions, InspectServiceOptions,
-        ListNetworksOptionsBuilder, ListNodesOptions, ListServicesOptionsBuilder, ListTasksOptions,
-        ListVolumesOptionsBuilder,
+        ListNetworksOptionsBuilder, ListNodesOptions, ListServicesOptionsBuilder,
+        ListTasksOptionsBuilder, ListVolumesOptionsBuilder,
     },
 };
 use futures_util::TryStreamExt;

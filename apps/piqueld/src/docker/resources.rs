@@ -2,9 +2,9 @@ use super::{
     APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder,
     DesiredNetwork, DesiredService, DesiredVolume, DockerApi, DockerError, HashMap,
     InspectNetworkOptions, InspectServiceOptions, Ipam, ListNetworksOptionsBuilder,
-    ListServicesOptionsBuilder, ListTasksOptions, ListVolumesOptionsBuilder, NetworkCreateRequest,
-    ObservedApplication, ObservedNetwork, ObservedVolume, SERVICE_LABEL, SwarmInitRequest,
-    SwarmState, TryStreamExt, VolumeCreateOptions, async_trait,
+    ListServicesOptionsBuilder, ListTasksOptionsBuilder, ListVolumesOptionsBuilder,
+    NetworkCreateRequest, ObservedApplication, ObservedNetwork, ObservedVolume, SERVICE_LABEL,
+    SwarmInitRequest, SwarmState, TryStreamExt, VolumeCreateOptions, async_trait,
 };
 use piqueld_core::resource::image_repository;
 
@@ -151,6 +151,10 @@ impl DockerApi for BollardDocker {
                 ))
                 .await,
         )?;
+        let service_names = listed_services
+            .iter()
+            .filter_map(|service| service.spec.as_ref()?.name.clone())
+            .collect::<Vec<_>>();
         let mut raw_services = Vec::with_capacity(listed_services.len());
         for listed in listed_services {
             let Some(id) = listed.id.as_deref() else {
@@ -160,7 +164,13 @@ impl DockerApi for BollardDocker {
         }
         let all_tasks = Self::map_request(
             "list tasks",
-            self.docker.list_tasks(None::<ListTasksOptions>).await,
+            self.docker
+                .list_tasks(Some(
+                    ListTasksOptionsBuilder::default()
+                        .filters(&HashMap::from([("service", service_names)]))
+                        .build(),
+                ))
+                .await,
         )?;
         let mut services = raw_services
             .into_iter()
