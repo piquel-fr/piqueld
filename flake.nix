@@ -108,11 +108,10 @@
                 }
               ];
             }).config.environment.etc."piqueld/config.toml".source;
-          vmRelease = self.packages.${system}.release.overrideAttrs (_: {
-            # The package check already runs the release test suite. The VM
-            # check exercises the installed split package and service wiring.
-            doCheck = false;
-          });
+          # Reuse the checked release. A doCheck=false override would create a
+          # second derivation and compile the complete Rust and WASM package
+          # again just to populate the VM closure.
+          vmRelease = self.packages.${system}.release;
           vmPackage = pkgs.runCommand "piqueld-daemon-vm-0.1.0" { } ''
             mkdir -p "$out/bin"
             cp ${vmRelease}/bin/piqueld "$out/bin/piqueld"

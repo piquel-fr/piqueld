@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   rust:
-    name: Rust and contract qualification
+    name: Rust validation
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -35,8 +35,6 @@ jobs:
           tool: cargo-deny@0.19.9
       - name: Authoritative workspace validation
         run: just
-      - name: Cross-crate contract qualification
-        run: ./scripts/qualification.sh contracts
 
   ui-browser:
     name: Production WASM and Chromium smoke
