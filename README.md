@@ -1,7 +1,7 @@
 # piqueld
 
 `piqueld` is a small Rust control plane for one Docker Engine running a
-single-node Swarm. Plan 06A supports one honest workflow: submit an application
+single-node Swarm. Plan 06B supports one honest workflow: submit an application
 manifest that names prebuilt container images, resolve those images to digests,
 and reconcile the resulting private network, named volumes, and replicated
 services.
@@ -19,14 +19,17 @@ The supported manifest and runtime model are documented in:
 
 - [`docs/application-manifest.md`](docs/application-manifest.md)
 - [`docs/api.md`](docs/api.md)
+- [`docs/piquelctl.md`](docs/piquelctl.md)
+- [`docs/configuration.md`](docs/configuration.md)
+- [`docs/quickstart.md`](docs/quickstart.md)
 - [`docs/resource-planning.md`](docs/resource-planning.md)
 - [`docs/docker-reconciliation.md`](docs/docker-reconciliation.md)
 - [`docs/migrations.md`](docs/migrations.md)
 
-| Supported in Plan 06A | Deferred until later plans |
+| Supported in Plan 06B | Deferred until later plans |
 | --- | --- |
 | Prebuilt images, replicas, environment, command/args, health checks, resource limits, named volumes, and mounts | Git sources, builds, registry management, credentials, and secrets |
-| Single-node Swarm reconciliation, drift repair, durable operations, polling, and volume retention | Published ports, routes, Traefik, logs, state transfer, authentication, packaging, CLI, and UI |
+| Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, and the essential `piquelctl` workflow | Published ports, routes, Traefik, logs, state transfer, authentication, packaging, and UI |
 | Unix-socket and loopback-TCP API transports | Remote or multi-node operation |
 
 ## Development
@@ -58,6 +61,7 @@ just docker-test
 The reproducible Nix package and checks can be evaluated explicitly with
 `just nix-check`.
 
-The daemon reads `/etc/piqueld/config.toml` by default; `PIQUELD_CONFIG` selects
+The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
 another host configuration. Configuration only covers local paths, listeners,
-SQLite, Docker, and reconciliation limits.
+SQLite, Docker, and reconciliation limits. The complete non-root development
+example is [`config/piqueld.example.toml`](config/piqueld.example.toml).

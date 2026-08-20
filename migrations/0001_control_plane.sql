@@ -84,12 +84,13 @@ CREATE TABLE operation_steps (
     CHECK (error_code IS NULL OR state = 'failed')
 );
 
-CREATE TABLE application_create_idempotency (
+CREATE TABLE mutation_idempotency (
     key_hash TEXT PRIMARY KEY CHECK (length(key_hash) = 71 AND key_hash LIKE 'sha256:%'),
     request_hash TEXT NOT NULL CHECK (length(request_hash) = 71 AND request_hash LIKE 'sha256:%'),
     application_id TEXT NOT NULL REFERENCES applications(id),
     operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
-    generation INTEGER NOT NULL CHECK (generation = 1),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    kind TEXT NOT NULL CHECK (kind IN ('create','replace','delete','reconcile')),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms > 0)
 );
 
@@ -102,5 +103,5 @@ CREATE UNIQUE INDEX operations_one_running_per_app_idx ON operations(application
 CREATE INDEX operations_finished_retention_idx ON operations(finished_at_ms)
     WHERE finished_at_ms IS NOT NULL;
 CREATE INDEX operation_steps_dispatch_idx ON operation_steps(operation_id, state, position);
-CREATE INDEX application_create_idempotency_application_idx
-    ON application_create_idempotency(application_id);
+CREATE INDEX mutation_idempotency_application_idx
+    ON mutation_idempotency(application_id);

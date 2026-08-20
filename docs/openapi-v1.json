@@ -1080,6 +1080,10 @@
                 "description": "Version of the exposed API.",
                 "type": "string"
               },
+              "daemon_version": {
+                "description": "Version of the running daemon binary.",
+                "type": "string"
+              },
               "instance_id": {
                 "description": "Control-plane instance identifier.",
                 "type": "string"
@@ -1092,6 +1096,7 @@
             "required": [
               "status",
               "api_version",
+              "daemon_version",
               "instance_id"
             ],
             "type": "object"
@@ -2087,6 +2092,10 @@
             "description": "Version of the exposed API.",
             "type": "string"
           },
+          "daemon_version": {
+            "description": "Version of the running daemon binary.",
+            "type": "string"
+          },
           "instance_id": {
             "description": "Control-plane instance identifier.",
             "type": "string"
@@ -2099,6 +2108,7 @@
         "required": [
           "status",
           "api_version",
+          "daemon_version",
           "instance_id"
         ],
         "type": "object"
@@ -2462,6 +2472,20 @@
               "minLength": 8,
               "type": "string"
             }
+          },
+          {
+            "description": "Binds a retry-safe mutation to one request.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -2658,6 +2682,20 @@
               "format": "uint64",
               "minimum": 1,
               "type": "integer"
+            }
+          },
+          {
+            "description": "Binds a retry-safe mutation to one request.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],

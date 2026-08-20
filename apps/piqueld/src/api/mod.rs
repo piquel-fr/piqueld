@@ -258,7 +258,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Builds the Plan 06A HTTP router.
+/// Builds the Plan 06 HTTP router.
 pub fn router(state: ApiState) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     let (router, openapi) = documented_router().split_for_parts();
@@ -373,6 +373,34 @@ fn valid_expected_generation(expected: u64) -> Result<(), ApiError> {
 fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok()
 }
+
+fn optional_idempotency_key(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
+    let Some(key) = header_text(headers, "idempotency-key") else {
+        return Ok(None);
+    };
+    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "idempotency_key_invalid",
+            "Idempotency-Key is invalid",
+        ));
+    }
+    Ok(Some(key))
+}
+
+fn mutation_request_hash(
+    kind: &str,
+    application_id: &ApplicationId,
+    expected_generation: u64,
+    spec_hash: Option<&str>,
+) -> String {
+    let request = format!(
+        "piqueld-mutation/v1\0{kind}\0{application_id}\0{expected_generation}\0{}",
+        spec_hash.unwrap_or_default()
+    );
+    format!("sha256:{}", hex(&Sha256::digest(request.as_bytes())))
+}
+
 fn require_json(headers: &HeaderMap) -> Result<(), ApiError> {
     match content_type(headers) {
         Some(value) if value.eq_ignore_ascii_case(JSON) => Ok(()),

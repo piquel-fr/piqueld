@@ -173,11 +173,34 @@ async fn generation_updates_and_create_idempotency_are_durable() {
         .expect("idempotent retry is readable");
     assert_eq!(first, replay);
 
+    let replace_key = format!("sha256:{}", "c".repeat(64));
+    let replace_request = format!("sha256:{}", "d".repeat(64));
     let replaced = store
-        .replace(&application, &resolved, 1, &["ensure_network".into()])
+        .replace_idempotent(
+            &application,
+            &resolved,
+            1,
+            &["ensure_network".into()],
+            &replace_key,
+            &replace_request,
+        )
         .await
         .expect("replacement increments the generation");
     assert_eq!(replaced.generation, 2);
+    assert_eq!(
+        store
+            .replace_idempotent(
+                &application,
+                &resolved,
+                1,
+                &["ensure_network".into()],
+                &replace_key,
+                &replace_request,
+            )
+            .await
+            .expect("replacement retry is idempotent"),
+        replaced
+    );
     assert!(matches!(
         store
             .replace(&application, &resolved, 1, &["ensure_network".into()])
@@ -187,6 +210,31 @@ async fn generation_updates_and_create_idempotency_are_durable() {
             actual: 2
         })
     ));
+    let delete_key = format!("sha256:{}", "e".repeat(64));
+    let delete_request = format!("sha256:{}", "f".repeat(64));
+    let deleted = store
+        .request_delete_idempotent(
+            &application.id,
+            2,
+            &["remove_service".into()],
+            &delete_key,
+            &delete_request,
+        )
+        .await
+        .expect("delete is idempotent");
+    assert_eq!(
+        store
+            .request_delete_idempotent(
+                &application.id,
+                2,
+                &["remove_service".into()],
+                &delete_key,
+                &delete_request,
+            )
+            .await
+            .expect("delete retry is idempotent"),
+        deleted
+    );
 }
 
 #[tokio::test]

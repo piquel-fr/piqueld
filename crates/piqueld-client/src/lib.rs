@@ -14,6 +14,8 @@ pub use applications::{
     PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
 };
 pub use operations::{OperationStepView, OperationView};
+pub use piqueld_core::manifest::Source;
+pub use piqueld_core::{ValidatedApplication, ValidationErrors};
 pub use system::SystemStatus;
 
 use bytes::Bytes;
@@ -23,17 +25,30 @@ use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
+    fmt,
     future::Future,
     path::{Path, PathBuf},
     time::Duration,
 };
 use thiserror::Error;
 use tokio::net::{TcpStream, UnixStream};
-use url::Url;
+use url::{Host, Url};
 use utoipa::ToSchema;
 
 /// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
+
+/// Validates a TOML application manifest and returns its editable name.
+///
+/// The daemon repeats this validation. The helper lets local CLI workflows
+/// resolve a replacement target without importing the core crate directly.
+///
+/// # Errors
+/// Returns field-level validation errors when the manifest is malformed or
+/// outside the supported application schema.
+pub fn application_name_from_toml(input: &str) -> Result<String, ValidationErrors> {
+    piqueld_core::parse_toml(input).map(|application| application.name().to_owned())
+}
 
 /// Successful API response envelope.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -89,8 +104,11 @@ pub enum ClientError {
     #[error("invalid API endpoint")]
     Endpoint,
     /// The connection, protocol, or request timeout failed.
-    #[error("API transport failed")]
-    Transport,
+    #[error("API transport failed: {message}")]
+    Transport {
+        /// Safe transport failure detail suitable for operator diagnostics.
+        message: String,
+    },
     /// The server returned a non-success response.
     #[error("API returned {status}: {error:?}")]
     Api {
@@ -108,11 +126,11 @@ impl Client {
     /// Creates a client for an HTTP endpoint.
     ///
     /// # Errors
-    /// Returns [`ClientError::Endpoint`] when `base_url` is not a plain HTTP origin.
+    /// Returns [`ClientError::Endpoint`] when `base_url` is not a loopback HTTP origin.
     pub fn tcp(base_url: &str) -> Result<Self, ClientError> {
         let url = Url::parse(base_url).map_err(|_| ClientError::Endpoint)?;
         if url.scheme() != "http"
-            || url.path() != "/"
+            || !matches!(url.path(), "" | "/")
             || url.query().is_some()
             || url.fragment().is_some()
             || !url.username().is_empty()
@@ -120,7 +138,12 @@ impl Client {
         {
             return Err(ClientError::Endpoint);
         }
-        let host = url.host_str().ok_or(ClientError::Endpoint)?.to_owned();
+        let host = match url.host().ok_or(ClientError::Endpoint)? {
+            Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => host.to_owned(),
+            Host::Ipv4(host) if host.is_loopback() => host.to_string(),
+            Host::Ipv6(host) if host.is_loopback() => host.to_string(),
+            _ => return Err(ClientError::Endpoint),
+        };
         let port = url.port_or_known_default().ok_or(ClientError::Endpoint)?;
         let authority = if host.contains(':') {
             format!("[{host}]:{port}")
@@ -159,7 +182,7 @@ impl Client {
     ) -> Result<T, ClientError> {
         tokio::time::timeout(self.timeout, future)
             .await
-            .map_err(|_| ClientError::Transport)?
+            .map_err(|_| ClientError::transport("request timed out"))?
     }
 
     async fn raw_request<B: Serialize>(
@@ -209,40 +232,38 @@ impl Client {
                     let io = TokioIo::new(
                         TcpStream::connect((host.as_str(), port))
                             .await
-                            .map_err(|_| ClientError::Transport)?,
+                            .map_err(ClientError::transport)?,
                     );
-                    let (mut sender, connection) = http1::handshake(io)
-                        .await
-                        .map_err(|_| ClientError::Transport)?;
+                    let (mut sender, connection) =
+                        http1::handshake(io).await.map_err(ClientError::transport)?;
                     tokio::spawn(async move {
                         let _ = connection.await;
                     });
                     sender
                         .send_request(request)
                         .await
-                        .map_err(|_| ClientError::Transport)
+                        .map_err(ClientError::transport)
                 }
                 Endpoint::Unix(path) => {
                     let io = TokioIo::new(
                         UnixStream::connect(path)
                             .await
-                            .map_err(|_| ClientError::Transport)?,
+                            .map_err(ClientError::transport)?,
                     );
-                    let (mut sender, connection) = http1::handshake(io)
-                        .await
-                        .map_err(|_| ClientError::Transport)?;
+                    let (mut sender, connection) =
+                        http1::handshake(io).await.map_err(ClientError::transport)?;
                     tokio::spawn(async move {
                         let _ = connection.await;
                     });
                     sender
                         .send_request(request)
                         .await
-                        .map_err(|_| ClientError::Transport)
+                        .map_err(ClientError::transport)
                 }
             }
         })
         .await
-        .map_err(|_| ClientError::Transport)?
+        .map_err(|_| ClientError::transport("request timed out"))?
     }
 
     async fn send_text<T: DeserializeOwned>(
@@ -275,6 +296,14 @@ impl Client {
     }
 }
 
+impl ClientError {
+    fn transport(error: impl fmt::Display) -> Self {
+        Self::Transport {
+            message: error.to_string(),
+        }
+    }
+}
+
 async fn decode_envelope<T: DeserializeOwned>(
     response: hyper::Response<hyper::body::Incoming>,
 ) -> Result<T, ClientError> {
@@ -283,7 +312,7 @@ async fn decode_envelope<T: DeserializeOwned>(
         .into_body()
         .collect()
         .await
-        .map_err(|_| ClientError::Transport)?
+        .map_err(ClientError::transport)?
         .to_bytes();
     if !status.is_success() {
         return Err(ClientError::Api {

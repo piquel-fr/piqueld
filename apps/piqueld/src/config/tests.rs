@@ -44,3 +44,8 @@ fn removed_data_directory_is_not_accepted_as_configuration() {
         Err(ConfigError::Parse)
     ));
 }
+
+#[test]
+fn built_in_defaults_are_valid() {
+    assert!(DaemonConfig::validated_default().is_ok());
+}

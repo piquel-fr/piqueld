@@ -22,12 +22,14 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::{
-    ApiError, ApiState, BoundaryError, RequestShape, accepted, decode_json, generation,
-    header_text, hex, idempotency_key_hash, idempotent_application_id, ok,
-    openapi::ApiErrorResponse, parse_manifest, parse_update, require_json,
-    valid_expected_generation,
+    ApiError, ApiState, BoundaryError, RequestShape, accepted, decode_json, generation, hex,
+    idempotency_key_hash, idempotent_application_id, mutation_request_hash, ok,
+    openapi::ApiErrorResponse, optional_idempotency_key, parse_manifest, parse_update,
+    require_json, valid_expected_generation,
 };
-use crate::store::{ApplicationStatus, DEFAULT_PAGE_SIZE, StoreError, StoredApplication};
+use crate::store::{
+    ApplicationStatus, DEFAULT_PAGE_SIZE, OperationKind, StoreError, StoredApplication,
+};
 
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -133,20 +135,13 @@ pub(super) async fn create(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
     let body = request_body(body)?;
-    let key = header_text(&headers, "idempotency-key").ok_or_else(|| {
+    let key = optional_idempotency_key(&headers)?.ok_or_else(|| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
             "idempotency_key_required",
             "Idempotency-Key is required for application creation",
         )
     })?;
-    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "idempotency_key_invalid",
-            "Idempotency-Key is invalid",
-        ));
-    }
     let validated = parse_manifest(&headers, &body, RequestShape::Create)?;
     let id = idempotent_application_id(key);
     let app = validated.normalize(id.clone());
@@ -208,6 +203,7 @@ pub(super) async fn create(
     params(
         ("id" = String, Path, min_length = 8, max_length = 64),
         ("X-Expected-Generation" = Option<u64>, Header, nullable = false, format = "uint64", minimum = 1, description = "Required for application/toml replacement and replacement planning."),
+        ("Idempotency-Key" = Option<String>, Header, min_length = 1, max_length = 128, description = "Binds a retry-safe mutation to one request."),
     ),
     request_body(
         content(
@@ -236,11 +232,31 @@ pub(super) async fn replace(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
     let body = request_body(body)?;
+    let key = optional_idempotency_key(&headers)?;
     let id = ApplicationId::parse(&id)?;
     let (validated, expected) = parse_update(&headers, &body)?;
+    let app = validated.normalize(id.clone());
+    let spec_hash = app.spec_hash();
+    let key_binding = key.map(|key| {
+        (
+            idempotency_key_hash(key),
+            mutation_request_hash("replace", &id, expected, Some(&spec_hash)),
+        )
+    });
+    if let Some((key_hash, request_hash)) = &key_binding
+        && let Some(mutation) = state
+            .store
+            .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Replace)
+            .await?
+    {
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
     let current = state.store.get(&id).await?;
     generation(expected, current.generation)?;
-    let app = validated.normalize(id.clone());
     reject_name_collision(&state, &app, Some(&id)).await?;
     let prepared = state.runtime.prepare(&app).await?;
     let plan = Plan::from_request(
@@ -261,10 +277,24 @@ pub(super) async fn replace(
         .iter()
         .map(PlanAction::operation_step)
         .collect::<Vec<_>>();
-    let mutation = state
-        .store
-        .replace(&app, &prepared.resolved, expected, &steps)
-        .await?;
+    let mutation = if let Some((key_hash, request_hash)) = &key_binding {
+        state
+            .store
+            .replace_idempotent(
+                &app,
+                &prepared.resolved,
+                expected,
+                &steps,
+                key_hash,
+                request_hash,
+            )
+            .await?
+    } else {
+        state
+            .store
+            .replace(&app, &prepared.resolved, expected, &steps)
+            .await?
+    };
     state.runtime.trigger_reconciliation();
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
@@ -278,7 +308,10 @@ pub(super) async fn replace(
     path = "/api/v1/applications/{id}",
     operation_id = "deleteApplication",
     summary = "Request application deletion",
-    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    params(
+        ("id" = String, Path, min_length = 8, max_length = 64),
+        ("Idempotency-Key" = Option<String>, Header, min_length = 1, max_length = 128, description = "Binds a retry-safe mutation to one request."),
+    ),
     request_body = DeleteApplicationRequest,
     responses(
         (status = 202, description = "Success", body = Envelope<AcceptedOperation>),
@@ -302,7 +335,26 @@ pub(super) async fn delete(
     require_json(&headers)?;
     let request: DeleteApplicationRequest = decode_json(&body)?;
     valid_expected_generation(request.expected_generation)?;
+    let key = optional_idempotency_key(&headers)?;
     let id = ApplicationId::parse(&id)?;
+    let key_binding = key.map(|key| {
+        (
+            idempotency_key_hash(key),
+            mutation_request_hash("delete", &id, request.expected_generation, None),
+        )
+    });
+    if let Some((key_hash, request_hash)) = &key_binding
+        && let Some(mutation) = state
+            .store
+            .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Delete)
+            .await?
+    {
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
     let current = state.store.get(&id).await?;
     generation(request.expected_generation, current.generation)?;
     let observed = state.runtime.observe(&current).await?;
@@ -327,10 +379,23 @@ pub(super) async fn delete(
         .iter()
         .map(PlanAction::operation_step)
         .collect::<Vec<_>>();
-    let mutation = state
-        .store
-        .request_delete(&id, request.expected_generation, &steps)
-        .await?;
+    let mutation = if let Some((key_hash, request_hash)) = &key_binding {
+        state
+            .store
+            .request_delete_idempotent(
+                &id,
+                request.expected_generation,
+                &steps,
+                key_hash,
+                request_hash,
+            )
+            .await?
+    } else {
+        state
+            .store
+            .request_delete(&id, request.expected_generation, &steps)
+            .await?
+    };
     state.runtime.trigger_reconciliation();
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
