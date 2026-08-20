@@ -1,6 +1,6 @@
 use super::{
     APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, INSTANCE_LABEL, MANAGED_LABEL,
-    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name,
+    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name, valid_logical_name,
 };
 
 impl BollardDocker {
@@ -91,7 +91,7 @@ impl BollardDocker {
         let Some(service) = observed.get(SERVICE_LABEL) else {
             return false;
         };
-        Self::valid_logical_name(service)
+        valid_logical_name(service)
             && Self::owns(observed, expected)
             && docker_resource_name(&application, ResourceKind::Service, Some(service)) == name
     }
@@ -118,49 +118,12 @@ impl BollardDocker {
         piqueld_core::Sha256Digest::parse(value).is_ok()
     }
 
-    /// Returns whether a logical resource name is safe for Docker naming.
-    pub(super) fn valid_logical_name(value: &str) -> bool {
-        (1..=63).contains(&value.len())
-            && value
-                .bytes()
-                .next()
-                .is_some_and(|byte| byte.is_ascii_lowercase())
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-            && !value.ends_with('-')
-    }
-
     /// Returns whether an image reference contains a complete SHA-256 digest.
     pub(super) fn valid_digest(value: &str) -> bool {
         value.rsplit_once("@sha256:").is_some_and(|(_, d)| {
             d.len() == 64
                 && d.bytes()
                     .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        })
-    }
-
-    /// Returns the canonical repository portion of an image reference.
-    pub(super) fn image_repository(reference: &str) -> Option<String> {
-        let raw = reference.split('@').next()?;
-        let slash = raw.rfind('/');
-        let raw = match raw.rfind(':') {
-            Some(colon) if slash.is_none_or(|s| colon > s) => &raw[..colon],
-            _ => raw,
-        };
-        let first = raw.split('/').next()?;
-        Some(if let Some(path) = raw.strip_prefix("docker.io/") {
-            if path.contains('/') {
-                raw.into()
-            } else {
-                format!("docker.io/library/{path}")
-            }
-        } else if raw.contains('/') && (first.contains(['.', ':']) || first == "localhost") {
-            raw.into()
-        } else if raw.contains('/') {
-            format!("docker.io/{raw}")
-        } else {
-            format!("docker.io/library/{raw}")
         })
     }
 }

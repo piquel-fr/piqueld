@@ -27,6 +27,9 @@ pub enum DockerError {
     /// An owned resource has immutable settings that cannot be repaired safely.
     #[error("Docker resource configuration cannot be reconciled in place")]
     ConfigurationConflict,
+    /// A local value failed validation before a Docker request was made.
+    #[error("Docker request validation failed while {0}")]
+    Validation(&'static str),
     /// A requested image could not be resolved to a repository digest.
     #[error("container image could not be resolved to a digest while {0}")]
     ImageResolution(&'static str),
@@ -75,6 +78,7 @@ impl From<DockerError> for OperationError {
         match error {
             DockerError::OwnershipConflict => Self::OwnershipConflict,
             DockerError::ConfigurationConflict => Self::DockerConfigurationConflict,
+            DockerError::Validation(operation) => Self::ValidationFailed(operation),
             DockerError::NotManager => Self::SwarmManagerUnavailable,
             DockerError::IncompatibleSwarm => Self::SwarmTopologyUnsupported,
             DockerError::Unavailable(operation)

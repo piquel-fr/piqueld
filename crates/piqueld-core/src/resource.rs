@@ -402,7 +402,9 @@ fn desired_application_from_labels(
     ))
 }
 
-fn valid_logical_name(value: &str) -> bool {
+/// Returns whether a logical resource name is safe for Docker naming.
+#[must_use]
+pub fn valid_logical_name(value: &str) -> bool {
     (1..=63).contains(&value.len())
         && value
             .bytes()
@@ -590,7 +592,9 @@ fn same_image_repository(requested: &str, resolved: &str) -> bool {
         .is_some_and(|(left, right)| left == right)
 }
 
-fn image_repository(reference: &str) -> Option<String> {
+/// Returns the canonical repository portion of a valid image reference.
+#[must_use]
+pub fn image_repository(reference: &str) -> Option<String> {
     if !valid_image_reference(reference) {
         return None;
     }
@@ -769,12 +773,6 @@ pub struct ObservedService {
 }
 
 impl ObservedService {
-    /// Returns whether all desired service fields and owned runtime settings match.
-    #[must_use]
-    pub fn semantically_matches(&self, desired: &DesiredService) -> bool {
-        self.matches(desired)
-    }
-
     /// Returns whether all desired service fields match.
     #[must_use]
     pub fn matches(&self, desired: &DesiredService) -> bool {

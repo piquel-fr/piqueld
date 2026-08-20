@@ -45,6 +45,9 @@ pub enum OperationError {
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     DockerRequestFailed(&'static str),
+    /// A local runtime value failed validation before a Docker request was made.
+    #[error("Docker request validation failed while {0}")]
+    ValidationFailed(&'static str),
     /// A service update failed in Docker.
     #[error("service update paused after task failure; the previous healthy task is retained")]
     ServiceUpdateFailed,
@@ -72,6 +75,7 @@ impl OperationError {
             Self::DockerUnavailable(_) => "docker_unavailable",
             Self::ImageResolutionFailed(_) => "image_resolution_failed",
             Self::DockerRequestFailed(_) => "docker_request_failed",
+            Self::ValidationFailed(_) => "validation_failed",
             Self::ServiceUpdateFailed => "service_update_failed",
             Self::ConvergenceTimeout => "convergence_timeout",
             Self::DeletionNotConverged => "deletion_not_converged",

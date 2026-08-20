@@ -1,11 +1,13 @@
 use super::{
-    ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder, DesiredNetwork,
+    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder,
+    DesiredNetwork,
     DesiredService, DesiredVolume, DockerApi, DockerError, HashMap, InspectNetworkOptions,
     InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
     ListTasksOptions, ListVolumesOptionsBuilder, NetworkCreateRequest, ObservedApplication,
     ObservedNetwork, ObservedVolume, SERVICE_LABEL, SwarmInitRequest, SwarmState, TryStreamExt,
     VolumeCreateOptions, async_trait,
 };
+use piqueld_core::resource::image_repository;
 
 #[async_trait]
 impl DockerApi for BollardDocker {
@@ -71,23 +73,28 @@ impl DockerApi for BollardDocker {
             .inspect_image(reference)
             .await
             .map_err(|error| DockerError::image_resolution("inspect pulled image", error))?;
-        let repository = Self::image_repository(reference)
+        let repository = image_repository(reference)
             .ok_or(DockerError::ImageResolution("parse image repository"))?;
         image
             .repo_digests
             .unwrap_or_default()
             .into_iter()
             .find(|digest| {
-                Self::image_repository(digest).as_deref() == Some(repository.as_str())
+                image_repository(digest).as_deref() == Some(repository.as_str())
                     && Self::valid_digest(digest)
             })
             .ok_or(DockerError::ImageResolution("find repository digest"))
     }
 
+    // Keep the correlated resource snapshot in one boundary operation so all
+    // resource IDs can be normalized before service comparisons.
+    #[allow(clippy::too_many_lines)]
     async fn observe(
         &self,
         application: &ApplicationId,
     ) -> Result<ObservedApplication, DockerError> {
+        let application_filter =
+            || HashMap::from([("label", vec![format!("{APPLICATION_LABEL}={application}")])]);
         let raw_networks = Self::map_request(
             "list networks",
             self.docker
@@ -114,7 +121,11 @@ impl DockerApi for BollardDocker {
         let volumes = Self::map_request(
             "list volumes",
             self.docker
-                .list_volumes(Some(ListVolumesOptionsBuilder::default().build()))
+                .list_volumes(Some(
+                    ListVolumesOptionsBuilder::default()
+                        .filters(&application_filter())
+                        .build(),
+                ))
                 .await,
         )?
         .volumes
@@ -134,7 +145,10 @@ impl DockerApi for BollardDocker {
             "list services",
             self.docker
                 .list_services(Some(
-                    ListServicesOptionsBuilder::default().status(true).build(),
+                    ListServicesOptionsBuilder::default()
+                        .filters(&application_filter())
+                        .status(true)
+                        .build(),
                 ))
                 .await,
         )?;
@@ -351,7 +365,7 @@ impl DockerApi for BollardDocker {
                     *target = name.clone();
                 }
             }
-            if observed.semantically_matches(desired) {
+            if observed.matches(desired) {
                 return Ok(());
             }
             let version = existing

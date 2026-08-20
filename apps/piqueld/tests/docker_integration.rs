@@ -189,6 +189,24 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
     .await
     .unwrap();
     restarted.ensure_service(&service).await.unwrap();
+    let repaired = raw
+        .inspect_service(&service.name, None::<InspectServiceOptions>)
+        .await
+        .unwrap();
+    assert!(
+        repaired
+            .version
+            .and_then(|version| version.index)
+            .is_some_and(|version| matching_version.is_some_and(|previous| version > previous))
+    );
+    assert_eq!(
+        repaired
+            .spec
+            .and_then(|spec| spec.mode)
+            .and_then(|mode| mode.replicated)
+            .and_then(|replicated| replicated.replicas),
+        Some(i64::from(service.replicas))
+    );
     restarted
         .remove_service(&http_service.name, &labels)
         .await

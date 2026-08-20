@@ -11,7 +11,7 @@ impl BollardDocker {
     /// Builds the complete Docker service specification from desired state.
     pub(super) fn service_spec(desired: &DesiredService) -> Result<ServiceSpec, DockerError> {
         if !BollardDocker::valid_digest(&desired.image) {
-            return Err(DockerError::Request("build service specification"));
+            return Err(DockerError::Validation("validate digest-pinned image"));
         }
         Ok(ServiceSpec {
             name: Some(desired.name.clone()),
@@ -127,7 +127,7 @@ impl BollardDocker {
             .memory_bytes
             .map(i64::try_from)
             .transpose()
-            .map_err(|_| DockerError::Request("build service specification"))?;
+            .map_err(|_| DockerError::Validation("validate memory limit"))?;
         Ok(Some(TaskSpecResources {
             limits: Some(Limit {
                 nano_cpus: limits
