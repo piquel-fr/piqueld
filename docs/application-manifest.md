@@ -43,9 +43,10 @@ digests. Mount targets are normalized absolute paths below `/`; environment
 names and runtime strings reject invalid control data. Health-check paths are
 absolute, and resource limits must specify CPU, memory, or both.
 
-Defaults are replicas `1`, empty command and arguments, writable mounts, and the
-documented health-check defaults. Services, mounts, volumes, and environment maps
-are canonicalized before hashing. The specification hash is SHA-256 over a
+Defaults are replicas `1`, empty command and arguments, writable mounts, and
+health-check values of path `/health`, interval `10` seconds, timeout `3`
+seconds, and `3` retries. Services, mounts, volumes, and environment maps are
+canonicalized before hashing. The specification hash is SHA-256 over a
 versioned canonical JSON envelope.
 
 The parser is pure. The Docker runtime resolves each image reference to an

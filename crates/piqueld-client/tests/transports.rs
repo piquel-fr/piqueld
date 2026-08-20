@@ -47,7 +47,9 @@ async fn typed_client_uses_unix_socket() {
 
 #[tokio::test]
 async fn request_timeout_is_reported_by_the_client() {
-    let client = Client::tcp("http://127.0.0.1:1")
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let client = Client::tcp(&format!("http://{address}/"))
         .unwrap()
         .with_timeout(Duration::from_millis(1));
     assert!(matches!(

@@ -1,5 +1,5 @@
 # The default command regenerates checked-in output and then validates it.
-default: validate generate-openapi
+default: generate-openapi validate
 
 validate: fmt-check lint check test doc-test deny openapi-check boundary
 

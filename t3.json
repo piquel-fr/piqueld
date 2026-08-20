@@ -39,7 +39,7 @@
     },
     {
       "name": "Validate Workspace",
-      "command": "just",
+      "command": "just validate",
       "icon": "test"
     }
   ]

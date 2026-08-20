@@ -181,8 +181,9 @@ pub enum ConfigError {
 ///
 /// # Errors
 ///
-/// Returns the subscriber initialization error if another global subscriber is
-/// already installed or the configured filter cannot be initialized.
+/// Invalid or absent `RUST_LOG` values fall back to the `info` filter. The
+/// returned error is only from subscriber initialization, such as when another
+/// global subscriber is already installed.
 pub fn init_tracing() -> Result<(), tracing_subscriber::util::TryInitError> {
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
