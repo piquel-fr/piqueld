@@ -80,7 +80,7 @@ impl BollardDocker {
     }
 
     /// Converts a core health check into Docker's health-check representation.
-    fn health_config(health_check: &HealthCheck) -> HealthConfig {
+    pub(super) fn health_config(health_check: &HealthCheck) -> HealthConfig {
         match health_check {
             HealthCheck::Command {
                 command,

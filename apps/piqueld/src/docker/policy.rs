@@ -227,3 +227,22 @@ impl ServiceRuntimePolicy {
         value == &T::default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_http_health_check_round_trips_through_observation() {
+        let health_check = HealthCheck::Http {
+            port: 8080,
+            path: "/health".into(),
+            interval_seconds: 10,
+            timeout_seconds: 3,
+        };
+        let config = BollardDocker::health_config(&health_check);
+
+        assert_eq!(BollardDocker::observed_health(&config), Some(health_check));
+        assert!(ServiceRuntimePolicy::supported_health_config(&config));
+    }
+}

@@ -216,28 +216,72 @@ impl BollardDocker {
         let interval = u32::try_from(config.interval? / NANOSECONDS_PER_SECOND).ok()?;
         let timeout = u32::try_from(config.timeout? / NANOSECONDS_PER_SECOND).ok()?;
         match test.first().map(String::as_str) {
-            Some("CMD") => Some(HealthCheck::Command {
-                command: test[1..].to_vec(),
-                interval_seconds: interval,
-                timeout_seconds: timeout,
-            }),
+            Some("CMD") => Some(
+                Self::observed_wget_health(test, interval, timeout).unwrap_or(
+                    HealthCheck::Command {
+                        command: test[1..].to_vec(),
+                        interval_seconds: interval,
+                        timeout_seconds: timeout,
+                    },
+                ),
+            ),
             Some("CMD-SHELL") => {
                 let shell = test.get(1)?;
-                let url = shell
-                    .split_whitespace()
-                    .last()?
-                    .strip_prefix("http://127.0.0.1:")?;
-                let (port, path) = url
-                    .split_once('/')
-                    .map_or((url, "/"), |(port, _)| (port, &url[port.len()..]));
-                Some(HealthCheck::Http {
-                    port: port.parse().ok()?,
-                    path: path.into(),
-                    interval_seconds: interval,
-                    timeout_seconds: timeout,
-                })
+                let url = shell.split_whitespace().last()?;
+                Self::observed_http_health(url, interval, timeout)
             }
             _ => None,
         }
+    }
+
+    fn observed_wget_health(
+        test: &[String],
+        interval_seconds: u32,
+        timeout_seconds: u32,
+    ) -> Option<HealthCheck> {
+        if test.len() != 8 {
+            return None;
+        }
+        let [
+            _,
+            wget,
+            quiet,
+            timeout_flag,
+            timeout,
+            output_flag,
+            output_path,
+            url,
+        ] = test
+        else {
+            return None;
+        };
+        let expected_timeout = timeout_seconds.to_string();
+        if wget != "wget"
+            || quiet != "-q"
+            || timeout_flag != "-T"
+            || timeout != &expected_timeout
+            || output_flag != "-O"
+            || output_path != "/dev/null"
+        {
+            return None;
+        }
+        Self::observed_http_health(url, interval_seconds, timeout_seconds)
+    }
+
+    fn observed_http_health(
+        url: &str,
+        interval_seconds: u32,
+        timeout_seconds: u32,
+    ) -> Option<HealthCheck> {
+        let url = url.strip_prefix("http://127.0.0.1:")?;
+        let (port, path) = url
+            .split_once('/')
+            .map_or((url, "/"), |(port, _)| (port, &url[port.len()..]));
+        Some(HealthCheck::Http {
+            port: port.parse().ok()?,
+            path: path.into(),
+            interval_seconds,
+            timeout_seconds,
+        })
     }
 }
