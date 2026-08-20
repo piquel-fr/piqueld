@@ -28,8 +28,8 @@ impl DaemonConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] if the built-in defaults violate a configuration
-    /// invariant.
+    /// Returns [`ConfigError::Invalid`] if a built-in default violates a
+    /// configuration invariant.
     pub fn validated_default() -> Result<Self, ConfigError> {
         let config = Self::default();
         config.validate()?;
@@ -61,6 +61,9 @@ impl DaemonConfig {
 
     fn validate(&self) -> Result<(), ConfigError> {
         absolute_file("server.unix_socket", &self.server.unix_socket)?;
+        if let Some(ui_dir) = &self.server.ui_dir {
+            absolute_directory("server.ui_dir", ui_dir)?;
+        }
         absolute_file("database.path", &self.database.path)?;
         absolute_file("docker.socket", &self.docker.socket)?;
         if self.server.http_listen.port() == 0 {
@@ -111,6 +114,10 @@ pub struct ServerConfig {
     pub unix_socket: PathBuf,
     /// Loopback HTTP listener.
     pub http_listen: SocketAddr,
+    /// Optional dashboard asset directory override. When absent, the daemon
+    /// uses the package-provided `PIQUELD_UI_DIR` wrapper value or its local
+    /// default.
+    pub ui_dir: Option<PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -118,8 +125,18 @@ impl Default for ServerConfig {
         Self {
             unix_socket: PathBuf::from("/run/piqueld/piqueld.sock"),
             http_listen: "127.0.0.1:7845".parse().expect("constant socket address"),
+            ui_dir: None,
         }
     }
+}
+
+/// Returns the dashboard asset directory used when configuration does not
+/// specify `server.ui_dir`. The Nix package sets this through a transparent
+/// wrapper, so operators never need to copy a store path into configuration.
+#[must_use]
+pub fn default_ui_dir() -> PathBuf {
+    std::env::var_os("PIQUELD_UI_DIR")
+        .map_or_else(|| PathBuf::from("/usr/share/piqueld/ui"), PathBuf::from)
 }
 
 /// Embedded database location.

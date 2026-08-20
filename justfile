@@ -36,6 +36,20 @@ openapi-check:
 boundary:
     @./scripts/check-dependency-boundaries.sh
 
+# Browser UI development and release asset commands are explicit because they
+# require the wasm target and Trunk. They do not change the default validation.
+ui-check:
+    @cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
+
+ui-dev:
+    @cd apps/piqueld-ui && env -u NO_COLOR trunk serve --proxy-backend=http://127.0.0.1:7845
+
+ui-build:
+    @cd apps/piqueld-ui && env -u NO_COLOR trunk build --release --public-url / --dist ../../target/piqueld-ui-dist
+
+ui-browser-smoke: ui-build
+    @python3 ./scripts/plan06c-browser-smoke.py
+
 # Explicitly mutating generation command.
 generate-openapi:
     @cargo run --package piqueld --bin generate_openapi

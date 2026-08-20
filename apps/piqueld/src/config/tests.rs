@@ -23,6 +23,7 @@ fn host_paths_and_loopback_listener_are_validated() {
         "[server]\nhttp_listen = '127.0.0.1:0'",
         "[server]\nunix_socket = 'relative.sock'",
         "[database]\npath = 'relative.db'",
+        "[server]\nui_dir = 'relative-ui'",
         "[docker]\nsocket = 'relative.sock'",
         "[reconciliation]\nmax_parallel_operations = 0",
         "[reconciliation]\nscan_interval_seconds = 0",

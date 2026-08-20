@@ -344,6 +344,48 @@
         ],
         "type": "string"
       },
+      "ApplicationDetailView": {
+        "description": "Read-only application detail composed at the API boundary.",
+        "properties": {
+          "application": {
+            "$ref": "#/components/schemas/ApplicationView",
+            "description": "Desired application and generation."
+          },
+          "diagnostics": {
+            "description": "Bounded diagnostics from status, runtime, and the latest operation.",
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticView"
+            },
+            "type": "array"
+          },
+          "latest_operation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OperationView",
+                "description": "Most recent durable operation, when one exists."
+              }
+            ]
+          },
+          "observed": {
+            "$ref": "#/components/schemas/ObservedApplicationView",
+            "description": "Sanitized runtime observation."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApplicationStatusView",
+            "description": "Durable application lifecycle status."
+          }
+        },
+        "required": [
+          "application",
+          "status",
+          "observed",
+          "diagnostics"
+        ],
+        "type": "object"
+      },
       "ApplicationId": {
         "description": "Stable internal application identity. It is assigned by persistence and is not\nderived from editable application metadata.",
         "type": "string"
@@ -737,6 +779,24 @@
         ],
         "type": "string"
       },
+      "DiagnosticView": {
+        "description": "Sanitized runtime diagnostic shown by the read-only dashboard.",
+        "properties": {
+          "code": {
+            "description": "Stable diagnostic category.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Bounded, actionable message safe for a browser.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
       "Envelope_AcceptedOperation": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -762,6 +822,57 @@
               "operation_id",
               "application_id",
               "generation"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_ApplicationDetailView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Read-only application detail composed at the API boundary.",
+            "properties": {
+              "application": {
+                "$ref": "#/components/schemas/ApplicationView",
+                "description": "Desired application and generation."
+              },
+              "diagnostics": {
+                "description": "Bounded diagnostics from status, runtime, and the latest operation.",
+                "items": {
+                  "$ref": "#/components/schemas/DiagnosticView"
+                },
+                "type": "array"
+              },
+              "latest_operation": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/OperationView",
+                    "description": "Most recent durable operation, when one exists."
+                  }
+                ]
+              },
+              "observed": {
+                "$ref": "#/components/schemas/ObservedApplicationView",
+                "description": "Sanitized runtime observation."
+              },
+              "status": {
+                "$ref": "#/components/schemas/ApplicationStatusView",
+                "description": "Durable application lifecycle status."
+              }
+            },
+            "required": [
+              "application",
+              "status",
+              "observed",
+              "diagnostics"
             ],
             "type": "object"
           }
@@ -1310,6 +1421,17 @@
           }
         ]
       },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
       "Metadata": {
         "additionalProperties": false,
         "description": "Canonical application metadata.",
@@ -1416,6 +1538,90 @@
           "kind",
           "metadata",
           "spec"
+        ],
+        "type": "object"
+      },
+      "ObservedApplicationView": {
+        "description": "Bounded observed runtime state for one application.",
+        "properties": {
+          "network_count": {
+            "description": "Number of owned networks observed.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "services": {
+            "description": "Observed services in desired service order.",
+            "items": {
+              "$ref": "#/components/schemas/ObservedServiceView"
+            },
+            "type": "array"
+          },
+          "volume_count": {
+            "description": "Number of owned volumes observed.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "services",
+          "network_count",
+          "volume_count"
+        ],
+        "type": "object"
+      },
+      "ObservedServiceView": {
+        "description": "Observed service state summarized for browser and operator clients.",
+        "properties": {
+          "convergence": {
+            "description": "Runtime convergence category.",
+            "type": "string"
+          },
+          "desired_replicas": {
+            "description": "Desired replica count from the application manifest.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "diagnostics": {
+            "description": "Sanitized task and service diagnostics.",
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticView"
+            },
+            "type": "array"
+          },
+          "healthy_replicas": {
+            "description": "Replicas that are running and healthy enough to serve traffic.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "image": {
+            "description": "Observed immutable image reference, when the service exists.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "Logical service name from the desired application.",
+            "type": "string"
+          },
+          "observed_replicas": {
+            "description": "Replicas currently reported by the runtime.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "desired_replicas",
+          "observed_replicas",
+          "healthy_replicas",
+          "convergence",
+          "diagnostics"
         ],
         "type": "object"
       },
@@ -2824,6 +3030,86 @@
         "summary": "Replace an application"
       }
     },
+    "/api/v1/applications/{id}/detail": {
+      "get": {
+        "operationId": "getApplicationDetail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_ApplicationDetailView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get desired and observed application state"
+      }
+    },
     "/api/v1/applications/{id}/plan": {
       "post": {
         "operationId": "planApplicationReplace",
@@ -3279,6 +3565,24 @@
           }
         },
         "summary": "Get daemon status"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Daemon is serving requests"
+          }
+        },
+        "summary": "Check daemon health"
       }
     }
   },

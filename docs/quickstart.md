@@ -7,8 +7,8 @@ the engine can run a single-node Swarm.
 ## Build and start
 
 ```console
-cargo build --release --package piqueld --package piquelctl
-cargo run --package piqueld -- --config config/piqueld.example.toml
+nix build .#default
+./result/bin/piqueld --config ./result/share/piqueld/piqueld.example.toml
 ```
 
 The example keeps the socket and database under `/tmp/piqueld-dev`, so it does
@@ -21,13 +21,13 @@ non-root developer.
 In a second terminal:
 
 ```console
-cargo run --package piquelctl -- --socket /tmp/piqueld-dev/piqueld.sock status
-cargo run --package piquelctl -- --url http://127.0.0.1:7845 status
-cargo run --package piquelctl -- --socket /tmp/piqueld-dev/piqueld.sock plan \
+./result/bin/piquelctl --socket /tmp/piqueld-dev/piqueld.sock status
+./result/bin/piquelctl --url http://127.0.0.1:7845 status
+./result/bin/piquelctl --socket /tmp/piqueld-dev/piqueld.sock plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
-cargo run --package piquelctl -- --socket /tmp/piqueld-dev/piqueld.sock apply \
+./result/bin/piquelctl --socket /tmp/piqueld-dev/piqueld.sock apply \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --yes
-cargo run --package piquelctl -- --socket /tmp/piqueld-dev/piqueld.sock show notes
+./result/bin/piquelctl --socket /tmp/piqueld-dev/piqueld.sock show notes
 ```
 
 `status` reports the daemon version and `--json` produces the same structured
@@ -44,7 +44,7 @@ When finished, delete the application and note that its named volumes are
 retained:
 
 ```console
-cargo run --package piquelctl -- --socket /tmp/piqueld-dev/piqueld.sock delete notes --yes
+./result/bin/piquelctl --socket /tmp/piqueld-dev/piqueld.sock delete notes --yes
 ```
 
 The retained named volumes are deliberate so deleting an application does not
