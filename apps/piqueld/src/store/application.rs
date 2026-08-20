@@ -507,22 +507,16 @@ impl SqliteStore {
         {
             return Err(StoreError::InvalidInput);
         }
+        let id_value = id.as_str();
         let mut tx = self.begin_immediate().await?;
-        if let Some((key_hash, request_hash)) = idempotency
-            && let Some(mutation) = Self::find_idempotency(
-                &mut tx,
-                key_hash,
-                request_hash,
-                id.as_str(),
-                OperationKind::Delete,
-            )
-            .await?
+        if let Some(mutation) =
+            Self::find_optional_idempotency(&mut tx, idempotency, id_value, OperationKind::Delete)
+                .await?
         {
             tx.commit().await.map_err(StoreError::database)?;
             return Ok(mutation);
         }
         let now = now_ms();
-        let id_value = id.as_str();
         let expected_generation_i64 = generation_i64(expected_generation)?;
         let row = sqlx::query!(
             "SELECT generation AS \"generation!\",delete_intent AS \"delete_intent!\" FROM applications WHERE id=?1 AND deleted_at_ms IS NULL",
@@ -559,21 +553,16 @@ impl SqliteStore {
                 }
                 _ => return Err(StoreError::IllegalTransition),
             };
-            if let Some((key_hash, request_hash)) = idempotency {
-                Self::bind_idempotency(
-                    &mut tx,
-                    IdempotencyBinding {
-                        key_hash,
-                        request_hash,
-                        application_id: id_value,
-                        operation_id: &result.operation_id,
-                        generation: expected_generation_i64,
-                        kind: OperationKind::Delete,
-                        created_at_ms: now,
-                    },
-                )
-                .await?;
-            }
+            Self::bind_optional_idempotency(
+                &mut tx,
+                idempotency,
+                id_value,
+                &result,
+                expected_generation_i64,
+                OperationKind::Delete,
+                now,
+            )
+            .await?;
             tx.commit().await.map_err(StoreError::database)?;
             return Ok(result);
         }
@@ -593,26 +582,22 @@ impl SqliteStore {
         let operation_id =
             Self::insert_operation(&mut tx, id, generation, OperationKind::Delete, steps, now)
                 .await?;
-        if let Some((key_hash, request_hash)) = idempotency {
-            Self::bind_idempotency(
-                &mut tx,
-                IdempotencyBinding {
-                    key_hash,
-                    request_hash,
-                    application_id: id_value,
-                    operation_id: &operation_id,
-                    generation: generation_i64,
-                    kind: OperationKind::Delete,
-                    created_at_ms: now,
-                },
-            )
-            .await?;
-        }
-        tx.commit().await.map_err(StoreError::database)?;
-        Ok(MutationResult {
+        let result = MutationResult {
             generation,
             operation_id,
-        })
+        };
+        Self::bind_optional_idempotency(
+            &mut tx,
+            idempotency,
+            id_value,
+            &result,
+            generation_i64,
+            OperationKind::Delete,
+            now,
+        )
+        .await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(result)
     }
 
     /// Tombstones an application after its delete operation has succeeded.
@@ -961,6 +946,45 @@ impl SqliteStore {
         .await
         .map_err(StoreError::database)?;
         Ok(())
+    }
+
+    async fn bind_optional_idempotency(
+        tx: &mut Transaction<'_, Sqlite>,
+        idempotency: Option<(&str, &str)>,
+        application_id: &str,
+        mutation: &MutationResult,
+        generation: i64,
+        kind: OperationKind,
+        created_at_ms: i64,
+    ) -> Result<(), StoreError> {
+        if let Some((key_hash, request_hash)) = idempotency {
+            Self::bind_idempotency(
+                tx,
+                IdempotencyBinding {
+                    key_hash,
+                    request_hash,
+                    application_id,
+                    operation_id: &mutation.operation_id,
+                    generation,
+                    kind,
+                    created_at_ms,
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn find_optional_idempotency(
+        tx: &mut Transaction<'_, Sqlite>,
+        idempotency: Option<(&str, &str)>,
+        application_id: &str,
+        kind: OperationKind,
+    ) -> Result<Option<MutationResult>, StoreError> {
+        let Some((key_hash, request_hash)) = idempotency else {
+            return Ok(None);
+        };
+        Self::find_idempotency(tx, key_hash, request_hash, application_id, kind).await
     }
 
     async fn reset_failed_delete(

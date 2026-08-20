@@ -25,6 +25,11 @@ pub struct DaemonConfig {
 impl DaemonConfig {
     /// Returns the built-in configuration after applying the same validation
     /// used for file-backed configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] if the built-in defaults violate a configuration
+    /// invariant.
     pub fn validated_default() -> Result<Self, ConfigError> {
         let config = Self::default();
         config.validate()?;
