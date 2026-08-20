@@ -55,7 +55,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         let mut resolutions = ResolutionSet::default();
         for service in &application.spec.services {
             let Source::Image { image } = &service.source else {
-                unreachable!()
+                return Err(BoundaryError::Capability("build_pipeline_unavailable"));
             };
             let digest_reference = self.docker.resolve_image(image).await?;
             resolutions.sources.insert(

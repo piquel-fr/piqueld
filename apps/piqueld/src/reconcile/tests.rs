@@ -1,5 +1,6 @@
 use super::coordinator::plan_requires_execution;
 use super::*;
+use crate::api::RuntimeBoundary;
 use crate::docker::SwarmState;
 use crate::store::OperationRepository;
 use crate::store::WorkState;
@@ -16,11 +17,12 @@ use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicU32, Ordering},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 struct FakeDocker {
     failures: AtomicU32,
     calls: AtomicU32,
+    image_resolution_calls: AtomicU32,
     observation_failures: AtomicU32,
     observation_calls: AtomicU32,
     observed: Mutex<ObservedApplication>,
@@ -30,6 +32,7 @@ impl FakeDocker {
         Self {
             failures: AtomicU32::new(failures),
             calls: AtomicU32::new(0),
+            image_resolution_calls: AtomicU32::new(0),
             observation_failures: AtomicU32::new(0),
             observation_calls: AtomicU32::new(0),
             observed: Mutex::new(ObservedApplication::default()),
@@ -57,6 +60,7 @@ impl DockerApi for FakeDocker {
         Ok(SwarmState::Ready)
     }
     async fn resolve_image(&self, _: &str) -> Result<String, DockerError> {
+        self.image_resolution_calls.fetch_add(1, Ordering::SeqCst);
         Ok(format!(
             "docker.io/library/alpine@sha256:{}",
             "a".repeat(64)
@@ -122,6 +126,71 @@ fn application() -> NormalizedApplication {
     parse_json(r#"{"api_version":"piqueld.dev/v1alpha1","kind":"Application","metadata":{"name":"stale-generation"},"spec":{"services":[{"name":"web","source":{"type":"image","image":"example.test/web:1"},"replicas":1,"environment":{},"command":[],"arguments":[],"ports":[],"mounts":[],"secrets":[],"healthcheck":null,"resources":null}],"volumes":[],"routes":[]}}"#)
             .unwrap()
             .normalize(ApplicationId::parse("reconcile-stale").unwrap())
+}
+
+fn mixed_source_application() -> NormalizedApplication {
+    parse_json(
+        r#"{
+            "api_version":"piqueld.dev/v1alpha1",
+            "kind":"Application",
+            "metadata":{"name":"mixed-sources"},
+            "spec":{
+                "services":[
+                    {
+                        "name":"web",
+                        "source":{"type":"image","image":"example.test/web:1"},
+                        "replicas":1,
+                        "environment":{},
+                        "command":[],
+                        "arguments":[],
+                        "ports":[],
+                        "mounts":[],
+                        "secrets":[],
+                        "healthcheck":null,
+                        "resources":null
+                    },
+                    {
+                        "name":"worker",
+                        "source":{"type":"git","repository":"https://example.com/worker.git"},
+                        "replicas":1,
+                        "environment":{},
+                        "command":[],
+                        "arguments":[],
+                        "ports":[],
+                        "mounts":[],
+                        "secrets":[],
+                        "healthcheck":null,
+                        "resources":null
+                    }
+                ],
+                "volumes":[],
+                "routes":[]
+            }
+        }"#,
+    )
+    .unwrap()
+    .normalize(ApplicationId::parse("reconcile-mixed").unwrap())
+}
+
+#[tokio::test]
+async fn unsupported_git_sources_are_rejected_before_image_resolution() {
+    let fake = Arc::new(FakeDocker::new(0));
+    let runtime = DockerRuntime::new(
+        Arc::clone(&fake),
+        InstanceId::parse("home-1").unwrap(),
+        Arc::new(Notify::new()),
+    );
+
+    let error = runtime
+        .prepare(&mixed_source_application())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::api::BoundaryError::Capability("build_pipeline_unavailable")
+    ));
+    assert_eq!(fake.image_resolution_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
