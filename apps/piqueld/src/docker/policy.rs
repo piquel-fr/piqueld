@@ -200,10 +200,14 @@ impl ServiceRuntimePolicy {
             }) => {
                 health.test.as_ref()
                     == Some(&vec![
-                        "CMD-SHELL".into(),
-                        format!(
-                            "wget -q -T {timeout_seconds} -O /dev/null http://127.0.0.1:{port}{path}"
-                        ),
+                        "CMD".into(),
+                        "wget".into(),
+                        "-q".into(),
+                        "-T".into(),
+                        timeout_seconds.to_string(),
+                        "-O".into(),
+                        "/dev/null".into(),
+                        format!("http://127.0.0.1:{port}{path}"),
                     ])
             }
             None => false,
