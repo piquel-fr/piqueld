@@ -38,46 +38,41 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         &self,
         application: &NormalizedApplication,
     ) -> Result<PreparedApplication, BoundaryError> {
-        let docker = Arc::clone(&self.docker);
-        let jobs = application
-            .spec
-            .services
-            .iter()
-            .map(|service| (service.name.clone(), service.source.clone()))
-            .collect::<Vec<_>>();
-        let sources = stream::iter(jobs.into_iter().map(|(name, source)| {
-            let docker = Arc::clone(&docker);
-            async move {
-                let Source::Image { image } = source;
-                let digest_reference =
-                    tokio::time::timeout(PREPARE_TIMEOUT, docker.resolve_image(&image))
-                        .await
-                        .map_err(|_| {
-                            BoundaryError::Runtime(DockerError::Unavailable("resolve image"))
-                        })??;
-                Ok::<_, BoundaryError>((
-                    name,
-                    ResolvedSource::Image {
-                        requested: image,
-                        digest_reference,
-                    },
-                ))
-            }
-        }))
-        .buffer_unordered(4)
-        .try_collect::<Vec<_>>()
-        .await?;
-        let resolutions = ResolutionSet {
-            sources: sources.into_iter().collect(),
-        };
-        let resolved = compile_application(application, self.instance_id.clone(), &resolutions)
-            .map_err(BoundaryError::Compilation)?;
-        let observed = tokio::time::timeout(PREPARE_TIMEOUT, self.docker.observe(&application.id))
-            .await
-            .map_err(|_| {
-                BoundaryError::Runtime(DockerError::Unavailable("observe application"))
-            })??;
-        Ok(PreparedApplication { resolved, observed })
+        tokio::time::timeout(PREPARE_TIMEOUT, async {
+            let docker = Arc::clone(&self.docker);
+            let jobs = application
+                .spec
+                .services
+                .iter()
+                .map(|service| (service.name.clone(), service.source.clone()))
+                .collect::<Vec<_>>();
+            let sources = stream::iter(jobs.into_iter().map(|(name, source)| {
+                let docker = Arc::clone(&docker);
+                async move {
+                    let Source::Image { image } = source;
+                    let digest_reference = docker.resolve_image(&image).await?;
+                    Ok::<_, BoundaryError>((
+                        name,
+                        ResolvedSource::Image {
+                            requested: image,
+                            digest_reference,
+                        },
+                    ))
+                }
+            }))
+            .buffer_unordered(4)
+            .try_collect::<Vec<_>>()
+            .await?;
+            let resolutions = ResolutionSet {
+                sources: sources.into_iter().collect(),
+            };
+            let resolved = compile_application(application, self.instance_id.clone(), &resolutions)
+                .map_err(BoundaryError::Compilation)?;
+            let observed = self.docker.observe(&application.id).await?;
+            Ok(PreparedApplication { resolved, observed })
+        })
+        .await
+        .map_err(|_| BoundaryError::Runtime(DockerError::Unavailable("prepare application")))?
     }
 
     async fn observe(

@@ -50,13 +50,15 @@ pub async fn cancel_on_shutdown_signal(
         tokio::select! {
             result = tokio::signal::ctrl_c() => result.map_err(RuntimeError::Signal)?,
             _ = terminate.recv() => {},
+            () = cancellation.cancelled() => return Ok(()),
         }
     }
 
     #[cfg(not(unix))]
-    tokio::signal::ctrl_c()
-        .await
-        .map_err(RuntimeError::Signal)?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result.map_err(RuntimeError::Signal)?,
+        () = cancellation.cancelled() => return Ok(()),
+    }
 
     cancellation.cancel();
     Ok(())

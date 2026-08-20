@@ -81,27 +81,38 @@ async fn main() -> Result<()> {
     let cancellation = CancellationToken::new();
 
     // worker to run reconciliations
+    let controller_token = cancellation.child_token();
+    let controller_cancellation = cancellation.clone();
     let scan_interval = std::time::Duration::from_secs(config.reconciliation.scan_interval_seconds);
-    let controller = tokio::spawn(run_coordinator(
-        scheduler,
-        Arc::clone(&store),
-        Arc::clone(&docker),
-        Arc::clone(&wake),
-        scan_interval,
-        cancellation.child_token(),
-    ));
+    let controller = tokio::spawn(async move {
+        let result = run_coordinator(
+            scheduler,
+            Arc::clone(&store),
+            Arc::clone(&docker),
+            Arc::clone(&wake),
+            scan_interval,
+            controller_token,
+        )
+        .await;
+        controller_cancellation.cancel();
+        result
+    });
 
     // OS signal handling
-    let signal_task = tokio::spawn(piqueld::cancel_on_shutdown_signal(cancellation.clone()));
+    let signal_cancellation = cancellation.clone();
+    let signal_task = tokio::spawn(async move {
+        let result = piqueld::cancel_on_shutdown_signal(signal_cancellation.clone()).await;
+        signal_cancellation.cancel();
+        result
+    });
 
     let tcp_api = spawn_tcp_api(
         config.server.http_listen,
         state.clone(),
-        cancellation.child_token(),
+        cancellation.clone(),
     )
     .await?;
-    let unix_api =
-        spawn_unix_api(config.server.unix_socket, state, cancellation.child_token()).await?;
+    let unix_api = spawn_unix_api(config.server.unix_socket, state, cancellation.clone()).await?;
 
     piqueld::run_until_cancelled(cancellation).await?;
 
@@ -130,9 +141,12 @@ async fn spawn_tcp_api(
         .await
         .context("failed to bind HTTP API")?;
     Ok(tokio::spawn(async move {
-        axum::serve(listener, piqueld::api::router(state))
-            .with_graceful_shutdown(async move { cancellation.cancelled().await })
-            .await
+        let shutdown = cancellation.clone();
+        let result = axum::serve(listener, piqueld::api::router(state))
+            .with_graceful_shutdown(async move { shutdown.cancelled().await })
+            .await;
+        cancellation.cancel();
+        result
     }))
 }
 
@@ -145,6 +159,12 @@ async fn spawn_unix_api(
         tokio::fs::create_dir_all(parent)
             .await
             .context("failed to create Unix socket directory")?;
+        if parent == std::path::Path::new("/") {
+            anyhow::bail!("Unix API socket must be inside a private directory");
+        }
+        tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .await
+            .context("failed to restrict Unix socket directory permissions")?;
     }
     match tokio::fs::symlink_metadata(&path).await {
         Ok(metadata) if metadata.file_type().is_socket() => {
@@ -161,8 +181,11 @@ async fn spawn_unix_api(
         .await
         .context("failed to restrict Unix API socket permissions")?;
     Ok(tokio::spawn(async move {
-        axum::serve(listener, piqueld::api::router(state))
-            .with_graceful_shutdown(async move { cancellation.cancelled().await })
-            .await
+        let shutdown = cancellation.clone();
+        let result = axum::serve(listener, piqueld::api::router(state))
+            .with_graceful_shutdown(async move { shutdown.cancelled().await })
+            .await;
+        cancellation.cancel();
+        result
     }))
 }

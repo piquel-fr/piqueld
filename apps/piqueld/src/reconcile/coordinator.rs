@@ -3,6 +3,8 @@ use super::{
     Notify, OperationScheduler, Plan, PlanAction, PlanRequest, ReconcileHandler, RetryPolicy,
     SchedulerError, SqliteStore, StoreError, StoredApplication, blocked_plan_message,
 };
+use crate::store::ApplicationStatus;
+use piqueld_core::resource::ObservedApplication;
 
 /// Runs startup recovery, apply/delete wakes, and periodic full scans. Multiple
 /// wakes collapse through `Notify`, keeping polling work bounded.
@@ -85,76 +87,7 @@ async fn scan_and_run<D: DockerApi>(
             if cancellation.is_cancelled() {
                 return Ok(());
             }
-            if application.delete_intent {
-                retry_delete(store, docker, &application).await?;
-                continue;
-            }
-            if store
-                .active_reconcile(&application.application.id, application.generation)
-                .await?
-                .is_some()
-            {
-                continue;
-            }
-            let observed = match docker.observe(&application.application.id).await {
-                Ok(observed) => observed,
-                Err(error) => {
-                    tracing::warn!(
-                        application_id = %application.application.id,
-                        %error,
-                        "runtime observation failed during drift scan"
-                    );
-                    continue;
-                }
-            };
-            let runtime_plan = Plan::from_request(
-                &PlanRequest::Reconcile {
-                    desired: application.resolved.clone(),
-                },
-                &observed,
-            );
-            let status = store.status(&application.application.id).await?;
-            if runtime_plan.is_blocked() {
-                if status.state == ApplicationState::Ready {
-                    store
-                        .set_status(
-                            &application.application.id,
-                            ApplicationState::Ready,
-                            ApplicationState::Degraded,
-                            Some(application.generation),
-                            Some(blocked_plan_message(&runtime_plan)),
-                        )
-                        .await?;
-                }
-                continue;
-            }
-            if !plan_requires_execution(&runtime_plan) {
-                if status.state == ApplicationState::Degraded {
-                    store
-                        .set_status(
-                            &application.application.id,
-                            ApplicationState::Degraded,
-                            ApplicationState::Ready,
-                            Some(application.generation),
-                            Some("runtime converged"),
-                        )
-                        .await?;
-                }
-                continue;
-            }
-            let steps = runtime_plan
-                .actions
-                .iter()
-                .map(PlanAction::operation_step)
-                .collect::<Vec<_>>();
-            match store
-                .request_reconcile(&application.application.id, application.generation, &steps)
-                .await
-            {
-                Ok(_)
-                | Err(StoreError::IllegalTransition | StoreError::GenerationConflict { .. }) => {}
-                Err(error) => return Err(error.into()),
-            }
+            scan_application(store, docker, &application).await?;
         }
         let Some(next_cursor) = page.next_cursor else {
             break;
@@ -167,11 +100,126 @@ async fn scan_and_run<D: DockerApi>(
     scheduler.run_until_idle(cancellation.child_token()).await
 }
 
+async fn scan_application<D: DockerApi>(
+    store: &SqliteStore,
+    docker: &D,
+    application: &StoredApplication,
+) -> Result<(), StoreError> {
+    if application.delete_intent {
+        retry_delete(store, docker, application).await
+    } else {
+        scan_reconcile_application(store, docker, application).await
+    }
+}
+
+async fn scan_reconcile_application<D: DockerApi>(
+    store: &SqliteStore,
+    docker: &D,
+    application: &StoredApplication,
+) -> Result<(), StoreError> {
+    let Some((observed, status)) = load_reconcile_context(store, docker, application).await? else {
+        return Ok(());
+    };
+    let runtime_plan = Plan::from_request(
+        &PlanRequest::Reconcile {
+            desired: application.resolved.clone(),
+        },
+        &observed,
+    );
+    if runtime_plan.is_blocked() {
+        return record_blocked_status(store, application, &runtime_plan, status.state).await;
+    }
+    if !plan_requires_execution(&runtime_plan) {
+        return record_recovered_status(store, application, status.state).await;
+    }
+    let steps = runtime_plan
+        .actions
+        .iter()
+        .map(PlanAction::operation_step)
+        .collect::<Vec<_>>();
+    match store
+        .request_reconcile(&application.application.id, application.generation, &steps)
+        .await
+    {
+        Ok(_) | Err(StoreError::IllegalTransition | StoreError::GenerationConflict { .. }) => {}
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
+async fn load_reconcile_context<D: DockerApi>(
+    store: &SqliteStore,
+    docker: &D,
+    application: &StoredApplication,
+) -> Result<Option<(ObservedApplication, ApplicationStatus)>, StoreError> {
+    let active_reconcile = store
+        .active_reconcile(&application.application.id, application.generation)
+        .await?;
+    if active_reconcile.is_some() {
+        return Ok(None);
+    }
+    let observed = match docker.observe(&application.application.id).await {
+        Ok(observed) => observed,
+        Err(error) => {
+            tracing::warn!(
+                application_id = %application.application.id,
+                %error,
+                "runtime observation failed during drift scan"
+            );
+            return Ok(None);
+        }
+    };
+    let status = store.status(&application.application.id).await?;
+    Ok(Some((observed, status)))
+}
+
+async fn record_blocked_status(
+    store: &SqliteStore,
+    application: &StoredApplication,
+    plan: &piqueld_core::Plan,
+    current_state: ApplicationState,
+) -> Result<(), StoreError> {
+    if current_state != ApplicationState::Ready {
+        return Ok(());
+    }
+    store
+        .set_status(
+            &application.application.id,
+            ApplicationState::Ready,
+            ApplicationState::Degraded,
+            Some(application.generation),
+            Some(blocked_plan_message(plan)),
+        )
+        .await
+}
+
+async fn record_recovered_status(
+    store: &SqliteStore,
+    application: &StoredApplication,
+    current_state: ApplicationState,
+) -> Result<(), StoreError> {
+    if !matches!(
+        current_state,
+        ApplicationState::Degraded | ApplicationState::Failed
+    ) {
+        return Ok(());
+    }
+    store
+        .set_status(
+            &application.application.id,
+            current_state,
+            ApplicationState::Ready,
+            Some(application.generation),
+            Some("runtime converged"),
+        )
+        .await
+}
+
 async fn retry_delete<D: DockerApi>(
     store: &SqliteStore,
     docker: &D,
     application: &StoredApplication,
-) -> Result<(), SchedulerError> {
+) -> Result<(), StoreError> {
     let resolved = &application.resolved;
     let observed = match docker.observe(&application.application.id).await {
         Ok(observed) => observed,
@@ -209,7 +257,7 @@ async fn retry_delete<D: DockerApi>(
         .await
     {
         Ok(_) | Err(StoreError::IllegalTransition | StoreError::GenerationConflict { .. }) => {}
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     }
     Ok(())
 }

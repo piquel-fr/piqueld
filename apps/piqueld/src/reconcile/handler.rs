@@ -272,7 +272,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
                     .set_status(
                         &operation.application_id,
                         status.state,
-                        ApplicationState::Failed,
+                        ApplicationState::Degraded,
                         Some(operation.generation),
                         Some(&message),
                     )
@@ -354,10 +354,6 @@ impl<D: DockerApi> ReconcileHandler<D> {
         } else if plan_requires_execution(&current) {
             OperationError::DeletionNotConverged
         } else {
-            self.store
-                .finalize_delete(&operation.application_id, operation.generation)
-                .await
-                .map_err(journal_error)?;
             return Ok(());
         };
         Err(error)
