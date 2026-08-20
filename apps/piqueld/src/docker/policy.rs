@@ -15,6 +15,17 @@ use super::{
 pub(super) struct ServiceRuntimePolicy;
 
 impl ServiceRuntimePolicy {
+    /// Determines whether a Docker service specification conforms to the supported runtime policy.
+    ///
+    /// A specification must include a task template and container configuration, and all supported
+    /// service, task, container, health-check, mount, environment, and network settings must match the
+    /// policy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(!ServiceRuntimePolicy::matches(&ServiceSpec::default()));
+    /// ```
     pub(super) fn matches(spec: &ServiceSpec) -> bool {
         let Some(task) = spec.task_template.as_ref() else {
             return false;
@@ -33,6 +44,27 @@ impl ServiceRuntimePolicy {
             && Self::task_configuration(spec, task)
     }
 
+    /// Checks whether a task uses the supported restart policy.
+    ///
+    /// The policy must restart under any condition with the configured delay. Maximum
+    /// attempts and the restart window may be unset or zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let task = TaskSpec {
+    ///     restart_policy: Some(TaskSpecRestartPolicy {
+    ///         condition: Some(TaskSpecRestartPolicyConditionEnum::ANY),
+    ///         delay: Some(RESTART_DELAY),
+    ///         ..Default::default()
+    ///     }),
+    ///     ..Default::default()
+    /// };
+    ///
+    /// assert!(restart_policy(&task));
+    /// ```
+    ///
+    /// Returns `true` when the task uses the supported restart policy, `false` otherwise.
     fn restart_policy(task: &TaskSpec) -> bool {
         task.restart_policy.as_ref().is_some_and(|restart| {
             restart.condition == Some(TaskSpecRestartPolicyConditionEnum::ANY)
@@ -42,6 +74,14 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Determines whether a service uses the supported update configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let spec = ServiceSpec::default();
+    /// assert!(!update_policy(&spec));
+    /// ```
     fn update_policy(spec: &ServiceSpec) -> bool {
         spec.update_config.as_ref().is_some_and(|update| {
             update.parallelism == Some(1)
@@ -53,6 +93,23 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Determines whether a service uses replicated mode exclusively.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let spec = ServiceSpec {
+    ///     mode: Some(ServiceMode {
+    ///         replicated: Some(ServiceModeReplicated {
+    ///             replicas: Some(1),
+    ///         }),
+    ///         ..Default::default()
+    ///     }),
+    ///     ..Default::default()
+    /// };
+    ///
+    /// assert!(ServiceRuntimePolicy::replicated_mode(&spec));
+    /// ```
     fn replicated_mode(spec: &ServiceSpec) -> bool {
         spec.mode.as_ref().is_some_and(|mode| {
             mode.replicated.is_some()
@@ -62,6 +119,20 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Validates that a container's mounts use supported named-volume settings.
+    ///
+    /// Mounts may be absent. When present, each mount must be a named volume with
+    /// nonempty source and target values and default options for all other mount
+    /// settings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let container = TaskSpecContainerSpec::default();
+    /// assert!(ServiceRuntimePolicy::mounts(&container));
+    /// ```
+    ///
+    /// Returns `true` if all mounts use supported settings, `false` otherwise.
     fn mounts(container: &TaskSpecContainerSpec) -> bool {
         container.mounts.as_ref().is_none_or(|mounts| {
             mounts.iter().all(|mount| {
@@ -77,6 +148,24 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Validates that container environment entries have nonempty, unique variable names.
+    ///
+    /// An unset environment is accepted. Each entry must contain an equals sign and
+    /// its variable name must be nonempty and unique.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut container = TaskSpecContainerSpec::default();
+    /// container.env = Some(vec![
+    ///     "PORT=8080".to_owned(),
+    ///     "HOST=localhost".to_owned(),
+    /// ]);
+    ///
+    /// assert!(ServiceRuntimePolicy::environment(&container));
+    /// ```
+    ///
+    /// Returns `true` if the environment is absent or valid, `false` otherwise.
     fn environment(container: &TaskSpecContainerSpec) -> bool {
         container.env.as_ref().is_none_or(|environment| {
             let mut keys = BTreeSet::new();
@@ -88,6 +177,21 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Validates the network attachments configured for a task.
+    ///
+    /// Network attachments must have unique, nonempty targets and must not define
+    /// aliases or driver options. An absent network list is accepted.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let task = TaskSpec {
+    ///     networks: None,
+    ///     ..Default::default()
+    /// };
+    ///
+    /// assert!(networks(&task));
+    /// ```
     fn networks(task: &TaskSpec) -> bool {
         task.networks.as_ref().is_none_or(|networks| {
             let mut targets = BTreeSet::new();
@@ -102,6 +206,17 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Determines whether a container's health-check configuration is supported.
+    ///
+    /// A missing health check is accepted. Configured health checks must use a supported
+    /// command or HTTP representation and valid timing and retry settings.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let accepted = ServiceRuntimePolicy::health(&container);
+    /// assert!(accepted);
+    /// ```
     fn health(container: &TaskSpecContainerSpec) -> bool {
         container
             .health_check
@@ -109,6 +224,19 @@ impl ServiceRuntimePolicy {
             .is_none_or(Self::supported_health_config)
     }
 
+    /// Determines whether a container configuration uses only supported default settings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let container = bollard::models::TaskSpecContainerSpec::default();
+    ///
+    /// assert!(ServiceRuntimePolicy::container_configuration(&container));
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if the container configuration contains only supported defaults, `false` otherwise.
     fn container_configuration(container: &TaskSpecContainerSpec) -> bool {
         container.labels.as_ref().is_none_or(HashMap::is_empty)
             && container.hostname.as_deref().is_none_or(str::is_empty)
@@ -141,6 +269,17 @@ impl ServiceRuntimePolicy {
             && container.ulimits.as_ref().is_none_or(Vec::is_empty)
     }
 
+    /// Determines whether task-level and service-level settings use supported runtime configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// assert!(ServiceRuntimePolicy::task_configuration(&spec, &task));
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if the task and service settings are supported, `false` otherwise.
     fn task_configuration(spec: &ServiceSpec, task: &TaskSpec) -> bool {
         task.plugin_spec.is_none()
             && task.network_attachment_spec.is_none()
@@ -174,6 +313,22 @@ impl ServiceRuntimePolicy {
             && spec.networks.as_ref().is_none_or(Vec::is_empty)
     }
 
+    /// Validates that a health-check configuration uses supported timing, retry, and test values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let health = HealthConfig {
+    ///     test: Some(vec!["CMD".into(), "true".into()]),
+    ///     retries: Some(HEALTH_RETRIES),
+    ///     interval: Some(1),
+    ///     timeout: Some(1),
+    ///     start_period: Some(0),
+    ///     start_interval: Some(0),
+    /// };
+    ///
+    /// assert!(supported_health_config(&health));
+    /// ```
     fn supported_health_config(health: &HealthConfig) -> bool {
         if health.retries != Some(HEALTH_RETRIES)
             || health.interval.is_none_or(|value| value <= 0)
@@ -214,6 +369,22 @@ impl ServiceRuntimePolicy {
         }
     }
 
+    /// Determines whether a rollback configuration uses the supported runtime settings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let rollback = ServiceSpecRollbackConfig {
+    ///     parallelism: Some(1),
+    ///     delay: Some(0),
+    ///     failure_action: Some(ServiceSpecRollbackConfigFailureActionEnum::PAUSE),
+    ///     monitor: Some(ROLLBACK_MONITOR),
+    ///     max_failure_ratio: Some(0.0),
+    ///     order: Some(ServiceSpecRollbackConfigOrderEnum::STOP_FIRST),
+    /// };
+    ///
+    /// assert!(supported_rollback_config(&rollback));
+    /// ```
     fn supported_rollback_config(rollback: &ServiceSpecRollbackConfig) -> bool {
         rollback.parallelism == Some(1)
             && rollback.delay.is_none_or(|value| value == 0)
@@ -223,6 +394,14 @@ impl ServiceRuntimePolicy {
             && rollback.order == Some(ServiceSpecRollbackConfigOrderEnum::STOP_FIRST)
     }
 
+    /// Determines whether a value equals its type's default value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(is_default(&0u32));
+    /// assert!(!is_default(&1u32));
+    /// ```
     fn is_default<T: Default + PartialEq>(value: &T) -> bool {
         value == &T::default()
     }

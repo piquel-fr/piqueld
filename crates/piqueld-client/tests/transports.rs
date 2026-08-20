@@ -6,6 +6,16 @@ use std::{path::PathBuf, time::Duration};
 use tempfile::TempDir;
 use tokio::net::{TcpListener, UnixListener};
 
+/// Creates a system-status response for the test service.
+///
+/// # Examples
+///
+/// ```
+/// # async fn example() {
+/// let response = status().await;
+/// assert_eq!(response.0.data.status, "running");
+/// # }
+/// ```
 async fn status() -> Json<Envelope<SystemStatus>> {
     Json(Envelope {
         data: SystemStatus {
@@ -16,6 +26,13 @@ async fn status() -> Json<Envelope<SystemStatus>> {
     })
 }
 
+/// Builds the application router with the system status endpoint.
+///
+/// # Examples
+///
+/// ```
+/// let _router = app();
+/// ```
 fn app() -> Router {
     Router::new().route("/api/v1/system/status", get(status))
 }

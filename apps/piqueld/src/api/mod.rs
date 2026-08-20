@@ -125,6 +125,13 @@ impl ApiError {
 }
 
 impl From<StoreError> for ApiError {
+    /// Maps a storage error to its corresponding HTTP API error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error: ApiError = StoreError::NotFound.into();
+    /// ```
     fn from(value: StoreError) -> Self {
         if matches!(
             &value,
@@ -190,6 +197,17 @@ impl From<StoreError> for ApiError {
 }
 
 impl From<BoundaryError> for ApiError {
+    /// Converts a runtime boundary failure into an HTTP API error.
+    ///
+    /// Runtime failures map to a `502 Bad Gateway` response, while application
+    /// compilation failures map to a `500 Internal Server Error` response.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error: ApiError = BoundaryError::Compilation(vec![]).into();
+    /// let _ = error;
+    /// ```
     fn from(value: BoundaryError) -> Self {
         tracing::error!(error = ?value, "runtime boundary request failed");
         match value {
@@ -242,6 +260,16 @@ impl From<piqueld_core::ValidationErrors> for ApiError {
 }
 
 impl IntoResponse for ApiError {
+    /// Converts the API error into a JSON HTTP response with its status, error details, and a generated request ID.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn example(error: ApiError) {
+    /// let response = error.into_response();
+    /// assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    /// # }
+    /// ```
     fn into_response(self) -> Response {
         let body = ErrorBody {
             code: self.code.into(),
@@ -258,7 +286,14 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Builds the Plan 06A HTTP router.
+/// Builds the HTTP router with documented routes, standardized fallbacks, request-ID handling, and tracing.
+///
+/// # Examples
+///
+/// ```
+/// # let state = todo!();
+/// let app = router(state);
+/// ```
 pub fn router(state: ApiState) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     let (router, openapi) = documented_router().split_for_parts();
@@ -275,6 +310,13 @@ pub fn router(state: ApiState) -> Router {
 
 // Public endpoints must be registered through `routes!` here so Axum and the
 // generated OpenAPI document receive the same method and path at the same time.
+/// Builds the OpenAPI-aware router for system, application, planning, reconciliation, status, and operation endpoints.
+///
+/// # Examples
+///
+/// ```
+/// let router = documented_router();
+/// ```
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .routes(routes!(system::status))
@@ -292,6 +334,15 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(operations::get))
 }
 
+/// Binds the incoming request ID to JSON error responses while preserving other responses.
+///
+/// # Examples
+///
+/// ```no_run
+/// let app = axum::Router::new()
+///     .layer(axum::middleware::from_fn(bind_error_request_id));
+/// ```
+async fn bind_error_request_id(request: Request, next: Next) -> Response {
 async fn bind_error_request_id(request: Request, next: Next) -> Response {
     let request_id = request
         .extensions()
@@ -327,6 +378,15 @@ async fn bind_error_request_id(request: Request, next: Next) -> Response {
     Response::from_parts(parts, Body::from(bytes))
 }
 
+/// Creates the standard error for requests to an unknown endpoint.
+///
+/// # Examples
+///
+/// ```
+/// # async fn example() {
+/// let _error = fallback(Method::GET).await;
+/// # }
+/// ```
 async fn fallback(method: Method) -> ApiError {
     let _ = method;
     ApiError::new(
@@ -504,9 +564,28 @@ fn idempotent_application_id(key: &str) -> ApplicationId {
     ApplicationId::parse(format!("app-{}", hex(&digest[..16])))
         .expect("digest application ID is valid")
 }
+/// Produces a deterministic SHA-256 hash for an idempotency key.
+///
+/// # Examples
+///
+/// ```
+/// let hash = idempotency_key_hash("request-123");
+/// assert!(hash.starts_with("sha256:"));
+/// ```
 fn idempotency_key_hash(key: &str) -> String {
     format!("sha256:{}", hex(&Sha256::digest(key.as_bytes())))
 }
+/// Converts bytes to lowercase hexadecimal text.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(hex(&[0x0a, 0xff]), "0aff");
+/// ```
+///
+/// # Returns
+///
+/// A lowercase hexadecimal representation with two characters per byte.
 fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut value = String::with_capacity(bytes.len() * 2);

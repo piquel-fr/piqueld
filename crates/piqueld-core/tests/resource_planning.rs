@@ -8,16 +8,42 @@ use piqueld_core::resource::{
 };
 use piqueld_core::{ApplicationId, InstanceId, Plan, parse_toml};
 
+/// Loads and normalizes the prebuilt fixture application.
+///
+/// # Examples
+///
+/// ```
+/// let app = application();
+/// let _ = app;
+/// ```
+///
+/// Returns the normalized fixture application.
 fn application() -> piqueld_core::NormalizedApplication {
     parse_toml(include_str!("fixtures/manifests/prebuilt.toml"))
         .unwrap()
         .normalize(ApplicationId::parse("app-notes-01").unwrap())
 }
 
+/// Creates the identifier used by the test instance.
+///
+/// # Examples
+///
+/// ```
+/// let id = instance();
+/// assert_eq!(id, InstanceId::parse("instance-test").unwrap());
+/// ```
 fn instance() -> InstanceId {
     InstanceId::parse("instance-test").unwrap()
 }
 
+/// Creates the resolved image source used by the fixture tests.
+///
+/// # Examples
+///
+/// ```
+/// let resolutions = resolutions();
+/// assert!(resolutions.sources.contains_key("web"));
+/// ```
 fn resolutions() -> ResolutionSet {
     ResolutionSet {
         sources: [(
@@ -32,6 +58,20 @@ fn resolutions() -> ResolutionSet {
     }
 }
 
+/// Builds an observed application that matches the desired networks, volumes, and services.
+///
+/// Services are represented as running, healthy, and converged, while networks and volumes
+/// are marked as matching their desired runtime configuration.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let observed = observed(&desired);
+///
+/// assert_eq!(observed.networks.len(), desired.networks.len());
+/// assert_eq!(observed.volumes.len(), desired.volumes.len());
+/// assert_eq!(observed.services.len(), desired.services.len());
+/// ```
 fn observed(desired: &piqueld_core::resource::DesiredApplication) -> ObservedApplication {
     ObservedApplication {
         networks: desired

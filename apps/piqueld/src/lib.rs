@@ -34,11 +34,31 @@ pub async fn run_until_cancelled(cancellation: CancellationToken) -> Result<(), 
     Ok(())
 }
 
-/// Converts SIGINT or SIGTERM into cooperative daemon cancellation.
+/// Waits for a shutdown signal or cancellation, then cancels the provided token.
+///
+/// On Unix, shutdown signals are SIGINT and SIGTERM. On other platforms, the shutdown
+/// signal is Ctrl-C. If the token is already cancelled or becomes cancelled while waiting,
+/// the function returns successfully without waiting for an operating-system signal.
 ///
 /// # Errors
 ///
-/// Returns an error if the operating-system signal handler cannot be installed.
+/// Returns an error if the operating-system signal handler or Ctrl-C handler cannot be
+/// installed or queried.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use tokio_util::sync::CancellationToken;
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), piqueld::RuntimeError> {
+/// let cancellation = CancellationToken::new();
+/// let wait = piqueld::cancel_on_shutdown_signal(cancellation.clone());
+///
+/// cancellation.cancel();
+/// wait.await?;
+/// # Ok(())
+/// # }
+/// ```
 pub async fn cancel_on_shutdown_signal(
     cancellation: CancellationToken,
 ) -> Result<(), RuntimeError> {

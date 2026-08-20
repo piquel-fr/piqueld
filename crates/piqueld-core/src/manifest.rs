@@ -76,6 +76,13 @@ pub struct ServiceInput {
     pub resources: Option<ResourceLimitsInput>,
 }
 
+/// Provides the default number of service replicas.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(default_replicas(), 1);
+/// ```
 fn default_replicas() -> u16 {
     1
 }
@@ -143,14 +150,39 @@ pub enum HealthCheckInput {
     },
 }
 
+/// Provides the default HTTP health-check path.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(default_health_path(), "/health");
+/// ```
+///
+/// # Returns
+///
+/// The `/health` path.
 fn default_health_path() -> String {
     "/health".into()
 }
 
+/// Provides the default health-check interval in seconds.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(default_interval(), 10);
+/// ```
 fn default_interval() -> u32 {
     10
 }
 
+/// Provides the default health-check timeout in seconds.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(default_timeout(), 3);
+/// ```
 fn default_timeout() -> u32 {
     3
 }
@@ -338,10 +370,20 @@ pub fn parse_toml(input: &str) -> Result<ValidatedApplication, ValidationErrors>
     validate(manifest)
 }
 
-/// Parses and validates strict JSON without performing I/O.
+/// Parses and validates a strict JSON application manifest without performing I/O.
+///
+/// Trailing JSON data is rejected after the manifest.
 ///
 /// # Errors
-/// Returns validation errors, or one safe decode error for malformed input.
+///
+/// Returns validation errors, or a single safe decode error for malformed JSON or trailing data.
+///
+/// # Examples
+///
+/// ```
+/// let result = parse_json("{");
+/// assert!(result.is_err());
+/// ```
 pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
     let mut deserializer = serde_json::Deserializer::from_str(input);
     let manifest = serde_path_to_error::deserialize(&mut deserializer)
@@ -356,6 +398,16 @@ pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors>
     validate(manifest)
 }
 
+/// Creates a validation error for a manifest decoding failure.
+///
+/// # Examples
+///
+/// ```
+/// let path = "services[0].image".parse().unwrap();
+/// let errors = decode_error(&path);
+/// assert_eq!(errors.0[0].code, "manifest_decode_failed");
+/// assert_eq!(errors.0[0].path, "services[0].image");
+/// ```
 fn decode_error(path: &Path) -> ValidationErrors {
     ValidationErrors(vec![ValidationError {
         code: "manifest_decode_failed".into(),
@@ -365,6 +417,19 @@ fn decode_error(path: &Path) -> ValidationErrors {
     }])
 }
 
+/// Restricts a decoded field path to recognized fields and valid array indices.
+///
+/// Returns the longest safe prefix of the path, or `$` when the path starts with
+/// an unrecognized field or invalid index.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(safe_decode_path("spec.services[0].image"), "spec.services[0].image");
+/// assert_eq!(safe_decode_path("spec.services[0].unknown"), "spec.services[0]");
+/// assert_eq!(safe_decode_path("unknown.field"), "$");
+/// ```
+fn safe_decode_path path?
 fn safe_decode_path(path: &str) -> String {
     const FIELDS: &[&str] = &[
         "api_version",
@@ -410,6 +475,23 @@ fn safe_decode_path(path: &str) -> String {
     }
 }
 
+/// Validates that a string contains only bracketed, non-empty numeric indices.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// assert!(valid_path_indices("[0][12]"));
+
+/// assert!(!valid_path_indices("[0][]"));
+
+/// assert!(!valid_path_indices("[a]"));
+
+/// ```
 fn valid_path_indices(mut value: &str) -> bool {
     while !value.is_empty() {
         let Some(after_open) = value.strip_prefix('[') else {
@@ -430,6 +512,17 @@ fn valid_path_indices(mut value: &str) -> bool {
     true
 }
 
+/// Validates an application manifest and converts it into the validated domain model.
+///
+/// All validation errors are collected and returned together, ordered by field path
+/// and error code.
+///
+/// # Examples
+///
+/// ```
+/// let result = validate(ApplicationManifest::default());
+/// assert!(result.is_err());
+/// ```
 fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, ValidationErrors> {
     let mut errors = Vec::new();
     validate_header(&input, &mut errors);
@@ -458,6 +551,14 @@ fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, Validati
     })
 }
 
+/// Validates the manifest's API version, resource kind, application name, and service declaration.
+///
+/// # Examples
+///
+/// ```
+/// let mut errors = Vec::new();
+/// validate_header(&manifest, &mut errors);
+/// ```
 fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) {
     if input.api_version != APPLICATION_API_VERSION {
         error(
@@ -486,6 +587,15 @@ fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError
     }
 }
 
+/// Validates service definitions and appends any validation errors to `errors`.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let mut errors = Vec::new();
+/// validate_services(&services, &volume_names, &mut errors);
+/// assert!(errors.is_empty());
+/// ```
 fn validate_services(
     services: &[ServiceInput],
     volume_names: &BTreeSet<String>,
@@ -535,6 +645,22 @@ fn validate_services(
     }
 }
 
+/// Validates environment variable names and values, appending any validation errors.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::BTreeMap;
+///
+/// let environment = BTreeMap::from([
+///     ("APP_MODE".to_owned(), "production".to_owned()),
+/// ]);
+/// let mut errors = Vec::new();
+///
+/// validate_environment(&environment, "services[0]", &mut errors);
+///
+/// assert!(errors.is_empty());
+/// ```
 fn validate_environment(
     environment: &BTreeMap<String, String>,
     base: &str,
@@ -560,6 +686,22 @@ fn validate_environment(
     }
 }
 
+/// Validates that mounts reference declared volumes and use unique, valid target paths.
+///
+/// # Examples
+///
+/// ```
+/// let mounts = vec![MountInput {
+///     volume: "data".into(),
+///     target: "/data".into(),
+/// }];
+/// let volume_names = std::iter::once("data".to_owned()).collect();
+/// let mut errors = Vec::new();
+///
+/// validate_mounts(&mounts, "services[0]", &volume_names, &mut errors);
+///
+/// assert!(errors.is_empty());
+/// ```
 fn validate_mounts(
     mounts: &[MountInput],
     base: &str,
@@ -589,6 +731,24 @@ fn validate_mounts(
     }
 }
 
+/// Validates configured CPU and memory limits and appends any violations to the error list.
+///
+/// Resource limits must configure CPU, memory, or both. CPU limits must be greater than
+/// zero, and memory limits must be greater than zero and fit the runtime value.
+///
+/// # Examples
+///
+/// ```
+/// let resources = ResourceLimitsInput {
+///     cpu_millis: Some(500),
+///     memory_bytes: Some(256 * 1024 * 1024),
+/// };
+/// let mut errors = Vec::new();
+///
+/// validate_resources(Some(&resources), "services.api", &mut errors);
+///
+/// assert!(errors.is_empty());
+/// ```
 fn validate_resources(
     resources: Option<&ResourceLimitsInput>,
     base: &str,
@@ -625,12 +785,47 @@ fn validate_resources(
     }
 }
 
+/// Validates the names of declared volumes.
+///
+/// # Examples
+///
+/// ```
+/// let mut errors = Vec::new();
+/// validate_volumes(&[], &mut errors);
+/// assert!(errors.is_empty());
+/// ```
 fn validate_volumes(volumes: &[VolumeInput], errors: &mut Vec<ValidationError>) {
     for (index, volume) in volumes.iter().enumerate() {
         validate_name(&volume.name, &format!("spec.volumes[{index}].name"), errors);
     }
 }
 
+/// Validates a health check and appends any validation errors to the provided collection.
+///
+/// HTTP checks require a valid port and request path. Command checks require a
+/// non-empty NUL-free command, and all checks require a positive timeout that
+/// does not exceed the interval.
+///
+/// # Examples
+///
+/// ```
+/// let check = HealthCheckInput::Command {
+///     command: vec!["curl".into(), "http://localhost/health".into()],
+///     interval_seconds: 10,
+///     timeout_seconds: 3,
+/// };
+/// let mut errors = Vec::new();
+///
+/// validate_health(&check, "$.health", &mut errors);
+///
+/// assert!(errors.is_empty());
+/// ```
+///
+/// # Arguments
+///
+/// * `value` - The health-check configuration to validate.
+/// * `path` - The field path used when recording validation errors.
+/// * `errors` - The collection to which validation errors are appended.
 fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<ValidationError>) {
     let (interval, timeout) = match value {
         HealthCheckInput::Http {
@@ -706,6 +901,20 @@ fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<Valida
     }
 }
 
+/// Collects names into a set and records validation errors for duplicates.
+///
+/// # Examples
+///
+/// ```
+/// let names = vec!["api".to_owned(), "worker".to_owned(), "api".to_owned()];
+/// let mut errors = Vec::new();
+/// let unique = unique_names(names.iter(), "services", "duplicate_service", &mut errors);
+///
+/// assert_eq!(unique.len(), 2);
+/// assert_eq!(errors.len(), 1);
+/// ```
+///
+/// Returns the set of distinct names.
 fn unique_names<'a>(
     names: impl Iterator<Item = &'a String>,
     path: &str,
@@ -726,6 +935,25 @@ fn unique_names<'a>(
     found
 }
 
+/// Converts an application specification input into the corresponding domain specification.
+///
+/// # Returns
+///
+/// The domain specification with services, volumes, and nested configuration converted
+/// to their canonical representations.
+///
+/// # Examples
+///
+/// ```
+/// let input = ApplicationSpecInput {
+///     services: vec![],
+///     volumes: vec![],
+/// };
+/// let spec = convert_spec(input);
+///
+/// assert!(spec.services.is_empty());
+/// assert!(spec.volumes.is_empty());
+/// ```
 fn convert_spec(input: ApplicationSpecInput) -> ApplicationSpec {
     ApplicationSpec {
         services: input
@@ -786,8 +1014,22 @@ fn convert_spec(input: ApplicationSpecInput) -> ApplicationSpec {
 }
 
 impl ValidatedApplication {
-    /// Returns the editable application name.
-    #[must_use]
+    /// Provides the validated application name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn example(application: &ValidatedApplication) {
+    /// assert_eq!(application.name(), "my-app");
+    /// # }
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The application name.
+    ///
+    /// ```
+    /// ```
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -798,7 +1040,15 @@ impl ValidatedApplication {
         &self.spec
     }
 
-    /// Canonicalizes unordered collections and attaches a stable ID.
+    /// Canonicalizes unordered collections and attaches the supplied application ID.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn example(validated: ValidatedApplication, id: ApplicationId) {
+    /// let normalized = validated.normalize(id);
+    /// # }
+    /// ```
     #[must_use]
     pub fn normalize(self, id: ApplicationId) -> NormalizedApplication {
         let mut spec = self.spec;
@@ -813,6 +1063,21 @@ impl ValidatedApplication {
     }
 }
 
+/// Sorts services, service mounts, and volumes into their canonical order.
+///
+/// # Examples
+///
+/// ```
+/// let mut spec = ApplicationSpec {
+///     services: Vec::new(),
+///     volumes: Vec::new(),
+/// };
+///
+/// normalize_spec(&mut spec);
+///
+/// assert!(spec.services.is_empty());
+/// assert!(spec.volumes.is_empty());
+/// ```
 fn normalize_spec(spec: &mut ApplicationSpec) {
     spec.services
         .sort_by(|left, right| left.name.cmp(&right.name));
@@ -830,13 +1095,23 @@ impl NormalizedApplication {
         self
     }
 
-    /// Versioned SHA-256 over canonical JSON after defaults and normalization.
-    #[must_use]
+    /// Computes a versioned SHA-256 hash of the normalized application metadata and specification.
+    ///
+    /// # Returns
+    ///
+    /// A SHA-256 hash string prefixed with `sha256:`.
     ///
     /// # Panics
     ///
-    /// Panics only if the internal normalized manifest cannot be serialized,
-    /// which indicates a bug in the domain types.
+    /// Panics if the normalized manifest cannot be serialized.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let hash = normalized_application.spec_hash();
+    /// assert!(hash.starts_with("sha256:"));
+    /// ```
+    #[must_use]
     pub fn spec_hash(&self) -> String {
         #[derive(Serialize)]
         struct HashEnvelope<'a> {
@@ -854,26 +1129,52 @@ impl NormalizedApplication {
         format!("sha256:{:x}", Sha256::digest(bytes))
     }
 
-    /// Canonical JSON representation used for durable desired state.
+    /// Serializes the normalized application into a compact, canonical JSON string.
     ///
     /// # Errors
     ///
-    /// Returns a serialization error if the normalized manifest cannot be
-    /// represented as JSON.
+    /// Returns a serialization error if the normalized application cannot be represented as JSON.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn render(application: &NormalizedApplication) -> Result<(), serde_json::Error> {
+    /// let json = application.canonical_json()?;
+    /// assert!(!json.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self.clone().normalize())
     }
 
-    /// Portable desired TOML representation.
+    /// Serializes the normalized application as pretty-printed TOML.
     ///
     /// # Errors
     ///
-    /// Returns a serialization error if the normalized manifest cannot be
-    /// represented as TOML.
+    /// Returns a serialization error if the normalized application cannot be represented as TOML.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # let application: NormalizedApplication = todo!();
+    /// let toml = application.export_toml()?;
+    /// # Ok::<(), toml::ser::Error>(())
+    /// ```
     pub fn export_toml(&self) -> Result<String, toml::ser::Error> {
         toml::to_string_pretty(&self.clone().normalize().to_manifest())
     }
 
+    /// Converts the normalized application into its public manifest representation.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let manifest = normalized.to_manifest();
+    /// assert_eq!(manifest.kind, "Application");
+    /// ```
+    ///
+    /// Returns the application manifest with canonical values preserved.
     fn to_manifest(&self) -> ApplicationManifest {
         ApplicationManifest {
             api_version: self.api_version.clone(),
@@ -949,6 +1250,18 @@ impl NormalizedApplication {
     }
 }
 
+/// Validates an application name and records an error when it violates the naming rules.
+///
+/// Names must contain 1–63 lowercase letters, digits, or hyphens, start with a letter,
+/// and end with a letter or digit.
+///
+/// # Examples
+///
+/// ```
+/// let mut errors = Vec::new();
+/// validate_name("web-app", "metadata.name", &mut errors);
+/// assert!(errors.is_empty());
+/// ```
 fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     if value.is_empty()
         || value.len() > 63
@@ -970,6 +1283,15 @@ fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     }
 }
 
+/// Determines whether a string is a valid image reference.
+///
+/// # Examples
+///
+/// ```
+/// assert!(valid_image_reference("nginx:1.25"));
+/// assert!(!valid_image_reference("https://example.com/image"));
+/// ```
+pub(crate) fn valid_image_reference value? Wait requested only docstring, no signature. Need include just comments, not function.
 pub(crate) fn valid_image_reference(value: &str) -> bool {
     if value.is_empty()
         || value.len() > 512
@@ -1087,6 +1409,14 @@ fn valid_repository_component(value: &str) -> bool {
     true
 }
 
+/// Validates the syntax of an image digest.
+///
+/// # Examples
+///
+/// ```
+/// assert!(valid_image_digest("sha256:abcdef0123456789abcdef0123456789"));
+/// assert!(!valid_image_digest("sha256:short"));
+/// ```
 fn valid_image_digest(value: &str) -> bool {
     let Some((algorithm, encoded)) = value.split_once(':') else {
         return false;
@@ -1105,6 +1435,23 @@ fn valid_image_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'=' | b'_' | b'-'))
 }
 
+/// Validates that a mount target is an absolute, normalized container path below the root.
+///
+/// A validation error is added for root-only, relative, trailing-slash, oversized, or otherwise unsafe paths.
+///
+/// # Parameters
+///
+/// * `value` - The mount target path to validate.
+/// * `path` - The field path associated with the validation error.
+/// * `errors` - The collection to which validation errors are appended.
+///
+/// # Examples
+///
+/// ```
+/// let mut errors = Vec::new();
+/// validate_absolute_path("/var/data", "mount_target", &mut errors);
+/// assert!(errors.is_empty());
+/// ```
 fn validate_absolute_path(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     let components = value.split('/').skip(1);
     if !value.starts_with('/')
@@ -1126,6 +1473,18 @@ fn validate_absolute_path(value: &str, path: &str, errors: &mut Vec<ValidationEr
     }
 }
 
+/// Checks whether a value is a valid environment variable name.
+///
+/// Names must be nonempty, must not begin with a digit, and may contain only
+/// ASCII letters, digits, and underscores.
+///
+/// # Examples
+///
+/// ```
+/// assert!(valid_env_name("DATABASE_URL"));
+/// assert!(!valid_env_name("123_PORT"));
+/// assert!(!valid_env_name("API-KEY"));
+/// ```
 fn valid_env_name(value: &str) -> bool {
     !value.is_empty()
         && !value.as_bytes()[0].is_ascii_digit()
@@ -1134,6 +1493,20 @@ fn valid_env_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+/// Validates that container process arguments do not contain NUL characters.
+///
+/// Appends a validation error for each argument containing a NUL character.
+///
+/// # Examples
+///
+/// ```
+/// let values = vec!["--port".to_owned(), "8080".to_owned()];
+/// let mut errors = Vec::new();
+///
+/// validate_process_arguments(&values, "$.services[0].command", &mut errors);
+///
+/// assert!(errors.is_empty());
+/// ```
 fn validate_process_arguments(values: &[String], path: &str, errors: &mut Vec<ValidationError>) {
     for (index, value) in values.iter().enumerate() {
         if value.contains('\0') {
@@ -1147,6 +1520,16 @@ fn validate_process_arguments(values: &[String], path: &str, errors: &mut Vec<Va
     }
 }
 
+/// Adds a validation error with the specified code, path, and message.
+///
+/// # Examples
+///
+/// ```
+/// let mut errors = Vec::new();
+/// error(&mut errors, "invalid_name", "$.metadata.name", "Invalid name");
+///
+/// assert_eq!(errors.len(), 1);
+/// ```
 fn error(errors: &mut Vec<ValidationError>, code: &str, path: &str, message: &str) {
     errors.push(ValidationError {
         code: code.into(),

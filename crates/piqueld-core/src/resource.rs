@@ -34,12 +34,22 @@ pub struct InstanceIdError;
 pub struct InstanceId(String);
 
 impl InstanceId {
-    /// Parses a safe, stable control-plane instance identifier.
+    /// Parses a lowercase control-plane instance identifier.
+    ///
+    /// Identifiers must contain 1–64 ASCII letters, digits, and internal hyphens,
+    /// and must begin and end with a letter or digit.
     ///
     /// # Errors
     ///
-    /// Returns [`InstanceIdError`] when the value is empty, malformed, or
-    /// outside the bounded identifier format.
+    /// Returns [`InstanceIdError`] if the value is empty, malformed, too long, or
+    /// begins or ends with a hyphen.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let id = InstanceId::parse("control-plane-1").unwrap();
+    /// assert_eq!(id.to_string(), "control-plane-1");
+    /// ```
     pub fn parse(value: impl Into<String>) -> Result<Self, InstanceIdError> {
         let value = value.into();
         if (1..=64).contains(&value.len())
@@ -61,14 +71,28 @@ impl InstanceId {
         }
     }
 
-    /// Returns the persisted representation.
-    #[must_use]
+    /// Returns the canonical string representation used for persistence.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let id: InstanceId = "worker-1".parse().unwrap();
+    /// assert_eq!(id.as_str(), "worker-1");
+    /// ```
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 impl<'de> Deserialize<'de> for InstanceId {
+    /// Deserializes an instance identifier from a string and validates its format.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let instance: InstanceId = serde_json::from_str("\"worker-1\"").unwrap();
+    /// assert_eq!(instance.to_string(), "worker-1");
+    /// ```
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -86,6 +110,14 @@ impl fmt::Display for InstanceId {
 
 impl FromStr for InstanceId {
     type Err = InstanceIdError;
+    /// Parses an instance identifier from its string representation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let id: InstanceId = "web-1".parse().unwrap();
+    /// assert_eq!(id.to_string(), "web-1");
+    /// ```
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::parse(value)
     }
@@ -102,12 +134,21 @@ pub struct Sha256DigestError;
 pub struct Sha256Digest(String);
 
 impl Sha256Digest {
-    /// Parses an explicitly tagged lowercase SHA-256 digest.
+    /// Parses a lowercase, explicitly tagged SHA-256 digest.
     ///
     /// # Errors
     ///
-    /// Returns [`Sha256DigestError`] when the value is not a lowercase
-    /// `sha256:` digest with exactly 64 hexadecimal digits.
+    /// Returns [`Sha256DigestError`] if the value does not contain the `sha256:`
+    /// prefix followed by exactly 64 lowercase hexadecimal digits.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let digest = Sha256Digest::parse(
+    ///     "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    /// )?;
+    /// # Ok::<(), Sha256DigestError>(())
+    /// ```
     pub fn parse(value: impl Into<String>) -> Result<Self, Sha256DigestError> {
         let value = value.into();
         if valid_sha256(&value) {
@@ -117,14 +158,28 @@ impl Sha256Digest {
         }
     }
 
-    /// Returns the persisted representation.
-    #[must_use]
+    /// Returns the canonical string representation used for persistence.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let id: InstanceId = "worker-1".parse().unwrap();
+    /// assert_eq!(id.as_str(), "worker-1");
+    /// ```
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 impl<'de> Deserialize<'de> for Sha256Digest {
+    /// Deserializes an instance identifier from a string and validates its format.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let instance: InstanceId = serde_json::from_str("\"worker-1\"").unwrap();
+    /// assert_eq!(instance.to_string(), "worker-1");
+    /// ```
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -142,6 +197,14 @@ impl fmt::Display for Sha256Digest {
 
 impl FromStr for Sha256Digest {
     type Err = Sha256DigestError;
+    /// Parses an instance identifier from its string representation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let id: InstanceId = "web-1".parse().unwrap();
+    /// assert_eq!(id.to_string(), "web-1");
+    /// ```
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::parse(value)
     }
@@ -161,8 +224,16 @@ pub enum ResolvedSource {
 }
 
 impl ResolvedSource {
-    /// Returns the immutable image reference used by Docker.
-    #[must_use]
+    /// Provides the immutable image reference resolved for Docker.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn check(source: &ResolvedSource) {
+    /// let reference = source.digest_reference();
+    /// assert!(!reference.is_empty());
+    /// # }
+    /// ```
     pub fn digest_reference(&self) -> &str {
         match self {
             Self::Image {
@@ -193,8 +264,16 @@ pub enum ResolutionRequirement {
     },
 }
 
-/// Returns the image resolutions still needed before compilation.
-#[must_use]
+/// Identifies image sources that do not yet have resolved immutable references.
+///
+/// # Examples
+///
+/// ```
+/// # let app: NormalizedApplication = todo!();
+/// let resolutions = ResolutionSet::default();
+/// let requirements = preview_resolution(&app, &resolutions);
+/// assert!(requirements.is_empty() || !requirements.is_empty());
+/// ```
 pub fn preview_resolution(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
@@ -282,8 +361,23 @@ pub struct DesiredVolume {
 }
 
 impl DesiredVolume {
-    /// Returns whether the volume has a canonical name and identity.
-    #[must_use]
+    /// Determines whether the volume has a valid logical identity and canonical Docker name.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// assert!(volume.has_valid_identity());
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if the volume has valid ownership labels, a valid logical name, no
+    /// service label, and its name matches the canonical volume name; `false`
+    /// otherwise.
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
     pub fn has_valid_identity(&self) -> bool {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
             return false;
@@ -344,8 +438,19 @@ pub struct DesiredService {
 }
 
 impl DesiredService {
-    /// Returns whether the service has a canonical name and identity.
-    #[must_use]
+    /// Determines whether the service has valid logical identity and canonical ownership metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn check(service: &DesiredService) {
+    /// assert!(service.has_valid_identity());
+    /// # }
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if the service has a valid logical name, matching service label, and canonical resource name; `false` otherwise.
     pub fn has_valid_identity(&self) -> bool {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
             return false;
@@ -385,6 +490,27 @@ pub struct DesiredApplication {
 /// Resolved application state used by the runtime reconciler.
 pub type ResolvedApplication = DesiredApplication;
 
+/// Extracts an application and instance identity from valid managed-resource labels.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::BTreeMap;
+///
+/// let labels = BTreeMap::from([
+///     (MANAGED_LABEL.to_owned(), "true".to_owned()),
+///     (APPLICATION_LABEL.to_owned(), "my-app".to_owned()),
+///     (INSTANCE_LABEL.to_owned(), "dev".to_owned()),
+///     (SPEC_HASH_LABEL.to_owned(), format!("sha256:{}", "a".repeat(64))),
+/// ]);
+///
+/// assert!(desired_application_from_labels(&labels).is_some());
+/// ```
+///
+/// # Returns
+///
+/// `Some` containing the application and instance identifiers when all required
+/// labels are valid, or `None` otherwise.
 fn desired_application_from_labels(
     labels: &BTreeMap<String, String>,
 ) -> Option<(ApplicationId, InstanceId)> {
@@ -402,8 +528,18 @@ fn desired_application_from_labels(
     ))
 }
 
-/// Returns whether a logical resource name is safe for Docker naming.
-#[must_use]
+/// Validates a logical resource name for Docker naming requirements.
+///
+/// Names must contain 1–63 lowercase letters, digits, or hyphens, start with a
+/// lowercase letter, and end with a letter or digit.
+///
+/// # Examples
+///
+/// ```
+/// assert!(valid_logical_name("web-1"));
+/// assert!(!valid_logical_name("Web-1"));
+/// assert!(!valid_logical_name("web-"));
+/// ```
 pub fn valid_logical_name(value: &str) -> bool {
     (1..=63).contains(&value.len())
         && value
@@ -428,13 +564,22 @@ pub struct CompileError {
     pub message: String,
 }
 
-/// Compiles normalized intent after all image references have immutable resolutions.
+/// Compiles normalized application intent into desired Docker resources using immutable image resolutions.
 ///
 /// # Errors
 ///
-/// Returns bounded compilation diagnostics when a service has no matching image
-/// resolution or its resolved image is not an immutable reference to the
-/// requested repository.
+/// Returns bounded compilation diagnostics when an image resolution is missing or does not
+/// reference the requested repository with an immutable digest.
+///
+/// # Examples
+///
+/// ```
+/// # let app: NormalizedApplication = todo!();
+/// # let instance_id: InstanceId = todo!();
+/// # let resolutions: ResolutionSet = todo!();
+/// let desired = compile_application(&app, instance_id, &resolutions)?;
+/// # Ok::<(), Vec<CompileError>>(())
+/// ```
 pub fn compile_application(
     app: &NormalizedApplication,
     instance_id: InstanceId,
@@ -481,6 +626,19 @@ pub fn compile_application(
     })
 }
 
+/// Validates that every normalized service has a matching immutable image resolution.
+///
+/// # Returns
+///
+/// A list of compilation errors for unresolved services or resolutions that do not match the
+/// requested service sources.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let errors = validate_application(&app, &resolutions);
+/// assert!(errors.is_empty());
+/// ```
 fn validate_application(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
@@ -502,6 +660,18 @@ fn validate_application(
     errors
 }
 
+/// Creates compilation diagnostics for services whose images lack immutable digest resolutions.
+///
+/// # Examples
+///
+/// ```ignore
+/// let errors = unresolved_errors(&app, &resolutions);
+/// assert!(errors.iter().all(|error| error.code == "source_unresolved"));
+/// ```
+///
+/// # Returns
+///
+/// A compilation error for each service image that has not been resolved.
 fn unresolved_errors(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
@@ -518,6 +688,21 @@ fn unresolved_errors(
         .collect()
 }
 
+/// Determines whether a resolved image matches the requested image and uses an immutable digest from the same repository.
+///
+/// # Examples
+///
+/// ```
+/// let source = Source::Image {
+///     image: "nginx".into(),
+/// };
+/// let resolved = ResolvedSource::Image {
+///     requested: "nginx".into(),
+///     digest_reference: "nginx@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+/// };
+///
+/// assert!(resolved_source_matches(&source, &resolved));
+/// ```
 fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
     match (source, resolved) {
         (
@@ -534,6 +719,24 @@ fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
     }
 }
 
+/// Builds the desired Docker service from its normalized definition and resolved image.
+///
+/// # Examples
+///
+/// ```ignore
+/// let desired = compile_service(
+///     &service,
+///     &application,
+///     &resolutions,
+///     &ownership,
+///     "private-network",
+/// );
+/// assert_eq!(desired.logical_name, service.name);
+/// ```
+///
+/// # Returns
+///
+/// A desired service with its resolved image, ownership labels, mounts, runtime settings, and private-network attachment.
 fn compile_service(
     service: &Service,
     app: &NormalizedApplication,
@@ -573,6 +776,25 @@ fn compile_service(
     }
 }
 
+/// Determines whether an image reference uses a valid immutable SHA-256 digest.
+///
+/// # Examples
+///
+/// ```
+/// let reference = "registry.example.com/app@sha256:\
+/// 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+///
+/// assert!(immutable_digest_reference(reference));
+/// assert!(!immutable_digest_reference("registry.example.com/app:latest"));
+/// ```
+///
+/// # Parameters
+///
+/// * `reference` - The image reference to validate.
+///
+/// # Returns
+///
+/// `true` if the reference contains a valid lowercase 64-character SHA-256 digest, `false` otherwise.
 fn immutable_digest_reference(reference: &str) -> bool {
     valid_image_reference(reference)
         && reference
@@ -586,14 +808,48 @@ fn immutable_digest_reference(reference: &str) -> bool {
             })
 }
 
+/// Determines whether two image references belong to the same repository.
+///
+/// # Examples
+///
+/// ```
+/// assert!(same_image_repository(
+///     "docker.io/library/alpine:latest",
+///     "alpine@sha256:abc",
+/// ));
+/// assert!(!same_image_repository(
+///     "alpine:latest",
+///     "ubuntu@sha256:abc",
+/// ));
+/// ```
+///
+/// # Returns
+///
+/// `true` if both references have the same normalized repository, `false` otherwise.
 fn same_image_repository(requested: &str, resolved: &str) -> bool {
     image_repository(requested)
         .zip(image_repository(resolved))
         .is_some_and(|(left, right)| left == right)
 }
 
-/// Returns the canonical repository portion of a valid image reference.
-#[must_use]
+/// Normalizes a valid image reference to its canonical repository name.
+///
+/// Docker Hub references are expanded to include the `docker.io` registry and
+/// `library` namespace when applicable. Tags and digests are omitted from the
+/// result.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     image_repository("ubuntu:latest"),
+///     Some("docker.io/library/ubuntu".to_owned())
+/// );
+/// ```
+///
+/// # Returns
+///
+/// The canonical repository name, or `None` if the image reference is invalid.
 pub fn image_repository(reference: &str) -> Option<String> {
     if !valid_image_reference(reference) {
         return None;
@@ -716,8 +972,17 @@ pub struct ObservedNetwork {
 }
 
 impl ObservedNetwork {
-    /// Returns whether ownership labels identify the desired network.
-    #[must_use]
+    /// Determines whether the observed network belongs to the desired application and has its canonical name.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// assert!(observed.matches_ownership(&desired, &application));
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if the ownership labels identify the application and the observed network has the desired name, `false` otherwise.
     pub fn matches_ownership(
         &self,
         desired: &DesiredNetwork,
@@ -776,8 +1041,20 @@ pub struct ObservedService {
 }
 
 impl ObservedService {
-    /// Returns whether all desired service fields match.
-    #[must_use]
+    /// Determines whether the observed service conforms to the desired service configuration.
+    ///
+    /// Compares runtime settings, image, replicas, environment, command, arguments, health
+    /// check, resources, mounts, networks, and managed labels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let observed = /* an observed service */ todo!();
+    /// # let desired = /* its desired configuration */ todo!();
+    /// assert!(observed.matches(&desired));
+    /// ```
+    ///
+    /// Returns `true` when all compared fields match, `false` otherwise.
     pub fn matches(&self, desired: &DesiredService) -> bool {
         self.image == desired.image
             && self.replicas == desired.replicas
@@ -792,8 +1069,22 @@ impl ObservedService {
             && self.runtime_configuration_matches
     }
 
-    /// Returns whether ownership labels identify the desired service.
-    #[must_use]
+    /// Determines whether an observed service belongs to the desired service.
+    ///
+    /// The service must have valid application and instance ownership labels, the
+    /// expected service label, and the canonical desired resource name.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// assert!(observed.matches_ownership(&desired_service, &desired_application));
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if the observed service matches the desired service, `false` otherwise.
+    ///
+    /// #[must_use]
     pub fn matches_ownership(
         &self,
         desired: &DesiredService,
@@ -806,8 +1097,20 @@ impl ObservedService {
             && self.name == desired.name
     }
 
-    /// Returns whether labels and the canonical name identify this service.
-    #[must_use]
+    /// Determines whether the service belongs to the specified application and instance.
+    ///
+    /// A service is owned when its ownership labels are valid and its name matches the
+    /// canonical Docker resource name derived from its application and logical service name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let owned = service.is_owned_by(&instance, &application);
+    /// assert!(owned);
+    /// ```
+    ///
+    /// Returns `true` if the service has matching ownership metadata and a canonical name,
+    /// `false` otherwise.
     pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
         if OwnershipState::from_labels(&self.labels, instance, application) != OwnershipState::Owned
         {
@@ -848,8 +1151,26 @@ pub enum OwnershipState {
 }
 
 impl OwnershipState {
-    /// Classifies ownership labels without exposing raw backend data.
-    #[must_use]
+    /// Classifies a resource's ownership labels as owned, foreign, or invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::BTreeMap;
+    ///
+    /// let labels = BTreeMap::new();
+    /// let instance = "dev".parse().unwrap();
+    /// let application = "web".parse().unwrap();
+    ///
+    /// assert!(matches!(
+    ///     OwnershipState::from_labels(&labels, &instance, &application),
+    ///     OwnershipState::Invalid
+    /// ));
+    /// ```
+    ///
+    /// Returns `Owned` when labels identify the expected resource, `Foreign` when
+    /// they identify another resource, and `Invalid` when required labels are
+    /// missing or malformed.
     pub fn from_labels(
         labels: &BTreeMap<String, String>,
         instance: &InstanceId,
@@ -871,6 +1192,17 @@ impl OwnershipState {
     }
 }
 
+/// Compares two slices for equality without considering element order.
+///
+/// Duplicate elements are significant.
+///
+/// # Examples
+///
+/// ```
+/// assert!(unordered_eq(&[3, 1, 2], &[1, 2, 3]));
+/// assert!(!unordered_eq(&[1, 1, 2], &[1, 2]));
+/// ```
+pub(crate) fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool
 pub(crate) fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
     let mut observed = observed.iter().collect::<Vec<_>>();
     let mut desired = desired.iter().collect::<Vec<_>>();
@@ -879,6 +1211,14 @@ pub(crate) fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
     observed == desired
 }
 
+/// Returns the unique strings in lexicographic order.
+///
+/// # Examples
+///
+/// ```
+/// let values = ["beta".to_string(), "alpha".to_string(), "beta".to_string()];
+/// assert_eq!(sorted(&values), vec!["alpha", "beta"]);
+/// ```
 fn sorted(values: &[String]) -> Vec<&str> {
     let mut values = values.iter().map(String::as_str).collect::<Vec<_>>();
     values.sort_unstable();
@@ -886,6 +1226,24 @@ fn sorted(values: &[String]) -> Vec<&str> {
     values
 }
 
+/// Checks whether observed labels contain all desired labels and match every managed label.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::BTreeMap;
+///
+/// let mut observed = BTreeMap::from([
+///     ("app".to_string(), "example".to_string()),
+///     ("io.piqueld.instance".to_string(), "test".to_string()),
+/// ]);
+/// let desired = BTreeMap::from([("io.piqueld.instance".to_string(), "test".to_string())]);
+///
+/// assert!(owned_label_subset(&observed, &desired));
+///
+/// observed.insert("io.piqueld.instance".to_string(), "other".to_string());
+/// assert!(!owned_label_subset(&observed, &desired));
+/// ```
 pub(crate) fn owned_label_subset(
     observed: &BTreeMap<String, String>,
     desired: &BTreeMap<String, String>,
@@ -899,6 +1257,16 @@ pub(crate) fn owned_label_subset(
             .all(|(key, value)| desired.get(key) == Some(value))
 }
 
+/// Validates a lowercase, explicitly tagged SHA-256 digest.
+///
+/// # Examples
+///
+/// ```
+/// assert!(valid_sha256(
+///     "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+/// ));
+/// assert!(!valid_sha256("sha256:invalid"));
+/// ```
 fn valid_sha256(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|digest| {
         digest.len() == 64

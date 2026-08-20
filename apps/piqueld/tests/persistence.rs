@@ -6,6 +6,15 @@ use piqueld_core::{ApplicationId, InstanceId, parse_toml};
 use sqlx::{Connection, SqliteConnection};
 use std::{os::unix::fs::PermissionsExt, path::Path};
 
+/// Marks an operation and all of its steps as succeeded in the database.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example(database: &std::path::Path, operation_id: &str) {
+/// mark_operation_succeeded(database, operation_id).await;
+/// # }
+/// ```
 async fn mark_operation_succeeded(database: &Path, operation_id: &str) {
     let mut connection =
         SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))

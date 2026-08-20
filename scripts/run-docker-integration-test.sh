@@ -32,6 +32,7 @@ runtime_dir="$(mktemp -d -t piqueld-dind.XXXXXXXX)"
 socket_path="$runtime_dir/docker.sock"
 container_id=""
 
+# cleanup removes the temporary Docker-in-Docker container and runtime directory.
 cleanup() {
   if [[ -n "$container_id" ]]; then
     docker rm --force "$container_id" >/dev/null 2>&1 || true

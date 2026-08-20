@@ -30,10 +30,29 @@ impl<D> DockerRuntime<D> {
 
 #[async_trait]
 impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
+    /// Wakes one waiting reconciliation task.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// runtime.trigger_reconciliation();
+    /// ```
     fn trigger_reconciliation(&self) {
         self.wake.notify_one();
     }
 
+    /// Prepares an application for execution by resolving its image sources, compiling it, and retrieving its observed state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a boundary error if image resolution, application compilation, Docker observation, or the preparation timeout fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let prepared = runtime.prepare(&application).await?;
+    /// # Ok::<(), BoundaryError>(())
+    /// ```
     async fn prepare(
         &self,
         application: &NormalizedApplication,
@@ -75,6 +94,18 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         .map_err(|_| BoundaryError::Runtime(DockerError::Unavailable("prepare application")))?
     }
 
+    /// Retrieves the current observed state of a stored application from Docker.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let observed = runtime.observe(&application).await?;
+    /// # Ok::<(), BoundaryError>(())
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The application's current observed state.
     async fn observe(
         &self,
         application: &StoredApplication,

@@ -8,6 +8,21 @@ use async_trait::async_trait;
 
 #[async_trait]
 impl<D: DockerApi> OperationHandler for ReconcileHandler<D> {
+    /// Executes an operation and records eligible failures.
+    ///
+    /// Cancellation and supersession errors are returned without recording. Errors encountered while recording a failure are logged, while the original operation result is preserved.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     handler: &ReconcileHandler<D>,
+    /// #     operation: &Operation,
+    /// #     cancellation: &CancellationToken,
+    /// # ) where D: DockerApi {
+    /// let result = handler.execute(operation, cancellation).await;
+    /// # }
+    /// ```
     async fn execute(
         &self,
         operation: &Operation,
@@ -33,6 +48,22 @@ impl<D: DockerApi> OperationHandler for ReconcileHandler<D> {
 }
 
 impl<D: DockerApi> ReconcileHandler<D> {
+    /// Executes an operation against the application's current state, updating its status and validating convergence.
+    ///
+    /// Superseded operations skip their remaining steps without mutating application state. Delete operations
+    /// complete only after the application is no longer present in the runtime state.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// handler.execute_operation(&operation, &cancellation).await?;
+    /// # Ok::<(), OperationError>(())
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the operation completes or is safely superseded; an `OperationError` when execution,
+    /// state updates, or convergence validation fails.
     async fn execute_operation(
         &self,
         operation: &Operation,
@@ -71,6 +102,22 @@ impl<D: DockerApi> ReconcileHandler<D> {
     }
 }
 
+/// Builds the plan request corresponding to an operation and its stored application state.
+///
+/// Delete operations use the stored instance identifier; other operations use the
+/// resolved desired state.
+///
+/// # Examples
+///
+/// ```
+/// # let operation: Operation = todo!();
+/// # let app: StoredApplication = todo!();
+/// let request = request_for(&operation, &app);
+/// assert!(matches!(
+///     request,
+///     PlanRequest::Delete { .. } | PlanRequest::Reconcile { .. }
+/// ));
+/// ```
 fn request_for(operation: &Operation, app: &StoredApplication) -> PlanRequest {
     if operation.kind == OperationKind::Delete {
         PlanRequest::Delete {
@@ -83,6 +130,15 @@ fn request_for(operation: &Operation, app: &StoredApplication) -> PlanRequest {
         }
     }
 }
+/// Converts a store failure into an operation error indicating that the journal is unavailable.
+///
+/// # Examples
+///
+/// ```ignore
+/// let operation_error = journal_error(store_error);
+/// assert!(matches!(operation_error, OperationError::JournalUnavailable));
+/// ```
+рминистр
 pub(super) fn journal_error(error: crate::store::StoreError) -> OperationError {
     tracing::error!(error = ?error, "operation journal request failed");
     drop(error);
@@ -90,6 +146,20 @@ pub(super) fn journal_error(error: crate::store::StoreError) -> OperationError {
 }
 
 impl<D: DockerApi> ReconcileHandler<D> {
+    /// Loads the stored application associated with an operation.
+    ///
+    /// Missing applications are treated as successfully finalized for delete operations.
+    /// Other store failures are reported as unavailable state.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let application = handler.load_application(&operation).await?;
+    /// if let Some(application) = application {
+    ///     // Use the stored application state.
+    /// }
+    /// # Ok::<(), OperationError>(())
+    /// ```
     async fn load_application(
         &self,
         operation: &Operation,
@@ -108,6 +178,19 @@ impl<D: DockerApi> ReconcileHandler<D> {
         }
     }
 
+    /// Transitions a pending non-delete application to the deploying state.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// handler.start_deployment(&operation).await?;
+    /// assert_eq!(handler.store.status(&operation.application_id).await?.state, ApplicationState::Deploying);
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the deployment status is started or no transition is required.
+    /// Returns an error if the application status cannot be read or updated.
     async fn start_deployment(&self, operation: &Operation) -> Result<(), OperationError> {
         let status = self
             .store
@@ -129,6 +212,29 @@ impl<D: DockerApi> ReconcileHandler<D> {
         Ok(())
     }
 
+    /// Executes each pending operation step in order, stopping when the operation is cancelled or superseded.
+    
+    ///
+    
+    /// Completed and skipped steps are ignored. Non-delete operations from superseded generations
+    
+    /// skip their remaining steps without executing them.
+    
+    ///
+    
+    /// # Examples
+    
+    ///
+    
+    /// ```rust,ignore
+    
+    /// handler
+    
+    ///     .execute_steps(&operation, &request, steps, &ownership, &cancellation)
+    
+    ///     .await?;
+    
+    /// ```
     async fn execute_steps(
         &self,
         operation: &Operation,
@@ -156,6 +262,22 @@ impl<D: DockerApi> ReconcileHandler<D> {
         Ok(())
     }
 
+    /// Executes a reconciliation step against the currently observed application state.
+    ///
+    /// The step is skipped when its action is no longer present in the current plan.
+    /// Otherwise, it runs the action and records the resulting step state, including
+    /// failures and cancellation-aware recovery.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(handler: &Handler, operation: &Operation, request: &PlanRequest,
+    /// #     step: &OperationStep, ownership: &BTreeMap<String, String>,
+    /// #     cancellation: &CancellationToken) -> Result<(), OperationError> {
+    /// handler.execute_step(operation, request, step, ownership, cancellation).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn execute_step(
         &self,
         operation: &Operation,
@@ -206,6 +328,25 @@ impl<D: DockerApi> ReconcileHandler<D> {
         }
     }
 
+    /// Records a failed step as recovery when cancellation is active, or as failed otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// // A cancelled operation leaves the step eligible for recovery.
+    /// handler.record_step_failure(&step, error, &cancellation).await?;
+    /// # Ok::<(), OperationError>(())
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `step` - The operation step whose state should be updated.
+    /// * `error` - The error encountered while executing the step.
+    /// * `cancellation` - The operation's cancellation token.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the step state is recorded successfully; otherwise, the journal error.
     async fn record_step_failure(
         &self,
         step: &crate::store::OperationStep,
@@ -226,6 +367,24 @@ impl<D: DockerApi> ReconcileHandler<D> {
         Ok(())
     }
 
+    /// Records an operation failure by transitioning the application to an appropriate failed or degraded state.
+    ///
+    /// Superseded non-delete operations are ignored. The current application status determines whether a
+    /// failure status transition is applicable.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// handler
+    ///     .record_operation_failure(&operation, error)
+    ///     .await
+    ///     .expect("failed to record operation failure");
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the current application status cannot be read or the failure status cannot be recorded.
+    pub(super) async fn record_operation_failure
     pub(super) async fn record_operation_failure(
         &self,
         operation: &Operation,
@@ -284,6 +443,17 @@ impl<D: DockerApi> ReconcileHandler<D> {
         Ok(())
     }
 
+    /// Marks pending and recovery steps as skipped when an operation has been superseded.
+    ///
+    /// Steps that are running, failed, or cancelled cause the operation to remain
+    /// superseded so the scheduler can cancel it. Completed steps are left unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let result = handler.skip_superseded_steps(&operation).await;
+    /// assert!(result.is_ok() || matches!(result, Err(OperationError::Superseded)));
+    /// ```
     async fn skip_superseded_steps(&self, operation: &Operation) -> Result<(), OperationError> {
         let steps = self
             .store
@@ -314,6 +484,22 @@ impl<D: DockerApi> ReconcileHandler<D> {
         }
     }
 
+    /// Marks a converged non-delete application as ready.
+    ///
+    /// Delete operations are left unchanged, and applications that are already ready
+    /// are not updated.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// handler.mark_ready(&operation).await?;
+    /// # Ok::<(), OperationError>(())
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the application is ready or the operation is a delete;
+    /// otherwise, the journal error encountered while reading or updating status.
     async fn mark_ready(&self, operation: &Operation) -> Result<(), OperationError> {
         if operation.kind == OperationKind::Delete {
             return Ok(());
@@ -338,6 +524,18 @@ impl<D: DockerApi> ReconcileHandler<D> {
         Ok(())
     }
 
+    /// Verifies that a deletion has converged after re-observing the application.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the deletion remains blocked or requires further execution.
+    /// Propagates errors encountered while observing the application.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// handler.finish_delete(&operation, &request, &cancellation).await?;
+    /// ```
     async fn finish_delete(
         &self,
         operation: &Operation,
@@ -359,6 +557,18 @@ impl<D: DockerApi> ReconcileHandler<D> {
         Err(error)
     }
 
+    /// Determines whether an operation targets the application's current generation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let is_current = handler.operation_is_current(&operation).await?;
+    /// assert!(is_current);
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `Ok(true)` when the operation generation matches the stored application generation; `Ok(false)` otherwise. Store failures are returned as `OperationError`.
     async fn operation_is_current(&self, operation: &Operation) -> Result<bool, OperationError> {
         let application = self
             .store

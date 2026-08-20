@@ -57,10 +57,49 @@ pub enum DockerError {
 }
 
 impl DockerError {
+    /// Creates an error indicating that Docker was unavailable during an operation.
+    
+    ///
+    
+    /// The underlying Docker error is retained for diagnostics.
+    
+    ///
+    
+    /// # Examples
+    
+    ///
+    
+    /// ```
+    
+    /// let source = bollard::errors::Error::DockerResponseServerError {
+    
+    ///     status_code: 503,
+    
+    ///     message: "Docker unavailable".into(),
+    
+    /// };
+    
+    /// let error = DockerError::unavailable("listing containers", source);
+    
+    /// ```
     pub(super) fn unavailable(operation: &'static str, source: bollard::errors::Error) -> Self {
         Self::UnavailableSource { operation, source }
     }
 
+    /// Creates an image-resolution error that preserves the failed operation and underlying Docker error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let source = bollard::errors::Error::DockerResponseServerError {
+    ///     status_code: 404,
+    ///     message: "image not found".to_owned(),
+    /// };
+    /// let error = DockerError::image_resolution("pull image", source);
+    /// assert!(matches!(error, DockerError::ImageResolutionSource { .. }));
+    /// ```
+    ///
+    /// `operation` identifies the Docker operation that failed.
     pub(super) fn image_resolution(
         operation: &'static str,
         source: bollard::errors::Error,
@@ -68,12 +107,43 @@ impl DockerError {
         Self::ImageResolutionSource { operation, source }
     }
 
+    /// Creates a request error while preserving the operation description and underlying Docker error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let source = bollard::errors::Error::DockerResponseServerError {
+    ///     status_code: 500,
+    ///     message: "request failed".to_owned(),
+    /// };
+    /// let error = DockerError::request("pull image", source);
+    ///
+    /// assert!(matches!(
+    ///     error,
+    ///     DockerError::RequestSource {
+    ///         operation: "pull image",
+    ///         ..
+    ///     }
+    /// ));
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// A request error containing the operation description and underlying Docker error.
     pub(super) fn request(operation: &'static str, source: bollard::errors::Error) -> Self {
         Self::RequestSource { operation, source }
     }
 }
 
 impl From<DockerError> for OperationError {
+    /// Converts a Docker-specific error into its corresponding operation error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error: OperationError = DockerError::OwnershipConflict.into();
+    /// assert!(matches!(error, OperationError::OwnershipConflict));
+    /// ```
     fn from(error: DockerError) -> Self {
         match error {
             DockerError::OwnershipConflict => Self::OwnershipConflict,

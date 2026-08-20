@@ -5,6 +5,20 @@ use super::{
 use piqueld_core::ApplicationId;
 
 impl<D: DockerApi> ReconcileHandler<D> {
+    /// Executes a planned action, including resource changes and service-state waits.
+    ///
+    /// Resource operations are retried when appropriate, while retained volumes and resolved images
+    /// require no action.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let result = reconciler
+    ///     .execute_action(&action, &application_id, &ownership, &cancellation)
+    ///     .await;
+    /// ```
+    ///
+    /// Returns an error if the action fails or is cancelled.
     pub(super) async fn execute_action(
         &self,
         action: &PlanAction,
@@ -42,6 +56,17 @@ impl<D: DockerApi> ReconcileHandler<D> {
             ActionKind::RetainVolume { .. } | ActionKind::ResolveImage { .. } => Ok(()),
         }
     }
+    /// Builds the labels used to identify resources managed for an application.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let labels = ownership_labels(&application);
+    ///
+    /// assert_eq!(labels.get(MANAGED_LABEL), Some(&"true".to_owned()));
+    /// assert_eq!(labels.get(INSTANCE_LABEL), Some(&application.resolved.instance_id.to_string()));
+    /// assert_eq!(labels.get(APPLICATION_LABEL), Some(&application.application.id.to_string()));
+    /// ```
     pub(super) fn ownership_labels(
         application: &crate::store::StoredApplication,
     ) -> std::collections::BTreeMap<String, String> {
@@ -58,6 +83,27 @@ impl<D: DockerApi> ReconcileHandler<D> {
             ),
         ])
     }
+    /// Executes a Docker operation with cancellation-aware retries and bounded exponential backoff.
+    ///
+    /// Non-retryable Docker errors are returned immediately. Retryable errors are retried
+    /// until the configured attempt limit is reached or cancellation is requested.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// reconciler
+    ///     .retry(&cancellation, || async { docker_operation().await })
+    ///     .await?;
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `cancellation` — Token used to stop the operation before an attempt or during backoff.
+    /// * `call` — Operation to execute for each attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns cancellation, non-retryable Docker errors, or the final retryable error.
     pub(super) async fn retry<F, Fut>(
         &self,
         cancellation: &CancellationToken,
@@ -104,6 +150,19 @@ impl<D: DockerApi> ReconcileHandler<D> {
             "execute retryable Docker operation",
         ))
     }
+    /// Waits for a service to converge or be removed.
+    ///
+    /// Returns an error if convergence fails, the convergence deadline expires, or
+    /// cancellation is requested.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// reconciler
+    ///     .wait_service(&app, "web", false, &cancellation)
+    ///     .await?;
+    /// # Ok::<(), OperationError>(())
+    /// ```
     pub(super) async fn wait_service(
         &self,
         app: &piqueld_core::ApplicationId,
@@ -129,7 +188,18 @@ impl<D: DockerApi> ReconcileHandler<D> {
         }
     }
 
-    /// Reads application state until Docker responds or the convergence deadline expires.
+    /// Observes an application until Docker responds, cancellation is requested, or the convergence deadline expires.
+    ///
+    /// Retryable Docker errors are retried with bounded exponential backoff. Non-retryable errors are returned immediately.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let observed = reconciler
+    ///     .observe_with_retry(&app, &cancellation, deadline)
+    ///     .await?;
+    /// # Ok::<(), OperationError>(())
+    /// ```
     pub(super) async fn observe_with_retry(
         &self,
         app: &piqueld_core::ApplicationId,

@@ -105,10 +105,21 @@ pub enum ClientError {
 }
 
 impl Client {
-    /// Creates a client for an HTTP endpoint.
+    /// Creates a client for a plain HTTP origin.
+    ///
+    /// The endpoint may include a host and optional port, but must not include
+    /// credentials, a path, a query, or a fragment.
     ///
     /// # Errors
-    /// Returns [`ClientError::Endpoint`] when `base_url` is not a plain HTTP origin.
+    ///
+    /// Returns [`ClientError::Endpoint`] when `base_url` is not a valid plain HTTP
+    /// origin.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let client = Client::tcp("http://localhost:8080").unwrap();
+    /// ```
     pub fn tcp(base_url: &str) -> Result<Self, ClientError> {
         let url = Url::parse(base_url).map_err(|_| ClientError::Endpoint)?;
         if url.scheme() != "http"
@@ -137,7 +148,17 @@ impl Client {
         })
     }
 
-    /// Creates a client for a Unix-domain socket.
+    /// Creates a client that connects through the specified Unix-domain socket.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let client = Client::unix("/var/run/piqueld.sock");
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `path` — The filesystem path of the Unix-domain socket.
     #[must_use]
     pub fn unix(path: impl AsRef<Path>) -> Self {
         Self {
@@ -146,7 +167,16 @@ impl Client {
         }
     }
 
-    /// Overrides the per-request timeout.
+    /// Overrides the default timeout applied to each request.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// let client = Client::unix("/tmp/piqueld.sock")
+    ///     .with_timeout(Duration::from_secs(10));
+    /// ```
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
@@ -261,6 +291,30 @@ impl Client {
         .await
     }
 
+    /// Sends a request and decodes its successful response payload.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(client: &Client) -> Result<(), ClientError> {
+    /// let body: Option<&serde_json::Value> = None;
+    /// let response: serde_json::Value = client
+    ///     .send(hyper::Method::GET, "/health", body, &[])
+    ///     .await?;
+    /// # let _ = response;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The API path to request.
+    /// * `body` - The optional request body.
+    /// * `headers` - Additional request headers.
+    ///
+    /// # Returns
+    ///
+    /// The decoded response payload.
     async fn send<T: DeserializeOwned, B: Serialize>(
         &self,
         method: Method,
@@ -275,6 +329,29 @@ impl Client {
     }
 }
 
+/// Decodes a successful API response from its JSON envelope.
+///
+/// Non-success responses are converted to [`ClientError::Api`], while unreadable
+/// response bodies and invalid JSON produce transport and decoding errors,
+/// respectively.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example(response: hyper::Response<hyper::body::Incoming>) {
+/// #[derive(serde::Deserialize)]
+/// struct Payload {
+///     name: String,
+/// }
+///
+/// let payload: Payload = decode_envelope(response).await.unwrap();
+/// assert!(!payload.name.is_empty());
+/// # }
+/// ```
+///
+/// # Returns
+///
+/// The deserialized value contained in the response envelope.
 async fn decode_envelope<T: DeserializeOwned>(
     response: hyper::Response<hyper::body::Incoming>,
 ) -> Result<T, ClientError> {
@@ -296,6 +373,19 @@ async fn decode_envelope<T: DeserializeOwned>(
         .map_err(|_| ClientError::Decode)
 }
 
+/// Converts an unsuccessful HTTP response into an API client error.
+///
+/// The response status is preserved, and its body is decoded as structured error
+/// information when possible.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example(response: hyper::Response<hyper::body::Incoming>) {
+/// let error = decode_api_error(response).await;
+/// assert!(matches!(error, ClientError::Api { .. }));
+/// # }
+/// ```
 pub(crate) async fn decode_api_error(
     response: hyper::Response<hyper::body::Incoming>,
 ) -> ClientError {
@@ -322,6 +412,15 @@ fn error_body(payload: &[u8]) -> ErrorBody {
     })
 }
 
+/// Percent-encodes a value for use as a URI path segment.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(path_segment("hello world"), "hello%20world");
+/// assert_eq!(path_segment("a/b"), "a%2Fb");
+/// ```
+fn path_segment(value: &str) -> String
 fn path_segment(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -335,8 +434,17 @@ fn path_segment(value: &str) -> String {
     encoded
 }
 
-/// Returns the client crate version embedded at build time.
-#[must_use]
+/// Provides the client crate version embedded at build time.
+///
+/// # Examples
+///
+/// ```
+/// assert!(!version().is_empty());
+/// ```
+///
+/// # Returns
+///
+/// The client crate version.
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }

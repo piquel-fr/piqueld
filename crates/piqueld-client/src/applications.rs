@@ -132,7 +132,18 @@ pub struct ListApplicationsOptions {
 impl Client {
     /// Lists the first page of applications.
     ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(client: &Client) -> Result<(), ClientError> {
+    /// let page = client.applications().await?;
+    /// # let _ = page;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// # Errors
+    ///
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn applications(&self) -> Result<Page<ApplicationView>, ClientError> {
         self.applications_with(&ListApplicationsOptions::default())
@@ -179,8 +190,20 @@ impl Client {
 
     /// Creates an application and starts its asynchronous reconciliation.
     ///
+    /// `idempotency_key` identifies the request for safe retries.
+    ///
     /// # Errors
+    ///
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let operation = client
+    ///     .create_application(&request, "request-123")
+    ///     .await?;
+    /// ```
+    ///
     pub async fn create_application(
         &self,
         request: &CreateApplicationRequest,
@@ -231,10 +254,24 @@ impl Client {
         .await
     }
 
-    /// Plans creating an application without mutating runtime state.
+    /// Plans an application creation without changing runtime state.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     client: &Client,
+    /// #     request: &PlanApplicationRequest,
+    /// # ) -> Result<(), ClientError> {
+    /// let plan = client.plan_create(request).await?;
+    /// # let _ = plan;
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    ///
+    /// Returns [`ClientError`] if the request fails during transport, decoding, or API response handling.
     pub async fn plan_create(
         &self,
         request: &PlanApplicationRequest,
@@ -248,10 +285,28 @@ impl Client {
         .await
     }
 
-    /// Plans replacing an application without mutating runtime state.
+    /// Plans an application replacement without mutating runtime state.
+    ///
+    /// # Returns
+    ///
+    /// The dry-run replacement plan.
     ///
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    ///
+    /// Returns [`ClientError`] if the request fails during transport, decoding, or API response handling.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     client: &Client,
+    /// #     request: &ReplacePlanRequest,
+    /// # ) -> Result<(), ClientError> {
+    /// let plan = client.plan_replace("my-application", request).await?;
+    /// # let _ = plan;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn plan_replace(
         &self,
         id: &str,
@@ -266,10 +321,27 @@ impl Client {
         .await
     }
 
-    /// Requests reconciliation at an expected generation.
+    /// Requests reconciliation for an application at the specified generation.
     ///
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    ///
+    /// Returns [`ClientError`] if the request fails during transport, response decoding, or API handling.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(client: &Client) -> Result<(), ClientError> {
+    /// let operation = client.reconcile("my-app", 3).await?;
+    /// # let _ = operation;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// The returned operation represents the accepted reconciliation request.
+    ///
+    /// # Returns
+    ///
+    /// The accepted asynchronous reconciliation operation.
     pub async fn reconcile(
         &self,
         id: &str,
@@ -321,10 +393,25 @@ impl Client {
         .await
     }
 
-    /// Replaces an application using a TOML manifest.
+    /// Replaces an application with a TOML manifest after verifying its expected generation.
     ///
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    ///
+    /// Returns [`ClientError`] if the request fails during transport, decoding, or API response handling.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(client: &Client) -> Result<(), ClientError> {
+    /// let manifest = r#"
+    /// name = "example"
+    /// "#;
+    /// client
+    ///     .replace_application_toml("example", manifest, 1)
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn replace_application_toml(
         &self,
         id: &str,
@@ -346,8 +433,17 @@ impl Client {
 
     /// Plans creating an application from a TOML manifest.
     ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let plan = client
+    ///     .plan_create_toml("name = \"example\"")
+    ///     .await?;
+    /// ```
+    ///
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    ///
+    /// Returns [`ClientError`] if the request, response decoding, or API operation fails.
     pub async fn plan_create_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
         self.send_text(
             Method::POST,
@@ -358,10 +454,25 @@ impl Client {
         .await
     }
 
-    /// Plans replacing an application from a TOML manifest.
+    /// Plans replacing an application from a TOML manifest without modifying the application.
+    ///
+    /// # Parameters
+    ///
+    /// * `manifest` - TOML document describing the replacement application.
+    /// * `expected_generation` - Generation that must currently be active for the plan to apply.
     ///
     /// # Errors
+    ///
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let plan = client
+    ///     .plan_replace_toml("example", manifest, 1)
+    ///     .await?;
+    /// # Ok::<(), ClientError>(())
+    /// ```
     pub async fn plan_replace_toml(
         &self,
         id: &str,

@@ -16,10 +16,20 @@ pub struct SystemStatus {
 }
 
 impl Client {
-    /// Fetches control-plane status.
+    /// Fetches the control-plane status.
     ///
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    ///
+    /// Returns [`ClientError`] if the request, response decoding, or API response handling fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(client: &Client) -> Result<(), ClientError> {
+    /// let status = client.system_status().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn system_status(&self) -> Result<SystemStatus, ClientError> {
         self.send::<_, ()>(Method::GET, "/api/v1/system/status", None, &[])
             .await

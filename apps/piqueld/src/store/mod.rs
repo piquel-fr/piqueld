@@ -94,22 +94,73 @@ pub enum StoreError {
 }
 
 impl StoreError {
+    /// Creates a database error that preserves the underlying SQLx error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error = StoreError::database(sqlx::Error::RowNotFound);
+    /// assert!(matches!(error, StoreError::DatabaseSource(_)));
+    /// ```
     fn database(source: sqlx::Error) -> Self {
         Self::DatabaseSource(source)
     }
 
+    /// Creates a corruption error that preserves the underlying source error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error = StoreError::corrupt(std::io::Error::other("invalid data"));
+    /// assert!(matches!(error, StoreError::CorruptSource(_)));
+    /// ```
     pub(crate) fn corrupt(source: impl StdError + Send + Sync + 'static) -> Self {
         Self::CorruptSource(Box::new(source))
     }
 
+    /// Creates a schema-mismatch error that preserves the underlying source error.
+    
+    ///
+    
+    /// # Examples
+    
+    ///
+    
+    /// ```ignore
+    
+    /// let error = StoreError::schema_mismatch(std::io::Error::other("schema version mismatch"));
+    
+    /// ```
     fn schema_mismatch(source: impl StdError + Send + Sync + 'static) -> Self {
         Self::SchemaMismatchSource(Box::new(source))
     }
 
+    /// Creates an invalid-input error from a source error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error = StoreError::invalid_input(std::io::Error::new(
+    ///     std::io::ErrorKind::InvalidInput,
+    ///     "invalid value",
+    /// ));
+    /// assert!(matches!(error, StoreError::InvalidInputSource(_)));
+    /// ```
     fn invalid_input(source: impl StdError + Send + Sync + 'static) -> Self {
         Self::InvalidInputSource(Box::new(source))
     }
 
+    /// Creates a path-related store error from an I/O error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error = StoreError::path(std::io::Error::new(
+    ///     std::io::ErrorKind::NotFound,
+    ///     "database path not found",
+    /// ));
+    /// assert!(matches!(error, StoreError::PathSource(_)));
+    /// ```
     fn path(source: std::io::Error) -> Self {
         Self::PathSource(source)
     }
@@ -133,7 +184,17 @@ pub enum ApplicationState {
     Failed,
 }
 impl ApplicationState {
-    /// Returns the stable serialized state name.
+    /// Gets the stable serialized name of the application state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ApplicationState::Ready.as_str(), "ready");
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The stable serialized state name.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -145,6 +206,16 @@ impl ApplicationState {
             Self::Failed => "failed",
         }
     }
+    /// Parses a persisted application state value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ApplicationState::parse("ready")?, ApplicationState::Ready);
+    /// # Ok::<(), StoreError>(())
+    /// ```
+    ///
+    /// Returns [`StoreError::Corrupt`] for unrecognized values.
     fn parse(value: &str) -> Result<Self, StoreError> {
         match value {
             "pending" => Ok(Self::Pending),
@@ -156,7 +227,17 @@ impl ApplicationState {
             _ => Err(StoreError::Corrupt),
         }
     }
-    /// Whether a state change is valid for the durable application lifecycle.
+    /// Determines whether the application can move to the specified lifecycle state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(ApplicationState::Pending.can_transition_to(ApplicationState::Deploying));
+    /// assert!(!ApplicationState::Deleting.can_transition_to(ApplicationState::Ready));
+    /// ```
+    ///
+    /// Returns `true` when the transition is allowed or the states are identical,
+    /// and `false` otherwise.
     #[must_use]
     pub fn can_transition_to(self, next: Self) -> bool {
         self == next
@@ -196,8 +277,13 @@ pub enum OperationKind {
     Reconcile,
 }
 impl OperationKind {
-    /// Returns the stable serialized operation name.
-    #[must_use]
+    /// Provides the serialized operation name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(OperationKind::Create.as_str(), "create");
+    /// ```
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Create => "create",
@@ -206,6 +292,20 @@ impl OperationKind {
             Self::Reconcile => "reconcile",
         }
     }
+    /// Parses an operation kind from its serialized representation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(matches!(
+    ///     OperationKind::parse("create"),
+    ///     Ok(OperationKind::Create)
+    /// ));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] when the value is not a recognized operation kind.
     fn parse(v: &str) -> Result<Self, StoreError> {
         match v {
             "create" => Ok(Self::Create),
@@ -235,7 +335,17 @@ pub enum WorkState {
     Cancelled,
 }
 impl WorkState {
-    /// Returns the stable serialized work state.
+    /// Converts the work state to its stable serialized representation.
+    ///
+    /// # Returns
+    ///
+    /// The lowercase serialized name of the work state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(WorkState::Running.as_str(), "running");
+    /// ```
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -247,6 +357,18 @@ impl WorkState {
             Self::Cancelled => "cancelled",
         }
     }
+    /// Parses a persisted work-state value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] when `v` is not a recognized work-state value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(matches!(WorkState::parse("pending"), Ok(WorkState::Pending)));
+    /// assert!(matches!(WorkState::parse("unknown"), Err(StoreError::Corrupt)));
+    /// ```
     fn parse(v: &str) -> Result<Self, StoreError> {
         match v {
             "pending" => Ok(Self::Pending),
@@ -258,7 +380,14 @@ impl WorkState {
             _ => Err(StoreError::Corrupt),
         }
     }
-    /// Whether an operation transition is valid.
+    /// Determines whether an operation may move from its current state to another state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(WorkState::Pending.can_transition_to(WorkState::Running));
+    /// assert!(!WorkState::Succeeded.can_transition_to(WorkState::Running));
+    /// ```
     #[must_use]
     pub fn can_transition_to(self, next: Self) -> bool {
         self == next
@@ -298,8 +427,17 @@ pub enum StepState {
     Skipped,
 }
 impl StepState {
-    /// Returns the stable serialized step state.
-    #[must_use]
+    /// Provides the stable serialized representation of this step state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(StepState::Running.as_str(), "running");
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The lowercase serialized state name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
@@ -311,6 +449,19 @@ impl StepState {
             Self::Skipped => "skipped",
         }
     }
+    /// Parses a persisted state value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] when `state` is not a recognized state value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let state = WorkState::parse("running")?;
+    /// assert_eq!(state, WorkState::Running);
+    /// # Ok::<(), StoreError>(())
+    /// ```
     fn parse(state: &str) -> Result<Self, StoreError> {
         Ok(match state {
             "pending" => Self::Pending,
@@ -324,7 +475,14 @@ impl StepState {
         })
     }
 
-    /// Whether a step transition is valid.
+    /// Determines whether a step can move to the specified state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(StepState::Pending.can_transition_to(StepState::Running));
+    /// assert!(!StepState::Succeeded.can_transition_to(StepState::Running));
+    /// ```
     #[must_use]
     pub fn can_transition_to(self, next: Self) -> bool {
         self == next
@@ -467,10 +625,21 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
-    /// Opens a local `SQLite` database, applies forward migrations, and creates or loads its instance ID.
+    /// Opens a local SQLite database, applies pending migrations, and initializes or loads its stable instance identifier.
     ///
     /// # Errors
-    /// Returns a sanitized storage or schema compatibility error.
+    ///
+    /// Returns an error if the database path is invalid, the database cannot be opened or migrated, or its schema or metadata is incompatible or corrupt.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example() -> Result<(), StoreError> {
+    /// let store = SqliteStore::open("example.sqlite").await?;
+    /// assert!(!store.instance_id().is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let path = path.as_ref();
         prepare_database_path(path)?;
@@ -553,6 +722,21 @@ impl SqliteStore {
         Ok(Self { pool, instance_id })
     }
 
+    /// Sets the SQLite schema version for the active transaction.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - The transaction in which to update the schema version.
+    /// * `version` - The schema version to store in SQLite.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut tx = pool.begin().await?;
+    /// set_user_version(&mut tx, 2).await?;
+    /// tx.commit().await?;
+    /// # Ok::<(), StoreError>(())
+    /// ```
     async fn set_user_version(
         tx: &mut Transaction<'_, Sqlite>,
         version: usize,
@@ -566,16 +750,49 @@ impl SqliteStore {
             .map_err(StoreError::database)
     }
 
-    /// Stable identity of this control-plane database.
-    #[must_use]
+    /// Provides the stable identity assigned to this control-plane database.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let store: SqliteStore = todo!();
+    /// let id = store.instance_id();
+    /// assert!(!id.is_empty());
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The database's stable instance identifier.
     pub fn instance_id(&self) -> &str {
         &self.instance_id
     }
 
+    /// Acquires a SQLite connection from the connection pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if a pooled connection cannot be acquired.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(store: &SqliteStore) -> Result<(), StoreError> {
+    /// let _connection = store.connection().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn connection(&self) -> Result<PoolConnection<Sqlite>, StoreError> {
         self.pool.acquire().await.map_err(StoreError::database)
     }
 
+    /// Starts an immediate SQLite transaction.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let transaction = store.begin_immediate().await?;
+    /// transaction.commit().await?;
+    /// ```
     async fn begin_immediate(&self) -> Result<Transaction<'static, Sqlite>, StoreError> {
         self.pool
             .begin_with("BEGIN IMMEDIATE")
@@ -583,6 +800,31 @@ impl SqliteStore {
             .map_err(StoreError::database)
     }
 
+    /// Classifies a failed state transition by checking whether the target record exists.
+    ///
+    /// # Arguments
+    ///
+    /// * `connection` - Database connection used to look up the record.
+    /// * `table` - Supported table name: `operations`, `operation_steps`, or `application_status`.
+    /// * `id` - Operation, step, or application identifier to look up.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(StoreError::IllegalTransition)` if the record exists, `Ok(StoreError::NotFound)` if it does not, or `Err(StoreError::Database)` if the lookup fails or the table name is unsupported.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let pool = sqlx::sqlite::SqlitePoolOptions::new()
+    ///     .connect("sqlite::memory:")
+    ///     .await?;
+    /// let mut connection = pool.acquire().await?;
+    /// let result = transition_miss(&mut connection, "operations", "operation-id").await?;
+    /// # let _ = result;
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn transition_miss(
         connection: &mut SqliteConnection,
         table: &'static str,
@@ -622,6 +864,32 @@ impl SqliteStore {
         })
     }
 
+    /// Inserts a pending operation and its ordered steps for an application generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the step metadata or generation is invalid, or if inserting
+    /// the operation or its steps fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// async fn example(
+    ///     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    ///     app_id: &ApplicationId,
+    /// ) {
+    ///     let operation_id = insert_operation(
+    ///         tx,
+    ///         app_id,
+    ///         1,
+    ///         OperationKind::Create,
+    ///         &["provision".to_owned(), "verify".to_owned()],
+    ///         0,
+    ///     )
+    ///     .await
+    ///     .unwrap();
+    /// }
+    /// ```
     async fn insert_operation(
         tx: &mut Transaction<'_, Sqlite>,
         app_id: &ApplicationId,
@@ -650,6 +918,37 @@ impl SqliteStore {
         Ok(id)
     }
 
+    /// Inserts pending steps for an operation in their supplied order.
+    ///
+    /// # Arguments
+    ///
+    /// * `operation_id` — Identifier of the operation that owns the steps.
+    /// * `steps` — Actions to persist as operation steps.
+    /// * `now` — Timestamp assigned to each step's creation and update fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a step position cannot be represented or the database insertion fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), StoreError> {
+    /// let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+    ///     .await
+    ///     .map_err(StoreError::database)?;
+    /// let mut tx = pool.begin().await.map_err(StoreError::database)?;
+    ///
+    /// insert_operation_steps(
+    ///     &mut tx,
+    ///     "operation-id",
+    ///     &["create-resource".to_owned()],
+    ///     1_700_000_000_000,
+    /// )
+    /// .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn insert_operation_steps(
         tx: &mut Transaction<'_, Sqlite>,
         operation_id: &str,
@@ -675,10 +974,28 @@ impl SqliteStore {
     }
 }
 
-/// Prepares only missing database parents and rejects symlinked path components.
-/// Existing directories are never chmodded or otherwise modified. The final
-/// database path is checked as well so a replaced symlink cannot be followed by
-/// the `SQLite` driver during normal startup.
+/// Prepares a database path by creating missing parent directories and validating each path component.
+///
+/// Existing directories and database files are left unchanged. Symlinks, parent-directory
+/// components, and non-directory parent components are rejected.
+///
+/// # Examples
+///
+/// ```
+/// # use std::fs;
+/// # use std::path::PathBuf;
+/// # let path = std::env::temp_dir().join(format!(
+/// #     "store-doc-example-{}-{}.db",
+/// #     std::process::id(),
+/// #     std::time::SystemTime::now()
+/// #         .duration_since(std::time::UNIX_EPOCH)
+/// #         .unwrap()
+/// #         .as_nanos()
+/// # ));
+/// prepare_database_path(&path).unwrap();
+/// assert!(path.parent().unwrap().is_dir());
+/// # fs::remove_dir_all(path.parent().unwrap()).ok();
+/// ```
 fn prepare_database_path(path: &Path) -> Result<(), StoreError> {
     let parent = path.parent().ok_or_else(|| {
         StoreError::path(std::io::Error::new(
@@ -742,6 +1059,18 @@ fn prepare_database_path(path: &Path) -> Result<(), StoreError> {
     }
 }
 
+/// Gets the current Unix timestamp in milliseconds.
+///
+/// # Examples
+///
+/// ```
+/// let timestamp = now_ms();
+/// assert!(timestamp >= 0);
+/// ```
+///
+/// # Returns
+///
+/// The current time since the Unix epoch in milliseconds, capped at `i64::MAX`.
 fn now_ms() -> i64 {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -750,15 +1079,67 @@ fn now_ms() -> i64 {
     i64::try_from(millis).unwrap_or(i64::MAX)
 }
 
+/// Converts an unsigned generation value to a signed 64-bit integer.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(generation_i64(42).unwrap(), 42);
+/// ```
+///
+/// # Errors
+///
+/// Returns [`StoreError`] if the value cannot be represented as an `i64`.
+///
+/// # Returns
+///
+/// The generation value represented as an `i64`.
 fn generation_i64(value: u64) -> Result<i64, StoreError> {
     i64::try_from(value).map_err(StoreError::corrupt)
 }
+/// Creates a unique identifier with the specified prefix.
+///
+/// # Examples
+///
+/// ```
+/// let id = new_id("app");
+/// assert!(id.starts_with("app-"));
+/// ```
 fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::now_v7().simple())
 }
+/// Checks whether text is non-empty, within the specified byte-length limit, and contains no control characters.
+///
+/// # Examples
+///
+/// ```
+/// assert!(valid_bounded_text("application-name", 32));
+/// assert!(!valid_bounded_text("", 32));
+/// assert!(!valid_bounded_text("too long", 3));
+/// ```
+///
+/// # Arguments
+///
+/// * `value` - Text to validate.
+/// * `max_len` - Maximum allowed length in bytes.
+///
+/// # Returns
+///
+/// `true` if the text satisfies all validation requirements, `false` otherwise.
 fn valid_bounded_text(value: &str, max_len: usize) -> bool {
     !value.is_empty() && value.len() <= max_len && !value.chars().any(char::is_control)
 }
+/// Validates operation step names for persistence.
+///
+/// Each step must be nonempty, contain at most 64 characters, and exclude
+/// control characters.
+///
+/// # Examples
+///
+/// ```
+/// assert!(validate_operation_steps(&["prepare".to_owned(), "apply".to_owned()]).is_ok());
+/// ```
+fn validate_operation_steps(steps: &[String]) -> Result<(), StoreError> {
 fn validate_operation_steps(steps: &[String]) -> Result<(), StoreError> {
     if steps
         .iter()
@@ -769,17 +1150,66 @@ fn validate_operation_steps(steps: &[String]) -> Result<(), StoreError> {
         Ok(())
     }
 }
+/// Validates and converts a page size to the signed integer type used by the database.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(page_limit(1).unwrap(), 1);
+/// assert!(page_limit(0).is_err());
+/// ```
+///
+/// # Errors
+///
+/// Returns `StoreError::InvalidInput` if the limit is outside the allowed page-size range
+/// or cannot be represented as an `i64`.
+fn page_limit(limit: usize) -> Result<i64, StoreError>
 fn page_limit(limit: usize) -> Result<i64, StoreError> {
     if !(1..=MAX_PAGE_SIZE).contains(&limit) {
         return Err(StoreError::InvalidInput);
     }
     i64::try_from(limit).map_err(StoreError::invalid_input)
 }
+/// Checks whether a value uses the `sha256:` prefix followed by 64 hexadecimal characters.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// assert!(valid_sha256("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+
+/// assert!(!valid_sha256("sha256:invalid"));
+
+/// ```
 fn valid_sha256(value: &str) -> bool {
     value.len() == 71
         && value.starts_with("sha256:")
         && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
+/// Validates that a resolved application matches its normalized specification and database instance.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Corrupt`] when the resolved identity, name, specification hash, or
+/// instance identifier is inconsistent, or when recompilation produces a different result.
+/// Returns a compilation error when the application cannot be recompiled.
+///
+/// # Examples
+///
+/// ```rust
+/// # fn example(
+/// #     app: &NormalizedApplication,
+/// #     resolved: &ResolvedApplication,
+/// #     instance_id: &str,
+/// # ) -> Result<(), StoreError> {
+/// validate_resolved(app, resolved, instance_id)?;
+/// # Ok(())
+/// # }
+/// ```
 fn validate_resolved(
     app: &NormalizedApplication,
     resolved: &ResolvedApplication,
@@ -805,6 +1235,41 @@ fn validate_resolved(
         .then_some(())
         .ok_or(StoreError::Corrupt)
 }
+/// Validates a resolved application and serializes it to canonical JSON.
+
+///
+
+/// # Examples
+
+///
+
+/// ```no_run
+
+/// # fn example() -> Result<(), StoreError> {
+
+/// # let app = todo!();
+
+/// # let value = todo!();
+
+/// # let instance_id = "instance-id";
+
+/// let json = canonical_resolved(&app, &value, instance_id)?;
+
+/// # let _ = json;
+
+/// # Ok(())
+
+/// # }
+
+/// ```
+
+///
+
+/// # Returns
+
+///
+
+/// The canonical JSON representation of the resolved application.
 fn canonical_resolved(
     app: &NormalizedApplication,
     value: &ResolvedApplication,
@@ -813,6 +1278,22 @@ fn canonical_resolved(
     validate_resolved(app, value, instance_id)?;
     serde_json::to_string(value).map_err(StoreError::corrupt)
 }
+/// Decodes and validates a normalized application from its canonical JSON representation.
+///
+/// The JSON is revalidated through the public TOML parser, and both its specification
+/// hash and canonical representation must match the expected values.
+///
+/// # Examples
+///
+/// ```
+/// let result = decode_application("{", "");
+/// assert!(result.is_err());
+/// ```
+///
+/// # Errors
+///
+/// Returns `StoreError::Corrupt` when the JSON is invalid, fails semantic validation,
+/// has a mismatched specification hash, or is not in canonical form.
 fn decode_application(
     json: &str,
     expected_hash: &str,
@@ -844,6 +1325,21 @@ struct ApplicationRow {
 }
 
 impl ApplicationRow {
+    /// Reconstructs a stored application from its persisted JSON and metadata, validating its identity, resolved state, generation, and canonical representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Corrupt`] when persisted data is malformed, inconsistent, or fails validation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn example(row: ApplicationRow, instance_id: &str) -> Result<(), StoreError> {
+    /// let stored = row.decode(instance_id)?;
+    /// assert_eq!(stored.application.id.as_str(), row.id);
+    /// # Ok(())
+    /// # }
+    /// ```
     fn decode(self, instance_id: &str) -> Result<StoredApplication, StoreError> {
         let application = decode_application(&self.desired_json, &self.spec_hash)?;
         if application.id.as_str() != self.id || application.metadata.name.as_str() != self.name {

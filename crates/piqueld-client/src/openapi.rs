@@ -7,7 +7,20 @@ impl Client {
     /// Fetches the generated `OpenAPI` document.
     ///
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    ///
+    /// Returns [`ClientError`] if the request fails, the API returns an unsuccessful
+    /// response, the response body cannot be collected, or the body contains invalid
+    /// JSON.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(client: &Client) -> Result<(), ClientError> {
+    /// let document = client.openapi().await?;
+    /// assert!(document.is_object());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn openapi(&self) -> Result<serde_json::Value, ClientError> {
         self.with_request_timeout(async {
             let response = self

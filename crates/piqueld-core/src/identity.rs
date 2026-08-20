@@ -85,6 +85,15 @@ pub enum ResourceKind {
 }
 
 impl ResourceKind {
+    /// Returns the lowercase token for this resource kind.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ResourceKind::Network.token(), "network");
+    /// assert_eq!(ResourceKind::Service.token(), "service");
+    /// assert_eq!(ResourceKind::Volume.token(), "volume");
+    /// ```
     fn token(self) -> &'static str {
         match self {
             Self::Network => "network",
@@ -94,8 +103,28 @@ impl ResourceKind {
     }
 }
 
-/// Produces a stable, collision-resistant Docker name no longer than 63 bytes.
-#[must_use]
+/// Produces a deterministic, collision-resistant Docker resource name.
+///
+/// # Parameters
+///
+/// * `id` — The application identifier.
+/// * `kind` — The Docker resource type.
+/// * `logical_name` — An optional logical name for the resource.
+///
+/// # Examples
+///
+/// ```
+/// let id = ApplicationId::parse("my-app-1").unwrap();
+/// let name = docker_resource_name(&id, ResourceKind::Network, Some("backend"));
+///
+/// assert!(name.len() <= 63);
+/// ```
+///
+/// # Returns
+///
+/// A Docker-safe name no longer than 63 bytes.
+///
+/// #[must_use]
 pub fn docker_resource_name(
     id: &ApplicationId,
     kind: ResourceKind,
@@ -108,8 +137,14 @@ pub fn docker_resource_name(
     )
 }
 
-/// Returns the readable name prefix shared by all resources of an application.
-#[must_use]
+/// Returns the readable name prefix shared by all Docker resources belonging to an application.
+///
+/// # Examples
+///
+/// ```
+/// let id = ApplicationId::parse("demo-app").unwrap();
+/// assert_eq!(docker_resource_readable_prefix(&id), "piqueld-demo-app-");
+/// ```
 pub fn docker_resource_readable_prefix(id: &ApplicationId) -> String {
     let head_len = 63usize.saturating_sub("piqueld".len() + 12 + 2);
     let mut head = sanitize(id.as_str())
@@ -122,6 +157,30 @@ pub fn docker_resource_readable_prefix(id: &ApplicationId) -> String {
     format!("piqueld-{head}-")
 }
 
+/// Builds a deterministic, readable name from a prefix and logical components.
+///
+/// The components are sanitized for safe naming, while their original values determine
+/// a 12-character hexadecimal digest suffix. The readable portion is truncated to fit
+/// the requested limit and trailing hyphens are removed.
+///
+/// # Examples
+///
+/// ```
+/// let name = bounded_name("app", &["web", "api"], 30);
+/// assert!(name.starts_with("app-web-api-"));
+/// assert_eq!(name.len(), 30);
+/// ```
+///
+/// # Arguments
+///
+/// * `prefix` - Fixed prefix included in the generated name.
+/// * `parts` - Logical components used to form the readable portion and digest.
+/// * `limit` - Target maximum length for the generated name.
+///
+/// # Returns
+///
+/// A deterministic bounded name containing the prefix, sanitized components, and a
+/// uniqueness suffix.
 fn bounded_name(prefix: &str, parts: &[&str], limit: usize) -> String {
     let identity = parts.join("\0");
     let suffix = format!("{:x}", Sha256::digest(identity.as_bytes()));

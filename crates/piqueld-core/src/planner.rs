@@ -185,13 +185,40 @@ pub struct PlanAction {
 
 impl PlanAction {
     /// Returns a stable, concise line suitable for an operation log.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use piqueld_core::planner::PlanAction;
+    /// # fn example(action: &PlanAction) {
+    /// let description = action.human_description();
+    /// assert!(!description.is_empty());
+    /// # }
+    /// ```
     #[must_use]
     pub fn human_description(&self) -> String {
         self.kind.to_string()
     }
 
-    /// Creates an unsequenced action with a derived destructive flag.
-    #[must_use]
+    /// Creates an unsequenced action and derives its destructive status from the risk.
+    ///
+    /// The action starts with sequence number zero. Its `destructive` field is `true`
+    /// only when `risk` is [`ActionRisk::Destructive`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let action = PlanAction::new(
+    ///     ActionKind::CreateService,
+    ///     ActionReason::Missing,
+    ///     ActionRisk::NoRisk,
+    ///     true,
+    /// );
+    ///
+    /// assert_eq!(action.sequence, 0);
+    /// assert!(!action.destructive);
+    /// assert!(action.mutates_runtime);
+    /// ```
     pub fn new(
         kind: ActionKind,
         reason: ActionReason,
@@ -208,8 +235,34 @@ impl PlanAction {
         }
     }
 
-    /// Creates a non-mutating service convergence wait.
-    #[must_use]
+    /// Creates a non-mutating action that waits for a service to converge.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let action = PlanAction::wait_for_service("web");
+    /// assert!(!action.destructive);
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `service` - Name of the service whose convergence is pending.
+    ///
+    /// # Returns
+    ///
+    /// A service convergence wait action.
+    ///
+    /// #[must_use]
+    /// pub fn wait_for_service(service: &str) -> Self {
+    Self::new(
+    ActionKind::WaitForService {
+    service: service.into(),
+    },
+    ActionReason::ConvergencePending,
+    ActionRisk::None,
+    false,
+    )
+    }
     pub fn wait_for_service(service: &str) -> Self {
         Self::new(
             ActionKind::WaitForService {
@@ -221,7 +274,15 @@ impl PlanAction {
         )
     }
 
-    /// Creates a non-mutating service removal wait.
+    /// Creates a non-mutating action that waits for a service to be removed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let action = PlanAction::wait_for_service_removal("web");
+    /// assert_eq!(action.kind.name(), "wait_for_service_removal");
+    /// ```
+    ///
     #[must_use]
     pub fn wait_for_service_removal(service: &str) -> Self {
         Self::new(
@@ -234,8 +295,21 @@ impl PlanAction {
         )
     }
 
-    /// Returns a bounded operation-step identifier.
-    #[must_use]
+    /// Creates a stable operation-step identifier no longer than 64 bytes.
+    ///
+    /// Long identifiers retain a UTF-8-safe prefix and include an eight-byte hexadecimal
+    /// SHA-256 suffix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn example(action: &PlanAction) {
+    /// let step = action.operation_step();
+    /// assert!(step.len() <= 64);
+    /// # }
+    /// ```
+    ///
+    /// The returned string is the action description when it fits within the limit.
     pub fn operation_step(&self) -> String {
         let value = self.to_string();
         if value.len() <= 64 {
@@ -256,6 +330,15 @@ impl PlanAction {
 }
 
 impl fmt::Display for PlanAction {
+    /// Formats the action according to its kind.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # // The formatting is delegated to the action kind.
+    /// # let formatted = "create service";
+    /// assert_eq!(formatted, "create service");
+    /// ```
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.kind.fmt(formatter)
     }
@@ -318,7 +401,19 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Returns whether any diagnostic blocks execution.
+    /// Determines whether any diagnostic prevents execution.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let plan = Plan {
+    ///     actions: Vec::new(),
+    ///     diagnostics: Vec::new(),
+    ///     summary: PlanSummary::default(),
+    /// };
+    ///
+    /// assert!(!plan.is_blocked());
+    /// ```
     #[must_use]
     pub fn is_blocked(&self) -> bool {
         self.diagnostics
@@ -326,13 +421,44 @@ impl Plan {
             .any(|diagnostic| diagnostic.blocking)
     }
 
-    /// Returns whether the plan contains runtime mutations.
+    /// Determines whether the plan contains actions that mutate runtime state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let plan = Plan::default();
+    /// assert!(!plan.has_mutations());
+    /// ```
     #[must_use]
     pub fn has_mutations(&self) -> bool {
         self.actions.iter().any(|action| action.mutates_runtime)
     }
 
-    /// Builds a plan for the requested desired/observed transition.
+    /// Builds a deterministic plan for the requested transition between desired and observed application state.
+    ///
+    /// The resulting actions receive one-based sequence numbers, diagnostics are sorted by resource and code,
+    /// and the summary reflects the finalized plan.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let request = PlanRequest::Delete {
+    ///     application_id: "app".into(),
+    ///     instance_id: "instance".into(),
+    /// };
+    /// let plan = Plan::from_request(&request, &ObservedApplication::default());
+    ///
+    /// assert!(plan.actions.iter().all(|action| action.sequence > 0));
+    /// ```
+    ///
+    /// # Parameters
+    ///
+    /// * `request` — The requested reconciliation, deletion, or preview operation.
+    /// * `observed` — The current runtime state used to construct the plan.
+    ///
+    /// # Returns
+    ///
+    /// The ordered plan, including actions, diagnostics, and aggregate summary counts.
     #[must_use]
     pub fn from_request(request: &PlanRequest, observed: &ObservedApplication) -> Self {
         let mut plan = match request {
@@ -380,6 +506,19 @@ impl Plan {
         plan
     }
 
+    /// Records a blocking diagnostic when an unowned resource uses the specified name.
+    ///
+    /// Each name is recorded at most once for the provided set of previously reported names.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::BTreeSet;
+    ///
+    /// let mut seen = BTreeSet::new();
+    /// assert!(seen.insert("database".to_owned()));
+    /// assert!(!seen.insert("database".to_owned()));
+    /// ```
     fn collision(&mut self, name: &str, seen: &mut BTreeSet<String>) {
         if seen.insert(name.into()) {
             self.diagnostics.push(PlanDiagnostic {
@@ -392,6 +531,17 @@ impl Plan {
         }
     }
 
+    /// Records a blocking diagnostic when an observed resource differs from its desired immutable configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// planner.immutable_drift("backend", "service");
+    /// assert_eq!(
+    ///     planner.diagnostics.last().unwrap().code,
+    ///     "immutable_configuration_drift"
+    /// );
+    /// ```
     fn immutable_drift(&mut self, name: &str, resource: &str) {
         self.diagnostics.push(PlanDiagnostic {
             code: "immutable_configuration_drift".into(),
@@ -404,6 +554,13 @@ impl Plan {
         });
     }
 
+    /// Records an informational diagnostic for a foreign or unowned resource excluded from the plan.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// planner.ignored("network");
+    /// ```
     fn ignored(&mut self, name: &str) {
         self.diagnostics.push(PlanDiagnostic {
             code: "foreign_resource_ignored".into(),
@@ -414,6 +571,16 @@ impl Plan {
         });
     }
 
+    /// Computes aggregate counts for the plan's actions and diagnostics, including counts grouped by action name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn example(plan: &Plan) {
+    /// let summary = plan.summarize();
+    /// assert_eq!(summary.action_count, plan.actions.len());
+    /// # }
+    /// ```
     fn summarize(&self) -> PlanSummary {
         let mut by_action = BTreeMap::new();
         for action in &self.actions {
@@ -440,6 +607,17 @@ impl Plan {
         }
     }
 
+    /// Builds a reconciliation plan that converges observed infrastructure and services toward the desired application.
+    ///
+    /// Obsolete services and networks are removed only when infrastructure and service convergence succeed
+    /// without blocking diagnostics. Owned obsolete volumes are retained.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let plan = Plan::reconcile(&desired, &observed);
+    /// assert!(plan.actions.iter().all(|action| action.sequence.is_some()));
+    /// ```
     fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Self {
         let mut plan = Self::default();
         let mut blocked_names = BTreeSet::new();
@@ -456,6 +634,20 @@ impl Plan {
         plan
     }
 
+    /// Ensures that desired networks exist, are owned by the application, and match their immutable configuration.
+    ///
+    /// Missing, conflicting, or drifted networks add diagnostics or actions and cause the result to be `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let ready = planner.ensure_networks(&desired, &observed, &mut blocked);
+    /// assert!(ready);
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if every desired network is present, owned by the application, and matches its configuration; `false` otherwise.
     fn ensure_networks(
         &mut self,
         desired: &DesiredApplication,
@@ -498,6 +690,19 @@ impl Plan {
         ready
     }
 
+    /// Ensures that desired volumes exist, are owned by the application, and match their immutable configuration.
+    ///
+    /// Adds actions or blocking diagnostics for missing, foreign, or drifted volumes and reports whether all
+    /// desired volumes are ready.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let ready = planner.ensure_volumes(&desired, &observed, &mut blocked);
+    /// assert!(ready);
+    /// ```
+    ///
+    /// Returns `true` when every desired volume is ready; otherwise, returns `false`.
     fn ensure_volumes(
         &mut self,
         desired: &DesiredApplication,
@@ -542,6 +747,13 @@ impl Plan {
         ready
     }
 
+    /// Records retention actions for obsolete volumes owned by the desired application and reports other obsolete volumes as ignored.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// planner.retain_obsolete_volumes(&desired, &observed);
+    /// ```
     fn retain_obsolete_volumes(
         &mut self,
         desired: &DesiredApplication,
@@ -573,6 +785,19 @@ impl Plan {
         }
     }
 
+    /// Ensures desired services exist, match their specifications, and have reached a ready state.
+    ///
+    /// Returns whether all services are ready and the actions required to wait for services
+    /// that are being created, updated, or converged.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let (ready, waits) = planner.ensure_services(&desired, &observed, &mut blocked);
+    /// assert!(ready || !waits.is_empty());
+    /// ```
+    ///
+    /// `blocked` records service names that conflict with unowned observed services.
     fn ensure_services(
         &mut self,
         desired: &DesiredApplication,
@@ -635,6 +860,19 @@ impl Plan {
         (ready, waits)
     }
 
+    /// Plans removal of observed services that are absent from the desired application.
+    ///
+    /// Owned obsolete services are removed only when cleanup is ready; foreign services
+    /// are reported as ignored. Removal actions are followed by waits for service removal.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// planner.remove_obsolete_services(&desired, &observed, true);
+    /// assert!(planner.actions.iter().any(|action| {
+    ///     matches!(action.kind, ActionKind::RemoveService { .. })
+    /// }));
+    /// ```
     fn remove_obsolete_services(
         &mut self,
         desired: &DesiredApplication,
@@ -670,6 +908,23 @@ impl Plan {
         self.actions.append(&mut waits);
     }
 
+    /// Adds removal actions for obsolete owned networks when cleanup is ready.
+    ///
+    /// Networks that are not owned by the application are reported as ignored.
+    /// When cleanup is not ready, obsolete owned networks remain unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// planner.remove_obsolete_networks(&desired, &observed, true);
+    /// assert!(planner.actions.iter().any(|action| {
+    ///     matches!(action.kind, ActionKind::RemoveNetwork { .. })
+    /// }));
+    /// ```
+    ///
+    /// # Parameters
+    ///
+    /// - `cleanup_ready`: Whether obsolete networks may be removed.
     fn remove_obsolete_networks(
         &mut self,
         desired: &DesiredApplication,
@@ -704,6 +959,28 @@ impl Plan {
         }
     }
 
+    /// Builds a plan to delete resources owned by an application.
+    ///
+    /// Owned services and networks are removed, owned volumes are retained, and
+    /// resources owned by other applications are ignored.
+    ///
+    /// # Parameters
+    ///
+    /// * `application_id` - Identifies the application whose resources are deleted.
+    /// * `instance_id` - Identifies the application instance that owns the resources.
+    /// * `observed` - Resources currently present in the runtime.
+    ///
+    /// # Returns
+    ///
+    /// A plan containing deletion actions, service-removal waits, volume-retention
+    /// actions, and diagnostics for ignored resources.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let plan = Plan::deletion(&application_id, &instance_id, &observed);
+    /// assert!(!plan.actions.is_empty());
+    /// ```
     fn deletion(
         application_id: &ApplicationId,
         instance_id: &InstanceId,
@@ -763,6 +1040,17 @@ impl Plan {
     }
 }
 
+/// Returns references to the values sorted lexicographically by their names.
+///
+/// # Examples
+///
+/// ```
+/// let values = [("b", 2), ("a", 1)];
+/// let sorted = sorted_by_name(&values, |value| value.0);
+///
+/// assert_eq!(sorted[0].0, "a");
+/// assert_eq!(sorted[1].0, "b");
+/// ```
 fn sorted_by_name<T, F>(values: &[T], name: F) -> Vec<&T>
 where
     F: Fn(&T) -> &str,
@@ -772,6 +1060,23 @@ where
     values
 }
 
+/// Selects `io.piqueld.*` labels used for network configuration, excluding the specification-hash label.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::BTreeMap;
+///
+/// let labels = BTreeMap::from([
+///     ("io.piqueld.network", "frontend"),
+///     ("custom.label", "ignored"),
+/// ]);
+///
+/// let relevant = relevant_network_labels(&labels);
+///
+/// assert_eq!(relevant.get("io.piqueld.network"), Some(&"frontend"));
+/// assert!(!relevant.contains_key("custom.label"));
+/// ```
 fn relevant_network_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
     labels
         .iter()
@@ -782,6 +1087,17 @@ fn relevant_network_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, 
         .collect()
 }
 
+/// Identifies the desired service fields that differ from the observed service.
+///
+/// Comparison treats mount and network ordering as insignificant and reports runtime-policy
+/// differences when the observed configuration does not match the desired configuration.
+///
+/// # Examples
+///
+/// ```ignore
+/// let changed = service_drift(&observed_service, &desired_service);
+/// assert!(changed.contains(&"image".to_string()));
+/// ```
 fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<String> {
     let mut fields = Vec::new();
     if found.image != desired.image {

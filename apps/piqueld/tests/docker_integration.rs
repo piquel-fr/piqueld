@@ -7,6 +7,19 @@ use piqueld_core::resource::{DesiredNetwork, DesiredService, DesiredVolume, Reso
 use piqueld_core::{ApplicationId, InstanceId, ResourceKind, docker_resource_name};
 use std::{collections::BTreeMap, path::Path, time::Duration};
 
+/// Ensures that a Docker service reaches its desired state, retrying transient request failures for up to ten seconds.
+///
+/// # Panics
+///
+/// Panics if ensuring the service fails with a non-request error or remains unsuccessful after the retry period.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example(docker: &BollardDocker, desired: &DesiredService) {
+/// ensure_service_eventually(docker, desired).await;
+/// # }
+/// ```
 async fn ensure_service_eventually(docker: &BollardDocker, desired: &DesiredService) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {

@@ -21,7 +21,23 @@ struct OperationRow {
 }
 
 impl SqliteStore {
-    /// Atomically completes a successful delete operation and hides its application.
+    /// Atomically completes a delete operation and finalizes its application.
+    ///
+    /// The operation must be running, belong to the delete operation kind, and have
+    /// only succeeded or skipped steps. Otherwise, the transition fails with
+    /// `StoreError::IllegalTransition`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     store: &SqliteStore,
+    /// #     operation: &Operation,
+    /// # ) -> Result<(), StoreError> {
+    /// store.finish_delete_operation(operation).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub(crate) async fn finish_delete_operation(
         &self,
         operation: &Operation,
@@ -54,6 +70,21 @@ impl SqliteStore {
         tx.commit().await.map_err(StoreError::database)
     }
 
+    /// Moves a running operation and its running steps into recovery state.
+    ///
+    /// Clears error details and timing fields while recording the recovery timestamp.
+    ///
+    pub(crate) async fn recover_operation(&self, operation_id: &str, now: i64) -> Result<(), StoreError> {
+    /// # Examples
+    ///
+    /// ```no_run
+    /// store.recover_operation("operation-id", current_time_ms).await?;
+    /// # Ok::<(), StoreError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the operation cannot be updated, does not exist, or is not running.
     async fn recover_operation(&self, operation_id: &str, now: i64) -> Result<(), StoreError> {
         let mut tx = self.begin_immediate().await?;
         let changed = sqlx::query!(
@@ -79,6 +110,33 @@ impl SqliteStore {
         tx.commit().await.map_err(StoreError::database)
     }
 
+    /// Completes an operation state transition and cancels its unfinished steps.
+    ///
+    /// The operation is updated only when it is currently in `from`. When transitioning
+    /// to `running`, the operation's start time is initialized if needed.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// store
+    ///     .finish_operation(
+    ///         operation_id,
+    ///         WorkState::Running,
+    ///         WorkState::Succeeded,
+    ///         None,
+    ///         now,
+    ///     )
+    ///     .await?;
+    /// # Ok::<(), StoreError>(())
+    /// ```
+    ///
+    /// # Parameters
+    ///
+    /// * `operation_id` identifies the operation to update.
+    /// * `from` is the operation's expected current state.
+    /// * `to` is the operation's new state.
+    /// * `error` provides error details to record with the new state.
+    /// * `now` is the timestamp used for operation and step updates.
     async fn finish_operation(
         &self,
         operation_id: &str,
@@ -123,6 +181,18 @@ impl SqliteStore {
 }
 
 impl Operation {
+    /// Converts a database row into an operation, validating identifiers, generation, kind, and state.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let operation = Operation::parse_row(row)?;
+    /// assert_eq!(operation.id, row.id);
+    /// # Ok::<(), StoreError>(())
+    /// ```
+    ///
+    /// Returns a corruption error when a database value cannot be converted into its
+    /// corresponding domain value.
     fn parse_row(row: OperationRow) -> Result<Self, StoreError> {
         Ok(Self {
             id: row.id,
@@ -158,6 +228,19 @@ struct OperationStepRow {
 }
 
 impl OperationStep {
+    /// Converts a database row into an operation step, validating its position, attempt count, and state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::corrupt`] when the row contains invalid numeric values or an unrecognized state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let row: OperationStepRow = todo!();
+    /// let step = OperationStep::parse_step_row(row)?;
+    /// # Ok::<(), StoreError>(())
+    /// ```
     fn parse_step_row(row: OperationStepRow) -> Result<Self, StoreError> {
         Ok(Self {
             id: row.id,
@@ -177,12 +260,31 @@ impl OperationStep {
 }
 
 impl SqliteStore {
-    /// Reads an operation and its steps from one consistent database snapshot.
+    /// Reads an operation and its steps from a consistent database snapshot.
+    ///
+    /// # Arguments
+    ///
+    /// * `operation_id` — Identifier of the operation to retrieve.
+    ///
+    /// # Returns
+    ///
+    /// The parsed operation and its steps ordered by position.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the operation is missing, malformed, or the
-    /// database transaction cannot be read.
+    /// Returns [`StoreError::NotFound`] if the operation does not exist, a corruption
+    /// error if stored data is malformed, or a database error if the transaction
+    /// cannot be read or committed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(store: &SqliteStore) -> Result<(), StoreError> {
+    /// let (operation, steps) = store.operation_with_steps("operation-id").await?;
+    /// # let _ = (operation, steps);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn operation_with_steps(
         &self,
         operation_id: &str,
@@ -215,6 +317,22 @@ impl SqliteStore {
 }
 
 impl SqliteStore {
+    /// Loads an operation by its identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotFound`] when no matching operation exists, or another
+    /// [`StoreError`] if the database row cannot be read or parsed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(store: &SqliteStore) -> Result<(), StoreError> {
+    /// let operation = store.operation("operation-id").await?;
+    /// # let _ = operation;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub(crate) async fn operation(&self, operation_id: &str) -> Result<Operation, StoreError> {
         let row = sqlx::query_as!(
             OperationRow,
@@ -228,6 +346,19 @@ impl SqliteStore {
         Operation::parse_row(row)
     }
 
+    /// Retrieves all steps for an operation in position order.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(store: &SqliteStore) -> Result<(), StoreError> {
+    /// let steps = store.operation_steps("operation-id").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Returns a database or parsing error when the steps cannot be retrieved or
+    /// contain invalid data.
     pub(crate) async fn operation_steps(
         &self,
         operation_id: &str,
@@ -245,6 +376,16 @@ impl SqliteStore {
             .collect()
     }
 
+    /// Lists pending and recovery operations, exposing only the oldest eligible generation for each application.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(store: &SqliteStore) -> Result<(), StoreError> {
+    /// let operations = store.pending_operations(10).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub(crate) async fn pending_operations(
         &self,
         limit: usize,
@@ -264,6 +405,32 @@ impl SqliteStore {
         rows.into_iter().map(Operation::parse_row).collect()
     }
 
+    /// Transitions an operation between valid workflow states while enforcing state-specific constraints.
+    ///
+    /// Transitions to `recovery`, `failed`, or `cancelled` apply the corresponding recovery or
+    /// completion behavior. A successful transition requires all operation steps to be terminal, and
+    /// only one operation for an application may be running at a time.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::IllegalTransition` when the state change or error value is invalid.
+    /// Returns a transition error when the operation does not currently have the expected state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(store: &SqliteStore) -> Result<(), StoreError> {
+    /// store
+    ///     .transition_operation(
+    ///         "operation-id",
+    ///         WorkState::Pending,
+    ///         WorkState::Running,
+    ///         None,
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub(crate) async fn transition_operation(
         &self,
         operation_id: &str,
@@ -317,6 +484,38 @@ impl SqliteStore {
             Err(Self::transition_miss(&mut connection, "operations", operation_id).await?)
         }
     }
+    /// Transitions an operation step between valid states while enforcing execution order and concurrency rules.
+    ///
+    /// A step can start only when its operation is running, no other step is running, and all preceding
+    /// steps have reached a terminal state. Failed transitions require an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::IllegalTransition`] when the state change or error value is invalid.
+    /// Returns a store error when the step cannot be updated or the expected source state no longer
+    /// applies.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(store: &SqliteStore) -> Result<(), StoreError> {
+    /// store
+    ///     .transition_step(
+    ///         "step-id",
+    ///         StepState::Running,
+    ///         StepState::Succeeded,
+    ///         None,
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the step is transitioned successfully.
+    ///
+    /// [`StoreError::IllegalTransition`]: crate::store::StoreError::IllegalTransition
     pub(crate) async fn transition_step(
         &self,
         step_id: &str,
@@ -362,6 +561,17 @@ impl SqliteStore {
         }
     }
 
+    /// Moves all running operations and operation steps to recovery and clears their start timestamps.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(store: &SqliteStore) -> Result<(), StoreError> {
+    /// let recovered = store.recover_interrupted().await?;
+    /// println!("Recovered {recovered} records");
+    /// # Ok(())
+    /// # }
+    /// ```
     pub(crate) async fn recover_interrupted(&self) -> Result<u64, StoreError> {
         let mut tx = self.begin_immediate().await?;
         let now = now_ms();

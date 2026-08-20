@@ -10,6 +10,25 @@ use piqueld_core::resource::image_repository;
 
 #[async_trait]
 impl DockerApi for BollardDocker {
+    /// Ensures Docker is a validated single-node Swarm manager.
+    ///
+    /// If requested, initializes an inactive local Docker node as a manager using
+    /// loopback addresses.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(docker: &BollardDocker) -> Result<(), DockerError> {
+    /// let state = docker.ensure_swarm(false).await?;
+    /// assert!(matches!(state, SwarmState::Ready));
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// `auto_initialize` controls whether an inactive local node may be initialized.
+    ///
+    /// Returns the resulting Swarm state, or an error if Docker is unavailable or
+    /// the node cannot operate as a manager.
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError> {
         let info = self
             .docker
@@ -52,6 +71,22 @@ impl DockerApi for BollardDocker {
         Ok(SwarmState::Initialized)
     }
 
+    /// Pulls an image and resolves it to a valid repository digest.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(docker: &BollardDocker) -> Result<(), DockerError> {
+    /// let digest = docker.resolve_image("alpine:latest").await?;
+    /// assert!(digest.starts_with("alpine@sha256:"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the image cannot be pulled or inspected, its repository
+    /// cannot be parsed, or no matching valid repository digest is found.
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         // Pulling through the Engine records RepoDigests. Stream details are intentionally
         // discarded because image-pull progress is not part of the durable API contract.
@@ -87,6 +122,22 @@ impl DockerApi for BollardDocker {
 
     // Keep the correlated resource snapshot in one boundary operation so all
     // resource IDs can be normalized before service comparisons.
+    /// Collects the networks, volumes, services, and tasks belonging to an application.
+    ///
+    /// Resources are filtered by application ownership, and service network references
+    /// are returned using network names rather than network IDs.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let observed = docker.observe(&application).await?;
+    /// assert!(!observed.services.is_empty());
+    /// # Ok::<(), DockerError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DockerError`] if Docker resource listing or service inspection fails.
     #[allow(clippy::too_many_lines)]
     async fn observe(
         &self,
@@ -217,6 +268,28 @@ impl DockerApi for BollardDocker {
         })
     }
 
+    /// Ensures that the desired private overlay network exists with the expected ownership and configuration.
+    ///
+    /// Existing networks must belong to the application and use the expected runtime configuration.
+    /// Missing networks are created as attachable, non-ingress overlay networks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ownership conflict when the desired identity is invalid, the network belongs to
+    /// another resource, or it has the wrong role. Returns a configuration conflict when an existing
+    /// network has incompatible runtime settings. Docker request failures are also returned.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     docker: &BollardDocker,
+    /// #     desired: &DesiredNetwork,
+    /// # ) -> Result<(), DockerError> {
+    /// docker.ensure_network(desired).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn ensure_network(&self, desired: &DesiredNetwork) -> Result<(), DockerError> {
         if !desired.has_valid_identity() {
             return Err(DockerError::OwnershipConflict);
@@ -270,6 +343,26 @@ impl DockerApi for BollardDocker {
         .map(|_| ())
     }
 
+    /// Ensures that a volume exists with the desired identity and runtime configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DockerError::OwnershipConflict`] when the desired identity is invalid,
+    /// the existing volume is owned by another resource, or it is assigned to a
+    /// service. Returns [`DockerError::ConfigurationConflict`] when an existing
+    /// volume has incompatible runtime configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     docker: &BollardDocker,
+    /// #     desired: &DesiredVolume,
+    /// # ) -> Result<(), DockerError> {
+    /// docker.ensure_volume(desired).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn ensure_volume(&self, desired: &DesiredVolume) -> Result<(), DockerError> {
         if !desired.has_valid_identity() {
             return Err(DockerError::OwnershipConflict);
@@ -315,6 +408,24 @@ impl DockerApi for BollardDocker {
         .map(|_| ())
     }
 
+    /// Ensures that the desired service exists with the expected configuration.
+    ///
+    /// Existing services are verified for ownership and updated when their specification differs.
+    /// Missing services are created.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DockerError`] if the desired identity is invalid, the existing service is
+    /// not owned by the application, its specification or version cannot be read, or Docker
+    /// rejects the operation.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let desired = DesiredService::new(/* service configuration */);
+    /// docker.ensure_service(&desired).await?;
+    /// # Ok::<(), DockerError>(())
+    /// ```
     async fn ensure_service(&self, desired: &DesiredService) -> Result<(), DockerError> {
         if !desired.has_valid_identity() {
             return Err(DockerError::OwnershipConflict);
@@ -392,6 +503,22 @@ impl DockerApi for BollardDocker {
         }
     }
 
+    /// Removes an owned service by name, treating an absent service as already removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the service is not owned by the specified labels, its identity
+    /// cannot be read, or Docker rejects the inspection or deletion request.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let ownership = [("owner".to_owned(), "example".to_owned())]
+    ///     .into_iter()
+    ///     .collect();
+    /// docker.remove_service("example-service", &ownership).await?;
+    /// # Ok::<(), DockerError>(())
+    /// ```
     async fn remove_service(
         &self,
         name: &str,
@@ -431,6 +558,26 @@ impl DockerApi for BollardDocker {
             Err(error) => Err(DockerError::request("delete service", error)),
         }
     }
+    /// Removes an owned private network when it exists.
+    ///
+    /// An absent network is treated as already removed. The operation fails when
+    /// the network is not owned by the caller.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(docker: &BollardDocker, ownership: &BTreeMap<String, String>) -> Result<(), DockerError> {
+    /// docker.remove_network("app-network", ownership).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// `ownership` contains the labels that identify the caller's resources.
+    async fn remove_network(
+    &self,
+    name: &str,
+    ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError>
     async fn remove_network(
         &self,
         name: &str,

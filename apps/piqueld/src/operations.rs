@@ -60,8 +60,18 @@ pub enum OperationError {
 }
 
 impl OperationError {
-    /// Returns the stable machine-readable failure code.
-    #[must_use]
+    /// Provides the stable machine-readable code for this failure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error = OperationError::OwnershipConflict;
+    /// assert_eq!(error.code(), "ownership_conflict");
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The stable machine-readable failure code.
     pub const fn code(&self) -> &'static str {
         match self {
             Self::StateUnavailable => "state_unavailable",
@@ -82,8 +92,18 @@ impl OperationError {
         }
     }
 
-    /// Formats the stable, sanitized public failure message.
-    #[must_use]
+    /// Formats the error as a stable, sanitized public message.
+    ///
+    /// # Returns
+    ///
+    /// The sanitized public failure message.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error = OperationError::Cancelled;
+    /// assert!(!error.message().is_empty());
+    /// ```
     pub fn message(&self) -> String {
         format!("{self}")
     }
@@ -149,6 +169,26 @@ impl<H> OperationScheduler<H>
 where
     H: OperationHandler,
 {
+    /// Executes a claimed operation using the provided cancellation token.
+    ///
+    /// # Parameters
+    ///
+    /// * `operation_id` — Identifier of the claimed operation to reload and execute.
+    ///
+    /// # Returns
+    ///
+    /// The operation result, or a store error if the operation cannot be reloaded.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let result = OperationScheduler::<H>::execute_claimed(
+    ///     &repository,
+    ///     &handler,
+    ///     operation_id,
+    ///     &token,
+    /// ).await?;
+    /// ```
     async fn execute_claimed(
         repository: &SqliteStore,
         handler: &H,
@@ -159,6 +199,27 @@ where
         Ok(handler.execute(&claimed, token).await)
     }
 
+    /// Finalizes a claimed operation based on its execution result.
+    ///
+    /// Successful delete operations use delete-specific finalization. Other successful operations
+    /// are marked as succeeded, cancellations and supersessions as cancelled, and other failures as
+    /// failed with sanitized error details.
+    ///
+    /// # Arguments
+    ///
+    /// * `operation` — The claimed operation being finalized.
+    /// * `result` — The outcome of executing the operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if the final state cannot be persisted.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let result = finish_claimed(&repository, &operation, Ok(())).await;
+    /// assert!(result.is_ok());
+    /// ```
     async fn finish_claimed(
         repository: &SqliteStore,
         operation: &Operation,
@@ -201,11 +262,24 @@ where
         }
     }
 
-    /// Creates a scheduler. The concurrency limit must be non-zero.
+    /// Creates an operation scheduler with the specified global concurrency limit.
+    ///
+    /// # Parameters
+    ///
+    /// `max_operations` specifies the maximum number of operations that may execute
+    /// concurrently across all applications. It must be greater than zero.
     ///
     /// # Panics
-    /// Panics when the concurrency limit is zero.
-    #[must_use]
+    ///
+    /// Panics if `max_operations` is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let scheduler = OperationScheduler::new(repository, handler, 4);
+    /// ```
+    ///
+    /// The scheduler permits up to four operations to execute concurrently.
     pub fn new(repository: Arc<SqliteStore>, handler: Arc<H>, max_operations: usize) -> Self {
         assert!(max_operations > 0, "scheduler limits must be positive");
         Self {
@@ -230,10 +304,28 @@ where
         Ok(recovered)
     }
 
-    /// Drains a snapshot of pending/recovery operations while respecting all limits.
+    /// Processes queued and recoverable operations until the queue is idle or cancellation is requested.
+    ///
+    /// Operations are limited by global concurrency and serialized per application. Cancellation
+    /// leaves unstarted operations queued for recovery.
     ///
     /// # Errors
-    /// Returns a sanitized repository error or an unexpected task failure.
+    ///
+    /// Returns a repository, semaphore, or task error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example<H: OperationHandler>(
+    /// #     scheduler: &OperationScheduler<H>,
+    /// # ) -> Result<(), SchedulerError> {
+    /// use tokio_util::sync::CancellationToken;
+    ///
+    /// let cancellation = CancellationToken::new();
+    /// scheduler.run_until_idle(cancellation).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn run_until_idle(
         &self,
         cancellation: CancellationToken,

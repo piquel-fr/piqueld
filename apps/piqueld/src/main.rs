@@ -16,6 +16,14 @@ use std::{
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 
+/// Starts the Piqueld daemon, loading its configuration, initializing Docker-backed
+/// reconciliation, and serving the TCP and Unix-domain APIs until shutdown.
+///
+/// # Examples
+///
+/// ```text
+/// piqueld --version
+/// ```
 #[tokio::main]
 async fn main() -> Result<()> {
     if std::env::args_os().any(|argument| argument == "--version") {
@@ -132,6 +140,28 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Starts the HTTP API on the specified TCP address.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example(
+/// #     state: ApiState,
+/// #     cancellation: CancellationToken,
+/// # ) -> anyhow::Result<()> {
+/// let handle = spawn_tcp_api("127.0.0.1:8080".parse()?, state, cancellation).await?;
+/// handle.await??;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Errors
+///
+/// Returns an error if the address cannot be bound.
+///
+/// # Returns
+///
+/// A task handle for the running HTTP server.
 async fn spawn_tcp_api(
     address: std::net::SocketAddr,
     state: ApiState,
@@ -150,6 +180,31 @@ async fn spawn_tcp_api(
     }))
 }
 
+/// Starts the HTTP API on a Unix-domain socket.
+///
+/// The socket's parent directory is restricted to owner-only access when created,
+/// and the socket is assigned user and group read/write permissions.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example(state: ApiState) {
+/// let cancellation = CancellationToken::new();
+/// let handle = spawn_unix_api(
+///     std::path::PathBuf::from("/run/piqueld/api.sock"),
+///     state,
+///     cancellation,
+/// ).await?;
+/// # let _ = handle;
+/// # Ok::<(), anyhow::Error>(())
+/// # }
+/// ```
+///
+/// The returned task completes when the API server stops.
+///
+/// # Returns
+///
+/// A handle for the running API server task.
 async fn spawn_unix_api(
     path: PathBuf,
     state: ApiState,

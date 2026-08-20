@@ -34,18 +34,34 @@ impl DaemonConfig {
         Self::from_toml(&source)
     }
 
-    /// Parses and validates a TOML configuration document.
+    /// Parses and validates a TOML host configuration document.
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] when the document is malformed or violates a
+    /// Returns [`ConfigError::Parse`] if the document is malformed or contains
+    /// unknown fields. Returns a validation error if the configuration violates a
     /// host configuration invariant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let config = DaemonConfig::from_toml("").unwrap();
+    /// ```
+    pub fn from_toml(source: &str) -> Result<Self, ConfigError> {
     pub fn from_toml(source: &str) -> Result<Self, ConfigError> {
         let config: Self = toml::from_str(source).map_err(|_| ConfigError::Parse)?;
         config.validate()?;
         Ok(config)
     }
 
+    /// Validates socket paths, the loopback HTTP listener, and reconciliation limits.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let config = DaemonConfig::default();
+    /// assert!(config.validate().is_ok());
+    /// ```
     fn validate(&self) -> Result<(), ConfigError> {
         absolute_file("server.unix_socket", &self.server.unix_socket)?;
         absolute_file("database.path", &self.database.path)?;
@@ -71,6 +87,25 @@ impl DaemonConfig {
     }
 }
 
+/// Validates that a configuration directory path is absolute.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+///
+/// assert!(absolute_directory("data directory", Path::new("/var/lib/app")).is_ok());
+/// assert!(absolute_directory("data directory", Path::new("var/lib/app")).is_err());
+/// ```
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Invalid`] when `path` is relative.
+///
+/// # Arguments
+///
+/// * `name` - The configuration field name used in the error message.
+/// * `path` - The directory path to validate.
 fn absolute_directory(name: &str, path: &Path) -> Result<(), ConfigError> {
     if path.is_absolute() {
         Ok(())
@@ -81,6 +116,17 @@ fn absolute_directory(name: &str, path: &Path) -> Result<(), ConfigError> {
     }
 }
 
+/// Validates that a path is absolute and names a file.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+///
+/// assert!(absolute_file("config", Path::new("/etc/piqueld.toml")).is_ok());
+/// assert!(absolute_file("config", Path::new("/etc")).is_err());
+/// ```
+///
 fn absolute_file(name: &str, path: &Path) -> Result<(), ConfigError> {
     absolute_directory(name, path)?;
     if path.file_name().is_some() {
@@ -118,6 +164,14 @@ pub struct DatabaseConfig {
 }
 
 impl Default for DatabaseConfig {
+    /// Creates the default database configuration using `/var/lib/piqueld/piqueld.db` as the database path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let config = DatabaseConfig::default();
+    /// assert_eq!(config.path, std::path::PathBuf::from("/var/lib/piqueld/piqueld.db"));
+    /// ```
     fn default() -> Self {
         Self {
             path: PathBuf::from("/var/lib/piqueld/piqueld.db"),
@@ -136,6 +190,15 @@ pub struct DockerConfig {
 }
 
 impl Default for DockerConfig {
+    /// Provides the default Docker Engine socket and enables automatic Swarm initialization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let config = DockerConfig::default();
+    /// assert_eq!(config.socket, std::path::PathBuf::from("/var/run/docker.sock"));
+    /// assert!(config.auto_initialize_swarm);
+    /// ```
     fn default() -> Self {
         Self {
             socket: PathBuf::from("/var/run/docker.sock"),
@@ -155,6 +218,19 @@ pub struct ReconciliationConfig {
 }
 
 impl Default for ReconciliationConfig {
+    /// Provides the default reconciliation settings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let config = ReconciliationConfig::default();
+    /// assert_eq!(config.scan_interval_seconds, 60);
+    /// assert_eq!(config.max_parallel_operations, 4);
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// A reconciliation configuration with a 60-second scan interval and a maximum of four parallel operations.
     fn default() -> Self {
         Self {
             scan_interval_seconds: 60,
@@ -177,13 +253,20 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-/// Installs structured JSON tracing, filtered by `RUST_LOG` when present.
+/// Installs a JSON tracing subscriber using the `RUST_LOG` filter when available.
+///
+/// Invalid or absent `RUST_LOG` values use the `info` filter.
 ///
 /// # Errors
 ///
-/// Invalid or absent `RUST_LOG` values fall back to the `info` filter. The
-/// returned error is only from subscriber initialization, such as when another
-/// global subscriber is already installed.
+/// Returns an error if the subscriber cannot be initialized, such as when a
+/// global subscriber has already been installed.
+///
+/// # Examples
+///
+/// ```
+/// let _ = init_tracing();
+/// ```
 pub fn init_tracing() -> Result<(), tracing_subscriber::util::TryInitError> {
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))

@@ -20,6 +20,18 @@ use utoipa::{OpenApi, ToResponse};
 )]
 struct ApiDoc;
 
+/// Creates the base OpenAPI document for the API.
+///
+/// # Examples
+///
+/// ```
+/// let document = base_document();
+/// assert_eq!(document.info.title, "piqueld");
+/// ```
+///
+/// # Returns
+///
+/// The generated OpenAPI document.
 pub(super) fn base_document() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
 }

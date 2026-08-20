@@ -24,6 +24,19 @@ struct FakeRuntime {
 
 #[async_trait]
 impl RuntimeBoundary for FakeRuntime {
+    /// Resolves application images to deterministic SHA-256 digest references and compiles the application.
+    ///
+    /// Compilation failures are returned as `BoundaryError::Compilation`; successful preparation contains the
+    /// compiled application and an empty observed state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(runtime: &FakeRuntime, application: &NormalizedApplication) {
+    /// let prepared = runtime.prepare(application).await.unwrap();
+    /// assert!(prepared.observed.services.is_empty());
+    /// # }
+    /// ```
     async fn prepare(
         &self,
         application: &NormalizedApplication,
@@ -58,6 +71,16 @@ impl RuntimeBoundary for FakeRuntime {
         })
     }
 
+    /// Reports the application's observed state, which is always empty for this runtime.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(runtime: &FakeRuntime, application: &StoredApplication) {
+    /// let observed = runtime.observe(application).await.unwrap();
+    /// assert_eq!(observed, ObservedApplication::default());
+    /// # }
+    /// ```
     async fn observe(
         &self,
         _application: &StoredApplication,
@@ -66,6 +89,21 @@ impl RuntimeBoundary for FakeRuntime {
     }
 }
 
+/// Builds the application manifest used by the API lifecycle tests.
+
+///
+
+/// # Examples
+
+///
+
+/// ```
+
+/// let application = manifest();
+
+/// assert_eq!(application.spec.services.len(), 1);
+
+/// ```
 fn manifest() -> ApplicationManifest {
     serde_json::from_value(serde_json::json!({
         "api_version": "piqueld.dev/v1alpha1",
@@ -79,6 +117,18 @@ fn manifest() -> ApplicationManifest {
     .expect("fixture is valid")
 }
 
+/// Creates API state backed by a fresh SQLite database in the specified temporary directory.
+///
+/// # Examples
+///
+/// ```ignore
+/// let temp = tempfile::tempdir().unwrap();
+/// let api_state = state(&temp).await;
+/// ```
+///
+/// `temp` supplies the directory for the temporary database file.
+///
+/// `temp` must remain available while the returned state is used.
 async fn state(temp: &TempDir) -> ApiState {
     let store = Arc::new(
         SqliteStore::open(temp.path().join("state.db"))
@@ -166,6 +216,29 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
     created
 }
 
+/// Replaces an application and previews the next replacement generation.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example(
+/// #     client: &Client,
+/// #     created: &AcceptedOperation,
+/// #     manifest: ApplicationManifest,
+/// # ) {
+/// let replaced = replace_and_plan(client, created, manifest).await;
+/// assert_eq!(replaced.generation, 2);
+/// # }
+/// ```
+///
+/// # Arguments
+///
+/// * `created` - The accepted operation identifying the application to replace.
+/// * `manifest` - The replacement application manifest.
+///
+/// # Returns
+///
+/// The accepted replacement operation.
 async fn replace_and_plan(
     client: &Client,
     created: &AcceptedOperation,

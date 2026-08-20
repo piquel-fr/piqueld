@@ -6,12 +6,27 @@ use super::{
 };
 
 impl SqliteStore {
-    /// Reads the durable lifecycle status for one application.
+    /// Reads the persisted lifecycle status for a non-deleted application.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the status is missing, malformed, or the
-    /// database cannot be read.
+    /// Returns [`StoreError::NotFound`] when the application has no status or is
+    /// deleted. Returns an error when the database cannot be read, the stored
+    /// state is malformed, or the observed generation cannot be converted to
+    /// `u64`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     store: &SqliteStore,
+    /// #     id: &ApplicationId,
+    /// # ) -> Result<(), StoreError> {
+    /// let status = store.status(id).await?;
+    /// println!("{:?}", status.state);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn status(&self, id: &ApplicationId) -> Result<ApplicationStatus, StoreError> {
         let id_value = id.as_str();
         let row = sqlx::query!(
@@ -35,6 +50,33 @@ impl SqliteStore {
         })
     }
 
+    /// Persists an application state transition when it satisfies the lifecycle and generation constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::IllegalTransition` for an invalid state or generation transition,
+    /// `StoreError::InvalidInput` for an overlong message, and other store errors when persistence
+    /// fails or the transition cannot be applied.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(
+    /// #     store: &SqliteStore,
+    /// #     id: &ApplicationId,
+    /// # ) -> Result<(), StoreError> {
+    /// store
+    ///     .set_status(
+    ///         id,
+    ///         ApplicationState::Pending,
+    ///         ApplicationState::Ready,
+    ///         Some(1),
+    ///         None,
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub(crate) async fn set_status(
         &self,
         id: &ApplicationId,

@@ -23,12 +23,56 @@ struct FakeDocker {
 }
 
 impl FakeDocker {
+    /// Initializes a fake Docker backend with the specified observed application state.
+    
+    ///
+    
+    /// # Examples
+    
+    ///
+    
+    /// ```
+    
+    /// let docker = FakeDocker::with_observed(ObservedApplication::default());
+    
+    /// ```
+    
+    ///
+    
+    /// `observed` provides the initial state returned by the fake Docker backend.
     fn with_observed(observed: ObservedApplication) -> Self {
         Self {
             observed: Arc::new(Mutex::new(observed)),
         }
     }
 
+    /// Checks whether observed resource labels match the expected ownership labels.
+    ///
+    /// When an application label is expected, the observed resource must also have a
+    /// `io.piqueld.spec-hash` label beginning with `sha256:`.
+    ///
+    /// # Returns
+    ///
+    /// `true` if ownership labels and any required application spec hash are valid,
+    /// `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::BTreeMap;
+    ///
+    /// let expected = BTreeMap::from([
+    ///     ("io.piqueld.managed".to_owned(), "true".to_owned()),
+    ///     ("io.piqueld.application".to_owned(), "demo".to_owned()),
+    /// ]);
+    /// let observed = BTreeMap::from([
+    ///     ("io.piqueld.managed".to_owned(), "true".to_owned()),
+    ///     ("io.piqueld.application".to_owned(), "demo".to_owned()),
+    ///     ("io.piqueld.spec-hash".to_owned(), "sha256:abc123".to_owned()),
+    /// ]);
+    ///
+    /// assert!(ownership_matches(&observed, &expected));
+    /// ```
     fn ownership_matches(
         observed: &BTreeMap<String, String>,
         expected: &BTreeMap<String, String>,
@@ -50,6 +94,18 @@ impl FakeDocker {
     }
 }
 
+/// Converts a desired service into a healthy, running observed service marked as converged.
+///
+/// # Examples
+///
+/// ```
+/// # let desired: &DesiredService = todo!();
+/// let observed = observed_service(desired);
+///
+/// assert!(matches!(observed.convergence, Convergence::Converged));
+/// assert_eq!(observed.tasks.len(), 1);
+/// assert!(observed.tasks[0].healthy);
+/// ```
 fn observed_service(desired: &DesiredService) -> ObservedService {
     ObservedService {
         name: desired.name.clone(),
@@ -76,14 +132,48 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
 
 #[async_trait]
 impl DockerApi for FakeDocker {
+    /// Reports the swarm as ready.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let state = docker.ensure_swarm(false).await.unwrap();
+    /// assert_eq!(state, SwarmState::Ready);
+    /// ```
     async fn ensure_swarm(&self, _auto_initialize: bool) -> Result<SwarmState, DockerError> {
         Ok(SwarmState::Ready)
     }
 
+    /// Resolves an image reference to a deterministic SHA-256 digest reference.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(docker: &FakeDocker) {
+    /// let resolved = docker.resolve_image("nginx:latest").await.unwrap();
+    /// assert_eq!(resolved, format!("nginx:latest@sha256:{}", "a".repeat(64)));
+    /// # }
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The input reference suffixed with a deterministic 64-character SHA-256 digest.
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         Ok(format!("{reference}@sha256:{}", "a".repeat(64)))
     }
 
+    /// Provides the currently observed application state.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let observed = docker.observe(&application_id).await?;
+    /// assert_eq!(observed, expected_state);
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// A snapshot of the observed application state.
     async fn observe(
         &self,
         _application: &ApplicationId,
@@ -91,6 +181,16 @@ impl DockerApi for FakeDocker {
         Ok(self.observed.lock().await.clone())
     }
 
+    /// Ensures that the desired network exists in the observed Docker state.
+    ///
+    /// Existing networks are preserved, while missing networks are created with the
+    /// desired labels and a matching runtime configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// docker.ensure_network(&desired_network).await.unwrap();
+    /// ```
     async fn ensure_network(
         &self,
         desired: &piqueld_core::resource::DesiredNetwork,
@@ -110,6 +210,19 @@ impl DockerApi for FakeDocker {
         Ok(())
     }
 
+    /// Ensures that the desired volume exists in the observed Docker state.
+    ///
+    /// # Arguments
+    ///
+    /// * `desired` - The volume definition to create when no volume with the same name exists.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` after the volume is present.
+    async fn ensure_volume(
+    &self,
+    desired: &piqueld_core::resource::DesiredVolume,
+    ) -> Result<(), DockerError> {
     async fn ensure_volume(
         &self,
         desired: &piqueld_core::resource::DesiredVolume,
@@ -129,6 +242,23 @@ impl DockerApi for FakeDocker {
         Ok(())
     }
 
+    /// Ensures that a service matches the desired state while preserving resources owned by other instances.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DockerError::OwnershipConflict` when a service with the desired name is owned by another instance.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     docker: &FakeDocker,
+    /// #     desired: &piqueld_core::resource::DesiredService,
+    /// # ) -> Result<(), DockerError> {
+    /// docker.ensure_service(desired).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn ensure_service(
         &self,
         desired: &piqueld_core::resource::DesiredService,
@@ -149,6 +279,25 @@ impl DockerApi for FakeDocker {
         Ok(())
     }
 
+    /// Removes the named service when its ownership matches the expected labels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DockerError::OwnershipConflict`] when an existing service with the
+    /// same name has different ownership labels.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let ownership = BTreeMap::from([
+    ///     ("managed-by".to_owned(), "scheduler".to_owned()),
+    /// ]);
+    ///
+    /// docker.remove_service("api", &ownership).await?;
+    /// # Ok::<(), DockerError>(())
+    /// ```
+    ///
+    /// `ownership` identifies the resource owner permitted to remove the service.
     async fn remove_service(
         &self,
         name: &str,
@@ -167,6 +316,26 @@ impl DockerApi for FakeDocker {
         Ok(())
     }
 
+    /// Removes a network when it is owned by this application.
+    ///
+    /// An existing network with mismatched ownership returns [`DockerError::OwnershipConflict`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     docker: &FakeDocker,
+    /// #     ownership: &std::collections::BTreeMap<String, String>,
+    /// # ) -> Result<(), DockerError> {
+    /// docker.remove_network("app_default", ownership).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn remove_network(
+    &self,
+    name: &str,
+    ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
     async fn remove_network(
         &self,
         name: &str,
@@ -206,6 +375,20 @@ struct SchedulerHarness {
 }
 
 impl SchedulerHarness {
+    /// Creates an isolated scheduler harness backed by a temporary database and fake Docker backend.
+    ///
+    /// # Returns
+    ///
+    /// A configured harness containing the application fixture, resolved desired state, and scheduler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example() {
+    /// let harness = SchedulerHarness::new().await;
+    /// assert!(harness.store.instance_id().len() > 0);
+    /// # }
+    /// ```
     async fn new() -> Self {
         let directory = tempfile::tempdir().expect("temporary directory");
         let database_path = directory.path().join("control-plane.db");
@@ -257,6 +440,23 @@ impl SchedulerHarness {
             .collect()
     }
 
+    /// Builds a reconciliation plan for the desired application state and its observed state.
+    
+    ///
+    
+    /// # Examples
+    
+    ///
+    
+    /// ```
+    
+    /// # let desired: ResolvedApplication = todo!();
+    
+    /// # let observed: ObservedApplication = todo!();
+    
+    /// let plan = reconcile_plan(desired, &observed);
+    
+    /// ```
     fn reconcile_plan(
         desired: ResolvedApplication,
         observed: &ObservedApplication,
@@ -264,6 +464,14 @@ impl SchedulerHarness {
         Plan::from_request(&PlanRequest::Reconcile { desired }, observed)
     }
 
+    /// Creates the application and records its initial reconciliation steps.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mutation = harness.create().await;
+    /// assert!(mutation.is_ok());
+    /// ```
     async fn create(&self) -> piqueld::store::MutationResult {
         let initial_plan =
             Self::reconcile_plan(self.resolved.clone(), &ObservedApplication::default());
@@ -274,6 +482,13 @@ impl SchedulerHarness {
             .expect("application is created")
     }
 
+    /// Marks an operation and all of its steps as running to simulate an interrupted operation.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// harness.interrupt(operation_id).await;
+    /// ```
     async fn interrupt(&self, operation_id: &str) {
         let mut connection = SqliteConnection::connect(&format!(
             "sqlite://{}?mode=rwc",
@@ -325,6 +540,17 @@ impl SchedulerHarness {
         assert_eq!(observed.services.len(), 1);
     }
 
+    /// Builds and persists a replacement application with its first service scaled to two replicas.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let (mutation, resolved) = harness.replace().await;
+    /// assert!(mutation.is_success());
+    /// assert_eq!(resolved.spec.services[0].replicas, 2);
+    /// ```
+    ///
+    /// The returned tuple contains the durable mutation result and the resolved replacement application.
     async fn replace(&self) -> (piqueld::store::MutationResult, ResolvedApplication) {
         let mut replacement = self.application.clone();
         replacement.spec.services[0].replicas = 2;
@@ -384,6 +610,18 @@ impl SchedulerHarness {
         );
     }
 
+    /// Persists a deletion request for the application and its managed resources.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let result = harness.delete(&desired).await;
+    /// assert!(result.is_ok());
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The result of persisting the deletion mutation.
     async fn delete(&self, desired: &ResolvedApplication) -> piqueld::store::MutationResult {
         let observed = self
             .docker

@@ -40,7 +40,26 @@ impl BollardDocker {
             })
     }
 
-    /// Checks the local, option-free volume settings supported by piqueld.
+    /// Determines whether a volume uses piqueld's supported local configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let volume = bollard::models::Volume {
+    ///     driver: "local".into(),
+    ///     options: Default::default(),
+    ///     cluster_volume: None,
+    ///     scope: None,
+    ///     ..Default::default()
+    /// };
+    ///
+    /// assert!(BollardDocker::volume_configuration_matches(&volume));
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if the volume uses the local driver, has no options or cluster configuration,
+    /// and has an unspecified, empty, or local scope; `false` otherwise.
     pub(super) fn volume_configuration_matches(volume: &bollard::models::Volume) -> bool {
         volume.driver == "local"
             && volume.options.is_empty()
@@ -54,7 +73,24 @@ impl BollardDocker {
             })
     }
 
-    /// Checks the ownership labels shared by an observed and desired resource.
+    /// Confirms that an observed resource belongs to the expected managed resource.
+    ///
+    /// Ownership requires matching managed and instance labels, matching optional
+    /// application and service labels, and a valid specification hash when an
+    /// application label is expected.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let expected = expected_labels();
+    /// let observed = expected.clone();
+    ///
+    /// assert!(BollardDocker::owns(&observed, &expected));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic.
     pub(super) fn owns(
         observed: &BTreeMap<String, String>,
         expected: &BTreeMap<String, String>,
@@ -76,7 +112,22 @@ impl BollardDocker {
                 .is_none_or(|value| observed.get(SERVICE_LABEL) == Some(value))
     }
 
-    /// Rechecks ownership and the canonical name before deleting a service.
+    /// Verifies that an observed service belongs to the expected application and uses its canonical Docker name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::BTreeMap;
+    ///
+    /// let observed = BTreeMap::new();
+    /// let expected = BTreeMap::new();
+    ///
+    /// assert!(!BollardDocker::owns_named_service(
+    ///     &observed,
+    ///     &expected,
+    ///     "service",
+    /// ));
+    /// ```
     pub(super) fn owns_named_service(
         observed: &BTreeMap<String, String>,
         expected: &BTreeMap<String, String>,
@@ -96,7 +147,32 @@ impl BollardDocker {
             && docker_resource_name(&application, ResourceKind::Service, Some(service)) == name
     }
 
-    /// Rechecks ownership and the canonical name before deleting a network.
+    /// Confirms that a resource is an owned private network with its canonical Docker name.
+    ///
+    /// # Arguments
+    ///
+    /// * `observed` - Labels observed on the Docker network.
+    /// * `expected` - Labels identifying the expected application ownership.
+    /// * `name` - The Docker network name to validate.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the resource belongs to the expected application, has no service label, and uses the canonical private-network name; `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::BTreeMap;
+    ///
+    /// let observed = BTreeMap::new();
+    /// let expected = BTreeMap::new();
+    ///
+    /// assert!(!BollardDocker::owns_private_network(
+    ///     &observed,
+    ///     &expected,
+    ///     "network",
+    /// ));
+    /// ```
     pub(super) fn owns_private_network(
         observed: &BTreeMap<String, String>,
         expected: &BTreeMap<String, String>,
@@ -113,12 +189,35 @@ impl BollardDocker {
             && docker_resource_name(&application, ResourceKind::Network, None) == name
     }
 
-    /// Returns whether a managed spec label is a valid SHA-256 digest.
+    /// Validates whether a value is a SHA-256 digest.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(BollardDocker::valid_spec_hash(
+    ///     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    /// ));
+    /// ```
+    ///
+    /// `true` if the value is a valid SHA-256 digest, `false` otherwise.
     pub(super) fn valid_spec_hash(value: &str) -> bool {
         piqueld_core::Sha256Digest::parse(value).is_ok()
     }
 
-    /// Returns whether an image reference contains a complete SHA-256 digest.
+    /// Determines whether a value ends with a complete lowercase SHA-256 digest.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(valid_digest(
+    ///     "ghcr.io/example/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    /// ));
+    /// assert!(!valid_digest("ghcr.io/example/app:latest"));
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if the value contains `@sha256:` followed by exactly 64 lowercase hexadecimal characters, `false` otherwise.
     pub(super) fn valid_digest(value: &str) -> bool {
         value.rsplit_once("@sha256:").is_some_and(|(_, d)| {
             d.len() == 64

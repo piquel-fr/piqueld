@@ -8,7 +8,15 @@ use super::{
 };
 
 impl BollardDocker {
-    /// Builds the complete Docker service specification from desired state.
+    /// Builds a complete Docker service specification from the desired service state.
+    ///
+    /// The desired image must be digest-pinned; otherwise, a validation error is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let spec = Self::service_spec(&desired_service)?;
+    /// ```
     pub(super) fn service_spec(desired: &DesiredService) -> Result<ServiceSpec, DockerError> {
         if !BollardDocker::valid_digest(&desired.image) {
             return Err(DockerError::Validation("validate digest-pinned image"));
@@ -28,7 +36,15 @@ impl BollardDocker {
         })
     }
 
-    /// Builds the container, network, resource, and restart portions of a service.
+    /// Builds the container, network, resource, and restart configuration for a service.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # let desired = DesiredService::default();
+    /// let task = task_spec(&desired).unwrap();
+    /// assert!(task.container_spec.is_some());
+    /// ```
     fn task_spec(desired: &DesiredService) -> Result<TaskSpec, DockerError> {
         Ok(TaskSpec {
             container_spec: Some(TaskSpecContainerSpec {
@@ -79,7 +95,20 @@ impl BollardDocker {
         })
     }
 
-    /// Converts a core health check into Docker's health-check representation.
+    /// Converts a health check into Docker's health-check configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let health_check = HealthCheck::Command {
+    ///     command: vec!["/bin/true".into()],
+    ///     interval_seconds: 30,
+    ///     timeout_seconds: 5,
+    /// };
+    /// let config = health_config(&health_check);
+    ///
+    /// assert_eq!(config.test, Some(vec!["CMD".into(), "/bin/true".into()]));
+    /// ```
     pub(super) fn health_config(health_check: &HealthCheck) -> HealthConfig {
         match health_check {
             HealthCheck::Command {
@@ -121,6 +150,21 @@ impl BollardDocker {
         }
     }
 
+    /// Converts optional resource limits into Docker task resource settings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(task_resources(None).unwrap().is_none());
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `resources` - Optional CPU and memory limits to apply to the task.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(Some(...))` with converted task resources when limits are provided, `Ok(None)` when they are absent, or a validation error when the memory limit cannot fit in a signed 64-bit integer.
     pub(super) fn task_resources(
         resources: Option<&ResourceLimits>,
     ) -> Result<Option<TaskSpecResources>, DockerError> {
@@ -144,6 +188,15 @@ impl BollardDocker {
         }))
     }
 
+    /// Builds the service update policy used for Docker service updates.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let config = update_config();
+    /// assert_eq!(config.parallelism, Some(1));
+    /// assert_eq!(config.max_failure_ratio, Some(0.0));
+    /// ```
     pub(super) fn update_config() -> ServiceSpecUpdateConfig {
         ServiceSpecUpdateConfig {
             parallelism: Some(1),
@@ -155,10 +208,26 @@ impl BollardDocker {
         }
     }
 
+    /// Converts a duration in seconds to nanoseconds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(seconds_to_nanoseconds(2), 2_000_000_000);
+    /// ```
     pub(super) fn seconds_to_nanoseconds(seconds: u32) -> i64 {
         i64::from(seconds) * NANOSECONDS_PER_SECOND
     }
 
+    /// Copies the values into an owned vector when the slice contains at least one value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let values = vec!["a".to_owned(), "b".to_owned()];
+    /// assert_eq!(nonempty(&values), Some(values));
+    /// assert_eq!(nonempty(&[]), None);
+    /// ```
     pub(super) fn nonempty(values: &[String]) -> Option<Vec<String>> {
         (!values.is_empty()).then(|| values.to_vec())
     }

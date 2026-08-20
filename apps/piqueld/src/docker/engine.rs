@@ -15,6 +15,28 @@ enum ServiceWireError {
 }
 
 impl ServiceWireError {
+    /// Converts a service-wire error into a public Docker error for the specified operation.
+    ///
+    /// Public errors are preserved, while raw response errors become request errors labeled
+    /// with `operation`.
+    ///
+    /// # Arguments
+    ///
+    /// * `operation` - The operation associated with the failed request.
+    ///
+    /// # Returns
+    ///
+    /// The original public error, or a request error identifying the operation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error = ServiceWireError::Public(DockerError::Request("create service"));
+    /// assert!(matches!(
+    ///     error.sanitized("create service"),
+    ///     DockerError::Request("create service")
+    /// ));
+    /// ```
     fn sanitized(self, operation: &'static str) -> DockerError {
         match self {
             Self::Public(error) => error,
@@ -24,10 +46,20 @@ impl ServiceWireError {
 }
 
 impl BollardDocker {
-    /// Opens one shared, cheaply cloneable Bollard connection handle.
+    /// Opens a shared, cheaply cloneable connection handle to Docker over a Unix socket.
     ///
     /// # Errors
-    /// Returns a sanitized unavailable error for invalid/non-Unix socket paths.
+    ///
+    /// Returns a sanitized unavailable error when the socket path is not valid UTF-8
+    /// or the Docker connection cannot be established.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::Path;
+    ///
+    /// let connection = BollardDocker::connect(Path::new("/var/run/docker.sock"));
+    /// ```
     pub fn connect(socket: &Path) -> Result<Self, DockerError> {
         let socket_path = socket.to_path_buf();
         let socket = socket_path
@@ -135,8 +167,16 @@ impl BollardDocker {
         })?
     }
 
-    /// Inspects the complete service representation, restoring Bollard's
-    /// typed health-check field after Docker's `Healthcheck` response key.
+    /// Retrieves and deserializes a complete Docker service representation, restoring the typed health-check field.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// # async fn example(docker: &BollardDocker) -> Result<(), DockerError> {
+    /// let service = docker.inspect_service_wire("service-id").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub(super) async fn inspect_service_wire(
         &self,
         identifier: &str,
@@ -151,6 +191,21 @@ impl BollardDocker {
         serde_json::from_value(value).map_err(|_| DockerError::Request("decode service response"))
     }
 
+    /// Creates a Docker service from the provided specification.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DockerError`] if Docker rejects the request or the service
+    /// request cannot be completed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(client: &BollardDocker, spec: &ServiceSpec) -> Result<(), DockerError> {
+    /// client.create_service_wire(spec).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub(super) async fn create_service_wire(&self, spec: &ServiceSpec) -> Result<(), DockerError> {
         self.service_request(Method::POST, "/services/create", Some(spec))
             .await
@@ -158,9 +213,28 @@ impl BollardDocker {
             .map(|_| ())
     }
 
-    /// Updates a service with a bounded retry for Docker's exact transient
-    /// optimistic-concurrency response. Every retry refreshes the current
-    /// service version and resubmits the same desired specification.
+    /// Updates a service specification, retrying transient out-of-sequence responses until the deadline.
+    ///
+    /// Each retry retrieves the service's current version before resubmitting the specification.
+    /// Other errors, including responses that do not exactly match Docker's out-of-sequence error,
+    /// are returned immediately.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let result = client.update_service_wire(name, version, &spec).await;
+    /// assert!(result.is_ok());
+    /// ```
+    ///
+    /// # Parameters
+    ///
+    /// * `name` - The service name.
+    /// * `version` - The service version used for the initial update.
+    /// * `spec` - The desired service specification.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when the service is updated successfully; otherwise, the resulting Docker error.
     pub(super) async fn update_service_wire(
         &self,
         name: &str,
@@ -195,8 +269,22 @@ impl BollardDocker {
         }
     }
 
-    /// Returns whether Docker reported the one transient update conflict that
-    /// is safe for the caller to retry with a refreshed service version.
+    /// Identifies the exact transient Docker update conflict that can be retried with a refreshed service version.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error = ServiceWireError::Response {
+    ///     status: StatusCode::INTERNAL_SERVER_ERROR,
+    ///     body: br#"{"message":"rpc error: code = Unknown desc = update out of sequence"}"#.to_vec(),
+    /// };
+    ///
+    /// assert!(update_out_of_sequence(&error));
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if the error is the expected HTTP 500 update conflict, `false` otherwise.
     fn update_out_of_sequence(error: &ServiceWireError) -> bool {
         let ServiceWireError::Response { status, body } = error else {
             return false;
@@ -210,7 +298,47 @@ impl BollardDocker {
                 })
     }
 
-    /// Renames the health-check key in either a service spec or a service response.
+    /// Renames a health-check field in a Swarm service specification or response.
+    
+    ///
+    
+    /// # Examples
+    
+    ///
+    
+    /// ```
+    
+    /// let mut service = serde_json::json!({
+    
+    ///     "Spec": {
+    
+    ///         "TaskTemplate": {
+    
+    ///             "ContainerSpec": {
+    
+    ///                 "HealthCheck": {"Test": ["CMD-SHELL", "true"]}
+    
+    ///             }
+    
+    ///         }
+    
+    ///     }
+    
+    /// });
+    
+    ///
+    
+    /// rename_swarm_healthcheck(&mut service, "HealthCheck", "Healthcheck");
+    
+    ///
+    
+    /// assert!(service["Spec"]["TaskTemplate"]["ContainerSpec"]
+    
+    ///     .get("Healthcheck")
+    
+    ///     .is_some());
+    
+    /// ```
     fn rename_swarm_healthcheck(value: &mut serde_json::Value, from: &str, to: &str) {
         let spec = if value.get("Spec").is_some() {
             value.get_mut("Spec").expect("checked service spec")
@@ -229,8 +357,14 @@ impl BollardDocker {
         }
     }
 
-    /// Fetches the local nodes and rejects anything other than one ready,
-    /// reachable, active manager.
+    /// Verifies that the Swarm contains exactly one active, ready, and reachable manager.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// docker.validate_single_node_manager().await?;
+    /// # Ok::<(), DockerError>(())
+    /// ```
     pub(super) async fn validate_single_node_manager(&self) -> Result<(), DockerError> {
         let nodes = Self::map_request(
             "list Swarm nodes",
@@ -242,7 +376,18 @@ impl BollardDocker {
         Ok(())
     }
 
-    /// Returns whether Docker reports exactly one ready, reachable manager.
+    /// Determines whether the nodes represent exactly one active, ready, reachable manager.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let nodes = [];
+    /// assert!(!single_node_manager(&nodes));
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `true` if there is exactly one active manager in the ready and reachable state, `false` otherwise.
     pub(super) fn single_node_manager(nodes: &[bollard::models::Node]) -> bool {
         nodes.len() == 1
             && nodes[0].spec.as_ref().and_then(|spec| spec.role)
@@ -258,7 +403,14 @@ impl BollardDocker {
                 == Some(bollard::models::Reachability::REACHABLE)
     }
 
-    /// Converts a Bollard request result while retaining the operation name.
+    /// Converts a Bollard request result into a [`DockerError`] labeled with the operation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let result = map_request("inspect service", Ok::<_, bollard::errors::Error>(42));
+    /// assert_eq!(result.unwrap(), 42);
+    /// ```
     pub(super) fn map_request<T>(
         operation: &'static str,
         result: Result<T, bollard::errors::Error>,

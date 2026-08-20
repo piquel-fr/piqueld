@@ -6,12 +6,34 @@ use super::{
 use crate::store::ApplicationStatus;
 use piqueld_core::resource::ObservedApplication;
 
-/// Runs startup recovery, apply/delete wakes, and periodic full scans. Multiple
-/// wakes collapse through `Notify`, keeping polling work bounded.
+/// Runs startup recovery, performs an initial scan, and continues scanning after wake notifications or at regular intervals.
+///
+/// Cancellation causes the coordinator to exit successfully. Recovery and scan failures are retried according to the coordinator's retry behavior.
 ///
 /// # Errors
-/// Returns only when cancellation is requested; transient scheduler/store failures
-/// are logged and retried so the controller remains alive.
+///
+/// Returns a [`SchedulerError`] if a scan cannot be completed.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example<D: DockerApi>(
+/// #     scheduler: Arc<OperationScheduler<ReconcileHandler<D>>>,
+/// #     store: Arc<SqliteStore>,
+/// #     docker: Arc<D>,
+/// #     wake: Arc<Notify>,
+/// # ) -> Result<(), SchedulerError> {
+/// let cancellation = CancellationToken::new();
+/// run_coordinator(
+///     scheduler,
+///     store,
+///     docker,
+///     wake,
+///     Duration::from_secs(60),
+///     cancellation,
+/// ).await
+/// # }
+/// ```
 pub async fn run_coordinator<D: DockerApi>(
     scheduler: Arc<OperationScheduler<ReconcileHandler<D>>>,
     store: Arc<SqliteStore>,
@@ -44,6 +66,17 @@ pub async fn run_coordinator<D: DockerApi>(
     }
 }
 
+/// Repeatedly runs the coordinator scan until it succeeds or cancellation is requested.
+///
+/// Failed scans are retried with exponentially increasing delays up to the retry policy's maximum delay.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// run_scan_until_success(&scheduler, &store, &docker, &cancellation)
+///     .await
+///     .expect("scan should complete successfully");
+/// ```
 async fn run_scan_until_success<D: DockerApi>(
     scheduler: &OperationScheduler<ReconcileHandler<D>>,
     store: &SqliteStore,
@@ -73,6 +106,19 @@ async fn run_scan_until_success<D: DockerApi>(
     }
 }
 
+/// Drains pending operations and scans all stored applications until processing completes or cancellation is requested.
+///
+/// Cancellation causes the scan to finish successfully without processing remaining applications.
+///
+/// # Examples
+///
+/// ```ignore
+/// scan_and_run(&scheduler, &store, &docker, &cancellation).await?;
+/// ```
+///
+/// # Returns
+///
+/// `Ok(())` when processing completes or cancellation is requested; otherwise, the encountered scheduler or store error.
 async fn scan_and_run<D: DockerApi>(
     scheduler: &OperationScheduler<ReconcileHandler<D>>,
     store: &SqliteStore,
@@ -100,6 +146,20 @@ async fn scan_and_run<D: DockerApi>(
     scheduler.run_until_idle(cancellation.child_token()).await
 }
 
+/// Processes an application by retrying deletion or reconciling its state.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn example<D: DockerApi>(
+/// #     store: &SqliteStore,
+/// #     docker: &D,
+/// #     application: &StoredApplication,
+/// # ) -> Result<(), StoreError> {
+/// scan_application(store, docker, application).await?;
+/// # Ok(())
+/// # }
+/// ```
 async fn scan_application<D: DockerApi>(
     store: &SqliteStore,
     docker: &D,
@@ -112,6 +172,17 @@ async fn scan_application<D: DockerApi>(
     }
 }
 
+/// Reconciles an application with its desired state and records the resulting status or schedules required operations.
+///
+/// Applications with blocked plans are marked as degraded. Applications that require no execution are marked as recovered;
+/// otherwise, the required reconciliation steps are submitted to the store.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// scan_reconcile_application(&store, &docker, &application).await?;
+/// # Ok::<(), StoreError>(())
+/// ```
 async fn scan_reconcile_application<D: DockerApi>(
     store: &SqliteStore,
     docker: &D,
@@ -147,6 +218,19 @@ async fn scan_reconcile_application<D: DockerApi>(
     Ok(())
 }
 
+/// Loads the runtime observation and persisted status for an application eligible for reconciliation.
+///
+/// Returns no context when reconciliation is already active or runtime observation fails. Store
+/// errors are propagated to the caller.
+///
+/// # Examples
+///
+/// ```ignore
+/// if let Some((observed, status)) = load_reconcile_context(&store, &docker, &application).await? {
+///     // Use the observed runtime state and persisted status for reconciliation.
+/// }
+/// # Ok::<(), StoreError>(())
+/// ```
 async fn load_reconcile_context<D: DockerApi>(
     store: &SqliteStore,
     docker: &D,
@@ -173,6 +257,26 @@ async fn load_reconcile_context<D: DockerApi>(
     Ok(Some((observed, status)))
 }
 
+/// Marks a ready application as degraded when its plan is blocked.
+///
+/// Applications in other states remain unchanged.
+///
+/// # Examples
+///
+/// ```ignore
+/// record_blocked_status(
+///     &store,
+///     &application,
+///     &plan,
+///     ApplicationState::Ready,
+/// )
+/// .await?;
+/// # Ok::<(), StoreError>(())
+/// ```
+///
+/// # Errors
+///
+/// Returns a [`StoreError`] if updating the application status fails.
 async fn record_blocked_status(
     store: &SqliteStore,
     application: &StoredApplication,
@@ -193,6 +297,16 @@ async fn record_blocked_status(
         .await
 }
 
+/// Records recovery when an application in a degraded or failed state has converged.
+///
+/// Applications in other states are left unchanged.
+///
+/// # Examples
+///
+/// ```no_run
+/// record_recovered_status(&store, &application, ApplicationState::Degraded).await?;
+/// # Ok::<(), StoreError>(())
+/// ```
 async fn record_recovered_status(
     store: &SqliteStore,
     application: &StoredApplication,
@@ -215,6 +329,26 @@ async fn record_recovered_status(
         .await
 }
 
+/// Retries deletion reconciliation for a stored application.
+///
+/// Runtime observation failures and blocked deletion plans are logged and skipped.
+/// Illegal state transitions and generation conflicts are also ignored; other store
+/// errors are returned.
+///
+/// # Examples
+///
+/// ```no_run
+/// retry_delete(&store, &docker, &application).await?;
+/// # Ok::<(), StoreError>(())
+/// ```
+///
+/// `store` persists the deletion request, `docker` provides the observed runtime
+/// state, and `application` identifies the application and its resolved instance.
+///
+/// # Errors
+///
+/// Returns a [`StoreError`] when persisting the deletion request fails for a
+/// reason other than an illegal transition or generation conflict.
 async fn retry_delete<D: DockerApi>(
     store: &SqliteStore,
     docker: &D,
@@ -262,6 +396,17 @@ async fn retry_delete<D: DockerApi>(
     Ok(())
 }
 
+/// Determines whether a plan contains an action that requires execution.
+///
+/// # Examples
+///
+/// ```
+/// let plan = piqueld_core::Plan::default();
+/// assert!(!plan_requires_execution(&plan));
+/// ```
+///
+/// Returns `true` when the plan contains an action other than retaining a volume,
+/// and `false` otherwise.
 pub(super) fn plan_requires_execution(plan: &piqueld_core::Plan) -> bool {
     plan.actions
         .iter()

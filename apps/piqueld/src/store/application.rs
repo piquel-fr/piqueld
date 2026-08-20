@@ -9,12 +9,24 @@ use super::{
 use uuid::Uuid;
 
 impl SqliteStore {
-    /// Creates an application, its initial status row, and a durable operation.
+    /// Creates an application at generation 1, initializes its pending status, and records a durable create operation.
+    ///
+    /// # Parameters
+    ///
+    /// * `steps` — The steps associated with the create operation.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when validation fails, the application already
-    /// exists, or the transaction cannot be committed.
+    /// Returns [`StoreError::AlreadyExists`] when an application with the same identifier exists. Returns other
+    /// [`StoreError`] variants when application data cannot be canonicalized or the transaction cannot be persisted.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let result = store.create(&app, &resolved, &[]).await?;
+    /// assert_eq!(result.generation, 1);
+    /// # Ok::<(), StoreError>(())
+    /// ```
     pub async fn create(
         &self,
         app: &NormalizedApplication,
@@ -61,12 +73,41 @@ impl SqliteStore {
         })
     }
 
-    /// Creates an application and binds the first request to an idempotency key.
+    /// Creates an application and associates the request with an idempotency key.
+    ///
+    /// If the key is already bound to the same request and application, returns the
+    /// previously created mutation result. A conflicting binding is rejected.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the key is invalid, its binding conflicts, or
-    /// the transaction cannot be committed.
+    /// Returns [`StoreError::InvalidInput`] for invalid SHA-256 hashes,
+    /// [`StoreError::IdempotencyConflict`] for a conflicting binding,
+    /// [`StoreError::AlreadyExists`] if the application already exists, or another
+    /// [`StoreError`] variant when persisted data is corrupt or the transaction
+    /// cannot be completed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     store: &SqliteStore,
+    /// #     app: &NormalizedApplication,
+    /// #     resolved: &ResolvedApplication,
+    /// # ) -> Result<(), StoreError> {
+    /// let result = store
+    ///     .create_idempotent(
+    ///         app,
+    ///         resolved,
+    ///         &[],
+    ///         "0000000000000000000000000000000000000000000000000000000000000000",
+    ///         "1111111111111111111111111111111111111111111111111111111111111111",
+    ///     )
+    ///     .await?;
+    ///
+    /// assert_eq!(result.generation, 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_idempotent(
         &self,
         app: &NormalizedApplication,
@@ -151,12 +192,26 @@ impl SqliteStore {
         })
     }
 
-    /// Looks up an existing create request by its hashed idempotency key.
+    /// Looks up a create request by its hashed idempotency key.
+    ///
+    /// Returns the previously recorded mutation result when the key matches the
+    /// application and request hashes, or `None` when no binding exists.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the hashes are invalid, the binding conflicts,
-    /// or the database cannot be read.
+    /// Returns [`StoreError::InvalidInput`] for invalid SHA-256 hashes,
+    /// [`StoreError::IdempotencyConflict`] when the binding does not match the
+    /// application or request, [`StoreError::Corrupt`] for an invalid generation,
+    /// or [`StoreError`] for database failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let result = store
+    ///     .create_idempotency(&app_id, &key_hash, &request_hash)
+    ///     .await?;
+    /// # Ok::<(), StoreError>(())
+    /// ```
     pub async fn create_idempotency(
         &self,
         app_id: &ApplicationId,
@@ -189,12 +244,23 @@ impl SqliteStore {
         }))
     }
 
-    /// Replaces an application generation and records the replacement operation.
+    /// Replaces an application's desired and resolved data, advances its generation, and records a replacement operation.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] for stale generations, invalid state, corrupt
-    /// persisted data, or a failed transaction.
+    /// Returns [`StoreError::GenerationConflict`] when the expected generation is stale,
+    /// [`StoreError::IllegalTransition`] when deletion is in progress, or
+    /// [`StoreError::AlreadyExists`] when the application has changed without advancing
+    /// its generation. It may also return errors for missing or corrupt persisted data,
+    /// generation overflow, database failures, or transaction commit failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let result = store.replace(&application, &resolved, 1, &steps).await?;
+    /// assert_eq!(result.generation, 2);
+    /// # Ok::<(), StoreError>(())
+    /// ```
     pub async fn replace(
         &self,
         app: &NormalizedApplication,
@@ -278,12 +344,36 @@ impl SqliteStore {
         })
     }
 
-    /// Queues an explicit reconciliation for the current application generation.
+    /// Queues a reconciliation operation for the specified application generation.
+    ///
+    /// An existing pending, running, or recovery reconciliation operation for the
+    /// generation is reused. Otherwise, a new operation is created and the
+    /// application status is reset to pending.
+    ///
+    /// # Parameters
+    ///
+    /// * `expected_generation` — The application generation to reconcile.
+    /// * `steps` — The reconciliation steps to associate with the operation.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] for a stale generation, deleting application, or
-    /// failed durable write.
+    /// Returns [`StoreError::NotFound`] when the application does not exist,
+    /// [`StoreError::GenerationConflict`] when the expected generation is stale,
+    /// [`StoreError::IllegalTransition`] when deletion is in progress, or a
+    /// persistence error when the operation cannot be durably stored.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     store: &SqliteStore,
+    /// #     id: &ApplicationId,
+    /// # ) -> Result<(), StoreError> {
+    /// let result = store.request_reconcile(id, 1, &[]).await?;
+    /// assert_eq!(result.generation, 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn request_reconcile(
         &self,
         id: &ApplicationId,
@@ -355,12 +445,19 @@ impl SqliteStore {
         })
     }
 
-    /// Returns the active reconciliation for a generation, when one exists.
+    /// Finds the active reconciliation operation for an application generation.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let result = store.active_reconcile(&application_id, 1).await?;
+    /// # Ok::<(), StoreError>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the generation is not representable or the
-    /// journal cannot be read.
+    /// Returns [`StoreError`] if the generation cannot be represented or the journal
+    /// cannot be read.
     pub async fn active_reconcile(
         &self,
         id: &ApplicationId,
@@ -382,12 +479,24 @@ impl SqliteStore {
         }))
     }
 
-    /// Marks an application for deletion and records its delete operation.
+    /// Requests deletion of an application and records the corresponding delete operation.
+    ///
+    /// An existing active delete operation is reused. Failed or cancelled delete operations
+    /// are reset with the supplied steps.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let result = store.request_delete(&id, generation, &steps).await?;
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] for a stale generation, illegal lifecycle state, or
-    /// failed durable write.
+    /// Returns [`StoreError::NotFound`] if the application does not exist, or
+    /// [`StoreError::GenerationConflict`] if its generation differs from
+    /// `expected_generation`. Also returns lifecycle, corruption, and database errors.
+    ///
+    /// Errors are returned if the generation cannot be incremented or a durable write fails.
     pub async fn request_delete(
         &self,
         id: &ApplicationId,
@@ -492,12 +601,24 @@ impl SqliteStore {
         })
     }
 
-    /// Tombstones an application after its delete operation has succeeded.
+    /// Finalizes a succeeded delete operation by tombstoning the application.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the generation is invalid, the delete
-    /// operation has not succeeded, or the tombstone cannot be written.
+    /// Returns [`StoreError`] if the generation is invalid, the delete operation has
+    /// not succeeded, or the tombstone cannot be persisted.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     store: &SqliteStore,
+    /// #     id: &ApplicationId,
+    /// # ) -> Result<(), StoreError> {
+    /// store.finalize_delete(id, 1).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn finalize_delete(
         &self,
         id: &ApplicationId,
@@ -509,6 +630,22 @@ impl SqliteStore {
         tx.commit().await.map_err(StoreError::database)
     }
 
+    /// Finalizes a successfully completed delete operation by tombstoning the application.
+    ///
+    /// The application must have a delete operation in the succeeded state for the specified
+    /// generation and must still be marked for deletion. A unique tombstone name is assigned.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     store: &SqliteStore,
+    /// #     id: &ApplicationId,
+    /// # ) -> Result<(), StoreError> {
+    /// store.finalize_delete(id, 7).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub(super) async fn finalize_delete_in_transaction(
         tx: &mut Transaction<'_, Sqlite>,
         id: &ApplicationId,
@@ -563,12 +700,27 @@ impl SqliteStore {
         }
     }
 
-    /// Reads one live application and revalidates its persisted state.
+    /// Reads a live application and validates its persisted representation.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::NotFound`] for an absent or tombstoned application,
-    /// or another store error when persisted state fails validation.
+    /// Returns [`StoreError::NotFound`] when the application is absent or tombstoned.
+    /// Returns [`StoreError::Corrupt`] when the persisted application ID does not match
+    /// the requested ID or its data fails validation. Database failures are returned as
+    /// store errors.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(
+    /// #     store: &SqliteStore,
+    /// #     id: &ApplicationId,
+    /// # ) -> Result<(), StoreError> {
+    /// let application = store.get(id).await?;
+    /// # let _ = application;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get(&self, id: &ApplicationId) -> Result<StoredApplication, StoreError> {
         let id_value = id.as_str();
         let row = sqlx::query_as!(
@@ -587,11 +739,24 @@ impl SqliteStore {
         Ok(stored)
     }
 
-    /// Finds one live application by its user-facing name.
+    /// Finds a live application by its user-facing name.
+    ///
+    /// Returns `None` when no live application has the specified name.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the row cannot be read or revalidated.
+    /// Returns [`StoreError`] if the database query fails or the stored application
+    /// data cannot be decoded or validated.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(store: &SqliteStore) -> Result<(), StoreError> {
+    /// let application = store.find_by_name("example").await?;
+    /// assert!(application.is_some());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn find_by_name(&self, name: &str) -> Result<Option<StoredApplication>, StoreError> {
         let row = sqlx::query_as!(
             ApplicationRow,
@@ -606,15 +771,38 @@ impl SqliteStore {
 
     /// Lists live applications in stable identifier order.
     ///
+    /// An optional versioned cursor continues the listing after the application
+    /// identified by the cursor.
+    ///
+    /// # Arguments
+    ///
+    /// * `cursor` - An optional cursor returned by a previous page.
+    /// * `limit` - The maximum number of applications to return.
+    ///
+    /// # Returns
+    ///
+    /// A page of applications and an optional cursor for the next page.
+    ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when pagination is invalid or rows cannot be read
-    /// and revalidated.
+    /// Returns [`StoreError`] if pagination is invalid, the cursor is malformed,
+    /// the database query fails, or persisted application data cannot be decoded
+    /// and validated.
     ///
     /// # Panics
     ///
-    /// This method cannot produce an empty page cursor; the internal assertion
-    /// would indicate a database/query invariant violation.
+    /// Panics if a non-empty bounded page cannot provide a cursor, indicating a
+    /// database or query invariant violation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(store: &SqliteStore) -> Result<(), StoreError> {
+    /// let page = store.list(None, 20).await?;
+    /// println!("{} applications", page.items.len());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn list(
         &self,
         cursor: Option<&str>,
@@ -670,6 +858,23 @@ impl SqliteStore {
 }
 
 impl SqliteStore {
+    /// Resets a failed or cancelled delete operation for an application and replaces its steps.
+    ///
+    /// The application status is restored to `deleting`, and the returned result identifies
+    /// the operation and its generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the steps are invalid, the generation cannot be represented,
+    /// the delete operation is missing or not failed or cancelled, or a database update fails.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let result = reset_failed_delete(&mut tx, &id, generation, &steps, now).await?;
+    /// assert_eq!(result.generation, generation);
+    /// # Ok::<(), StoreError>(())
+    /// ```
     async fn reset_failed_delete(
         tx: &mut Transaction<'_, Sqlite>,
         id: &ApplicationId,

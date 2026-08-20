@@ -29,6 +29,23 @@ pub struct ReconcileHandler<D> {
 
 impl<D> ReconcileHandler<D> {
     /// Creates a handler with the default retry policy.
+    
+    ///
+    
+    /// # Examples
+    
+    ///
+    
+    /// ```no_run
+    
+    /// let handler = ReconcileHandler::new(docker, store);
+    
+    /// ```
+    
+    ///
+    
+    /// The `docker` and `store` values must be shared using `Arc`.
+    
     #[must_use]
     pub fn new(docker: Arc<D>, store: Arc<SqliteStore>) -> Self {
         Self {
@@ -39,11 +56,18 @@ impl<D> ReconcileHandler<D> {
     }
 
     /// Replaces the retry policy used by this handler.
-    #[must_use]
     ///
     /// # Panics
-    /// Panics when the policy has no attempts or its initial delay exceeds its
+    ///
+    /// Panics if the policy allows zero attempts or its initial delay exceeds its
     /// maximum delay.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let handler = handler.with_retry_policy(RetryPolicy::default());
+    /// ```
+    #[must_use]
     pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
         if let Err(error) = retry.validate() {
             panic!("invalid retry policy: {error}");
@@ -78,11 +102,20 @@ pub enum RetryPolicyError {
 }
 
 impl RetryPolicy {
-    /// Validates the policy before it is installed on a reconciler.
+    /// Checks whether the retry policy has a valid configuration.
     ///
     /// # Errors
-    /// Returns an error when no attempts are configured or the initial delay
-    /// exceeds the maximum delay.
+    ///
+    /// Returns [`RetryPolicyError::ZeroAttempts`] when no attempts are configured,
+    /// or [`RetryPolicyError::InitialDelayExceedsMax`] when the initial delay is
+    /// greater than the maximum delay.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let policy = RetryPolicy::default();
+    /// assert!(policy.validate().is_ok());
+    /// ```
     pub fn validate(self) -> Result<(), RetryPolicyError> {
         if self.attempts == 0 {
             return Err(RetryPolicyError::ZeroAttempts);
@@ -95,6 +128,14 @@ impl RetryPolicy {
 }
 
 impl Default for RetryPolicy {
+    /// Provides the default retry policy for reconciliation operations.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let policy = RetryPolicy::default();
+    /// assert_eq!(policy.attempts, 4);
+    /// ```
     fn default() -> Self {
         Self {
             attempts: 4,
@@ -105,12 +146,36 @@ impl Default for RetryPolicy {
     }
 }
 
+/// Checks whether a plan contains a diagnostic with the specified code.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let plan = /* a plan containing diagnostics */;
+/// assert!(has_diagnostic(&plan, "EXAMPLE_CODE"));
+/// ```
+///
+/// # Returns
+///
+/// `true` if the plan contains a diagnostic with the specified code, `false` otherwise.
 fn has_diagnostic(plan: &piqueld_core::Plan, code: &str) -> bool {
     plan.diagnostics
         .iter()
         .any(|diagnostic| diagnostic.code == code)
 }
 
+/// Maps a blocked plan's diagnostics to the corresponding operation error.
+///
+/// Ownership-related diagnostics and unrecognized blocked-plan diagnostics map to
+/// [`OperationError::OwnershipConflict`]. Immutable Docker configuration drift
+/// maps to [`OperationError::DockerConfigurationConflict`].
+///
+/// # Examples
+///
+/// ```ignore
+/// let error = blocked_plan_error(&plan);
+/// assert_eq!(error, OperationError::OwnershipConflict);
+/// ```
 pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
     if has_diagnostic(plan, "unowned_name_collision") {
         OperationError::OwnershipConflict
@@ -121,6 +186,17 @@ pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
     }
 }
 
+/// Describes why runtime reconciliation is blocked by a plan diagnostic.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let message = blocked_plan_message(&plan);
+/// assert_eq!(
+///     message,
+///     "runtime reconciliation is blocked by an ownership conflict"
+/// );
+/// ```
 pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
     if has_diagnostic(plan, "unowned_name_collision") {
         "runtime reconciliation is blocked by an ownership conflict"

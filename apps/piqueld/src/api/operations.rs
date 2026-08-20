@@ -5,19 +5,24 @@ use axum::{
 };
 use piqueld_client::{Envelope, OperationStepView, OperationView};
 
-#[utoipa::path(
-    get,
-    path = "/api/v1/operations/{id}",
-    operation_id = "getOperation",
-    summary = "Get an operation",
-    params(("id" = String, Path, min_length = 8, max_length = 128)),
-    responses(
-        (status = 200, description = "Success", body = Envelope<OperationView>),
-        (status = 404, response = inline(ApiErrorResponse)),
-        (status = 500, response = inline(ApiErrorResponse)),
-        (status = 503, response = inline(ApiErrorResponse)),
-    )
-)]
+/// Retrieves an operation and its associated steps by identifier.
+///
+/// # Arguments
+///
+/// * `id` - The operation identifier from the request path.
+///
+/// # Examples
+///
+/// ```
+/// let id = "operation-123";
+/// let path = format!("/api/v1/operations/{id}", id = id);
+///
+/// assert_eq!(path, "/api/v1/operations/operation-123");
+/// ```
+///
+/// # Errors
+///
+/// Returns an `ApiError` if the operation cannot be loaded.
 pub(super) async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
