@@ -398,7 +398,7 @@ impl SqliteStore {
         let id_value = id.as_str();
         let expected_generation_i64 = generation_i64(expected_generation)?;
         let row = sqlx::query!(
-            "SELECT generation AS \"generation!\",delete_intent AS \"delete_intent!\" FROM applications WHERE id=?1",
+            "SELECT generation AS \"generation!\",delete_intent AS \"delete_intent!\" FROM applications WHERE id=?1 AND deleted_at_ms IS NULL",
             id_value
         )
         .fetch_optional(&mut *tx)
