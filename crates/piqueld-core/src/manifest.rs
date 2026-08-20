@@ -15,7 +15,7 @@ pub const APPLICATION_API_VERSION: &str = "piqueld.dev/v1alpha1";
 /// The only resource kind supported by the Plan 06A product.
 pub const APPLICATION_KIND: &str = "Application";
 
-/// Strict public application request and export shape.
+/// Strict public application manifest request and export shape.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationManifest {
@@ -47,7 +47,7 @@ pub struct ApplicationSpecInput {
     pub volumes: Vec<VolumeInput>,
 }
 
-/// User-declared service.
+/// User-declared application service.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceInput {

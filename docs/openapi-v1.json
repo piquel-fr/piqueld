@@ -350,7 +350,7 @@
       },
       "ApplicationManifest": {
         "additionalProperties": false,
-        "description": "Strict public application request and export shape.",
+        "description": "Strict public application manifest request and export shape.",
         "properties": {
           "api_version": {
             "description": "API version string.",
@@ -1954,7 +1954,7 @@
       },
       "ServiceInput": {
         "additionalProperties": false,
-        "description": "User-declared service.",
+        "description": "User-declared application service.",
         "properties": {
           "arguments": {
             "description": "Arguments passed to the command.",
