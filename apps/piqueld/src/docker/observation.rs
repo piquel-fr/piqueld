@@ -234,7 +234,8 @@ impl BollardDocker {
         }
     }
 
-    fn observed_wget_health(
+    /// Recognizes Docker's reserved canonical HTTP `wget` health-check vector.
+    pub(super) fn observed_wget_health(
         test: &[String],
         interval_seconds: u32,
         timeout_seconds: u32,

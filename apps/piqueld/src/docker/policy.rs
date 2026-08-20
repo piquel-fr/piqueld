@@ -231,6 +231,7 @@ impl ServiceRuntimePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::docker::DockerError;
 
     #[test]
     fn generated_http_health_check_round_trips_through_observation() {
@@ -240,9 +241,31 @@ mod tests {
             interval_seconds: 10,
             timeout_seconds: 3,
         };
-        let config = BollardDocker::health_config(&health_check);
+        let config = BollardDocker::health_config(&health_check).expect("valid HTTP health check");
 
         assert_eq!(BollardDocker::observed_health(&config), Some(health_check));
         assert!(ServiceRuntimePolicy::supported_health_config(&config));
+    }
+
+    #[test]
+    fn command_health_check_rejects_reserved_wget_vector() {
+        let health_check = HealthCheck::Command {
+            command: vec![
+                "wget".into(),
+                "-q".into(),
+                "-T".into(),
+                "3".into(),
+                "-O".into(),
+                "/dev/null".into(),
+                "http://127.0.0.1:8080/health".into(),
+            ],
+            interval_seconds: 10,
+            timeout_seconds: 3,
+        };
+
+        assert!(matches!(
+            BollardDocker::health_config(&health_check),
+            Err(DockerError::Validation("validate health check"))
+        ));
     }
 }

@@ -55,7 +55,11 @@ impl BollardDocker {
                         })
                         .collect(),
                 ),
-                health_check: desired.healthcheck.as_ref().map(Self::health_config),
+                health_check: desired
+                    .healthcheck
+                    .as_ref()
+                    .map(Self::health_config)
+                    .transpose()?,
                 ..Default::default()
             }),
             networks: Some(
@@ -80,29 +84,34 @@ impl BollardDocker {
     }
 
     /// Converts a core health check into Docker's health-check representation.
-    pub(super) fn health_config(health_check: &HealthCheck) -> HealthConfig {
+    pub(super) fn health_config(health_check: &HealthCheck) -> Result<HealthConfig, DockerError> {
         match health_check {
             HealthCheck::Command {
                 command,
                 interval_seconds,
                 timeout_seconds,
-            } => HealthConfig {
-                test: Some(
-                    std::iter::once("CMD".into())
-                        .chain(command.clone())
-                        .collect(),
-                ),
-                interval: Some(BollardDocker::seconds_to_nanoseconds(*interval_seconds)),
-                timeout: Some(BollardDocker::seconds_to_nanoseconds(*timeout_seconds)),
-                retries: Some(HEALTH_RETRIES),
-                ..Default::default()
-            },
+            } => {
+                let test = std::iter::once("CMD".into())
+                    .chain(command.clone())
+                    .collect::<Vec<_>>();
+                if Self::observed_wget_health(&test, *interval_seconds, *timeout_seconds).is_some()
+                {
+                    return Err(DockerError::Validation("validate health check"));
+                }
+                Ok(HealthConfig {
+                    test: Some(test),
+                    interval: Some(BollardDocker::seconds_to_nanoseconds(*interval_seconds)),
+                    timeout: Some(BollardDocker::seconds_to_nanoseconds(*timeout_seconds)),
+                    retries: Some(HEALTH_RETRIES),
+                    ..Default::default()
+                })
+            }
             HealthCheck::Http {
                 port,
                 path,
                 interval_seconds,
                 timeout_seconds,
-            } => HealthConfig {
+            } => Ok(HealthConfig {
                 test: Some(vec![
                     "CMD".into(),
                     "wget".into(),
@@ -117,7 +126,7 @@ impl BollardDocker {
                 timeout: Some(BollardDocker::seconds_to_nanoseconds(*timeout_seconds)),
                 retries: Some(HEALTH_RETRIES),
                 ..Default::default()
-            },
+            }),
         }
     }
 
