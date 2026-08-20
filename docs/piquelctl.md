@@ -1,8 +1,9 @@
 # `piquelctl`
 
-`piquelctl` is the small operator client for the Plan 06 workflow. It uses the
+`piquelctl` is the operator client for the piqueld control plane. It uses the
 public `piqueld-client` contracts and talks to the daemon over a Unix socket by
-default.
+default. Each operation has one command form; advanced behavior is exposed as
+options on that command.
 
 ## Commands
 
@@ -13,23 +14,32 @@ piquelctl show <name-or-id>
 piquelctl plan --file application.toml
 piquelctl apply --file application.toml
 piquelctl delete <name-or-id>
-piquelctl operation <operation-id>
+piquelctl operation <operation-id> [--watch]
 piquelctl secret list
 piquelctl secret set <name> --stdin
 piquelctl secret set <name> --file <private-file>
 piquelctl secret delete <name>
 piquelctl build show <build-id>
 piquelctl build operation <operation-id>
-piquelctl logs <name-or-id> [--since-seconds N] [--tail N] [--max-bytes N]
+piquelctl logs <name-or-id> [--since-seconds N] [--tail N] [--max-bytes N] [--follow]
 piquelctl export --application <name-or-id> --output application.toml
 piquelctl export --output state.tar --mode portable
-piquelctl import state.tar
+piquelctl import state.tar --replace
 ```
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit loopback
-HTTP origin such as `http://127.0.0.1:8080/`; the two transport options are
-mutually exclusive. The default socket is
-`/run/piqueld/piqueld.sock`.
+or Tailscale HTTP origin such as `http://127.0.0.1:8080/` or
+`http://100.64.0.10:8080/`; the two transport options are mutually exclusive.
+The default socket is `/run/piqueld/piqueld.sock`.
+
+Connection profiles may be selected with `--profile NAME` and
+`--profiles-file PATH` (or `PIQUELD_PROFILE`, `PIQUELD_PROFILES_FILE`). The
+default file is `$XDG_CONFIG_HOME/piqueld/profiles.toml`, falling back to
+`$HOME/.config/piqueld/profiles.toml`. A profile contains one `unix_socket` or
+`url` plus an optional protected `token_file` or `token_env`. Explicit
+`--socket`, `--url`, `--token-file`, and `--token-env` options override the
+profile. Tokens are sent as bearer credentials and are never included in
+diagnostics or JSON output.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
@@ -37,11 +47,10 @@ is interpreted as seconds. The timeout bounds each client request and the
 complete command.
 Manifest files must be regular UTF-8 files no larger than 4 MiB.
 
-Use `--json` for machine-readable output. JSON is made only from public API
-DTOs and the small CLI composition objects below; diagnostics and progress are
-written to stderr, so stdout remains valid JSON.
+Use `--json` for the stable `piquelctl.v1` envelope. Diagnostics and progress
+are written to stderr, so stdout remains valid JSON.
 
-| Command | JSON output |
+| Command | JSON envelope `data` |
 | --- | --- |
 | `status` | `SystemStatus` |
 | `list` | `{ "items": [{ "application": ApplicationView, "status": ApplicationStatusView }], "next_cursor": null }` |
@@ -66,6 +75,25 @@ written to stderr, so stdout remains valid JSON.
 The DTO fields and error envelope are defined by the versioned API and the
 `piqueld-client` crate. CLI errors are reported on stderr and never mixed into
 JSON stdout.
+
+The advanced options cover the complete user-visible feature set:
+
+- `logs NAME` reads bounded, ANSI-sanitized logs; `--follow` uses
+  the shared SSE cursor and reconnects with deduplication.
+- `secret set NAME` reads from stdin or `--file PATH`; plaintext values are
+  never command-line arguments, echoed from a terminal, or returned by list.
+- `operation ID --watch` follows operation events and build progress, then falls
+  back to polling if the stream is unavailable. Ctrl-C stops only the local
+  wait and does not cancel the daemon operation.
+- `export --output PATH` writes a portable or encrypted binary archive.
+  `import ARCHIVE --replace --yes` requires both explicit replacement
+  intent and confirmation, verifies the archive digest, and uses the daemon's
+  transactional import path.
+
+Binary output is refused on a terminal. Existing files are not overwritten
+unless `--force` is supplied, and binary output files are created privately.
+Structured JSON cannot be mixed with binary stdout; use `--output` when both
+are needed.
 
 ## Mutation safety
 
@@ -96,22 +124,21 @@ application service.
 
 Build visibility is intentionally small: `build show` reports one durable build
 and its owning application/operation, while `build operation` lists the builds
-attached to an operation. Build logs and follow/watch behavior remain deferred
-to later feature increments.
+attached to an operation. Build logs remain deferred to later feature increments.
 
-`logs` reads one bounded historical snapshot. It never follows or opens an SSE
-stream; follow/watch and profile behavior remain later feature increments.
+`logs` reads one bounded historical snapshot by default. `--follow` opens the
+shared SSE stream and reconnects with cursor deduplication.
 
 Application exports are portable manifest text. Complete state exports are
 bounded binary archives and can be portable or encrypted; binary output refuses
 an interactive terminal. Import is transactionally confirmed and reports
 missing secret values and retained volumes as explicit dependencies.
 
-The commonly useful exit codes are 0 for success, 1 for a general error, 2 for
-usage or input errors, 3 for generation conflicts, 4 for unavailable or timed
-out requests, 5 for a failed operation, and 130 when local operation waiting is
-interrupted.
+Stable exit categories are 0 success, 1 general error, 3 input or validation,
+4 authentication, 5 generation or state conflict, 6 unavailable or timed out,
+7 failed operation, 8 locally interrupted wait, and 9 explicit refusal. Clap
+usage errors use 2.
 
-Profiles and configuration files, authentication and tokens, build log viewing,
-registries, routes, SSE, shell completion, editor flows, conflict merging, and
-elaborate stable exit categories remain deferred to the later CLI plan.
+Profiles, authentication, stable structured output, operation watch, and log
+follow are implemented here. Registries, routes, shell completion, editor
+flows, and conflict merging remain deferred to later feature increments.

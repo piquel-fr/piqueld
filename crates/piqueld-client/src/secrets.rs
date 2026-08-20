@@ -1,8 +1,9 @@
 use http::Method;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use zeroize::Zeroize;
 
-use crate::{Client, ClientError, Page, decode_envelope, path_segment};
+use crate::{Client, ClientError, Page, path_segment};
 
 /// One application service that references a logical secret.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
@@ -104,7 +105,7 @@ impl Client {
         name: &str,
         value: Vec<u8>,
     ) -> Result<SecretMetadata, ClientError> {
-        decode_envelope(
+        self.decode(
             self.raw_bytes(
                 Method::POST,
                 &format!("/api/v1/secrets/{}", path_segment(name)),
@@ -127,7 +128,7 @@ impl Client {
         name: &str,
         value: Vec<u8>,
     ) -> Result<SecretMetadata, ClientError> {
-        decode_envelope(
+        self.decode(
             self.raw_bytes(
                 Method::PUT,
                 &format!("/api/v1/secrets/{}", path_segment(name)),
@@ -187,7 +188,7 @@ impl Client {
         if response.status() == http::StatusCode::NO_CONTENT {
             Ok(())
         } else {
-            Err(crate::decode_api_error(response).await)
+            Err(self.decode_error(response).await)
         }
     }
 }
@@ -210,7 +211,13 @@ async fn read_protected_secret_file(path: std::path::PathBuf) -> Result<Vec<u8>,
         .map_err(|_| ClientError::SecretFile)?;
         let mut file = std::fs::File::from(descriptor);
         let opened = file.metadata().map_err(|_| ClientError::SecretFile)?;
-        if !opened.is_file() || opened.permissions().mode() & 0o077 != 0 {
+        let effective_uid = rustix::process::geteuid().as_raw();
+        if !opened.is_file()
+            || opened.permissions().mode() & 0o077 != 0
+            || !matches!(opened.uid(), 0) && opened.uid() != effective_uid
+            || opened.len() == 0
+            || opened.len() > 500 * 1024
+        {
             return Err(ClientError::SecretFile);
         }
         let path_metadata =
@@ -226,7 +233,19 @@ async fn read_protected_secret_file(path: std::path::PathBuf) -> Result<Vec<u8>,
             .take(500 * 1024 + 1)
             .read_to_end(&mut value)
             .map_err(|_| ClientError::SecretFile)?;
-        if value.is_empty() || value.len() > 500 * 1024 {
+        let after = file.metadata().map_err(|_| ClientError::SecretFile)?;
+        if value.is_empty()
+            || value.len() > 500 * 1024
+            || value.len() as u64 != opened.len()
+            || opened.dev() != after.dev()
+            || opened.ino() != after.ino()
+            || opened.len() != after.len()
+            || opened.mtime() != after.mtime()
+            || opened.mtime_nsec() != after.mtime_nsec()
+            || opened.ctime() != after.ctime()
+            || opened.ctime_nsec() != after.ctime_nsec()
+        {
+            value.zeroize();
             return Err(ClientError::SecretFile);
         }
         Ok(value)

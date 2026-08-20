@@ -6,27 +6,30 @@ use piqueld_client::{
     ListApplicationsOptions, ListSecretsOptions, MAX_STATE_ARCHIVE_BYTES, OperationView, Page,
     PlanView, SecretMetadata, Source, StateExportMode, ValidationErrors,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    fmt,
+    env, fmt,
     fmt::Write as _,
+    fs::{self, OpenOptions},
     future::Future,
     io::{self, IsTerminal, Read, Write},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::ExitCode,
     time::Duration,
 };
-use tokio::{fs, io::AsyncWriteExt, signal, time};
+use tokio::{fs as async_fs, signal, time};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 const DEFAULT_SOCKET: &str = "/run/piqueld/piqueld.sock";
 const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SECRET_BYTES: usize = 500 * 1024;
 const MAX_PAGINATION_PAGES: usize = 10_000;
 const PAGE_SIZE: u16 = 100;
-const MAX_SECRET_BYTES: usize = 500 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Essential commands for inspecting and operating Plan 06 applications.
@@ -37,24 +40,93 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
     about = "Operate a local piqueld control plane"
 )]
 struct Cli {
+    /// Connection profile from the optional profiles file.
+    #[arg(
+        long,
+        global = true,
+        env = "PIQUELD_PROFILE",
+        default_value = "default"
+    )]
+    profile: String,
+
+    /// Profiles TOML path. The default is `$XDG_CONFIG_HOME/piqueld/profiles.toml`.
+    #[arg(long, global = true, env = "PIQUELD_PROFILES_FILE")]
+    profiles_file: Option<PathBuf>,
+
     /// Unix socket path. The default is the daemon's local socket.
-    #[arg(long, global = true, value_name = "PATH", conflicts_with = "url")]
+    #[arg(
+        long,
+        global = true,
+        env = "PIQUELD_SOCKET",
+        value_name = "PATH",
+        conflicts_with = "url"
+    )]
     socket: Option<PathBuf>,
 
-    /// Explicit loopback HTTP endpoint, for example <http://127.0.0.1:8080/>.
-    #[arg(long, global = true, value_name = "URL", conflicts_with = "socket")]
+    /// Explicit loopback or Tailscale HTTP endpoint.
+    #[arg(
+        long,
+        global = true,
+        env = "PIQUELD_URL",
+        value_name = "URL",
+        conflicts_with = "socket"
+    )]
     url: Option<String>,
+
+    /// Protected file containing an administrative bearer token.
+    #[arg(
+        long,
+        global = true,
+        env = "PIQUELD_TOKEN_FILE",
+        conflicts_with = "token_env"
+    )]
+    token_file: Option<PathBuf>,
+
+    /// Name of the environment variable containing an administrative bearer token.
+    #[arg(long, global = true, conflicts_with = "token_file")]
+    token_env: Option<String>,
 
     /// Bound for each request and for the complete command wait.
     #[arg(long, global = true, default_value = "30s", value_parser = parse_duration)]
     timeout: Duration,
 
-    /// Emit only the command's documented JSON result on stdout.
+    /// Emit the command's stable JSON envelope on stdout.
     #[arg(long, global = true)]
     json: bool,
 
+    /// Suppress progress and successful human output.
+    #[arg(long, short, global = true)]
+    quiet: bool,
+
+    /// Never prompt; explicit confirmation flags are still required.
+    #[arg(long, global = true)]
+    noninteractive: bool,
+
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfilesFile {
+    default: Option<String>,
+    #[serde(default)]
+    profiles: std::collections::BTreeMap<String, Profile>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Profile {
+    unix_socket: Option<PathBuf>,
+    url: Option<String>,
+    token_file: Option<PathBuf>,
+    token_env: Option<String>,
+}
+
+impl Cli {
+    fn structured_json(&self) -> bool {
+        self.json
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -124,6 +196,10 @@ struct LogsArgs {
     /// Maximum approximate response size.
     #[arg(long, default_value_t = 262_144, value_parser = clap::value_parser!(u32).range(1..=1_048_576))]
     max_bytes: u32,
+
+    /// Follow new log records until interrupted.
+    #[arg(long)]
+    follow: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -200,6 +276,10 @@ struct ImportArgs {
     #[arg(value_name = "PATH")]
     file: PathBuf,
 
+    /// Confirm that the archive may replace all control-plane state.
+    #[arg(long)]
+    replace: bool,
+
     /// Skip the destructive replacement confirmation prompt.
     #[arg(long)]
     yes: bool,
@@ -258,6 +338,14 @@ struct OperationArgs {
     /// Stable operation ID.
     operation_id: String,
 
+    /// Watch progress through SSE with polling fallback.
+    #[arg(long, conflicts_with = "no_wait")]
+    watch: bool,
+
+    /// Polling interval used after streaming becomes unavailable.
+    #[arg(long, requires = "watch", default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
+    poll_seconds: u64,
+
     /// Fetch once instead of waiting for a terminal state.
     #[arg(long)]
     no_wait: bool,
@@ -267,21 +355,25 @@ struct OperationArgs {
 enum ErrorKind {
     General,
     Input,
+    Authentication,
     Conflict,
     Unavailable,
     Operation,
     Interrupted,
+    Refused,
 }
 
 impl ErrorKind {
     const fn exit_code(self) -> u8 {
         match self {
             Self::General => 1,
-            Self::Input => 2,
-            Self::Conflict => 3,
-            Self::Unavailable => 4,
-            Self::Operation => 5,
-            Self::Interrupted => 130,
+            Self::Input => 3,
+            Self::Authentication => 4,
+            Self::Conflict => 5,
+            Self::Unavailable => 6,
+            Self::Operation => 7,
+            Self::Interrupted => 8,
+            Self::Refused => 9,
         }
     }
 }
@@ -349,15 +441,19 @@ impl From<ClientError> for CliError {
             ClientError::Api { status, error } => {
                 let kind = match status.as_u16() {
                     400 | 404 | 413 | 415 | 422 => ErrorKind::Input,
+                    401 | 403 => ErrorKind::Authentication,
                     409 | 412 => ErrorKind::Conflict,
                     502..=504 => ErrorKind::Unavailable,
                     _ => ErrorKind::General,
                 };
-                Self::new(kind, format!("{} ({})", error.message, error.code)).api(
-                    error.code,
-                    error.request_id,
-                    error.details,
-                )
+                let message = match kind {
+                    ErrorKind::Authentication => "authentication or authorization failed",
+                    ErrorKind::Conflict => "the request conflicts with current server state",
+                    ErrorKind::Input => "the daemon rejected the request as invalid",
+                    ErrorKind::Unavailable => "the requested daemon capability is unavailable",
+                    _ => "the daemon rejected the request",
+                };
+                Self::new(kind, message).api(error.code, error.request_id, error.details)
             }
         }
     }
@@ -402,34 +498,118 @@ async fn run(cli: &Cli) -> Result<()> {
 }
 
 fn build_client(cli: &Cli) -> Result<Client> {
-    if cli.socket.is_some() && cli.url.is_some() {
+    let profiles_path = cli.profiles_file.clone().or_else(default_profiles_path);
+    let profiles = profiles_path
+        .as_deref()
+        .filter(|path| path.exists())
+        .map(read_profiles)
+        .transpose()?
+        .unwrap_or_default();
+    let selected_name = if cli.profile == "default" {
+        profiles.default.as_deref().unwrap_or("default")
+    } else {
+        &cli.profile
+    };
+    let profile = profiles.profiles.get(selected_name);
+    if (cli.profile != "default" || profiles.default.is_some()) && profile.is_none() {
         return Err(CliError::new(
             ErrorKind::Input,
-            "--socket and --url cannot be used together",
+            format!("connection profile {selected_name:?} was not found"),
         ));
     }
-    let client = if let Some(url) = &cli.url {
-        Client::tcp(url).map_err(CliError::from)?
+
+    let (socket, url) = if cli.socket.is_some() || cli.url.is_some() {
+        (cli.socket.clone(), cli.url.clone())
     } else {
-        Client::unix(
-            cli.socket
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET)),
+        (
+            profile.and_then(|profile| profile.unix_socket.clone()),
+            profile.and_then(|profile| profile.url.clone()),
         )
     };
-    Ok(client.with_timeout(cli.timeout))
+    if socket.is_some() && url.is_some() {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            "connection profile must specify exactly one transport",
+        ));
+    }
+    let mut client = if let Some(url) = url {
+        Client::tcp(&url).map_err(|_| {
+            CliError::new(
+                ErrorKind::Input,
+                "HTTP endpoint must be an http:// loopback or Tailscale origin without credentials, path, query, or fragment",
+            )
+        })?
+    } else {
+        Client::unix(socket.unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET)))
+    }
+    .with_timeout(cli.timeout);
+
+    let (token_file, token_env) = if cli.token_file.is_some() || cli.token_env.is_some() {
+        (cli.token_file.clone(), cli.token_env.as_deref())
+    } else {
+        (
+            profile.and_then(|profile| profile.token_file.clone()),
+            profile.and_then(|profile| profile.token_env.as_deref()),
+        )
+    };
+    let token_env = token_env.unwrap_or("PIQUELD_TOKEN");
+    if token_env.is_empty() {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            "token environment variable name must not be empty",
+        ));
+    }
+    let mut token = if let Some(path) = token_file {
+        Some(read_private_text(&path, 4096, "token")?)
+    } else {
+        env::var(token_env).ok()
+    };
+    if let Some(value) = token.as_mut() {
+        let trimmed = value.trim_end_matches(['\r', '\n']).to_owned();
+        value.zeroize();
+        if trimmed.is_empty()
+            || trimmed.len() > 4096
+            || trimmed.bytes().any(|byte| byte.is_ascii_control())
+        {
+            let mut trimmed = trimmed;
+            trimmed.zeroize();
+            return Err(CliError::new(
+                ErrorKind::Input,
+                "administrative token has an invalid size or format",
+            ));
+        }
+        client = client.with_bearer_token(trimmed).map_err(|_| {
+            CliError::new(
+                ErrorKind::Input,
+                "administrative token has an invalid format",
+            )
+        })?;
+    }
+    Ok(client)
 }
 
 async fn status(cli: &Cli, client: &Client) -> Result<()> {
     let status = client.system_status().await?;
-    if cli.json {
-        emit_json(&status)?;
+    if cli.structured_json() {
+        emit_json_envelope("status", &status)?;
     } else {
+        let capabilities = client.capabilities().await?;
         println!(
             "daemon {} (version {}, API {}, instance {})",
             status.status, status.daemon_version, status.api_version, status.instance_id
         );
         println!("transport: {}", transport_description(cli));
+        println!(
+            "capabilities: persistence={} resolution={} observation={} execution={} secrets={}",
+            capabilities.persistence,
+            capabilities.source_resolution,
+            capabilities.runtime_observation,
+            capabilities.runtime_execution,
+            capabilities.secret_management
+        );
+        if let Some(reason) = capabilities.reason {
+            println!("diagnostic: {reason}");
+        }
     }
     Ok(())
 }
@@ -443,7 +623,7 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
             .await?;
         rows.push((application, status));
     }
-    if cli.json {
+    if cli.structured_json() {
         let items = rows
             .iter()
             .map(|(application, status)| {
@@ -453,7 +633,10 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
                 })
             })
             .collect::<Vec<_>>();
-        emit_json(&json!({"items": items, "next_cursor": Value::Null}))?;
+        emit_json_envelope(
+            "application_list",
+            &json!({"items": items, "next_cursor": Value::Null}),
+        )?;
     } else if rows.is_empty() {
         println!("No applications.");
     } else {
@@ -482,8 +665,11 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
     let status = client
         .application_status(application.application.id.as_str())
         .await?;
-    if cli.json {
-        emit_json(&json!({"application": application, "status": status}))?;
+    if cli.structured_json() {
+        emit_json_envelope(
+            "application_show",
+            &json!({"application": application, "status": status}),
+        )?;
     } else {
         println!(
             "{} ({})",
@@ -557,8 +743,8 @@ async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result
     let manifest = read_manifest(&args.file).await?;
     let name = manifest_name(&manifest, &args.file)?;
     let (plan, _) = prepare_plan(client, &manifest, &name, args.expected_generation).await?;
-    if cli.json {
-        emit_json(&plan)?;
+    if cli.structured_json() {
+        emit_json_envelope("application_plan", &plan)?;
     } else {
         render_plan(&plan, &mut io::stdout()).map_err(|error| {
             CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
@@ -579,7 +765,11 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
         return Err(blocked_plan_error(&plan));
     }
     render_plan_stderr(&plan);
-    confirm(args.yes, &format!("Apply application {name:?}? [y/N] "))?;
+    confirm_with_mode(
+        cli,
+        args.yes,
+        &format!("Apply application {name:?}? [y/N] "),
+    )?;
 
     let key = idempotency_key();
     let accepted = if let Some(application) = existing {
@@ -600,8 +790,8 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
             .map_err(CliError::from)?
     };
     if args.no_wait {
-        if cli.json {
-            emit_json(&accepted)?;
+        if cli.structured_json() {
+            emit_json_envelope("application_apply", &accepted)?;
         } else {
             println!(
                 "accepted operation {} for application {}",
@@ -611,8 +801,11 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
         return Ok(());
     }
     let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
-    if cli.json {
-        emit_json(&json!({"accepted": accepted, "operation": operation}))?;
+    if cli.structured_json() {
+        emit_json_envelope(
+            "application_apply",
+            &json!({"accepted": accepted, "operation": operation}),
+        )?;
     } else {
         println!("operation {} {}", operation.id, operation.state);
     }
@@ -626,7 +819,8 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
         "deleting {} ({}): managed services and network are removed; named volumes are retained",
         application.application.metadata.name, application.application.id
     );
-    confirm(
+    confirm_with_mode(
+        cli,
         args.yes,
         &format!(
             "Delete application {:?}? Named volumes will be retained. [y/N] ",
@@ -648,8 +842,11 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     .await
     .map_err(CliError::from)?;
     if args.no_wait {
-        if cli.json {
-            emit_json(&json!({"accepted": accepted, "volumes_retained": true}))?;
+        if cli.structured_json() {
+            emit_json_envelope(
+                "application_delete",
+                &json!({"accepted": accepted, "volumes_retained": true}),
+            )?;
         } else {
             println!(
                 "accepted operation {} (named volumes retained)",
@@ -659,12 +856,15 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
         return Ok(());
     }
     let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
-    if cli.json {
-        emit_json(&json!({
-            "accepted": accepted,
-            "operation": operation,
-            "volumes_retained": true,
-        }))?;
+    if cli.structured_json() {
+        emit_json_envelope(
+            "application_delete",
+            &json!({
+                "accepted": accepted,
+                "operation": operation,
+                "volumes_retained": true,
+            }),
+        )?;
     } else {
         println!(
             "operation {} {} (named volumes retained)",
@@ -675,6 +875,15 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
 }
 
 async fn operation(cli: &Cli, client: &Client, args: &OperationArgs) -> Result<()> {
+    if args.watch {
+        let operation = watch_operation(cli, client, &args.operation_id, args.poll_seconds).await?;
+        if cli.structured_json() {
+            emit_json_envelope("operation_watch", &operation)?;
+        } else if !cli.quiet {
+            println!("operation {} {}", operation.id, operation.state);
+        }
+        return Ok(());
+    }
     let initial = client.operation(&args.operation_id).await?;
     if args.no_wait {
         render_operation(cli, &initial)?;
@@ -700,8 +909,8 @@ async fn build(cli: &Cli, client: &Client, command: &BuildCommand) -> Result<()>
         }
         BuildCommand::Operation { operation_id } => {
             let builds = client.operation_builds(operation_id).await?;
-            if cli.json {
-                emit_json(&builds)
+            if cli.structured_json() {
+                emit_json_envelope("build_operation", &builds)
             } else if builds.items.is_empty() {
                 println!("No builds for operation {operation_id}.");
                 Ok(())
@@ -717,18 +926,19 @@ async fn build(cli: &Cli, client: &Client, command: &BuildCommand) -> Result<()>
 
 async fn logs(cli: &Cli, client: &Client, args: &LogsArgs) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
+    let options = ApplicationLogsOptions {
+        since_seconds: args.since_seconds,
+        tail: Some(args.tail),
+        max_bytes: Some(args.max_bytes),
+    };
+    if args.follow {
+        return follow_logs(cli, client, application.application.id.as_str(), &options).await;
+    }
     let records = client
-        .application_logs(
-            application.application.id.as_str(),
-            &ApplicationLogsOptions {
-                since_seconds: args.since_seconds,
-                tail: Some(args.tail),
-                max_bytes: Some(args.max_bytes),
-            },
-        )
+        .application_logs(application.application.id.as_str(), &options)
         .await?;
-    if cli.json {
-        emit_json(&json!({"items": records}))
+    if cli.structured_json() {
+        emit_json_envelope("logs", &json!({"items": records}))
     } else if records.is_empty() {
         println!("No logs for {}.", application.application.metadata.name);
         Ok(())
@@ -748,8 +958,8 @@ fn render_log_text(record: &ContainerLogView) {
 }
 
 fn render_build(cli: &Cli, build: &BuildView) -> Result<()> {
-    if cli.json {
-        emit_json(build)
+    if cli.structured_json() {
+        emit_json_envelope("build_show", build)
     } else {
         render_build_text(build);
         Ok(())
@@ -772,8 +982,8 @@ fn render_build_text(build: &BuildView) {
 
 async fn list_secrets(cli: &Cli, client: &Client) -> Result<()> {
     let secrets = all_secrets(client).await?;
-    if cli.json {
-        emit_json(&json!({"items": secrets}))?;
+    if cli.structured_json() {
+        emit_json_envelope("secret_list", &json!({"items": secrets}))?;
     } else if secrets.is_empty() {
         println!("No logical secrets.");
     } else {
@@ -792,32 +1002,7 @@ async fn list_secrets(cli: &Cli, client: &Client) -> Result<()> {
 
 async fn export_command(cli: &Cli, client: &Client, args: &ExportArgs) -> Result<()> {
     if args.application.is_some() {
-        if !matches!(args.mode, ExportMode::Portable) {
-            return Err(CliError::new(
-                ErrorKind::Input,
-                "--mode applies only to complete state exports",
-            ));
-        }
-        let application = resolve_application(
-            client,
-            args.application.as_deref().expect("application is present"),
-        )
-        .await?;
-        let document = client
-            .export_application(application.application.id.as_str(), args.include_resolved)
-            .await?;
-        let output = write_text_output(args.output.as_deref(), &document, args.force).await?;
-        if cli.json {
-            emit_json(&json!({
-                "kind": "application",
-                "application_id": application.application.id,
-                "bytes": document.len(),
-                "output": output,
-            }))?;
-        } else if let Some(output) = output {
-            eprintln!("exported application manifest to {}", output.display());
-        }
-        return Ok(());
+        return export_application_command(cli, client, args).await;
     }
     if args.include_resolved {
         return Err(CliError::new(
@@ -825,13 +1010,14 @@ async fn export_command(cli: &Cli, client: &Client, args: &ExportArgs) -> Result
             "--include-resolved requires --application",
         ));
     }
-    if cli.json && args.output.is_none() {
+    let destination = args.output.as_deref();
+    if cli.structured_json() && destination.is_none() {
         return Err(CliError::new(
             ErrorKind::Input,
             "binary state export with --json requires --output",
         ));
     }
-    if args.output.is_none() && io::stdout().is_terminal() {
+    if destination.is_none() && io::stdout().is_terminal() {
         return Err(CliError::new(
             ErrorKind::Input,
             "refusing to write a binary state archive to a terminal; pass --output",
@@ -844,15 +1030,18 @@ async fn export_command(cli: &Cli, client: &Client, args: &ExportArgs) -> Result
         })
         .await?;
     let archive_digest = digest(&archive);
-    let output = write_binary_output(args.output.as_deref(), &archive, args.force).await?;
-    if cli.json {
-        emit_json(&json!({
-            "kind": "state",
-            "mode": match args.mode { ExportMode::Portable => "portable", ExportMode::Encrypted => "encrypted" },
-            "archive_digest": archive_digest,
-            "bytes": archive.len(),
-            "output": output,
-        }))?;
+    let output = write_binary_output(destination, &archive, args.force)?;
+    if cli.structured_json() {
+        emit_json_envelope(
+            "state_export",
+            &json!({
+                "kind": "state",
+                "mode": match args.mode { ExportMode::Portable => "portable", ExportMode::Encrypted => "encrypted" },
+                "archive_digest": archive_digest,
+                "bytes": archive.len(),
+                "output": output,
+            }),
+        )?;
     } else if let Some(output) = output {
         eprintln!(
             "exported state archive to {} ({archive_digest})",
@@ -864,11 +1053,64 @@ async fn export_command(cli: &Cli, client: &Client, args: &ExportArgs) -> Result
     Ok(())
 }
 
+async fn export_application_command(cli: &Cli, client: &Client, args: &ExportArgs) -> Result<()> {
+    if !matches!(args.mode, ExportMode::Portable) {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            "--mode applies only to complete state exports",
+        ));
+    }
+    let application = resolve_application(
+        client,
+        args.application.as_deref().expect("application is present"),
+    )
+    .await?;
+    let document = client
+        .export_application(application.application.id.as_str(), args.include_resolved)
+        .await?;
+    let destination = args.output.as_deref();
+    let output = if cli.structured_json() && destination.is_none() {
+        None
+    } else {
+        write_text_output(destination, &document, args.force)?
+    };
+    if cli.structured_json() {
+        emit_json_envelope(
+            "application_export",
+            &json!({
+                "kind": "application",
+                "application_id": application.application.id,
+                "bytes": document.len(),
+                "output": output,
+                "toml": (destination.is_none()).then_some(&document),
+            }),
+        )?;
+    } else if let Some(output) = output
+        && !cli.quiet
+    {
+        eprintln!("exported application manifest to {}", output.display());
+    }
+    Ok(())
+}
+
 async fn import_command(cli: &Cli, client: &Client, args: &ImportArgs) -> Result<()> {
-    let archive = read_archive(&args.file).await?;
+    if !args.replace {
+        return Err(CliError::new(
+            ErrorKind::Refused,
+            "state import replaces control-plane state; pass --replace explicitly",
+        ));
+    }
+    let archive = read_archive(&args.file)?;
     let archive_digest = digest(&archive);
     let confirmation = client.prepare_state_import(&archive_digest).await?;
-    confirm(
+    if confirmation.archive_digest != archive_digest {
+        return Err(CliError::new(
+            ErrorKind::General,
+            "daemon confirmation digest did not match the archive",
+        ));
+    }
+    confirm_with_mode(
+        cli,
         args.yes,
         &format!(
             "Replace all control-plane state with {} ({})? [y/N] ",
@@ -876,10 +1118,13 @@ async fn import_command(cli: &Cli, client: &Client, args: &ImportArgs) -> Result
             archive_digest
         ),
     )?;
-    let result = client.import_state(archive, &confirmation.token).await?;
-    if cli.json {
-        emit_json(&result)?;
-    } else {
+    let mut token = confirmation.token;
+    let result = client.import_state(archive, &token).await;
+    token.zeroize();
+    let result = result?;
+    if cli.structured_json() {
+        emit_json_envelope("state_import", &result)?;
+    } else if !cli.quiet {
         println!(
             "imported {} application(s) and {} secret(s); operation {}",
             result.applications_imported, result.secrets_imported, result.operation_id
@@ -925,8 +1170,8 @@ async fn set_secret(cli: &Cli, client: &Client, args: &SecretSetArgs) -> Result<
             client.create_secret_file(&args.name, path).await?
         }
     };
-    if cli.json {
-        emit_json(&metadata)?;
+    if cli.structured_json() {
+        emit_json_envelope("secret_set", &metadata)?;
     } else {
         println!(
             "secret {} {} (generation {})",
@@ -954,58 +1199,152 @@ async fn delete_secret(cli: &Cli, client: &Client, args: &SecretDeleteArgs) -> R
             ),
         ));
     }
-    confirm(
+    confirm_with_mode(
+        cli,
         args.yes,
         &format!("Delete logical secret {:?}? [y/N] ", metadata.name),
     )?;
     client.delete_secret(&metadata.name).await?;
-    if cli.json {
-        emit_json(&json!({"deleted": true, "name": metadata.name}))?;
+    if cli.structured_json() {
+        emit_json_envelope(
+            "secret_delete",
+            &json!({"deleted": true, "name": metadata.name}),
+        )?;
     } else {
         println!("secret {} deleted", metadata.name);
     }
     Ok(())
 }
 
-async fn read_archive(path: &Path) -> Result<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path).await.map_err(|error| {
-        CliError::new(
-            ErrorKind::Input,
-            format!("could not read archive {}: {error}", path.display()),
-        )
-    })?;
-    if !metadata.is_file() {
+fn read_archive(path: &Path) -> Result<Vec<u8>> {
+    read_bounded_file(path, MAX_STATE_ARCHIVE_BYTES as u64, "state archive")
+}
+
+fn read_profiles(path: &Path) -> Result<ProfilesFile> {
+    let bytes = read_bounded_file(path, 1024 * 1024, "profiles file")?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| CliError::new(ErrorKind::Input, "profiles file is not valid UTF-8"))?;
+    toml::from_str(text)
+        .map_err(|_| CliError::new(ErrorKind::Input, "profiles file is not valid TOML"))
+}
+
+fn default_profiles_path() -> Option<PathBuf> {
+    env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .map(|base| base.join("piqueld/profiles.toml"))
+}
+
+fn read_private_text(path: &Path, maximum: usize, label: &str) -> Result<String> {
+    let descriptor = rustix::fs::openat2(
+        rustix::fs::CWD,
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+        rustix::fs::ResolveFlags::NO_SYMLINKS | rustix::fs::ResolveFlags::NO_MAGICLINKS,
+    )
+    .map_err(|_| CliError::new(ErrorKind::Input, format!("cannot read {label} file")))?;
+    let mut file = fs::File::from(descriptor);
+    let opened = file
+        .metadata()
+        .map_err(|_| CliError::new(ErrorKind::Input, format!("cannot read {label} file")))?;
+    let path_metadata = fs::symlink_metadata(path)
+        .map_err(|_| CliError::new(ErrorKind::Input, format!("cannot read {label} file")))?;
+    let effective_uid = rustix::process::geteuid().as_raw();
+    if !opened.is_file()
+        || opened.permissions().mode() & 0o077 != 0
+        || !matches!(opened.uid(), 0) && opened.uid() != effective_uid
+        || opened.len() == 0
+        || opened.len() > maximum as u64
+        || path_metadata.file_type().is_symlink()
+        || path_metadata.dev() != opened.dev()
+        || path_metadata.ino() != opened.ino()
+    {
         return Err(CliError::new(
             ErrorKind::Input,
-            format!("archive path {} is not a regular file", path.display()),
+            format!(
+                "{label} file must be private (0600 or stricter), regular, non-empty, and not a symlink"
+            ),
         ));
     }
-    if metadata.len() == 0 || metadata.len() > MAX_STATE_ARCHIVE_BYTES as u64 {
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(maximum.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| CliError::new(ErrorKind::Input, format!("cannot read {label} file")))?;
+    let after = file
+        .metadata()
+        .map_err(|_| CliError::new(ErrorKind::Input, format!("cannot read {label} file")))?;
+    if bytes.is_empty() || bytes.len() > maximum || bytes.len() as u64 != opened.len() {
+        bytes.zeroize();
         return Err(CliError::new(
             ErrorKind::Input,
-            format!("archive {} exceeds the input safety limit", path.display()),
+            format!("{label} file has an invalid size"),
         ));
     }
-    let bytes = fs::read(path).await.map_err(|error| {
-        CliError::new(
-            ErrorKind::Input,
-            format!("could not read archive {}: {error}", path.display()),
-        )
-    })?;
-    if bytes.len() > MAX_STATE_ARCHIVE_BYTES {
+    if metadata_changed(&opened, &after) {
+        bytes.zeroize();
         return Err(CliError::new(
             ErrorKind::Input,
-            "archive exceeds the input safety limit",
+            format!("{label} file changed while it was being read"),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|error| {
+        let mut bytes = error.into_bytes();
+        bytes.zeroize();
+        CliError::new(ErrorKind::Input, format!("{label} file must contain UTF-8"))
+    })
+}
+
+fn read_bounded_file(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
+    let descriptor = rustix::fs::openat2(
+        rustix::fs::CWD,
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+        rustix::fs::ResolveFlags::NO_SYMLINKS | rustix::fs::ResolveFlags::NO_MAGICLINKS,
+    )
+    .map_err(|_| CliError::new(ErrorKind::Input, format!("cannot read {label}")))?;
+    let mut file = fs::File::from(descriptor);
+    let metadata = file
+        .metadata()
+        .map_err(|_| CliError::new(ErrorKind::Input, format!("cannot read {label}")))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > maximum {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            format!("{label} must be a non-empty regular file no larger than {maximum} bytes"),
+        ));
+    }
+    let capacity = usize::try_from(metadata.len())
+        .map_err(|_| CliError::new(ErrorKind::Input, format!("{label} is too large")))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    Read::by_ref(&mut file)
+        .take(maximum.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| CliError::new(ErrorKind::Input, format!("cannot read {label}")))?;
+    let after = file
+        .metadata()
+        .map_err(|_| CliError::new(ErrorKind::Input, format!("cannot read {label}")))?;
+    if bytes.len() as u64 != metadata.len() || metadata_changed(&metadata, &after) {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            format!("{label} changed while it was being read"),
         ));
     }
     Ok(bytes)
 }
 
-async fn write_binary_output(
-    path: Option<&Path>,
-    bytes: &[u8],
-    force: bool,
-) -> Result<Option<PathBuf>> {
+fn metadata_changed(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    before.dev() != after.dev()
+        || before.ino() != after.ino()
+        || before.len() != after.len()
+        || before.mtime() != after.mtime()
+        || before.mtime_nsec() != after.mtime_nsec()
+        || before.ctime() != after.ctime()
+        || before.ctime_nsec() != after.ctime_nsec()
+}
+
+fn write_binary_output(path: Option<&Path>, bytes: &[u8], force: bool) -> Result<Option<PathBuf>> {
     let Some(path) = path else {
         io::stdout().write_all(bytes).map_err(|error| {
             CliError::new(
@@ -1024,15 +1363,11 @@ async fn write_binary_output(
         })?;
         return Ok(None);
     }
-    write_file(path, bytes, force).await?;
+    write_file(path, bytes, force, true)?;
     Ok(Some(path.to_owned()))
 }
 
-async fn write_text_output(
-    path: Option<&Path>,
-    text: &str,
-    force: bool,
-) -> Result<Option<PathBuf>> {
+fn write_text_output(path: Option<&Path>, text: &str, force: bool) -> Result<Option<PathBuf>> {
     let Some(path) = path else {
         print!("{text}");
         return Ok(None);
@@ -1041,39 +1376,82 @@ async fn write_text_output(
         print!("{text}");
         return Ok(None);
     }
-    write_file(path, text.as_bytes(), force).await?;
+    write_file(path, text.as_bytes(), force, false)?;
     Ok(Some(path.to_owned()))
 }
 
-async fn write_file(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true);
-    if force {
-        options.truncate(true);
+fn write_file(path: &Path, bytes: &[u8], force: bool, private: bool) -> Result<()> {
+    write_output_file(path, bytes, force, private)
+}
+
+fn write_output_file(path: &Path, bytes: &[u8], force: bool, private: bool) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .ok_or_else(|| CliError::new(ErrorKind::Input, "output destination must name a file"))?;
+    let mut temporary = None;
+    for nonce in 0..100_u32 {
+        let candidate = parent.join(format!(
+            ".{}.piquelctl-{}-{nonce}.tmp",
+            name.to_string_lossy(),
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options
+            .write(true)
+            .create_new(true)
+            .mode(if private { 0o600 } else { 0o644 });
+        match options.open(&candidate) {
+            Ok(file) => {
+                temporary = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(_) => {
+                return Err(CliError::new(
+                    ErrorKind::Refused,
+                    "destination directory cannot be written",
+                ));
+            }
+        }
+    }
+    let (temporary_path, mut file) = temporary.ok_or_else(|| {
+        CliError::new(
+            ErrorKind::General,
+            "could not allocate a temporary output file",
+        )
+    })?;
+    let write_result = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(CliError::new(ErrorKind::General, "local output I/O failed"));
+    }
+    let rename = if force {
+        fs::rename(&temporary_path, path)
     } else {
-        options.create_new(true);
+        rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            &temporary_path,
+            rustix::fs::CWD,
+            path,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(io::Error::from)
+    };
+    if rename.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(CliError::new(
+            ErrorKind::Refused,
+            "destination exists or cannot be replaced; use --force to replace it",
+        ));
     }
-    let mut file = options.open(path).await.map_err(|error| {
-        CliError::new(
-            ErrorKind::Input,
-            format!(
-                "could not create output {}: {error}; pass --force to replace it",
-                path.display()
-            ),
-        )
-    })?;
-    file.write_all(bytes).await.map_err(|error| {
-        CliError::new(
-            ErrorKind::General,
-            format!("could not write output {}: {error}", path.display()),
-        )
-    })?;
-    file.flush().await.map_err(|error| {
-        CliError::new(
-            ErrorKind::General,
-            format!("could not flush output {}: {error}", path.display()),
-        )
-    })?;
+    if let Ok(directory) = fs::File::open(parent) {
+        let _ = directory.sync_all();
+    }
     Ok(())
 }
 
@@ -1210,6 +1588,190 @@ async fn resolve_application(client: &Client, name_or_id: &str) -> Result<Applic
     }
 }
 
+async fn watch_operation(
+    cli: &Cli,
+    client: &Client,
+    operation_id: &str,
+    poll_seconds: u64,
+) -> Result<OperationView> {
+    let mut last_event_id = None;
+    let mut seen_event_ids = BTreeSet::new();
+    let mut event_order = std::collections::VecDeque::new();
+    let mut stream_failures = 0_u8;
+    let mut build_cursors = std::collections::BTreeMap::new();
+    loop {
+        let current = client.operation(operation_id).await?;
+        report_operation_progress(cli, &current);
+        report_build_progress(cli, client, operation_id, &mut build_cursors).await?;
+        if terminal_operation(&current.state) {
+            return finish_operation(current);
+        }
+
+        if stream_failures < 2 {
+            let mut events = client.watch_operation(operation_id, last_event_id.as_deref());
+            loop {
+                tokio::select! {
+                    signal = signal::ctrl_c() => {
+                        signal.map_err(|_| CliError::new(ErrorKind::General, "could not install Ctrl-C handler"))?;
+                        return Err(CliError::new(
+                            ErrorKind::Interrupted,
+                            "watch interrupted; the server-side operation was not cancelled",
+                        ));
+                    }
+                    event = events.recv() => match event {
+                        Some(Ok(event)) => {
+                            if event.id.as_ref().is_some_and(|id| is_duplicate_event(&mut seen_event_ids, &mut event_order, id)) {
+                                continue;
+                            }
+                            if let Some(id) = event.id {
+                                last_event_id = Some(id);
+                            }
+                            if !cli.quiet {
+                                eprintln!("operation event {}", event.event.as_deref().unwrap_or("message"));
+                            }
+                            if let Ok(operation) = serde_json::from_str::<OperationView>(&event.data) {
+                                report_operation_progress(cli, &operation);
+                                report_build_progress(cli, client, operation_id, &mut build_cursors).await?;
+                                if terminal_operation(&operation.state) {
+                                    return finish_operation(operation);
+                                }
+                            }
+                        }
+                        Some(Err(ClientError::Transport { .. })) | None => {
+                            stream_failures = stream_failures.saturating_add(1);
+                            break;
+                        }
+                        Some(Err(error)) => return Err(error.into()),
+                    }
+                }
+            }
+        } else {
+            tokio::select! {
+                signal = signal::ctrl_c() => {
+                    signal.map_err(|_| CliError::new(ErrorKind::General, "could not install Ctrl-C handler"))?;
+                    return Err(CliError::new(
+                        ErrorKind::Interrupted,
+                        "watch interrupted; the server-side operation was not cancelled",
+                    ));
+                }
+                () = time::sleep(Duration::from_secs(poll_seconds.max(1))) => {}
+            }
+        }
+    }
+}
+
+async fn report_build_progress(
+    cli: &Cli,
+    client: &Client,
+    operation_id: &str,
+    cursors: &mut std::collections::BTreeMap<String, u64>,
+) -> Result<()> {
+    if cli.quiet {
+        return Ok(());
+    }
+    let builds = client.operation_builds(operation_id).await?.items;
+    for build in builds {
+        eprintln!(
+            "  build {} ({}): {}",
+            build.service_name, build.id, build.state
+        );
+        let cursor = cursors.entry(build.id.clone()).or_default();
+        loop {
+            let logs = client.build_logs(&build.id, *cursor, 100).await?.items;
+            if logs.is_empty() {
+                break;
+            }
+            for log in &logs {
+                eprintln!("    {}", log.message);
+                *cursor = (*cursor).max(log.sequence);
+            }
+            if logs.len() < 100 {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn follow_logs(
+    cli: &Cli,
+    client: &Client,
+    id: &str,
+    options: &ApplicationLogsOptions,
+) -> Result<()> {
+    let mut cursor = None;
+    let mut seen_event_ids = BTreeSet::new();
+    let mut event_order = std::collections::VecDeque::new();
+    loop {
+        let mut events = client.follow_application_logs(id, options, cursor.as_deref());
+        loop {
+            tokio::select! {
+                signal = signal::ctrl_c() => {
+                    signal.map_err(|_| CliError::new(ErrorKind::General, "could not install Ctrl-C handler"))?;
+                    return Ok(());
+                }
+                event = events.recv() => match event {
+                    Some(Ok(event)) => {
+                        if event.id.as_ref().is_some_and(|id| is_duplicate_event(&mut seen_event_ids, &mut event_order, id)) {
+                            continue;
+                        }
+                        if let Some(id) = event.id {
+                            cursor = Some(id);
+                        }
+                        if cli.structured_json() {
+                            emit_json_envelope("application_log_event", &json!({
+                                "event": event.event,
+                                "data": event.data,
+                                "cursor": cursor,
+                            }))?;
+                        } else if !cli.quiet {
+                            if let Ok(logs) = serde_json::from_str::<Vec<piqueld_client::ContainerLogView>>(&event.data) {
+                                for log in logs {
+                                    println!("{} {} {}: {}", log.timestamp, log.service, log.stream, log.display_message);
+                                }
+                            } else {
+                                println!("{}", event.data);
+                            }
+                        }
+                    }
+                    Some(Err(ClientError::Transport { .. })) | None => {
+                        if !cli.quiet {
+                            eprintln!("log stream interrupted; reconnecting");
+                        }
+                        break;
+                    }
+                    Some(Err(error)) => return Err(error.into()),
+                }
+            }
+        }
+        time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+fn report_operation_progress(cli: &Cli, operation: &OperationView) {
+    if !cli.quiet {
+        report_operation(operation);
+    }
+}
+
+fn is_duplicate_event(
+    seen: &mut BTreeSet<String>,
+    order: &mut std::collections::VecDeque<String>,
+    id: &str,
+) -> bool {
+    const WINDOW: usize = 1024;
+    if !seen.insert(id.to_owned()) {
+        return true;
+    }
+    order.push_back(id.to_owned());
+    if order.len() > WINDOW
+        && let Some(expired) = order.pop_front()
+    {
+        seen.remove(&expired);
+    }
+    false
+}
+
 async fn wait_for_operation(
     client: &Client,
     operation_id: &str,
@@ -1275,8 +1837,8 @@ fn report_operation(operation: &OperationView) {
 }
 
 fn render_operation(cli: &Cli, operation: &OperationView) -> Result<()> {
-    if cli.json {
-        emit_json(operation)
+    if cli.structured_json() {
+        emit_json_envelope("operation", operation)
     } else {
         println!("operation {}: {}", operation.id, operation.state);
         println!(
@@ -1390,14 +1952,18 @@ fn reason_text(reason: &impl fmt::Debug) -> String {
     format!("{reason:?}")
 }
 
-fn confirm(yes: bool, prompt: &str) -> Result<()> {
+fn confirm_with_mode(cli: &Cli, yes: bool, prompt: &str) -> Result<()> {
+    confirm_inner(cli.noninteractive, yes, prompt)
+}
+
+fn confirm_inner(noninteractive: bool, yes: bool, prompt: &str) -> Result<()> {
     if yes {
         return Ok(());
     }
-    if !io::stdin().is_terminal() {
+    if noninteractive || !io::stdin().is_terminal() {
         return Err(CliError::new(
-            ErrorKind::Input,
-            "confirmation is required in a non-interactive terminal; pass --yes",
+            ErrorKind::Refused,
+            "confirmation is required; pass --yes",
         ));
     }
     eprint!("{prompt}");
@@ -1418,7 +1984,7 @@ fn confirm(yes: bool, prompt: &str) -> Result<()> {
         Ok(())
     } else {
         Err(CliError::new(
-            ErrorKind::Input,
+            ErrorKind::Refused,
             "operation was not confirmed",
         ))
     }
@@ -1451,7 +2017,7 @@ fn read_secret_stdin() -> Result<Vec<u8>> {
 }
 
 async fn read_manifest(path: &Path) -> Result<String> {
-    let metadata = fs::metadata(path).await.map_err(|error| {
+    let metadata = async_fs::metadata(path).await.map_err(|error| {
         CliError::new(
             ErrorKind::Input,
             format!("could not read manifest {}: {error}", path.display()),
@@ -1473,7 +2039,7 @@ async fn read_manifest(path: &Path) -> Result<String> {
             ),
         ));
     }
-    let bytes = fs::read(path).await.map_err(|error| {
+    let bytes = async_fs::read(path).await.map_err(|error| {
         CliError::new(
             ErrorKind::Input,
             format!("could not read manifest {}: {error}", path.display()),
@@ -1632,23 +2198,42 @@ fn emit_json<T: Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
+fn emit_json_envelope<T: Serialize>(kind: &str, data: &T) -> Result<()> {
+    let value = json!({
+        "schema": "piquelctl.v1",
+        "kind": kind,
+        "data": data,
+    });
+    emit_json(&value)
+}
+
 fn finish_error(cli: &Cli, error: CliError) -> ExitCode {
-    if cli.json {
+    if cli.structured_json() {
+        let category = match error.kind {
+            ErrorKind::Authentication => "authentication",
+            ErrorKind::Conflict => "conflict",
+            ErrorKind::Unavailable => "unavailable",
+            ErrorKind::Operation => "operation_failed",
+            ErrorKind::Interrupted => "interrupted",
+            ErrorKind::Refused => "refused",
+            ErrorKind::Input => "validation",
+            ErrorKind::General => "general",
+        };
+        let value = json!({
+            "schema": "piquelctl.error.v1",
+            "error": {
+                "category": category,
+                "message": &error.message,
+                "api_code": &error.api_code,
+                "request_id": &error.request_id,
+                "details": &error.details,
+                "exit_code": error.kind.exit_code(),
+            }
+        });
         eprintln!(
-            "piquelctl: {}{}{}{}",
-            error.message,
-            error
-                .api_code
-                .as_deref()
-                .map_or_else(String::new, |code| format!("; API code {code}")),
-            error
-                .request_id
-                .as_deref()
-                .map_or_else(String::new, |id| format!("; request ID {id}")),
-            error
-                .details
-                .as_ref()
-                .map_or_else(String::new, |details| format!("; details {details}")),
+            "{}",
+            serde_json::to_string(&value)
+                .unwrap_or_else(|_| { "{\"schema\":\"piquelctl.error.v1\"}".to_owned() })
         );
     } else {
         eprintln!("piquelctl: {}", error.message);
@@ -1724,10 +2309,33 @@ mod tests {
                 "encrypted",
                 "--force",
             ],
-            vec!["piquelctl", "import", "state.tar", "--yes"],
+            vec!["piquelctl", "import", "state.tar", "--replace", "--yes"],
         ];
         for arguments in cases {
             Cli::try_parse_from(arguments).expect("command parses");
+        }
+    }
+
+    #[test]
+    fn parser_covers_advanced_options_on_the_flat_surface() {
+        let cases = [
+            vec!["piquelctl", "--json", "list"],
+            vec!["piquelctl", "logs", "notes", "--follow"],
+            vec!["piquelctl", "secret", "list"],
+            vec!["piquelctl", "secret", "set", "database", "--file", "secret"],
+            vec!["piquelctl", "operation", "operation-01", "--watch"],
+            vec![
+                "piquelctl",
+                "export",
+                "--output",
+                "state.tar",
+                "--mode",
+                "encrypted",
+            ],
+            vec!["piquelctl", "import", "state.tar", "--replace", "--yes"],
+        ];
+        for arguments in cases {
+            Cli::try_parse_from(arguments).expect("advanced command parses");
         }
     }
 
@@ -1747,6 +2355,26 @@ mod tests {
         assert!(Cli::try_parse_from(["piquelctl", "--timeout", "zero", "status"]).is_err());
         assert!(Cli::try_parse_from(["piquelctl", "--timeout", "0s", "status"]).is_err());
         assert!(Cli::try_parse_from(["piquelctl", "plan", "status"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "piquelctl",
+                "operation",
+                "operation-01",
+                "--watch",
+                "--no-wait",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "piquelctl",
+                "operation",
+                "operation-01",
+                "--poll-seconds",
+                "1",
+            ])
+            .is_err()
+        );
         assert!(Cli::try_parse_from(["piquelctl", "secret", "set", "database-password"]).is_err());
         assert!(
             Cli::try_parse_from([
@@ -1776,5 +2404,53 @@ mod tests {
         assert!(!looks_like_application_id("notes"));
         assert!(!looks_like_application_id("APP-NOTES"));
         assert!(!looks_like_application_id("--------"));
+    }
+
+    #[test]
+    fn advanced_exit_categories_are_stable() {
+        assert_eq!(ErrorKind::Input.exit_code(), 3);
+        assert_eq!(ErrorKind::Authentication.exit_code(), 4);
+        assert_eq!(ErrorKind::Conflict.exit_code(), 5);
+        assert_eq!(ErrorKind::Unavailable.exit_code(), 6);
+        assert_eq!(ErrorKind::Operation.exit_code(), 7);
+        assert_eq!(ErrorKind::Interrupted.exit_code(), 8);
+        assert_eq!(ErrorKind::Refused.exit_code(), 9);
+    }
+
+    #[test]
+    fn protected_inputs_and_atomic_outputs_are_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let token = directory.path().join("token");
+        fs::write(&token, "canary\n").unwrap();
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_private_text(&token, 100, "token").unwrap(), "canary\n");
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(read_private_text(&token, 100, "token").is_err());
+
+        let output = directory.path().join("state.tar");
+        write_output_file(&output, b"archive", false, true).unwrap();
+        assert_eq!(
+            fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(write_output_file(&output, b"other", false, true).is_err());
+        assert_eq!(fs::read(&output).unwrap(), b"archive");
+    }
+
+    #[test]
+    fn event_deduplication_has_a_bounded_window() {
+        let mut seen = BTreeSet::new();
+        let mut order = std::collections::VecDeque::new();
+        assert!(!is_duplicate_event(&mut seen, &mut order, "first"));
+        assert!(is_duplicate_event(&mut seen, &mut order, "first"));
+        for index in 0..1024 {
+            assert!(!is_duplicate_event(
+                &mut seen,
+                &mut order,
+                &format!("event-{index}")
+            ));
+        }
+        assert_eq!(seen.len(), 1024);
+        assert!(!seen.contains("first"));
     }
 }

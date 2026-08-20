@@ -27,7 +27,7 @@ pub use operations::{OperationStepView, OperationView};
 pub use piqueld_core::manifest::Source;
 pub use piqueld_core::{ValidatedApplication, ValidationErrors};
 pub use secrets::{ListSecretsOptions, SecretMetadata, SecretReferenceView};
-pub use system::SystemStatus;
+pub use system::{SystemCapabilities, SystemStatus};
 pub use transfer::{
     ImportDependencyReport, MAX_STATE_ARCHIVE_BYTES, PrepareStateImportRequest, StateExportMode,
     StateImportConfirmation, StateImportResult,
@@ -35,12 +35,12 @@ pub use transfer::{
 
 use http::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{fmt, future::Future, time::Duration};
+use std::{fmt, future::Future, sync::Arc, time::Duration};
 use thiserror::Error;
 use utoipa::ToSchema;
 
 #[cfg(not(target_arch = "wasm32"))]
-use bytes::Bytes;
+use bytes::Buf;
 #[cfg(not(target_arch = "wasm32"))]
 use http::{Request, header};
 #[cfg(not(target_arch = "wasm32"))]
@@ -59,6 +59,8 @@ use tokio::net::{TcpStream, UnixStream};
 use url::{Host, Url};
 #[cfg(target_arch = "wasm32")]
 use web_sys::{RequestCache, RequestCredentials, RequestMode};
+#[cfg(not(target_arch = "wasm32"))]
+use zeroize::Zeroize;
 
 /// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
@@ -127,12 +129,74 @@ enum Endpoint {
     Unix(PathBuf),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 /// Configured asynchronous API client.
 pub struct Client {
     #[cfg(not(target_arch = "wasm32"))]
     endpoint: Endpoint,
     timeout: Duration,
+    #[cfg(not(target_arch = "wasm32"))]
+    bearer_token: Option<Arc<BearerToken>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct BearerToken(String);
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ZeroizingBody {
+    bytes: Vec<u8>,
+    position: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ZeroizingBody {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes, position: 0 }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Buf for ZeroizingBody {
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.position)
+    }
+
+    fn chunk(&self) -> &[u8] {
+        &self.bytes[self.position..]
+    }
+
+    fn advance(&mut self, count: usize) {
+        self.position = self.position.saturating_add(count).min(self.bytes.len());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for ZeroizingBody {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for BearerToken {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl fmt::Debug for Client {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("Client");
+        #[cfg(not(target_arch = "wasm32"))]
+        debug.field("endpoint", &self.endpoint);
+        debug.field("timeout", &self.timeout);
+        #[cfg(not(target_arch = "wasm32"))]
+        debug.field(
+            "bearer_token",
+            &self.bearer_token.as_ref().map(|_| "[REDACTED]"),
+        );
+        debug.finish()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -167,7 +231,8 @@ impl Client {
     /// Creates a client for an HTTP endpoint.
     ///
     /// # Errors
-    /// Returns [`ClientError::Endpoint`] when `base_url` is not a loopback HTTP origin.
+    /// Returns [`ClientError::Endpoint`] when `base_url` is not an HTTP origin
+    /// on localhost, a private network, or the Tailscale CGNAT range.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn tcp(base_url: &str) -> Result<Self, ClientError> {
         let url = Url::parse(base_url).map_err(|_| ClientError::Endpoint)?;
@@ -183,6 +248,7 @@ impl Client {
         let host = match url.host().ok_or(ClientError::Endpoint)? {
             Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => host.to_owned(),
             Host::Ipv4(host) if host.is_loopback() => host.to_string(),
+            Host::Ipv4(host) if is_private_or_tailnet(host.octets()) => host.to_string(),
             Host::Ipv6(host) if host.is_loopback() => host.to_string(),
             _ => return Err(ClientError::Endpoint),
         };
@@ -199,6 +265,7 @@ impl Client {
                 port,
             },
             timeout: Duration::from_secs(30),
+            bearer_token: None,
         })
     }
 
@@ -209,6 +276,7 @@ impl Client {
         Self {
             endpoint: Endpoint::Unix(path.as_ref().to_owned()),
             timeout: Duration::from_secs(30),
+            bearer_token: None,
         }
     }
 
@@ -226,6 +294,27 @@ impl Client {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    /// Adds an administrative bearer token to native requests.
+    ///
+    /// The token is omitted from debug output and zeroized when the last
+    /// client clone is dropped.
+    ///
+    /// # Errors
+    /// Returns [`ClientError::Endpoint`] when the token cannot be represented
+    /// safely in an HTTP authorization header.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_bearer_token(mut self, token: impl Into<String>) -> Result<Self, ClientError> {
+        let token = token.into();
+        if token.is_empty()
+            || token.len() > 4096
+            || token.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return Err(ClientError::Endpoint);
+        }
+        self.bearer_token = Some(Arc::new(BearerToken(token)));
+        Ok(self)
     }
 
     async fn with_request_timeout<T>(
@@ -284,11 +373,20 @@ impl Client {
             .method(method)
             .uri(format!("http://{authority}{path}"))
             .header(header::ACCEPT, "application/json");
+        if let Some(token) = &self.bearer_token {
+            let mut value = Vec::with_capacity(7 + token.0.len());
+            value.extend_from_slice(b"Bearer ");
+            value.extend_from_slice(token.0.as_bytes());
+            let header_value =
+                http::HeaderValue::from_bytes(&value).map_err(|_| ClientError::Endpoint)?;
+            value.zeroize();
+            builder = builder.header(header::AUTHORIZATION, header_value);
+        }
         for (name, value) in headers {
             builder = builder.header(*name, *value);
         }
         let request = builder
-            .body(Full::new(Bytes::from(bytes)))
+            .body(Full::new(ZeroizingBody::new(bytes)))
             .map_err(|_| ClientError::Endpoint)?;
         let endpoint = self.endpoint.clone();
         tokio::time::timeout(self.timeout, async move {
@@ -380,6 +478,32 @@ impl Client {
         .await
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn decode<T: DeserializeOwned>(
+        &self,
+        response: hyper::Response<hyper::body::Incoming>,
+    ) -> Result<T, ClientError> {
+        self.with_request_timeout(decode_envelope(response)).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn decode_error(&self, response: hyper::Response<hyper::body::Incoming>) -> ClientError {
+        tokio::time::timeout(self.timeout, decode_api_error(response))
+            .await
+            .unwrap_or_else(|_| ClientError::transport("error response timed out"))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn collect_body(&self, body: hyper::body::Incoming) -> Result<bytes::Bytes, ClientError> {
+        self.with_request_timeout(async {
+            body.collect()
+                .await
+                .map_err(ClientError::transport)
+                .map(http_body_util::Collected::to_bytes)
+        })
+        .await
+    }
+
     #[cfg(target_arch = "wasm32")]
     async fn send<T: DeserializeOwned, B: Serialize>(
         &self,
@@ -427,9 +551,7 @@ impl Client {
             {
                 Ok(response) if response.status().is_success() => response,
                 Ok(response) => {
-                    let error = tokio::time::timeout(client.timeout, decode_api_error(response))
-                        .await
-                        .unwrap_or_else(|_| ClientError::transport("SSE error response timed out"));
+                    let error = client.decode_error(response).await;
                     let _ = tx.send(Err(error)).await;
                     return;
                 }
@@ -474,6 +596,14 @@ impl Client {
         });
         rx
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_private_or_tailnet(octets: [u8; 4]) -> bool {
+    matches!(
+        octets,
+        [10, _, _, _] | [172, 16..=31, _, _] | [192, 168, _, _] | [100, 64..=127, _, _]
+    )
 }
 
 impl ClientError {

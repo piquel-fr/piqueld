@@ -293,7 +293,7 @@ pub struct Metadata {
 
 /// Canonical resource specification.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct ApplicationSpec {
     /// Canonical services.
     pub services: Vec<Service>,
@@ -320,6 +320,7 @@ pub struct Service {
     /// Arguments passed to the command.
     pub arguments: Vec<String>,
     /// Container ports exposed to the managed ingress controller.
+    #[serde(default)]
     pub ports: Vec<u16>,
     /// Persistent volume mounts.
     pub mounts: Vec<Mount>,

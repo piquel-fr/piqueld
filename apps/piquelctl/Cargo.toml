@@ -13,9 +13,12 @@ clap.workspace = true
 piqueld-client.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+rustix.workspace = true
 sha2.workspace = true
 tokio.workspace = true
+toml.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true

@@ -15,7 +15,8 @@ use piqueld::store::{SqliteStore, StoredApplication};
 use piqueld::transfer::ARCHIVE_CONTENT_TYPE;
 use piqueld_client::{
     AcceptedOperation, Client, CreateApplicationRequest, DeleteApplicationRequest, Envelope,
-    PlanApplicationRequest, ReplaceApplicationRequest, StateImportConfirmation, StateImportResult,
+    OperationView, PlanApplicationRequest, ReplaceApplicationRequest, StateImportConfirmation,
+    StateImportResult,
 };
 use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
@@ -191,6 +192,15 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
         client.operation(&created.operation_id).await.unwrap().kind,
         "create"
     );
+    let mut events = client.watch_operation(&created.operation_id, None);
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+        .await
+        .expect("operation event arrives")
+        .expect("operation event stream remains open")
+        .expect("operation event is valid");
+    assert_eq!(event.event.as_deref(), Some("operation"));
+    let streamed: OperationView = serde_json::from_str(&event.data).expect("operation JSON");
+    assert_eq!(streamed.id, created.operation_id);
     created
 }
 

@@ -308,7 +308,7 @@ fn page(items: Vec<Value>, next_cursor: Option<&str>) -> Value {
     json!({"items": items, "next_cursor": next_cursor})
 }
 
-fn secret_metadata(name: &str, references: Vec<Value>) -> Value {
+fn secret_metadata(name: &str, references: &[Value]) -> Value {
     json!({
         "name": name,
         "value_is_set": true,
@@ -392,7 +392,9 @@ fn assert_json_success(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!output.stdout.is_empty(), "JSON stdout must not be empty");
-    serde_json::from_slice(&output.stdout).expect("clean JSON stdout")
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("clean JSON stdout");
+    assert_eq!(envelope["schema"], "piquelctl.v1");
+    envelope["data"].clone()
 }
 
 #[test]
@@ -424,10 +426,9 @@ fn secret_list_and_set_keep_plaintext_out_of_output() {
     fs::write(&path, canary).expect("secret file");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("private secret file");
     let server = start_server(false, 3, move |request| match request.path.as_str() {
-        "/api/v1/secrets?limit=100" => Reply::json(page(
-            vec![secret_metadata("database-password", Vec::new())],
-            None,
-        )),
+        "/api/v1/secrets?limit=100" => {
+            Reply::json(page(vec![secret_metadata("database-password", &[])], None))
+        }
         "/api/v1/secrets/database-password" if request.method == "GET" => {
             Reply::error("404 Not Found", "secret_not_found", Value::Null)
         }
@@ -437,7 +438,7 @@ fn secret_list_and_set_keep_plaintext_out_of_output() {
                 Some(&"application/octet-stream".to_owned())
             );
             assert_eq!(request.body, canary);
-            Reply::json(secret_metadata("database-password", Vec::new()))
+            Reply::json(secret_metadata("database-password", &[]))
         }
         path => panic!("unexpected path {path}"),
     });
@@ -472,7 +473,7 @@ fn secret_delete_refuses_referenced_metadata_before_mutation() {
         assert_eq!(request.path, "/api/v1/secrets/database-password");
         Reply::json(secret_metadata(
             "database-password",
-            vec![json!({
+            &[json!({
                 "application_id": "app-notes-01",
                 "application_name": "notes",
                 "service": "web",
@@ -481,7 +482,7 @@ fn secret_delete_refuses_referenced_metadata_before_mutation() {
         ))
     });
     let output = run(&server, &["secret", "delete", "database-password", "--yes"]);
-    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(output.status.code(), Some(5));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("still referenced"));
     let _ = server.finish();
@@ -720,7 +721,7 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
             "--yes",
         ],
     );
-    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(output.status.code(), Some(7));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("runtime_failed"));
@@ -740,14 +741,14 @@ fn manifest_input_is_missing_or_oversized_before_network_use() {
         &server,
         &["plan", "--file", missing.to_str().expect("manifest path")],
     );
-    assert_eq!(missing_output.status.code(), Some(2));
+    assert_eq!(missing_output.status.code(), Some(3));
     assert!(missing_output.stdout.is_empty());
 
     let oversized_output = run(
         &server,
         &["plan", "--file", oversized.to_str().expect("manifest path")],
     );
-    assert_eq!(oversized_output.status.code(), Some(2));
+    assert_eq!(oversized_output.status.code(), Some(3));
     assert!(oversized_output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&oversized_output.stderr);
     assert!(stderr.contains("exceeds"));
@@ -833,7 +834,7 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
         .status()
         .expect("send SIGINT");
     let output = child.wait_with_output().expect("interrupted child");
-    assert_eq!(output.status.code(), Some(130));
+    assert_eq!(output.status.code(), Some(8));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("was not cancelled"));
     let _ = interrupt_server.finish();

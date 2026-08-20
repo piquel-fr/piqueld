@@ -178,8 +178,11 @@ ported. The feature/fix commits map as follows:
 | Git resolution, deterministic context, BuildKit, registry digest verification, build persistence | #8 `50839c6`, `f0eae59` | #8 rebuilt from latest #7 as `0321107`; fresh migration 0003 and one build-concurrency owner |
 | Build credential scope, context TOCTOU, atomic verified-artifact publication and recovery | #8 `f0eae59` | #8 rebuilt durable build service/planner/action and verified-only deployment |
 | Routes/ports, owned Traefik, runtime status, bounded logs and events | #9 `6c72270`, `1316fa1` | #9 rebuilt as `f79994b`; shared cursor/reconnection SSE design |
-| Canonical app export, deterministic portable/encrypted archives, strict validation, digest confirmation, maintenance gate, transactional import/audit and dependencies | #10 `1ec606a`, `4125d7d` | #10 in progress from `f79994b`; fresh migration 0004, API/client/CLI/docs/tests together |
-| Complete advanced CLI surface | #11 `b45b426`, `ab1b68e` | #11 pending; extend Plan 06B and keep #10 transfer commands without duplication |
+| Canonical app export, deterministic portable/encrypted archives, strict validation, digest confirmation, maintenance gate, transactional import/audit and dependencies | #10 `1ec606a`, `4125d7d` | #10 rebuilt from `f79994b` as `4f92d0b072a04a081c0b706c5588e59c66633edd`; fresh migration 0004, API/client/CLI/docs/tests together |
+| Complete advanced CLI surface | #11 `b45b426`, `ab1b68e` | #11 rebuilt from actual #10 as `6916091076de717d21860713d54d44701b63c90a`; grouped application/secret/operation/state commands extend Plan 06B and preserve #10 transfer commands |
+| Operation watch endpoint required by the rebuilt CLI | #11 `b45b426` (old #9 did not carry the operation-events route) | Moved into #11 on top of #9's shared cursor/reconnection primitive; server OpenAPI, transport-neutral client, Last-Event-ID handling, deduplication, stream fallback, and focused API coverage move together |
+| Protected profile/token/secret inputs, stable output and exit categories, binary output safety, retry/timeout/error redaction | #11 `ab1b68e` | Rebuilt against the current public client; uses protected `openat2` reads, zeroized token/body buffers, atomic private outputs, profile precedence, stable envelopes, and no plaintext CLI arguments |
+| Dependency license policy needed by the existing rustls/gix graph | cumulative #8 dependency graph; discovered during #11 full validation | Added only `ISC`, `MIT-0`, and `CDLA-Permissive-2.0` to `deny.toml`; `cargo deny check` and full `just` now pass, with duplicate-version warnings retained |
 | Structured UI and packaged assets | #12 `24a36dc`, `d845f04` | #12 pending; extend Plan 06C rather than restore old tree |
 | NixOS/security/operations and recovery | #13 `3254200`, `6a7d09c` | #13 pending; adapt to rebuilt binary/assets |
 | Qualification CI, release, acceptance, docs and Rust compatibility fixes | #14 `22bbb1a`, `5d38829`, `a2990f8`, `38cf58d`, `a1d0f36` | #14 pending; consolidate against cumulative rebuilt stack |
@@ -191,7 +194,8 @@ ported. The feature/fix commits map as follows:
 | 7 | `rebuild/07-secret-lifecycle` | `48a298c` (`feat(secrets): rebuild logical secret lifecycle on product stack`) |
 | 8 | `rebuild/08-build-and-registry` | `0321107` (`feat(build): rebuild Git source pipeline on product stack`) |
 | 9 | `rebuild/09-traefik-status-and-logs` | `f79994b` (`feat(ingress): rebuild status and logs on product stack`) |
-| 10 | `rebuild/10-import-export` | final local transfer increment; exact branch head is recorded in the final handoff |
+| 10 | `rebuild/10-import-export` | `4f92d0b072a04a081c0b706c5588e59c66633edd` (`feat(transfer): rebuild state import and export on product stack`) |
+| 11 | `rebuild/11-cli` | `6916091076de717d21860713d54d44701b63c90a` (`feat(cli): rebuild advanced operator workflow on product stack`) |
 
 ## Local #10 validation at ledger checkpoint
 
@@ -213,3 +217,17 @@ Listener-based TCP/Unix tests need an elevated execution environment because the
 managed sandbox denies local socket binds; they are not treated as product
 failures. Full `just`, no-default-feature, cargo-deny, Nix, WASM/Trunk, browser,
 and privileged Docker validation remain cumulative gates before remote rewrites.
+
+## Local #11 validation at ledger checkpoint
+
+Passed on `6916091076de717d21860713d54d44701b63c90a`:
+
+- `just` (full workspace check, tests, doc-tests, cargo-deny, OpenAPI check, and dependency boundary script)
+- strict workspace Clippy and formatting checks
+- black-box CLI integration over Unix and TCP with stable JSON, auth canaries, grouped commands, secret input, state transfer safeguards, and refusal paths
+- operation SSE API/client contract, including typed event decoding
+- workspace API, persistence, migration, fake-runtime, manifest, and UI tests
+
+The privileged Swarm/Docker acceptance test remains ignored by design. WASM,
+Trunk release, NixOS VM, browser, and privileged Docker validation remain
+cumulative gates for their owning rebuilt PRs.
