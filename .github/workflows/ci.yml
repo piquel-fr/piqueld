@@ -35,6 +35,17 @@ jobs:
           tool: cargo-deny@0.19.9
       - name: Authoritative workspace validation
         run: just
+      - name: Prepare Nix VM binaries
+        run: |
+          mkdir -p artifacts/nix-binaries
+          install -Dm755 target/debug/piqueld artifacts/nix-binaries/piqueld
+          install -Dm755 target/debug/piquelctl artifacts/nix-binaries/piquelctl
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: piqueld-nix-binaries-${{ github.sha }}
+          path: artifacts/nix-binaries
+          if-no-files-found: error
+          retention-days: 7
 
   ui-browser:
     name: Production WASM and Chromium smoke
@@ -68,12 +79,26 @@ jobs:
 
   nix:
     name: Nix packages and NixOS VM
+    needs: [rust, ui-browser]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: piqueld-nix-binaries-${{ github.sha }}
+          path: artifacts/nix
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: piqueld-ui-${{ github.sha }}
+          path: artifacts/nix/ui
+      - name: Verify Nix VM artifacts
+        run: |
+          test -x artifacts/nix/piqueld
+          test -x artifacts/nix/piquelctl
+          test -f artifacts/nix/ui/index.html
       - uses: DeterminateSystems/determinate-nix-action@c70cb8ae92d68c66953db28a26a63db1665bc837 # v3.21.5
       - uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
@@ -81,7 +106,9 @@ jobs:
           use-flakehub: disabled
           diagnostic-endpoint: ""
       - name: Flake, module, package, and VM checks
-        run: nix flake check -L --no-update-lock-file
+        env:
+          PIQUELD_CI_ARTIFACTS: ${{ github.workspace }}/artifacts/nix
+        run: nix flake check -L --impure --no-update-lock-file
 
   docker:
     name: Privileged disposable Docker qualification

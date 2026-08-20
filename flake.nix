@@ -27,6 +27,15 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           rustTarget = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+          ciArtifactsPath = builtins.getEnv "PIQUELD_CI_ARTIFACTS";
+          ciArtifacts =
+            if ciArtifactsPath == "" then
+              null
+            else
+              builtins.path {
+                path = ciArtifactsPath;
+                name = "piqueld-ci-artifacts";
+              };
         in
         rec {
           default = pkgs.rustPlatform.buildRustPackage {
@@ -74,37 +83,54 @@
           };
           release = default;
           # PR checks already run the full Rust tests and production UI build
-          # in their owning jobs. Keep the NixOS VM check focused on the Nix
-          # module and a real daemon/CLI startup, without rebuilding release
-          # optimizations, the browser bundle, or the same test suite.
-          ci = default.overrideAttrs (_: {
-            pname = "piqueld-ci";
-            cargoBuildType = "debug";
-            cargoBuildFlags = [
-              "-p"
-              "piqueld"
-              "-p"
-              "piquelctl"
-            ];
-            doCheck = false;
-            postBuild = "";
-            buildPhase = ''
-              runHook preBuild
-              cargoBuildHook
-              runHook postBuild
-            '';
-            installPhase = ''
-              runHook preInstall
-              install -Dm755 target/${rustTarget}/debug/piqueld "$out/bin/piqueld"
-              install -Dm755 target/${rustTarget}/debug/piquelctl "$out/bin/piquelctl"
-              install -Dm644 config/piqueld.example.toml \
-                "$out/share/piqueld/piqueld.example.toml"
-              mkdir -p "$out/share/piqueld/ui"
-              wrapProgram "$out/bin/piqueld" \
-                --set PIQUELD_UI_DIR "$out/share/piqueld/ui"
-              runHook postInstall
-            '';
-          });
+          # in their owning jobs. In CI, reuse those tested artifacts for the
+          # VM so Nix only checks packaging/module wiring and VM behavior. The
+          # fallback keeps local `nix flake check` self-contained.
+          ci =
+            if ciArtifacts == null then
+              default.overrideAttrs (_: {
+                pname = "piqueld-ci";
+                cargoBuildType = "debug";
+                cargoBuildFlags = [
+                  "-p"
+                  "piqueld"
+                  "-p"
+                  "piquelctl"
+                ];
+                doCheck = false;
+                postBuild = "";
+                buildPhase = ''
+                  runHook preBuild
+                  cargoBuildHook
+                  runHook postBuild
+                '';
+                installPhase = ''
+                  runHook preInstall
+                  install -Dm755 target/${rustTarget}/debug/piqueld "$out/bin/piqueld"
+                  install -Dm755 target/${rustTarget}/debug/piquelctl "$out/bin/piquelctl"
+                  install -Dm644 config/piqueld.example.toml \
+                    "$out/share/piqueld/piqueld.example.toml"
+                  mkdir -p "$out/share/piqueld/ui"
+                  wrapProgram "$out/bin/piqueld" \
+                    --set PIQUELD_UI_DIR "$out/share/piqueld/ui"
+                  runHook postInstall
+                '';
+              })
+            else
+              pkgs.runCommand "piqueld-ci"
+                {
+                  nativeBuildInputs = [ pkgs.makeWrapper ];
+                }
+                ''
+                  install -Dm755 ${ciArtifacts}/piqueld "$out/bin/piqueld"
+                  install -Dm755 ${ciArtifacts}/piquelctl "$out/bin/piquelctl"
+                  install -Dm644 ${self}/config/piqueld.example.toml \
+                    "$out/share/piqueld/piqueld.example.toml"
+                  mkdir -p "$out/share/piqueld/ui"
+                  cp -R ${ciArtifacts}/ui/. "$out/share/piqueld/ui/"
+                  wrapProgram "$out/bin/piqueld" \
+                    --set PIQUELD_UI_DIR "$out/share/piqueld/ui"
+                '';
           piqueld = pkgs.runCommand "piqueld-daemon-0.1.0" { } ''
             mkdir -p "$out/bin"
             cp ${release}/bin/piqueld "$out/bin/piqueld"

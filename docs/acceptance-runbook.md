@@ -56,9 +56,11 @@ cargo test -p piqueld --features docker-integration \
   --test docker_integration -- --ignored --test-threads=1
 ```
 
-Run `nix flake check -L --no-update-lock-file` for the fast CI package/module/VM
-evidence. The production release package is checked separately by the release
-workflow with `nix build .#release` and the reproducibility checks below.
+Run `nix flake check -L --no-update-lock-file` for the local package/module/VM
+evidence. In CI, the VM check is packaged from the Rust and production UI
+artifacts already validated by their owning jobs, avoiding a duplicate compile.
+The production release package is checked separately by the release workflow
+with `nix build .#release` and the reproducibility checks below.
 Build a release with `nix build .#release` and verify it twice under different
 umasks with `scripts/package-release.sh`.
 
