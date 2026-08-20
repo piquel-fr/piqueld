@@ -73,6 +73,38 @@
             doCheck = true;
           };
           release = default;
+          # PR checks already run the full Rust tests and production UI build
+          # in their owning jobs. Keep the NixOS VM check focused on the Nix
+          # module and a real daemon/CLI startup, without rebuilding release
+          # optimizations, the browser bundle, or the same test suite.
+          ci = default.overrideAttrs (_: {
+            pname = "piqueld-ci";
+            cargoBuildType = "debug";
+            cargoBuildFlags = [
+              "-p"
+              "piqueld"
+              "-p"
+              "piquelctl"
+            ];
+            doCheck = false;
+            postBuild = "";
+            buildPhase = ''
+              runHook preBuild
+              cargoBuildHook
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 target/${rustTarget}/debug/piqueld "$out/bin/piqueld"
+              install -Dm755 target/${rustTarget}/debug/piquelctl "$out/bin/piquelctl"
+              install -Dm644 config/piqueld.example.toml \
+                "$out/share/piqueld/piqueld.example.toml"
+              mkdir -p "$out/share/piqueld/ui"
+              wrapProgram "$out/bin/piqueld" \
+                --set PIQUELD_UI_DIR "$out/share/piqueld/ui"
+              runHook postInstall
+            '';
+          });
           piqueld = pkgs.runCommand "piqueld-daemon-0.1.0" { } ''
             mkdir -p "$out/bin"
             cp ${release}/bin/piqueld "$out/bin/piqueld"
@@ -108,10 +140,9 @@
                 }
               ];
             }).config.environment.etc."piqueld/config.toml".source;
-          # Reuse the checked release. A doCheck=false override would create a
-          # second derivation and compile the complete Rust and WASM package
-          # again just to populate the VM closure.
-          vmRelease = self.packages.${system}.release;
+          # The PR VM uses the focused CI package. The checked production
+          # release remains covered by the release workflow.
+          vmRelease = self.packages.${system}.ci;
           vmPackage = pkgs.runCommand "piqueld-daemon-vm-0.1.0" { } ''
             mkdir -p "$out/bin"
             cp ${vmRelease}/bin/piqueld "$out/bin/piqueld"
@@ -146,7 +177,7 @@
           };
         in
         {
-          package = self.packages.${system}.default;
+          package = self.packages.${system}.ci;
           formatting =
             pkgs.runCommand "piqueld-formatting"
               {

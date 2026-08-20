@@ -75,10 +75,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: DeterminateSystems/determinate-nix-action@c70cb8ae92d68c66953db28a26a63db1665bc837 # v3.21.5
-      - uses: DeterminateSystems/magic-nix-cache-action@76aaf8814cdb385b86597c32b8c51b66b69b0839
+      - uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
-          source-revision: c2f46a0afa5f95fd4c184a533afd280c68cf63ff # v0.1.6
-          use-flakehub: false
+          use-gha-cache: enabled
+          use-flakehub: disabled
           diagnostic-endpoint: ""
       - name: Flake, module, package, and VM checks
         run: nix flake check -L --no-update-lock-file
