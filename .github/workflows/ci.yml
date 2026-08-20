@@ -1,0 +1,178 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.96"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
+        with:
+          tool: just@1.40.0
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
+        with:
+          tool: cargo-deny@0.19.9
+      - name: Authoritative workspace validation
+        run: just
+      - name: Prepare Nix VM binaries
+        run: |
+          mkdir -p artifacts/nix-binaries
+          install -Dm755 target/debug/piqueld artifacts/nix-binaries/piqueld
+          install -Dm755 target/debug/piquelctl artifacts/nix-binaries/piquelctl
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: piqueld-nix-binaries-${{ github.sha }}
+          path: artifacts/nix-binaries
+          if-no-files-found: error
+          retention-days: 7
+
+  ui-browser:
+    name: Production WASM and Chromium smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.96"
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
+        with:
+          tool: trunk@0.21.14
+      - name: Install headless Chromium
+        run: sudo apt-get update && sudo apt-get install --yes chromium
+      - name: Build production bundle
+        working-directory: apps/piqueld-ui
+        run: trunk build index.html --release --locked --public-url /
+      - name: Browser smoke
+        run: PIQUELD_BROWSER=chromium ./scripts/browser-smoke.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: piqueld-ui-${{ github.sha }}
+          path: apps/piqueld-ui/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  nix:
+    name: Nix packages and NixOS VM
+    needs: [rust, ui-browser]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: piqueld-nix-binaries-${{ github.sha }}
+          path: artifacts/nix/binary-source
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: piqueld-ui-${{ github.sha }}
+          path: artifacts/nix/ui-source
+      - name: Verify Nix VM artifacts
+        run: |
+          daemon_binary="$(find artifacts/nix/binary-source -type f -name piqueld -print -quit)"
+          cli_binary="$(find artifacts/nix/binary-source -type f -name piquelctl -print -quit)"
+          test -n "$daemon_binary"
+          test -n "$cli_binary"
+          install -Dm755 "$daemon_binary" artifacts/nix/piqueld
+          install -Dm755 "$cli_binary" artifacts/nix/piquelctl
+          ui_index="$(find artifacts/nix/ui-source -type f -name index.html -print -quit)"
+          test -n "$ui_index"
+          ui_root="${ui_index%/index.html}"
+          mkdir -p artifacts/nix/ui
+          cp -R "$ui_root"/. artifacts/nix/ui/
+          test -f artifacts/nix/ui/index.html
+      - uses: DeterminateSystems/determinate-nix-action@c70cb8ae92d68c66953db28a26a63db1665bc837 # v3.21.5
+      - uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: enabled
+          use-flakehub: disabled
+          diagnostic-endpoint: ""
+      - name: Flake, module, package, and VM checks
+        env:
+          PIQUELD_CI_ARTIFACTS: ${{ github.workspace }}/artifacts/nix
+        run: nix flake check -L --impure --no-update-lock-file
+
+  docker:
+    name: Privileged disposable Docker qualification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.96"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Start isolated loopback registry
+        run: |
+          mkdir -p artifacts/docker
+          docker run --detach --name piqueld-test-registry \
+            --publish 127.0.0.1:5000:5000 \
+            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          for _ in $(seq 1 100); do
+            if curl --fail --silent http://127.0.0.1:5000/v2/ >/dev/null; then
+              exit 0
+            fi
+            sleep 0.1
+          done
+          docker logs piqueld-test-registry >&2
+          exit 1
+      - name: Build, registry, Swarm, routing, logs, and retention
+        env:
+          PIQUELD_DOCKER_ISOLATED: "1"
+          PIQUELD_DOCKER_DISPOSABLE: "1"
+          PIQUELD_DOCKER_SOCKET: /var/run/docker.sock
+          PIQUELD_TEST_REGISTRY: 127.0.0.1:5000
+          PIQUELD_TEST_ORIGIN_PORT: "18080"
+        run: |
+          set -o pipefail
+          cargo test -p piqueld --features docker-integration \
+            --test docker_integration -- --ignored --test-threads=1 \
+            2>&1 | tee artifacts/docker/test.log
+      - name: Capture disposable Docker diagnostics
+        if: ${{ always() }}
+        run: |
+          mkdir -p artifacts/docker
+          docker info >artifacts/docker/info.txt 2>&1 || true
+          docker node ls >artifacts/docker/nodes.txt 2>&1 || true
+          docker service ls >artifacts/docker/services.txt 2>&1 || true
+          docker ps -a >artifacts/docker/containers.txt 2>&1 || true
+          docker logs piqueld-test-registry >artifacts/docker/registry.log 2>&1 || true
+          docker service logs --raw --tail 500 piqueld-traefik \
+            >artifacts/docker/traefik.log 2>&1 || true
+          docker rm --force piqueld-test-registry >/dev/null 2>&1 || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() }}
+        with:
+          name: piqueld-docker-qualification-${{ github.sha }}
+          path: artifacts/docker
+          if-no-files-found: error
+          retention-days: 7

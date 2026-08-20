@@ -341,25 +341,17 @@ impl From<BoundaryError> for ApiError {
     fn from(value: BoundaryError) -> Self {
         tracing::error!(error = ?value, "runtime boundary request failed");
         match value {
-            BoundaryError::Runtime(_) => Self::new(
-                StatusCode::BAD_GATEWAY,
-                "runtime_request_failed",
-                "runtime request failed",
-            ),
+            BoundaryError::Runtime(_) | BoundaryError::Build(_) | BoundaryError::Ingress(_) => {
+                Self::new(
+                    StatusCode::BAD_GATEWAY,
+                    "runtime_request_failed",
+                    "runtime request failed",
+                )
+            }
             BoundaryError::Compilation(_) => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "application_compilation_failed",
                 "application compilation failed",
-            ),
-            BoundaryError::Build(_) => Self::new(
-                StatusCode::BAD_GATEWAY,
-                "runtime_request_failed",
-                "runtime request failed",
-            ),
-            BoundaryError::Ingress(_) => Self::new(
-                StatusCode::BAD_GATEWAY,
-                "runtime_request_failed",
-                "runtime request failed",
             ),
             BoundaryError::Secrets(error) => error.into(),
         }

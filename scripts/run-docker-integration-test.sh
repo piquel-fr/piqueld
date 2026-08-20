@@ -61,9 +61,15 @@ for _attempt in {1..60}; do
     >/dev/null 2>&1
   then
     docker exec "$container_id" chmod 666 /piqueld-socket/docker.sock
+    # The local just target proves the foundational Plan 06C lifecycle. The
+    # full registry/Traefik qualification runs in CI with those services and
+    # its explicit environment provisioned by the workflow.
     PIQUELD_DOCKER_ISOLATED=1 \
+      PIQUELD_DOCKER_DISPOSABLE=1 \
       PIQUELD_DOCKER_SOCKET="$socket_path" \
-      cargo test -p piqueld --test docker_integration -- --ignored
+      cargo test -p piqueld --features docker-integration --test docker_integration \
+        swarm_init_create_replica_drift_restart_delete_and_volume_retention \
+        -- --ignored --test-threads=1
     exit 0
   fi
   if [[ "$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null || true)" != "true" ]]; then

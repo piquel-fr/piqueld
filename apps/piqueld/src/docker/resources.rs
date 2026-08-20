@@ -649,6 +649,10 @@ impl DockerApi for BollardDocker {
             if observed.semantically_matches(desired) {
                 return Ok(());
             }
+            eprintln!(
+                "Docker semantic mismatch for {}:\nobserved={observed:#?}\ndesired={desired:#?}",
+                desired.name
+            );
             let version = existing
                 .version
                 .and_then(|v| v.index)
