@@ -174,8 +174,10 @@ impl ApplicationState {
                 ) | (
                     Self::Degraded,
                     Self::Pending | Self::Ready | Self::Deleting | Self::Failed,
-                ) | (Self::Failed, Self::Pending | Self::Deleting)
-                    | (Self::Deleting, Self::Degraded | Self::Failed)
+                ) | (
+                    Self::Failed,
+                    Self::Pending | Self::Ready | Self::Degraded | Self::Deleting
+                ) | (Self::Deleting, Self::Degraded | Self::Failed)
             )
     }
 }
@@ -502,7 +504,7 @@ impl SqliteStore {
             )
             .fetch_optional(&pool)
             .await
-            .map_err(StoreError::schema_mismatch)?
+            .map_err(StoreError::database)?
             .ok_or(StoreError::SchemaMismatch)?;
             if u64::try_from(recorded).map_err(StoreError::schema_mismatch)? != version {
                 return Err(StoreError::SchemaMismatch);
@@ -679,7 +681,7 @@ impl SqliteStore {
 /// the `SQLite` driver during normal startup.
 fn prepare_database_path(path: &Path) -> Result<(), StoreError> {
     let parent = path.parent().ok_or_else(|| {
-        StoreError::invalid_input(std::io::Error::new(
+        StoreError::path(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "database path has no parent",
         ))
@@ -692,7 +694,7 @@ fn prepare_database_path(path: &Path) -> Result<(), StoreError> {
             Component::RootDir => current.push(Path::new("/")),
             Component::CurDir => continue,
             Component::ParentDir => {
-                return Err(StoreError::invalid_input(std::io::Error::new(
+                return Err(StoreError::path(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "database path contains a parent component",
                 )));

@@ -6,6 +6,7 @@ use super::{
     Transaction, canonical_resolved, generation_i64, now_ms, page_limit, valid_sha256,
     validate_operation_steps,
 };
+use uuid::Uuid;
 
 impl SqliteStore {
     /// Creates an application, its initial status row, and a durable operation.
@@ -413,10 +414,27 @@ impl SqliteStore {
             });
         }
         if row.delete_intent == 1 {
-            let operation =
-                Self::reset_failed_delete(&mut tx, id, expected_generation, steps, now).await?;
+            let operation = sqlx::query!(
+                r#"SELECT id AS "id!",state AS "state!" FROM operations WHERE application_id=?1 AND generation=?2 AND kind='delete' ORDER BY created_at_ms DESC,id DESC LIMIT 1"#,
+                id_value,
+                expected_generation_i64
+            )
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(StoreError::database)?
+            .ok_or(StoreError::Corrupt)?;
+            let result = match operation.state.as_str() {
+                "pending" | "running" | "recovery" => MutationResult {
+                    generation: expected_generation,
+                    operation_id: operation.id,
+                },
+                "failed" => {
+                    Self::reset_failed_delete(&mut tx, id, expected_generation, steps, now).await?
+                }
+                _ => return Err(StoreError::IllegalTransition),
+            };
             tx.commit().await.map_err(StoreError::database)?;
-            return Ok(operation);
+            return Ok(result);
         }
         let generation = expected_generation
             .checked_add(1)
@@ -474,21 +492,59 @@ impl SqliteStore {
         })
     }
 
-    /// Tombstones an application after its owned runtime resources are gone.
+    /// Tombstones an application after its delete operation has succeeded.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when the generation is invalid, the application is
-    /// not deleting, or the tombstone cannot be written.
+    /// Returns [`StoreError`] when the generation is invalid, the delete
+    /// operation has not succeeded, or the tombstone cannot be written.
     pub async fn finalize_delete(
         &self,
         id: &ApplicationId,
         generation: u64,
     ) -> Result<(), StoreError> {
         let now = now_ms();
-        let tombstone_name = format!("deleted-{}-{now}", id.as_str());
+        let mut tx = self.begin_immediate().await?;
+        Self::finalize_delete_in_transaction(&mut tx, id, generation, now).await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    pub(super) async fn finalize_delete_in_transaction(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &ApplicationId,
+        generation: u64,
+        now: i64,
+    ) -> Result<(), StoreError> {
         let id_value = id.as_str();
         let generation_i64 = generation_i64(generation)?;
+        let operation_exists = sqlx::query_scalar!(
+            r#"SELECT 1 AS "present!: i64" FROM operations WHERE application_id=?1 AND generation=?2 AND kind='delete' AND state='succeeded'"#,
+            id_value,
+            generation_i64
+        )
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+        .is_some();
+        if !operation_exists {
+            return Err(StoreError::IllegalTransition);
+        }
+
+        let tombstone_name = loop {
+            let candidate = format!("deleted-{}-{now}-{}", id.as_str(), Uuid::now_v7().simple());
+            let candidate_name = candidate.as_str();
+            let exists = sqlx::query_scalar!(
+                r#"SELECT 1 AS "present!: i64" FROM applications WHERE name=?1"#,
+                candidate_name
+            )
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(StoreError::database)?
+            .is_some();
+            if !exists {
+                break candidate;
+            }
+        };
         let changed = sqlx::query!(
             "UPDATE applications SET name=?1,deleted_at_ms=?2,updated_at_ms=?2 WHERE id=?3 AND generation=?4 AND delete_intent=1 AND deleted_at_ms IS NULL",
             tombstone_name,
@@ -496,7 +552,7 @@ impl SqliteStore {
             id_value,
             generation_i64
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?
         .rows_affected();

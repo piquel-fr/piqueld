@@ -3,7 +3,36 @@
 use piqueld::store::{ApplicationState, SCHEMA_VERSION, SqliteStore, WorkState};
 use piqueld_core::resource::{ResolutionSet, ResolvedSource, compile_application};
 use piqueld_core::{ApplicationId, InstanceId, parse_toml};
-use std::os::unix::fs::PermissionsExt;
+use sqlx::{Connection, SqliteConnection};
+use std::{os::unix::fs::PermissionsExt, path::Path};
+
+async fn mark_operation_succeeded(database: &Path, operation_id: &str) {
+    let mut connection =
+        SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))
+            .await
+            .expect("database can be inspected");
+    sqlx::query(
+        "UPDATE operations SET state='running',started_at_ms=created_at_ms,updated_at_ms=created_at_ms WHERE id=?1",
+    )
+    .bind(operation_id)
+    .execute(&mut connection)
+    .await
+    .expect("operation can be started");
+    sqlx::query(
+        "UPDATE operation_steps SET state='succeeded',started_at_ms=created_at_ms,finished_at_ms=created_at_ms,updated_at_ms=created_at_ms WHERE operation_id=?1",
+    )
+    .bind(operation_id)
+    .execute(&mut connection)
+    .await
+    .expect("operation steps can be completed");
+    sqlx::query(
+        "UPDATE operations SET state='succeeded',finished_at_ms=created_at_ms,updated_at_ms=created_at_ms WHERE id=?1",
+    )
+    .bind(operation_id)
+    .execute(&mut connection)
+    .await
+    .expect("operation can be completed");
+}
 
 fn application() -> piqueld_core::NormalizedApplication {
     parse_toml(include_str!(
@@ -39,7 +68,8 @@ fn resolved(
 #[tokio::test]
 async fn fresh_database_persists_resolved_state_and_retains_volumes() {
     let directory = tempfile::tempdir().expect("temporary directory");
-    let store = SqliteStore::open(directory.path().join("control-plane.db"))
+    let database = directory.path().join("control-plane.db");
+    let store = SqliteStore::open(&database)
         .await
         .expect("fresh database opens");
     assert_eq!(SCHEMA_VERSION, 1);
@@ -86,10 +116,17 @@ async fn fresh_database_persists_resolved_state_and_retains_volumes() {
         ApplicationState::Deleting
     );
 
+    assert!(matches!(
+        store
+            .finalize_delete(&application.id, deleted.generation)
+            .await,
+        Err(piqueld::store::StoreError::IllegalTransition)
+    ));
+    mark_operation_succeeded(&database, &deleted.operation_id).await;
     store
         .finalize_delete(&application.id, deleted.generation)
         .await
-        .expect("delete tombstone is durable");
+        .expect("delete tombstone is durable after operation success");
     assert!(matches!(
         store.get(&application.id).await,
         Err(piqueld::store::StoreError::NotFound)
@@ -172,4 +209,90 @@ async fn missing_database_parent_is_created_without_rewriting_existing_parent_mo
         .expect("existing parent metadata")
         .permissions();
     assert_eq!(before.mode(), after.mode());
+}
+
+#[tokio::test]
+async fn symlinked_database_parent_is_rejected() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let target = directory.path().join("target");
+    std::fs::create_dir(&target).expect("target directory is created");
+    let link = directory.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).expect("parent symlink is created");
+
+    let Err(error) = SqliteStore::open(link.join("control-plane.db")).await else {
+        panic!("symlinked database parent was accepted");
+    };
+    assert!(matches!(error, piqueld::store::StoreError::PathSource(_)));
+}
+
+#[tokio::test]
+async fn delete_requests_reuse_active_operations_and_reset_failed_operations() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("control-plane.db");
+    let store = SqliteStore::open(&database)
+        .await
+        .expect("fresh database opens");
+    let application = application();
+    let resolved = resolved(&application, store.instance_id());
+    store
+        .create(&application, &resolved, &["ensure_network".into()])
+        .await
+        .expect("application is created");
+    let first = store
+        .request_delete(&application.id, 1, &["remove_service".into()])
+        .await
+        .expect("delete is durable");
+
+    for state in ["pending", "running", "recovery"] {
+        let mut connection =
+            SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))
+                .await
+                .expect("database can be inspected");
+        if state == "running" {
+            sqlx::query(
+                "UPDATE operations SET state='running',started_at_ms=created_at_ms,updated_at_ms=created_at_ms WHERE id=?1",
+            )
+            .bind(&first.operation_id)
+            .execute(&mut connection)
+            .await
+            .expect("operation can be marked running");
+        } else {
+            sqlx::query(
+                "UPDATE operations SET state=?1,started_at_ms=NULL,finished_at_ms=NULL,updated_at_ms=created_at_ms WHERE id=?2",
+            )
+            .bind(state)
+            .bind(&first.operation_id)
+            .execute(&mut connection)
+            .await
+            .expect("operation can be marked queued");
+        }
+        let retry = store
+            .request_delete(&application.id, 2, &["remove_service".into()])
+            .await
+            .expect("active delete is reused");
+        assert_eq!(retry, first);
+    }
+
+    let mut connection =
+        SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))
+            .await
+            .expect("database can be inspected");
+    sqlx::query(
+        "UPDATE operations SET state='failed',error_code='docker_request_failed',error_message='request failed',updated_at_ms=created_at_ms,finished_at_ms=created_at_ms WHERE id=?1",
+    )
+    .bind(&first.operation_id)
+    .execute(&mut connection)
+    .await
+    .expect("operation can be marked failed");
+    let retry = store
+        .request_delete(&application.id, 2, &["remove_network".into()])
+        .await
+        .expect("failed delete is reset");
+    assert_eq!(retry, first);
+    let (operation, steps) = store
+        .operation_with_steps(&first.operation_id)
+        .await
+        .expect("reset delete is readable");
+    assert_eq!(operation.state, WorkState::Pending);
+    assert_eq!(steps[0].action, "remove_network");
 }

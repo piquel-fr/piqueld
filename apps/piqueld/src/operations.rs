@@ -1,6 +1,6 @@
 //! Bounded, cancellation-aware scheduling for durable operations.
 
-use crate::store::{MAX_PAGE_SIZE, Operation, SqliteStore, StoreError, WorkState};
+use crate::store::{MAX_PAGE_SIZE, Operation, OperationKind, SqliteStore, StoreError, WorkState};
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
 use tokio::{
@@ -161,14 +161,17 @@ where
 
     async fn finish_claimed(
         repository: &SqliteStore,
-        operation_id: &str,
+        operation: &Operation,
         result: Result<(), OperationError>,
     ) -> Result<(), StoreError> {
         match result {
+            Ok(()) if operation.kind == OperationKind::Delete => {
+                repository.finish_delete_operation(operation).await
+            }
             Ok(()) => {
                 repository
                     .transition_operation(
-                        operation_id,
+                        &operation.id,
                         WorkState::Running,
                         WorkState::Succeeded,
                         None,
@@ -178,7 +181,7 @@ where
             Err(OperationError::Cancelled | OperationError::Superseded) => {
                 repository
                     .transition_operation(
-                        operation_id,
+                        &operation.id,
                         WorkState::Running,
                         WorkState::Cancelled,
                         None,
@@ -188,7 +191,7 @@ where
             Err(error) => {
                 repository
                     .transition_operation(
-                        operation_id,
+                        &operation.id,
                         WorkState::Running,
                         WorkState::Failed,
                         Some(error),
@@ -295,12 +298,28 @@ where
                         },
                         result = Self::execute_claimed(&repository, &handler, &operation.id, &token) => result?,
                     };
-                    Self::finish_claimed(&repository, &operation.id, result).await?;
+                    Self::finish_claimed(&repository, &operation, result).await?;
                     Ok::<(), SchedulerError>(())
                 });
             }
+            let mut first_error = None;
             while let Some(result) = tasks.join_next().await {
-                result.map_err(SchedulerError::Task)??;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                    Err(error) => {
+                        if first_error.is_none() {
+                            first_error = Some(SchedulerError::Task(error));
+                        }
+                    }
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(error);
             }
             // Every operation in the snapshot is now terminal or recovery due to cancellation.
             if cancellation.is_cancelled() {

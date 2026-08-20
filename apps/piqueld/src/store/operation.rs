@@ -21,6 +21,39 @@ struct OperationRow {
 }
 
 impl SqliteStore {
+    /// Atomically completes a successful delete operation and hides its application.
+    pub(crate) async fn finish_delete_operation(
+        &self,
+        operation: &Operation,
+    ) -> Result<(), StoreError> {
+        let now = now_ms();
+        let generation = super::generation_i64(operation.generation)?;
+        let application_id = operation.application_id.as_str();
+        let mut tx = self.begin_immediate().await?;
+        let changed = sqlx::query!(
+            "UPDATE operations SET state='succeeded',error_code=NULL,error_message=NULL,updated_at_ms=?1,finished_at_ms=?1 WHERE id=?2 AND application_id=?3 AND generation=?4 AND kind='delete' AND state='running' AND NOT EXISTS (SELECT 1 FROM operation_steps WHERE operation_id=?2 AND state NOT IN ('succeeded','skipped'))",
+            now,
+            operation.id,
+            application_id,
+            generation
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if changed != 1 {
+            return Err(StoreError::IllegalTransition);
+        }
+        Self::finalize_delete_in_transaction(
+            &mut tx,
+            &operation.application_id,
+            operation.generation,
+            now,
+        )
+        .await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
     async fn recover_operation(&self, operation_id: &str, now: i64) -> Result<(), StoreError> {
         let mut tx = self.begin_immediate().await?;
         let changed = sqlx::query!(
