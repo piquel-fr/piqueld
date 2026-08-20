@@ -1,7 +1,8 @@
 use super::{
     ActionKind, ApplicationRepository, ApplicationState, Arc, CancellationToken, DockerApi,
     Duration, MAX_PAGE_SIZE, Notify, OperationScheduler, PlanAction, PlanRequest, ReconcileHandler,
-    SchedulerError, SqliteStore, StatusRepository, StoreError, StoredApplication, plan,
+    SchedulerError, SqliteStore, StatusRepository, StoreError, StoredApplication,
+    blocked_plan_message, plan,
 };
 
 /// Runs startup recovery, apply/delete wakes, and periodic full scans. Multiple
@@ -116,7 +117,7 @@ async fn scan_and_run<D: DockerApi>(
                             ApplicationState::Ready,
                             ApplicationState::Degraded,
                             Some(application.generation),
-                            Some("runtime reconciliation is blocked by an ownership conflict"),
+                            Some(blocked_plan_message(&runtime_plan)),
                         )
                         .await?;
                 }

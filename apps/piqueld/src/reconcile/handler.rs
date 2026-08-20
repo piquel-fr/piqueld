@@ -1,3 +1,4 @@
+use super::blocked_plan_error;
 use super::coordinator::plan_requires_execution;
 use super::{
     ApplicationRepository, ApplicationState, CancellationToken, DockerApi, Operation,
@@ -173,7 +174,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
             .await?;
         let current = plan(request, &observed);
         if current.is_blocked() {
-            return Err(OperationError::OwnershipConflict);
+            return Err(blocked_plan_error(&current));
         }
         let Some(action) = current
             .actions
@@ -339,7 +340,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
             .await?;
         let current = plan(request, &observed);
         let error = if current.is_blocked() {
-            OperationError::OwnershipConflict
+            blocked_plan_error(&current)
         } else if plan_requires_execution(&current) {
             OperationError::DeletionNotConverged
         } else {

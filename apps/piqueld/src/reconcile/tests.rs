@@ -3,8 +3,11 @@ use super::*;
 use crate::docker::SwarmState;
 use crate::store::OperationRepository;
 use crate::store::WorkState;
+use piqueld_core::planner::DiagnosticSeverity;
 use piqueld_core::resource::{DesiredNetwork, DesiredService, DesiredVolume};
-use piqueld_core::{ApplicationId, NormalizedApplication, ObservedApplication, parse_json};
+use piqueld_core::{
+    ApplicationId, NormalizedApplication, ObservedApplication, PlanDiagnostic, parse_json,
+};
 use sqlx::{
     Connection, Executor,
     sqlite::{SqliteConnectOptions, SqliteConnection},
@@ -456,6 +459,47 @@ async fn immutable_configuration_conflicts_are_never_retried() {
         .unwrap_err();
     assert_eq!(error, OperationError::DockerConfigurationConflict);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn blocked_plan_errors_preserve_ownership_and_configuration_conflicts() {
+    let immutable = piqueld_core::Plan {
+        diagnostics: vec![PlanDiagnostic {
+            code: "immutable_configuration_drift".into(),
+            severity: DiagnosticSeverity::Error,
+            resource: "piqueld-example-volume".into(),
+            message: "immutable configuration drift".into(),
+            blocking: true,
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        super::blocked_plan_error(&immutable),
+        OperationError::DockerConfigurationConflict
+    );
+    assert_eq!(
+        super::blocked_plan_message(&immutable),
+        "runtime reconciliation is blocked by immutable Docker configuration"
+    );
+
+    let ownership = piqueld_core::Plan {
+        diagnostics: vec![PlanDiagnostic {
+            code: "unowned_name_collision".into(),
+            severity: DiagnosticSeverity::Error,
+            resource: "piqueld-example-volume".into(),
+            message: "ownership conflict".into(),
+            blocking: true,
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        super::blocked_plan_error(&ownership),
+        OperationError::OwnershipConflict
+    );
+    assert_eq!(
+        super::blocked_plan_message(&ownership),
+        "runtime reconciliation is blocked by an ownership conflict"
+    );
 }
 
 #[tokio::test]

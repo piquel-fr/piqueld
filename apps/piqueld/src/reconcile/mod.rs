@@ -71,6 +71,32 @@ impl Default for RetryPolicy {
     }
 }
 
+fn has_diagnostic(plan: &piqueld_core::Plan, code: &str) -> bool {
+    plan.diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == code)
+}
+
+pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
+    if has_diagnostic(plan, "unowned_name_collision") {
+        OperationError::OwnershipConflict
+    } else if has_diagnostic(plan, "immutable_configuration_drift") {
+        OperationError::DockerConfigurationConflict
+    } else {
+        OperationError::OwnershipConflict
+    }
+}
+
+pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
+    if has_diagnostic(plan, "unowned_name_collision") {
+        "runtime reconciliation is blocked by an ownership conflict"
+    } else if has_diagnostic(plan, "immutable_configuration_drift") {
+        "runtime reconciliation is blocked by immutable Docker configuration"
+    } else {
+        "runtime reconciliation is blocked by an ownership conflict"
+    }
+}
+
 mod actions;
 mod coordinator;
 mod handler;

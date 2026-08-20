@@ -203,18 +203,21 @@ fn adapter_owned_runtime_configuration_drift_is_not_treated_as_converged() {
         },
         &observed,
     );
-    assert!(
+    assert!(!infrastructure_plan.actions.iter().any(|action| {
+        matches!(
+            action.kind,
+            ActionKind::EnsureNetwork { .. } | ActionKind::EnsureVolume { .. }
+        )
+    }));
+    assert_eq!(
         infrastructure_plan
-            .actions
+            .diagnostics
             .iter()
-            .any(|action| matches!(action.kind, ActionKind::EnsureNetwork { .. }))
+            .filter(|diagnostic| diagnostic.code == "immutable_configuration_drift")
+            .count(),
+        2
     );
-    assert!(
-        infrastructure_plan
-            .actions
-            .iter()
-            .any(|action| matches!(action.kind, ActionKind::EnsureVolume { .. }))
-    );
+    assert!(infrastructure_plan.is_blocked());
 }
 
 #[test]

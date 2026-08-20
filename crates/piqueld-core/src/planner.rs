@@ -475,6 +475,18 @@ impl Plan {
         }
     }
 
+    fn immutable_drift(&mut self, name: &str, resource: &str) {
+        self.diagnostics.push(PlanDiagnostic {
+            code: "immutable_configuration_drift".into(),
+            severity: DiagnosticSeverity::Error,
+            resource: name.into(),
+            message: format!(
+                "the {resource} configuration differs from the desired immutable settings and cannot be repaired in place"
+            ),
+            blocking: true,
+        });
+    }
+
     fn ignored(&mut self, name: &str) {
         self.diagnostics.push(PlanDiagnostic {
             code: "foreign_resource_ignored".into(),
@@ -584,16 +596,7 @@ impl Plan {
                             != relevant_network_labels(&network.labels) =>
                 {
                     ready = false;
-                    self.actions.push(PlanAction::new(
-                        ActionKind::EnsureNetwork {
-                            network: network.clone(),
-                        },
-                        ActionReason::Drift {
-                            fields: vec!["configuration".into()],
-                        },
-                        ActionRisk::Availability,
-                        true,
-                    ));
+                    self.immutable_drift(&network.name, "network");
                 }
                 Some(_) => {}
             }
@@ -637,16 +640,7 @@ impl Plan {
                 }
                 Some(found) if !found.runtime_configuration_matches => {
                     ready = false;
-                    self.actions.push(PlanAction::new(
-                        ActionKind::EnsureVolume {
-                            volume: volume.clone(),
-                        },
-                        ActionReason::Drift {
-                            fields: vec!["configuration".into()],
-                        },
-                        ActionRisk::DataAdjacent,
-                        true,
-                    ));
+                    self.immutable_drift(&volume.name, "volume");
                 }
                 Some(_) => {}
             }
