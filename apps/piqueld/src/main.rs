@@ -156,15 +156,22 @@ async fn spawn_unix_api(
     cancellation: CancellationToken,
 ) -> Result<tokio::task::JoinHandle<Result<(), std::io::Error>>> {
     if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .context("failed to create Unix socket directory")?;
         if parent == std::path::Path::new("/") {
             anyhow::bail!("Unix API socket must be inside a private directory");
         }
-        tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+        let parent_missing = match tokio::fs::symlink_metadata(parent).await {
+            Ok(_) => false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => return Err(error).context("failed to inspect Unix socket directory"),
+        };
+        tokio::fs::create_dir_all(parent)
             .await
-            .context("failed to restrict Unix socket directory permissions")?;
+            .context("failed to create Unix socket directory")?;
+        if parent_missing {
+            tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                .await
+                .context("failed to restrict Unix socket directory permissions")?;
+        }
     }
     match tokio::fs::symlink_metadata(&path).await {
         Ok(metadata) if metadata.file_type().is_socket() => {
