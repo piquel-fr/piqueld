@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use std::time::Duration;
 
-const PREPARE_TIMEOUT: Duration = Duration::from_secs(30);
+const PREPARE_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Runtime boundary backed by Docker.
 pub struct DockerRuntime<D> {
