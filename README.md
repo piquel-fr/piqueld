@@ -31,17 +31,18 @@ The supported manifest and runtime model are documented in:
 
 ## Development
 
-Use a Rust 1.96-or-newer toolchain directly or enter the reproducible shell with
-`nix develop`. The ordinary validation command is:
+Use a Rust 1.96-or-newer toolchain directly. Nix is optional; `nix develop`
+provides a reproducible development shell and the flake contains deployment
+checks. The ordinary command is:
 
 ```console
 just
 ```
 
-`just` checks formatting, lints, compiles, tests, checks documentation tests,
-audits dependencies and licenses, verifies the checked-in OpenAPI snapshot, and
-checks dependency boundaries. It does not rewrite tracked files. Regenerate
-OpenAPI explicitly with:
+`just` regenerates the checked-in OpenAPI snapshot and then checks formatting,
+lints, compiles, tests, checks documentation tests, audits dependencies and
+licenses, verifies the snapshot, and checks dependency boundaries. Use
+`just validate` for read-only validation. Regenerate OpenAPI explicitly with:
 
 ```console
 just generate-openapi

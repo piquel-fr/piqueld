@@ -1,7 +1,16 @@
-# Default validation is read-only with respect to tracked generated files.
-default: validate
+# The default command regenerates checked-in output and then validates it.
+default: validate generate-openapi
 
 validate: fmt-check lint check test doc-test deny openapi-check boundary
+
+build:
+    @cargo build --workspace --locked
+
+run:
+    @cargo run --package piqueld
+
+fmt:
+    @cargo fmt --all
 
 fmt-check:
     @cargo fmt --all -- --check
