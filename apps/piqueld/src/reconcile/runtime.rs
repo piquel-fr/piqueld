@@ -52,7 +52,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                 async move {
                     let Source::Image { image } = source;
                     let digest_reference =
-                    tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, docker.resolve_image(&image))
+                        tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, docker.resolve_image(&image))
                             .await
                             .map_err(|_| {
                                 BoundaryError::Runtime(DockerError::Unavailable("resolve image"))
