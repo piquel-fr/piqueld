@@ -428,7 +428,7 @@ impl SqliteStore {
                     generation: expected_generation,
                     operation_id: operation.id,
                 },
-                "failed" => {
+                "failed" | "cancelled" => {
                     Self::reset_failed_delete(&mut tx, id, expected_generation, steps, now).await?
                 }
                 _ => return Err(StoreError::IllegalTransition),
@@ -689,11 +689,11 @@ impl SqliteStore {
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::Corrupt)?;
-        if operation.state != "failed" {
+        if !matches!(operation.state.as_str(), "failed" | "cancelled") {
             return Err(StoreError::IllegalTransition);
         }
         sqlx::query!(
-            "UPDATE operations SET state='pending',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE id=?2 AND state='failed'",
+            "UPDATE operations SET state='pending',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE id=?2 AND state IN ('failed','cancelled')",
             now,
             operation.id
         )

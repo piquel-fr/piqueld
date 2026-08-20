@@ -226,7 +226,7 @@ async fn symlinked_database_parent_is_rejected() {
 }
 
 #[tokio::test]
-async fn delete_requests_reuse_active_operations_and_reset_failed_operations() {
+async fn delete_requests_reuse_active_operations_and_reset_terminal_operations() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("control-plane.db");
     let store = SqliteStore::open(&database)
@@ -273,26 +273,32 @@ async fn delete_requests_reuse_active_operations_and_reset_failed_operations() {
         assert_eq!(retry, first);
     }
 
-    let mut connection =
-        SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))
+    for (state, action) in [
+        ("failed", "remove_network"),
+        ("cancelled", "remove_service"),
+    ] {
+        let mut connection =
+            SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))
+                .await
+                .expect("database can be inspected");
+        sqlx::query(
+            "UPDATE operations SET state=?1,error_code=NULL,error_message=NULL,updated_at_ms=created_at_ms,finished_at_ms=created_at_ms WHERE id=?2",
+        )
+        .bind(state)
+        .bind(&first.operation_id)
+        .execute(&mut connection)
+        .await
+        .expect("operation can be marked terminal");
+        let retry = store
+            .request_delete(&application.id, 2, &[action.into()])
             .await
-            .expect("database can be inspected");
-    sqlx::query(
-        "UPDATE operations SET state='failed',error_code='docker_request_failed',error_message='request failed',updated_at_ms=created_at_ms,finished_at_ms=created_at_ms WHERE id=?1",
-    )
-    .bind(&first.operation_id)
-    .execute(&mut connection)
-    .await
-    .expect("operation can be marked failed");
-    let retry = store
-        .request_delete(&application.id, 2, &["remove_network".into()])
-        .await
-        .expect("failed delete is reset");
-    assert_eq!(retry, first);
-    let (operation, steps) = store
-        .operation_with_steps(&first.operation_id)
-        .await
-        .expect("reset delete is readable");
-    assert_eq!(operation.state, WorkState::Pending);
-    assert_eq!(steps[0].action, "remove_network");
+            .expect("terminal delete is reset");
+        assert_eq!(retry, first);
+        let (operation, steps) = store
+            .operation_with_steps(&first.operation_id)
+            .await
+            .expect("reset delete is readable");
+        assert_eq!(operation.state, WorkState::Pending);
+        assert_eq!(steps[0].action, action);
+    }
 }
