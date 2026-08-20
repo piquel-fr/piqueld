@@ -65,7 +65,6 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             .await?;
             let resolutions = ResolutionSet {
                 sources: sources.into_iter().collect(),
-                ..Default::default()
             };
             let resolved = compile_application(application, self.instance_id.clone(), &resolutions)
                 .map_err(BoundaryError::Compilation)?;
