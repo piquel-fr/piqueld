@@ -9,7 +9,7 @@ use thiserror::Error;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Complete host-specific daemon bootstrap configuration.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DaemonConfig {
     /// Local API listeners.
@@ -20,17 +20,6 @@ pub struct DaemonConfig {
     pub docker: DockerConfig,
     /// Reconciliation scheduling limits.
     pub reconciliation: ReconciliationConfig,
-}
-
-impl Default for DaemonConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            database: DatabaseConfig::default(),
-            docker: DockerConfig::default(),
-            reconciliation: ReconciliationConfig::default(),
-        }
-    }
 }
 
 impl DaemonConfig {

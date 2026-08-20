@@ -1,6 +1,6 @@
 use super::{
-    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, INGRESS_NETWORK, INSTANCE_LABEL,
-    MANAGED_LABEL, ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name,
+    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, INSTANCE_LABEL, MANAGED_LABEL,
+    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name,
 };
 
 impl BollardDocker {
@@ -15,8 +15,7 @@ impl BollardDocker {
     ) -> bool {
         let readable_application = app.as_str().chars().take(42).collect::<String>();
         let prefix = format!("piqueld-{readable_application}-");
-        name == INGRESS_NETWORK
-            || name.starts_with(&prefix)
+        name.starts_with(&prefix)
             || labels
                 .get(APPLICATION_LABEL)
                 .is_some_and(|value| value == app.as_str())

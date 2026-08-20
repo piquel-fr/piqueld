@@ -1,9 +1,8 @@
 use super::{
-    BollardDocker, DesiredService, DockerError, EndpointPortConfig, EndpointPortConfigProtocolEnum,
-    EndpointSpec, EndpointSpecModeEnum, HEALTH_RETRIES, HealthCheck, HealthConfig, Limit, Mount,
-    MountTypeEnum, NANOSECONDS_PER_MILLISECOND, NANOSECONDS_PER_SECOND, NetworkAttachmentConfig,
-    RESTART_DELAY, ResourceLimits, ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated,
-    ServiceSpecUpdateConfig, ServiceSpecUpdateConfigFailureActionEnum,
+    BollardDocker, DesiredService, DockerError, HEALTH_RETRIES, HealthCheck, HealthConfig, Limit,
+    Mount, MountTypeEnum, NANOSECONDS_PER_MILLISECOND, NANOSECONDS_PER_SECOND,
+    NetworkAttachmentConfig, RESTART_DELAY, ResourceLimits, ServiceSpec, ServiceSpecMode,
+    ServiceSpecModeReplicated, ServiceSpecUpdateConfig, ServiceSpecUpdateConfigFailureActionEnum,
     ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec, TaskSpecResources,
     TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
 };
@@ -23,20 +22,6 @@ impl BollardDocker {
                     replicas: Some(i64::from(desired.replicas)),
                 }),
                 ..Default::default()
-            }),
-            endpoint_spec: (!desired.ports.is_empty()).then(|| EndpointSpec {
-                mode: Some(EndpointSpecModeEnum::VIP),
-                ports: Some(
-                    desired
-                        .ports
-                        .iter()
-                        .map(|port| EndpointPortConfig {
-                            protocol: Some(EndpointPortConfigProtocolEnum::TCP),
-                            target_port: Some(i64::from(*port)),
-                            ..Default::default()
-                        })
-                        .collect(),
-                ),
             }),
             update_config: Some(BollardDocker::update_config()),
             ..Default::default()

@@ -40,8 +40,11 @@ impl BollardDocker {
             .map_err(|error| DockerError::unavailable("connect to Docker Engine", error))
     }
 
-    /// Sends service specifications through the Unix socket so Docker's
-    /// `Healthcheck` spelling is normalized at the narrow wire boundary.
+    /// Performs one raw service request through Docker's Unix socket.
+    ///
+    /// Bollard's service model uses a different health-check key spelling than
+    /// the Swarm API. Keeping the request and response bytes here lets the
+    /// adapter translate that key and inspect Docker's exact update error.
     async fn service_request(
         &self,
         method: Method,
@@ -70,6 +73,8 @@ impl BollardDocker {
             .map_err(|_| {
                 ServiceWireError::Public(DockerError::Request("open Docker service connection"))
             })?;
+        // Hyper returns a connection driver separately from the request sender;
+        // it must run concurrently for the sender to make progress.
         tokio::spawn(async move {
             let _ = connection.await;
         });
@@ -170,6 +175,8 @@ impl BollardDocker {
         }
     }
 
+    /// Returns whether Docker reported the one transient update conflict that
+    /// is safe for the caller to retry with a refreshed service version.
     fn update_out_of_sequence(error: &ServiceWireError) -> bool {
         let ServiceWireError::Response { status, body } = error else {
             return false;
@@ -183,6 +190,7 @@ impl BollardDocker {
                 })
     }
 
+    /// Renames the health-check key in either a service spec or a service response.
     fn rename_swarm_healthcheck(value: &mut serde_json::Value, from: &str, to: &str) {
         let spec = if value.get("Spec").is_some() {
             value.get_mut("Spec").expect("checked service spec")
@@ -201,6 +209,8 @@ impl BollardDocker {
         }
     }
 
+    /// Fetches the local nodes and rejects anything other than one ready,
+    /// reachable, active manager.
     pub(super) async fn validate_single_node_manager(&self) -> Result<(), DockerError> {
         let nodes = Self::map_request(
             "list Swarm nodes",

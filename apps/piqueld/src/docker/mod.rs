@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use bollard::{
     Docker,
     models::{
-        EndpointPortConfig, EndpointPortConfigProtocolEnum, EndpointSpec, EndpointSpecModeEnum,
         HealthConfig, Ipam, Limit, Mount, MountTypeEnum, NetworkAttachmentConfig,
         NetworkCreateRequest, ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated,
         ServiceSpecRollbackConfig, ServiceSpecRollbackConfigFailureActionEnum,
@@ -26,8 +25,8 @@ use futures_util::TryStreamExt;
 use piqueld_core::manifest::{HealthCheck, ResourceLimits};
 use piqueld_core::resource::{
     APPLICATION_LABEL, Convergence, DesiredMount, DesiredNetwork, DesiredService, DesiredVolume,
-    INGRESS_NETWORK, INSTANCE_LABEL, MANAGED_LABEL, ObservedNetwork, ObservedService, ObservedTask,
-    ObservedVolume, SERVICE_LABEL, SPEC_HASH_LABEL, TaskDiagnostic, TaskState,
+    INSTANCE_LABEL, MANAGED_LABEL, ObservedNetwork, ObservedService, ObservedTask, ObservedVolume,
+    SERVICE_LABEL, SPEC_HASH_LABEL, TaskDiagnostic, TaskState,
 };
 use piqueld_core::{ApplicationId, ObservedApplication, ResourceKind, docker_resource_name};
 use std::{
