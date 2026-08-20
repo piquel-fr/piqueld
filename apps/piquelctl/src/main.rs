@@ -3,11 +3,12 @@
 use clap::{Args, Parser, Subcommand};
 use piqueld_client::{
     ApplicationLogsOptions, ApplicationView, BuildView, Client, ClientError, ContainerLogView,
-    ListApplicationsOptions, ListSecretsOptions, OperationView, Page, PlanView, SecretMetadata,
-    Source, ValidationErrors,
+    ListApplicationsOptions, ListSecretsOptions, MAX_STATE_ARCHIVE_BYTES, OperationView, Page,
+    PlanView, SecretMetadata, Source, StateExportMode, ValidationErrors,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fmt,
@@ -18,7 +19,7 @@ use std::{
     process::ExitCode,
     time::Duration,
 };
-use tokio::{fs, signal, time};
+use tokio::{fs, io::AsyncWriteExt, signal, time};
 use uuid::Uuid;
 
 const DEFAULT_SOCKET: &str = "/run/piqueld/piqueld.sock";
@@ -87,6 +88,10 @@ enum Command {
     },
     /// Read one bounded historical log snapshot for an application.
     Logs(LogsArgs),
+    /// Export one application manifest or the complete binary state archive.
+    Export(ExportArgs),
+    /// Confirm and transactionally import a complete binary state archive.
+    Import(ImportArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -156,6 +161,46 @@ struct SecretDeleteArgs {
     name: String,
 
     /// Skip the interactive confirmation prompt.
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ExportMode {
+    Portable,
+    Encrypted,
+}
+
+#[derive(Debug, Args)]
+struct ExportArgs {
+    /// Application name or ID; omit to export the complete control-plane state.
+    #[arg(long)]
+    application: Option<String>,
+
+    /// Output file. `-` means stdout; state archives refuse a terminal stdout.
+    #[arg(long, value_name = "PATH")]
+    output: Option<PathBuf>,
+
+    /// Secret mode for complete state exports.
+    #[arg(long, value_enum, default_value = "portable")]
+    mode: ExportMode,
+
+    /// Include resolved source metadata in application exports.
+    #[arg(long)]
+    include_resolved: bool,
+
+    /// Allow replacing an existing output file.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Debug, Args)]
+struct ImportArgs {
+    /// State archive to import.
+    #[arg(value_name = "PATH")]
+    file: PathBuf,
+
+    /// Skip the destructive replacement confirmation prompt.
     #[arg(long)]
     yes: bool,
 }
@@ -351,6 +396,8 @@ async fn run(cli: &Cli) -> Result<()> {
         Command::Secret { command } => secret(cli, &client, command).await,
         Command::Build { command } => build(cli, &client, command).await,
         Command::Logs(args) => logs(cli, &client, args).await,
+        Command::Export(args) => export_command(cli, &client, args).await,
+        Command::Import(args) => import_command(cli, &client, args).await,
     }
 }
 
@@ -743,6 +790,116 @@ async fn list_secrets(cli: &Cli, client: &Client) -> Result<()> {
     Ok(())
 }
 
+async fn export_command(cli: &Cli, client: &Client, args: &ExportArgs) -> Result<()> {
+    if args.application.is_some() {
+        if !matches!(args.mode, ExportMode::Portable) {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                "--mode applies only to complete state exports",
+            ));
+        }
+        let application = resolve_application(
+            client,
+            args.application.as_deref().expect("application is present"),
+        )
+        .await?;
+        let document = client
+            .export_application(application.application.id.as_str(), args.include_resolved)
+            .await?;
+        let output = write_text_output(args.output.as_deref(), &document, args.force).await?;
+        if cli.json {
+            emit_json(&json!({
+                "kind": "application",
+                "application_id": application.application.id,
+                "bytes": document.len(),
+                "output": output,
+            }))?;
+        } else if let Some(output) = output {
+            eprintln!("exported application manifest to {}", output.display());
+        }
+        return Ok(());
+    }
+    if args.include_resolved {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            "--include-resolved requires --application",
+        ));
+    }
+    if cli.json && args.output.is_none() {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            "binary state export with --json requires --output",
+        ));
+    }
+    if args.output.is_none() && io::stdout().is_terminal() {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            "refusing to write a binary state archive to a terminal; pass --output",
+        ));
+    }
+    let archive = client
+        .export_state(match args.mode {
+            ExportMode::Portable => StateExportMode::Portable,
+            ExportMode::Encrypted => StateExportMode::Encrypted,
+        })
+        .await?;
+    let archive_digest = digest(&archive);
+    let output = write_binary_output(args.output.as_deref(), &archive, args.force).await?;
+    if cli.json {
+        emit_json(&json!({
+            "kind": "state",
+            "mode": match args.mode { ExportMode::Portable => "portable", ExportMode::Encrypted => "encrypted" },
+            "archive_digest": archive_digest,
+            "bytes": archive.len(),
+            "output": output,
+        }))?;
+    } else if let Some(output) = output {
+        eprintln!(
+            "exported state archive to {} ({archive_digest})",
+            output.display()
+        );
+    } else {
+        eprintln!("state archive: {archive_digest}");
+    }
+    Ok(())
+}
+
+async fn import_command(cli: &Cli, client: &Client, args: &ImportArgs) -> Result<()> {
+    let archive = read_archive(&args.file).await?;
+    let archive_digest = digest(&archive);
+    let confirmation = client.prepare_state_import(&archive_digest).await?;
+    confirm(
+        args.yes,
+        &format!(
+            "Replace all control-plane state with {} ({})? [y/N] ",
+            args.file.display(),
+            archive_digest
+        ),
+    )?;
+    let result = client.import_state(archive, &confirmation.token).await?;
+    if cli.json {
+        emit_json(&result)?;
+    } else {
+        println!(
+            "imported {} application(s) and {} secret(s); operation {}",
+            result.applications_imported, result.secrets_imported, result.operation_id
+        );
+        if !result.dependencies.missing_secret_values.is_empty() {
+            eprintln!(
+                "missing secret values: {}",
+                result.dependencies.missing_secret_values.join(", ")
+            );
+        }
+        if !result.dependencies.retained_volumes_to_verify.is_empty() {
+            eprintln!(
+                "retained volumes to verify: {}",
+                result.dependencies.retained_volumes_to_verify.join(", ")
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn set_secret(cli: &Cli, client: &Client, args: &SecretSetArgs) -> Result<()> {
     let existing = match client.secret(&args.name).await {
         Ok(secret) => Some(secret),
@@ -808,6 +965,120 @@ async fn delete_secret(cli: &Cli, client: &Client, args: &SecretDeleteArgs) -> R
         println!("secret {} deleted", metadata.name);
     }
     Ok(())
+}
+
+async fn read_archive(path: &Path) -> Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path).await.map_err(|error| {
+        CliError::new(
+            ErrorKind::Input,
+            format!("could not read archive {}: {error}", path.display()),
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            format!("archive path {} is not a regular file", path.display()),
+        ));
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_STATE_ARCHIVE_BYTES as u64 {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            format!("archive {} exceeds the input safety limit", path.display()),
+        ));
+    }
+    let bytes = fs::read(path).await.map_err(|error| {
+        CliError::new(
+            ErrorKind::Input,
+            format!("could not read archive {}: {error}", path.display()),
+        )
+    })?;
+    if bytes.len() > MAX_STATE_ARCHIVE_BYTES {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            "archive exceeds the input safety limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+async fn write_binary_output(
+    path: Option<&Path>,
+    bytes: &[u8],
+    force: bool,
+) -> Result<Option<PathBuf>> {
+    let Some(path) = path else {
+        io::stdout().write_all(bytes).map_err(|error| {
+            CliError::new(
+                ErrorKind::General,
+                format!("could not write archive: {error}"),
+            )
+        })?;
+        return Ok(None);
+    };
+    if path == Path::new("-") {
+        io::stdout().write_all(bytes).map_err(|error| {
+            CliError::new(
+                ErrorKind::General,
+                format!("could not write archive: {error}"),
+            )
+        })?;
+        return Ok(None);
+    }
+    write_file(path, bytes, force).await?;
+    Ok(Some(path.to_owned()))
+}
+
+async fn write_text_output(
+    path: Option<&Path>,
+    text: &str,
+    force: bool,
+) -> Result<Option<PathBuf>> {
+    let Some(path) = path else {
+        print!("{text}");
+        return Ok(None);
+    };
+    if path == Path::new("-") {
+        print!("{text}");
+        return Ok(None);
+    }
+    write_file(path, text.as_bytes(), force).await?;
+    Ok(Some(path.to_owned()))
+}
+
+async fn write_file(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true);
+    if force {
+        options.truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    let mut file = options.open(path).await.map_err(|error| {
+        CliError::new(
+            ErrorKind::Input,
+            format!(
+                "could not create output {}: {error}; pass --force to replace it",
+                path.display()
+            ),
+        )
+    })?;
+    file.write_all(bytes).await.map_err(|error| {
+        CliError::new(
+            ErrorKind::General,
+            format!("could not write output {}: {error}", path.display()),
+        )
+    })?;
+    file.flush().await.map_err(|error| {
+        CliError::new(
+            ErrorKind::General,
+            format!("could not flush output {}: {error}", path.display()),
+        )
+    })?;
+    Ok(())
+}
+
+fn digest(value: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(value))
 }
 
 async fn prepare_plan(
@@ -1435,6 +1706,25 @@ mod tests {
             vec!["piquelctl", "build", "show", "build-01"],
             vec!["piquelctl", "build", "operation", "operation-01"],
             vec!["piquelctl", "logs", "notes"],
+            vec![
+                "piquelctl",
+                "export",
+                "--application",
+                "notes",
+                "--output",
+                "application.toml",
+                "--include-resolved",
+            ],
+            vec![
+                "piquelctl",
+                "export",
+                "--output",
+                "state.tar",
+                "--mode",
+                "encrypted",
+                "--force",
+            ],
+            vec!["piquelctl", "import", "state.tar", "--yes"],
         ];
         for arguments in cases {
             Cli::try_parse_from(arguments).expect("command parses");

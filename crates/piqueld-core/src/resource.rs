@@ -859,20 +859,20 @@ fn compile_traefik_labels(
     let mut found = false;
     for route in routes {
         found = true;
-        let router = router_name(&app.id, &route.host, service, route.port);
-        let backend = format!("{router}-backend");
+        let router_name = router_name(&app.id, &route.host, service, route.port);
+        let backend = format!("{router_name}-backend");
         labels.insert("traefik.enable".into(), "true".into());
         labels.insert("traefik.swarm.network".into(), ingress_network.into());
         labels.insert(
-            format!("traefik.http.routers.{router}.rule"),
+            format!("traefik.http.routers.{router_name}.rule"),
             format!("Host(`{}`)", route.host),
         );
         labels.insert(
-            format!("traefik.http.routers.{router}.entrypoints"),
+            format!("traefik.http.routers.{router_name}.entrypoints"),
             "web".into(),
         );
         labels.insert(
-            format!("traefik.http.routers.{router}.service"),
+            format!("traefik.http.routers.{router_name}.service"),
             backend.clone(),
         );
         labels.insert(

@@ -216,7 +216,7 @@ impl IngressApi for TraefikController {
                 .await
                 .map_err(|_| IngressError::Request)?;
         }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let deadline = tokio::time::Instant::now() + Duration::from_mins(1);
         loop {
             let status = self.status(desired).await?;
             if status == InfrastructureState::Ready || tokio::time::Instant::now() >= deadline {

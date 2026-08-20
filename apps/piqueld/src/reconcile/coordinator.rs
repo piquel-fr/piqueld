@@ -4,8 +4,18 @@ use super::{
     ReconcileHandler, RetryPolicy, SchedulerError, SecretService, SqliteStore, StoreError,
     StoredApplication, blocked_plan_message,
 };
-use crate::store::ApplicationStatus;
-use piqueld_core::{plan, resource::ObservedApplication};
+use piqueld_core::plan;
+
+/// Runtime dependencies and timing for the reconciliation coordinator.
+#[derive(Clone)]
+pub struct CoordinatorOptions {
+    /// Managed ingress boundary and its desired configuration.
+    pub ingress: Option<(Arc<dyn IngressApi>, IngressSpec)>,
+    /// Interval between full drift scans.
+    pub interval: Duration,
+    /// Logical-secret service used for recovery before runtime planning.
+    pub secret_service: Option<Arc<SecretService>>,
+}
 
 /// Runs startup recovery, apply/delete wakes, and periodic full scans. Multiple
 /// wakes collapse through `Notify`, keeping polling work bounded.
@@ -17,14 +27,22 @@ pub async fn run_coordinator<D: DockerApi>(
     scheduler: Arc<OperationScheduler<ReconcileHandler<D>>>,
     store: Arc<SqliteStore>,
     docker: Arc<D>,
-    ingress: Option<(Arc<dyn IngressApi>, IngressSpec)>,
+    options: CoordinatorOptions,
     wake: Arc<Notify>,
-    interval: Duration,
     cancellation: CancellationToken,
-    secret_service: Option<Arc<SecretService>>,
 ) -> Result<(), SchedulerError> {
+    let CoordinatorOptions {
+        ingress,
+        interval,
+        secret_service,
+    } = options;
     loop {
-        match scheduler.recover_and_run(cancellation.child_token()).await {
+        let recovery = {
+            let maintenance = store.maintenance_gate();
+            let _lease = maintenance.read().await;
+            scheduler.recover_and_run(cancellation.child_token()).await
+        };
+        match recovery {
             Ok(_) => break,
             Err(error) => {
                 tracing::error!(%error, "coordinator startup recovery failed; retrying");
@@ -103,11 +121,13 @@ async fn scan_and_run<D: DockerApi>(
     cancellation: &CancellationToken,
     secret_service: Option<&SecretService>,
 ) -> Result<(), SchedulerError> {
+    let maintenance = store.maintenance_gate();
+    let _lease = maintenance.read().await;
     if let Some((controller, spec)) = ingress {
         match controller.ensure(spec).await {
             Ok(InfrastructureState::Ready) => {}
             Ok(InfrastructureState::Degraded { diagnostic }) => {
-                tracing::warn!(%diagnostic, "managed ingress is degraded")
+                tracing::warn!(%diagnostic, "managed ingress is degraded");
             }
             Err(error) => tracing::warn!(%error, "managed ingress reconciliation failed"),
         }
@@ -117,13 +137,9 @@ async fn scan_and_run<D: DockerApi>(
     loop {
         let page = store.list(cursor.as_deref(), MAX_PAGE_SIZE).await?;
         for application in page.items {
-            if cancellation.is_cancelled() {
+            if scan_application(store, docker, &application, cancellation, secret_service).await? {
                 return Ok(());
             }
-            if should_defer_secret_recovery(secret_service, &application).await {
-                continue;
-            }
-            scan_application(store, docker, &application).await?;
         }
         let Some(next_cursor) = page.next_cursor else {
             break;
@@ -140,21 +156,34 @@ async fn scan_application<D: DockerApi>(
     store: &SqliteStore,
     docker: &D,
     application: &StoredApplication,
-) -> Result<(), StoreError> {
-    if application.delete_intent {
-        retry_delete(store, docker, application).await
-    } else {
-        scan_reconcile_application(store, docker, application).await
+    cancellation: &CancellationToken,
+    secret_service: Option<&SecretService>,
+) -> Result<bool, SchedulerError> {
+    if cancellation.is_cancelled() {
+        return Ok(true);
     }
-}
-
-async fn scan_reconcile_application<D: DockerApi>(
-    store: &SqliteStore,
-    docker: &D,
-    application: &StoredApplication,
-) -> Result<(), StoreError> {
-    let Some((observed, status)) = load_reconcile_context(store, docker, application).await? else {
-        return Ok(());
+    if application.delete_intent {
+        retry_delete(store, docker, application).await?;
+        return Ok(false);
+    }
+    if should_defer_secret_recovery(secret_service, application).await
+        || store
+            .active_reconcile(&application.application.id, application.generation)
+            .await?
+            .is_some()
+    {
+        return Ok(false);
+    }
+    let observed = match docker.observe(&application.application.id).await {
+        Ok(observed) => observed,
+        Err(error) => {
+            tracing::warn!(
+                application_id = %application.application.id,
+                %error,
+                "runtime observation failed during drift scan"
+            );
+            return Ok(false);
+        }
     };
     let runtime_plan = plan(
         &PlanRequest::Reconcile {
@@ -162,11 +191,14 @@ async fn scan_reconcile_application<D: DockerApi>(
         },
         &observed,
     );
+    let status = store.status(&application.application.id).await?;
     if runtime_plan.is_blocked() {
-        return record_blocked_status(store, application, &runtime_plan, status.state).await;
+        record_blocked_status(store, application, &runtime_plan, status.state).await?;
+        return Ok(false);
     }
     if !plan_requires_execution(&runtime_plan) {
-        return record_recovered_status(store, application, status.state).await;
+        record_recovered_status(store, application, status.state).await?;
+        return Ok(false);
     }
     let steps = runtime_plan
         .actions
@@ -178,35 +210,9 @@ async fn scan_reconcile_application<D: DockerApi>(
         .await
     {
         Ok(_) | Err(StoreError::IllegalTransition | StoreError::GenerationConflict { .. }) => {}
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     }
-    Ok(())
-}
-
-async fn load_reconcile_context<D: DockerApi>(
-    store: &SqliteStore,
-    docker: &D,
-    application: &StoredApplication,
-) -> Result<Option<(ObservedApplication, ApplicationStatus)>, StoreError> {
-    let active_reconcile = store
-        .active_reconcile(&application.application.id, application.generation)
-        .await?;
-    if active_reconcile.is_some() {
-        return Ok(None);
-    }
-    let observed = match docker.observe(&application.application.id).await {
-        Ok(observed) => observed,
-        Err(error) => {
-            tracing::warn!(
-                application_id = %application.application.id,
-                %error,
-                "runtime observation failed during drift scan"
-            );
-            return Ok(None);
-        }
-    };
-    let status = store.status(&application.application.id).await?;
-    Ok(Some((observed, status)))
+    Ok(false)
 }
 
 async fn record_blocked_status(
@@ -280,7 +286,7 @@ async fn retry_delete<D: DockerApi>(
     store: &SqliteStore,
     docker: &D,
     application: &StoredApplication,
-) -> Result<(), StoreError> {
+) -> Result<(), SchedulerError> {
     let resolved = &application.resolved;
     let observed = match docker.observe(&application.application.id).await {
         Ok(observed) => observed,
@@ -318,7 +324,7 @@ async fn retry_delete<D: DockerApi>(
         .await
     {
         Ok(_) | Err(StoreError::IllegalTransition | StoreError::GenerationConflict { .. }) => {}
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     }
     Ok(())
 }

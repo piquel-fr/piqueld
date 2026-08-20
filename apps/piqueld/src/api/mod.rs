@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use axum::{
     Extension, Router,
     body::Body,
-    extract::{Request, State},
+    extract::{DefaultBodyLimit, Request, State},
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response, sse::Event},
@@ -35,6 +35,7 @@ use crate::{
     proxy::IngressError,
     secrets::{SecretError, SecretService},
     store::{SqliteStore, StoreError, StoredApplication},
+    transfer::{StateTransferService, TransferError},
 };
 
 mod applications;
@@ -43,6 +44,7 @@ mod openapi;
 mod operations;
 mod secrets;
 mod system;
+mod transfer;
 mod ui;
 
 pub use openapi::openapi_document;
@@ -147,19 +149,28 @@ pub struct ApiState {
     secret_service: Option<Arc<SecretService>>,
     instance_id: String,
     create_lock: Arc<tokio::sync::Mutex<()>>,
+    transfer: StateTransferService,
+    import_confirmations:
+        Arc<tokio::sync::Mutex<std::collections::BTreeMap<String, (String, i64)>>>,
+    import_lock: Arc<tokio::sync::Mutex<()>>,
     ui_dir: std::path::PathBuf,
 }
 
 impl ApiState {
     /// Creates API state backed by the given store and runtime adapter.
     #[must_use]
-    pub fn new(store: Arc<SqliteStore>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
+    pub fn new(store: &Arc<SqliteStore>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
         Self {
             instance_id: store.instance_id().to_owned(),
-            store,
+            store: Arc::clone(store),
             runtime,
             secret_service: None,
             create_lock: Arc::new(tokio::sync::Mutex::new(())),
+            transfer: StateTransferService::new(Arc::clone(store)),
+            import_confirmations: Arc::new(tokio::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
+            import_lock: Arc::new(tokio::sync::Mutex::new(())),
             ui_dir: default_ui_dir(),
         }
     }
@@ -174,8 +185,20 @@ impl ApiState {
     /// Enables logical-secret API operations.
     #[must_use]
     pub fn with_secret_service(mut self, service: Arc<SecretService>) -> Self {
+        self.transfer.set_secret_service(Arc::clone(&service));
         self.secret_service = Some(service);
         self
+    }
+
+    fn ordinary_lease(&self) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, ApiError> {
+        let gate = self.store.maintenance_gate();
+        gate.try_read_owned().map_err(|_| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "state_import_maintenance",
+                "ordinary mutations and reconciliation are paused for state import",
+            )
+        })
     }
 
     pub(crate) fn secret_service(&self) -> Option<&Arc<SecretService>> {
@@ -387,6 +410,53 @@ impl From<SecretError> for ApiError {
     }
 }
 
+impl From<TransferError> for ApiError {
+    fn from(value: TransferError) -> Self {
+        match value {
+            TransferError::Malformed => Self::new(
+                StatusCode::BAD_REQUEST,
+                "archive_malformed",
+                "state archive is malformed",
+            ),
+            TransferError::Limit => Self::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "archive_limit",
+                "state archive exceeds a safety limit",
+            ),
+            TransferError::Checksum => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "archive_checksum",
+                "state archive checksum verification failed",
+            ),
+            TransferError::Schema => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "archive_schema",
+                "state archive schema is unsupported",
+            ),
+            TransferError::Validation => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "archive_validation",
+                "state archive failed domain validation",
+            ),
+            TransferError::Confirmation => Self::new(
+                StatusCode::PRECONDITION_FAILED,
+                "replace_confirmation_invalid",
+                "replace confirmation is missing, expired, or does not match this archive",
+            ),
+            TransferError::Maintenance => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "state_import_maintenance",
+                "state import maintenance is already active",
+            ),
+            TransferError::Storage => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "state_transfer_failed",
+                "state transfer storage failed",
+            ),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = ErrorBody {
@@ -425,6 +495,7 @@ fn build_router(state: ApiState, serve_ui: bool) -> Router {
     };
     router
         .with_state(state)
+        .layer(DefaultBodyLimit::max(crate::transfer::MAX_ARCHIVE_BYTES))
         .layer(Extension(Arc::new(openapi)))
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
         .layer(middleware::from_fn(bind_error_request_id))
@@ -452,6 +523,14 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::status))
         .routes(routes!(applications::logs))
         .routes(routes!(applications::events))
+        .routes(routes!(
+            transfer::export_state,
+            transfer::prepare_state_import
+        ))
+        .routes(routes!(
+            transfer::import_state,
+            transfer::export_application
+        ))
         .routes(routes!(operations::get))
         .routes(routes!(builds::get))
         .routes(routes!(builds::operation_builds))

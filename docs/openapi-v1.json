@@ -2035,6 +2035,83 @@
         ],
         "type": "object"
       },
+      "Envelope_StateImportConfirmation": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Single-use confirmation bound to one exact archive digest.",
+            "properties": {
+              "archive_digest": {
+                "description": "Digest bound to this confirmation.",
+                "type": "string"
+              },
+              "expires_at_ms": {
+                "description": "Expiration time in Unix milliseconds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "token": {
+                "description": "Header value accepted by the import endpoint.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "token",
+              "archive_digest",
+              "expires_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_StateImportResult": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Result of a transactional state replacement.",
+            "properties": {
+              "applications_imported": {
+                "description": "Number of applications restored.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "archive_digest": {
+                "description": "SHA-256 digest of the imported archive bytes.",
+                "type": "string"
+              },
+              "dependencies": {
+                "$ref": "#/components/schemas/ImportDependencyReport",
+                "description": "Dependencies requiring operator follow-up."
+              },
+              "operation_id": {
+                "description": "Auditable transfer operation ID.",
+                "type": "string"
+              },
+              "secrets_imported": {
+                "description": "Number of logical secrets restored.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "operation_id",
+              "archive_digest",
+              "applications_imported",
+              "secrets_imported",
+              "dependencies"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_SystemStatus": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -2338,6 +2415,85 @@
         },
         "required": [
           "status"
+        ],
+        "type": "object"
+      },
+      "ImportDependencyReport": {
+        "description": "Dependencies an operator must verify after restoring state.",
+        "properties": {
+          "git_sources_to_resolve": {
+            "description": "Git sources that require a fresh source/registry check.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "image_references_to_verify": {
+            "description": "Image references that must be verified before deployment.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "incompatible_secret_keys": {
+            "description": "Encryption key IDs that need operator verification.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "missing_secret_values": {
+            "description": "Logical secrets whose values were not present in the archive.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "notes": {
+            "description": "Safe operator-facing caveats.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ownership_compatible": {
+            "description": "Whether resolved ownership can be retained for this target.",
+            "type": "boolean"
+          },
+          "retained_volumes_to_verify": {
+            "description": "Named volumes retained by the control-plane state.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "runtime_secrets_to_recreate": {
+            "description": "Runtime Swarm secret names that will be recreated.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source_instance_id": {
+            "description": "Source archive instance identity.",
+            "type": "string"
+          },
+          "target_instance_id": {
+            "description": "Current target instance identity.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_instance_id",
+          "target_instance_id",
+          "ownership_compatible",
+          "missing_secret_values",
+          "incompatible_secret_keys",
+          "image_references_to_verify",
+          "git_sources_to_resolve",
+          "runtime_secrets_to_recreate",
+          "retained_volumes_to_verify",
+          "notes"
         ],
         "type": "object"
       },
@@ -2862,6 +3018,20 @@
           "application_id",
           "proposed_generation",
           "plan"
+        ],
+        "type": "object"
+      },
+      "PrepareStateImportRequest": {
+        "additionalProperties": false,
+        "description": "Confirmation returned before a destructive state replacement.",
+        "properties": {
+          "archive_digest": {
+            "description": "`sha256:` digest of the exact archive bytes that will be imported.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "archive_digest"
         ],
         "type": "object"
       },
@@ -3567,6 +3737,65 @@
             "type": "object"
           }
         ]
+      },
+      "StateImportConfirmation": {
+        "description": "Single-use confirmation bound to one exact archive digest.",
+        "properties": {
+          "archive_digest": {
+            "description": "Digest bound to this confirmation.",
+            "type": "string"
+          },
+          "expires_at_ms": {
+            "description": "Expiration time in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "token": {
+            "description": "Header value accepted by the import endpoint.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "archive_digest",
+          "expires_at_ms"
+        ],
+        "type": "object"
+      },
+      "StateImportResult": {
+        "description": "Result of a transactional state replacement.",
+        "properties": {
+          "applications_imported": {
+            "description": "Number of applications restored.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "archive_digest": {
+            "description": "SHA-256 digest of the imported archive bytes.",
+            "type": "string"
+          },
+          "dependencies": {
+            "$ref": "#/components/schemas/ImportDependencyReport",
+            "description": "Dependencies requiring operator follow-up."
+          },
+          "operation_id": {
+            "description": "Auditable transfer operation ID.",
+            "type": "string"
+          },
+          "secrets_imported": {
+            "description": "Number of logical secrets restored.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "operation_id",
+          "archive_digest",
+          "applications_imported",
+          "secrets_imported",
+          "dependencies"
+        ],
+        "type": "object"
       },
       "SystemStatus": {
         "description": "Current control-plane status.",
@@ -4453,6 +4682,81 @@
           }
         },
         "summary": "Watch application status events"
+      }
+    },
+    "/api/v1/applications/{id}/export": {
+      "get": {
+        "operationId": "exportApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Include resolved immutable metadata as a comment without secret values.",
+            "in": "query",
+            "name": "include_resolved",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/toml": {}
+            },
+            "description": "Canonical TOML manifest"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Export one canonical application manifest"
       }
     },
     "/api/v1/applications/{id}/logs": {
@@ -5581,6 +5885,199 @@
           }
         },
         "summary": "Rotate an encrypted logical secret"
+      }
+    },
+    "/api/v1/state/export": {
+      "get": {
+        "operationId": "exportState",
+        "parameters": [
+          {
+            "description": "Archive mode; portable is the default and excludes encrypted envelopes.",
+            "in": "query",
+            "name": "mode",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/StateExportMode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.piqueld.state-v1+tar": {}
+            },
+            "description": "Binary state archive"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Export a deterministic checksummed state archive"
+      }
+    },
+    "/api/v1/state/import": {
+      "post": {
+        "operationId": "importState",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Replace-Confirmation",
+            "required": true,
+            "schema": {
+              "maxLength": 72,
+              "minLength": 72,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/vnd.piqueld.state-v1+tar": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_StateImportResult"
+                }
+              }
+            },
+            "description": "Import result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Validate and transactionally replace control-plane state"
+      }
+    },
+    "/api/v1/state/import/confirm": {
+      "post": {
+        "operationId": "prepareStateImport",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrepareStateImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_StateImportConfirmation"
+                }
+              }
+            },
+            "description": "Confirmation"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Create a short-lived confirmation bound to archive bytes"
       }
     },
     "/api/v1/system/status": {

@@ -11,7 +11,7 @@ use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::operations::OperationScheduler;
 use piqueld::proxy::{IngressApi, IngressSpec, TraefikController};
-use piqueld::reconcile::{DockerRuntime, ReconcileHandler, run_coordinator};
+use piqueld::reconcile::{CoordinatorOptions, DockerRuntime, ReconcileHandler, run_coordinator};
 use piqueld::registry::RegistryClient;
 use piqueld::secrets::{MasterKey, SecretService};
 use piqueld::store::SqliteStore;
@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
         .ui_dir
         .clone()
         .unwrap_or_else(piqueld::config::default_ui_dir);
-    let mut state = ApiState::new(Arc::clone(&store), runtime).with_ui_dir(ui_dir);
+    let mut state = ApiState::new(&store, runtime).with_ui_dir(ui_dir);
     if let Some(service) = &secret_service {
         state = state.with_secret_service(Arc::clone(service));
     }
@@ -130,11 +130,13 @@ async fn main() -> Result<()> {
             scheduler,
             Arc::clone(&store),
             Arc::clone(&docker),
-            Some((ingress_controller, ingress_spec)),
+            CoordinatorOptions {
+                ingress: Some((ingress_controller, ingress_spec)),
+                interval: scan_interval,
+                secret_service,
+            },
             Arc::clone(&wake),
-            scan_interval,
             controller_token,
-            secret_service,
         )
         .await;
         controller_cancellation.cancel();
@@ -157,8 +159,17 @@ async fn main() -> Result<()> {
     .await?;
     let unix_api = spawn_unix_api(config.server.unix_socket, state, cancellation.clone()).await?;
 
-    piqueld::run_until_cancelled(cancellation).await?;
+    await_workers(cancellation, signal_task, tcp_api, unix_api, controller).await
+}
 
+async fn await_workers(
+    cancellation: CancellationToken,
+    signal_task: tokio::task::JoinHandle<Result<(), piqueld::RuntimeError>>,
+    tcp_api: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    unix_api: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    controller: tokio::task::JoinHandle<Result<(), piqueld::operations::SchedulerError>>,
+) -> Result<()> {
+    piqueld::run_until_cancelled(cancellation).await?;
     signal_task.await.context("shutdown task failed")??;
     tcp_api
         .await
