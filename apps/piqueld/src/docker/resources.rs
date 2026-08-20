@@ -1,11 +1,10 @@
 use super::{
     APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder,
-    DesiredNetwork,
-    DesiredService, DesiredVolume, DockerApi, DockerError, HashMap, InspectNetworkOptions,
-    InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
-    ListTasksOptions, ListVolumesOptionsBuilder, NetworkCreateRequest, ObservedApplication,
-    ObservedNetwork, ObservedVolume, SERVICE_LABEL, SwarmInitRequest, SwarmState, TryStreamExt,
-    VolumeCreateOptions, async_trait,
+    DesiredNetwork, DesiredService, DesiredVolume, DockerApi, DockerError, HashMap,
+    InspectNetworkOptions, InspectServiceOptions, Ipam, ListNetworksOptionsBuilder,
+    ListServicesOptionsBuilder, ListTasksOptions, ListVolumesOptionsBuilder, NetworkCreateRequest,
+    ObservedApplication, ObservedNetwork, ObservedVolume, SERVICE_LABEL, SwarmInitRequest,
+    SwarmState, TryStreamExt, VolumeCreateOptions, async_trait,
 };
 use piqueld_core::resource::image_repository;
 

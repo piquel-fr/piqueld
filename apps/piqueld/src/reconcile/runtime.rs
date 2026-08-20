@@ -46,15 +46,13 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             async move {
                 let Source::Image { image } = source;
                 let digest_reference = docker.resolve_image(&image).await?;
-                Ok::<_, BoundaryError>(
-                    (
-                        name,
-                        ResolvedSource::Image {
-                            requested: image,
-                            digest_reference,
-                        },
-                    ),
-                )
+                Ok::<_, BoundaryError>((
+                    name,
+                    ResolvedSource::Image {
+                        requested: image,
+                        digest_reference,
+                    },
+                ))
             }
         }))
         .buffer_unordered(4)
@@ -62,7 +60,6 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         .await?;
         let resolutions = ResolutionSet {
             sources: sources.into_iter().collect(),
-            ..Default::default()
         };
         let resolved = compile_application(application, self.instance_id.clone(), &resolutions)
             .map_err(BoundaryError::Compilation)?;

@@ -175,7 +175,7 @@ impl ApplicationState {
                     Self::Degraded,
                     Self::Pending | Self::Ready | Self::Deleting | Self::Failed,
                 ) | (Self::Failed, Self::Pending | Self::Deleting)
-                | (Self::Deleting, Self::Degraded | Self::Failed)
+                    | (Self::Deleting, Self::Degraded | Self::Failed)
             )
     }
 }

@@ -14,9 +14,7 @@ use piqueld_core::{
     compile_application,
     manifest::Source,
     planner::ActionKind,
-    resource::{
-        APPLICATION_LABEL, Convergence, INSTANCE_LABEL, MANAGED_LABEL, ResolvedSource,
-    },
+    resource::{APPLICATION_LABEL, Convergence, INSTANCE_LABEL, MANAGED_LABEL, ResolvedSource},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
