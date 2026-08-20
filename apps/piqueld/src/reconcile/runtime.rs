@@ -8,6 +8,7 @@ use futures_util::{StreamExt, TryStreamExt, stream};
 use std::time::Duration;
 
 const PREPARE_TIMEOUT: Duration = Duration::from_mins(5);
+const DOCKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runtime boundary backed by Docker.
 pub struct DockerRuntime<D> {
@@ -50,7 +51,12 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                 let docker = Arc::clone(&docker);
                 async move {
                     let Source::Image { image } = source;
-                    let digest_reference = docker.resolve_image(&image).await?;
+                    let digest_reference =
+                    tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, docker.resolve_image(&image))
+                            .await
+                            .map_err(|_| {
+                                BoundaryError::Runtime(DockerError::Unavailable("resolve image"))
+                            })??;
                     Ok::<_, BoundaryError>((
                         name,
                         ResolvedSource::Image {
@@ -68,7 +74,12 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             };
             let resolved = compile_application(application, self.instance_id.clone(), &resolutions)
                 .map_err(BoundaryError::Compilation)?;
-            let observed = self.docker.observe(&application.id).await?;
+            let observed =
+                tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, self.docker.observe(&application.id))
+                    .await
+                    .map_err(|_| {
+                        BoundaryError::Runtime(DockerError::Unavailable("observe application"))
+                    })??;
             Ok(PreparedApplication { resolved, observed })
         })
         .await
