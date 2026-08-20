@@ -90,6 +90,20 @@ pub enum ActionKind {
         /// Requested mutable image reference.
         reference: String,
     },
+    /// Resolve a Git source before its image is built.
+    ResolveGit {
+        /// Service whose repository must be resolved.
+        service: String,
+        /// HTTPS repository URL.
+        repository: String,
+        /// Requested Git reference.
+        reference: String,
+    },
+    /// Build and publish a Git source.
+    BuildImage {
+        /// Service whose source must be built.
+        service: String,
+    },
     /// Ensure a desired network exists.
     EnsureNetwork {
         /// Network state to create or verify.
@@ -158,6 +172,8 @@ impl ActionKind {
     pub fn name(&self) -> &'static str {
         match self {
             Self::ResolveImage { .. } => "resolve_image",
+            Self::ResolveGit { .. } => "resolve_git",
+            Self::BuildImage { .. } => "build_image",
             Self::EnsureNetwork { .. } => "ensure_network",
             Self::EnsureVolume { .. } => "ensure_volume",
             Self::EnsureSecret { .. } => "ensure_secret",
@@ -178,6 +194,8 @@ impl fmt::Display for ActionKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (verb, resource) = match self {
             Self::ResolveImage { service, .. } => ("RESOLVE IMAGE", service.as_str()),
+            Self::ResolveGit { service, .. } => ("RESOLVE GIT", service.as_str()),
+            Self::BuildImage { service } => ("BUILD IMAGE", service.as_str()),
             Self::EnsureNetwork { network } => ("ENSURE NETWORK", network.name.as_str()),
             Self::EnsureVolume { volume } => ("ENSURE VOLUME", volume.name.as_str()),
             Self::EnsureSecret { secret } => ("ENSURE SECRET", secret.logical_name.as_str()),
@@ -403,6 +421,28 @@ impl Plan {
                                 false,
                             )
                         }
+                        ResolutionRequirement::ResolveGit {
+                            service,
+                            repository,
+                            reference,
+                        } => PlanAction::new(
+                            ActionKind::ResolveGit {
+                                service: service.clone(),
+                                repository: repository.clone(),
+                                reference: reference.clone(),
+                            },
+                            ActionReason::ResolutionRequired,
+                            ActionRisk::None,
+                            false,
+                        ),
+                        ResolutionRequirement::BuildAndPush { service } => PlanAction::new(
+                            ActionKind::BuildImage {
+                                service: service.clone(),
+                            },
+                            ActionReason::ResolutionRequired,
+                            ActionRisk::None,
+                            false,
+                        ),
                         ResolutionRequirement::ProvideSecretGeneration { logical_name } => {
                             PlanAction::new(
                                 ActionKind::AwaitSecretGeneration {

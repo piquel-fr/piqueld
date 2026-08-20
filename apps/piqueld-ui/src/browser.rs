@@ -311,6 +311,11 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals) -> Vie
             let name = service.name.clone();
             let image = match &service.source {
                 Source::Image { image } => image.clone(),
+                Source::Git {
+                    repository,
+                    reference,
+                    ..
+                } => format!("git:{repository}#{reference}"),
             };
             let replicas = service.replicas;
             view! {

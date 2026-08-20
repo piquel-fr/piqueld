@@ -18,6 +18,8 @@ piquelctl secret list
 piquelctl secret set <name> --stdin
 piquelctl secret set <name> --file <private-file>
 piquelctl secret delete <name>
+piquelctl build show <build-id>
+piquelctl build operation <operation-id>
 ```
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit loopback
@@ -50,6 +52,8 @@ written to stderr, so stdout remains valid JSON.
 | `secret list` | `{ "items": [SecretMetadata] }` |
 | `secret set` | `SecretMetadata` (metadata only) |
 | `secret delete` | `{ "deleted": true, "name": "..." }` |
+| `build show` | `BuildView` (includes application and operation IDs) |
+| `build operation` | `Page<BuildView>` |
 
 The DTO fields and error envelope are defined by the versioned API and the
 `piqueld-client` crate. CLI errors are reported on stderr and never mixed into
@@ -81,6 +85,11 @@ printed in output, included in errors, or returned by the API. `secret list`
 shows metadata and references only. `secret delete` requires confirmation (or
 `--yes`) and refuses locally when the secret is still referenced by an
 application service.
+
+Build visibility is intentionally small: `build show` reports one durable build
+and its owning application/operation, while `build operation` lists the builds
+attached to an operation. Build logs and follow/watch behavior remain deferred
+to later feature increments.
 
 The commonly useful exit codes are 0 for success, 1 for a general error, 2 for
 usage or input errors, 3 for generation conflicts, 4 for unavailable or timed

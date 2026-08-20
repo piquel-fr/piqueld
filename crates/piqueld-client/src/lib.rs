@@ -2,6 +2,8 @@
 
 /// Application CRUD and planning endpoints.
 pub mod applications;
+/// Source-build status and log endpoints.
+pub mod builds;
 #[cfg(not(target_arch = "wasm32"))]
 mod openapi;
 /// Operation inspection endpoints.
@@ -17,6 +19,7 @@ pub use applications::{
     ListApplicationsOptions, ObservedApplicationView, ObservedServiceView, PlanApplicationRequest,
     PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
 };
+pub use builds::{BuildLogView, BuildView};
 pub use operations::{OperationStepView, OperationView};
 pub use piqueld_core::manifest::Source;
 pub use piqueld_core::{ValidatedApplication, ValidationErrors};

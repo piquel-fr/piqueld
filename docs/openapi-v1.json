@@ -55,6 +55,56 @@
             "type": "object"
           },
           {
+            "description": "Resolve a Git source before its image is built.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "resolve_git"
+                ],
+                "type": "string"
+              },
+              "reference": {
+                "description": "Requested Git reference.",
+                "type": "string"
+              },
+              "repository": {
+                "description": "HTTPS repository URL.",
+                "type": "string"
+              },
+              "service": {
+                "description": "Service whose repository must be resolved.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "service",
+              "repository",
+              "reference",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Build and publish a Git source.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "build_image"
+                ],
+                "type": "string"
+              },
+              "service": {
+                "description": "Service whose source must be built.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "service",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
             "description": "Ensure a desired network exists.",
             "properties": {
               "action": {
@@ -644,6 +694,130 @@
         ],
         "type": "object"
       },
+      "BuildLogView": {
+        "description": "One redacted source-build log entry.",
+        "properties": {
+          "build_id": {
+            "description": "Owning build identifier.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Redacted log message.",
+            "type": "string"
+          },
+          "sequence": {
+            "description": "Monotonic build-local cursor.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timestamp_ms": {
+            "description": "Log timestamp in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "build_id",
+          "sequence",
+          "timestamp_ms",
+          "message"
+        ],
+        "type": "object"
+      },
+      "BuildView": {
+        "description": "Registry-verified source build status.",
+        "properties": {
+          "application_id": {
+            "description": "Owning application identifier.",
+            "type": "string"
+          },
+          "build_key": {
+            "description": "Build identity hash, when an artifact row exists.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "context_hash": {
+            "description": "Deterministic context hash, when an artifact row exists.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at_ms": {
+            "description": "Creation timestamp in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "finished_at_ms": {
+            "description": "Completion timestamp in Unix milliseconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Stable build identifier.",
+            "type": "string"
+          },
+          "image_digest": {
+            "description": "Immutable registry digest reference.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_reference": {
+            "description": "Mutable registry tag.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "description": "Owning operation identifier.",
+            "type": "string"
+          },
+          "service_name": {
+            "description": "Logical service name.",
+            "type": "string"
+          },
+          "source_commit": {
+            "description": "Resolved source commit.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "Current durable build state.",
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "description": "Last update timestamp in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "verified": {
+            "description": "Whether the output is registry verified.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "operation_id",
+          "application_id",
+          "service_name",
+          "state",
+          "verified",
+          "created_at_ms",
+          "updated_at_ms"
+        ],
+        "type": "object"
+      },
       "CreateApplicationRequest": {
         "additionalProperties": false,
         "description": "Request to create an application.",
@@ -1149,6 +1323,108 @@
         ],
         "type": "object"
       },
+      "Envelope_BuildView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Registry-verified source build status.",
+            "properties": {
+              "application_id": {
+                "description": "Owning application identifier.",
+                "type": "string"
+              },
+              "build_key": {
+                "description": "Build identity hash, when an artifact row exists.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "context_hash": {
+                "description": "Deterministic context hash, when an artifact row exists.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at_ms": {
+                "description": "Creation timestamp in Unix milliseconds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "finished_at_ms": {
+                "description": "Completion timestamp in Unix milliseconds.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "id": {
+                "description": "Stable build identifier.",
+                "type": "string"
+              },
+              "image_digest": {
+                "description": "Immutable registry digest reference.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "image_reference": {
+                "description": "Mutable registry tag.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "operation_id": {
+                "description": "Owning operation identifier.",
+                "type": "string"
+              },
+              "service_name": {
+                "description": "Logical service name.",
+                "type": "string"
+              },
+              "source_commit": {
+                "description": "Resolved source commit.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "description": "Current durable build state.",
+                "type": "string"
+              },
+              "updated_at_ms": {
+                "description": "Last update timestamp in Unix milliseconds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "verified": {
+                "description": "Whether the output is registry verified.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "operation_id",
+              "application_id",
+              "service_name",
+              "state",
+              "verified",
+              "created_at_ms",
+              "updated_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_OperationView": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -1288,6 +1564,188 @@
                     "generation",
                     "spec_hash",
                     "delete_intent",
+                    "created_at_ms",
+                    "updated_at_ms"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_Page_BuildLogView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Cursor-paginated API response.",
+            "properties": {
+              "items": {
+                "description": "Items in this page.",
+                "items": {
+                  "description": "One redacted source-build log entry.",
+                  "properties": {
+                    "build_id": {
+                      "description": "Owning build identifier.",
+                      "type": "string"
+                    },
+                    "message": {
+                      "description": "Redacted log message.",
+                      "type": "string"
+                    },
+                    "sequence": {
+                      "description": "Monotonic build-local cursor.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "timestamp_ms": {
+                      "description": "Log timestamp in Unix milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "build_id",
+                    "sequence",
+                    "timestamp_ms",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_Page_BuildView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Cursor-paginated API response.",
+            "properties": {
+              "items": {
+                "description": "Items in this page.",
+                "items": {
+                  "description": "Registry-verified source build status.",
+                  "properties": {
+                    "application_id": {
+                      "description": "Owning application identifier.",
+                      "type": "string"
+                    },
+                    "build_key": {
+                      "description": "Build identity hash, when an artifact row exists.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "context_hash": {
+                      "description": "Deterministic context hash, when an artifact row exists.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "created_at_ms": {
+                      "description": "Creation timestamp in Unix milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "finished_at_ms": {
+                      "description": "Completion timestamp in Unix milliseconds.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "id": {
+                      "description": "Stable build identifier.",
+                      "type": "string"
+                    },
+                    "image_digest": {
+                      "description": "Immutable registry digest reference.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "image_reference": {
+                      "description": "Mutable registry tag.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation_id": {
+                      "description": "Owning operation identifier.",
+                      "type": "string"
+                    },
+                    "service_name": {
+                      "description": "Logical service name.",
+                      "type": "string"
+                    },
+                    "source_commit": {
+                      "description": "Resolved source commit.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "state": {
+                      "description": "Current durable build state.",
+                      "type": "string"
+                    },
+                    "updated_at_ms": {
+                      "description": "Last update timestamp in Unix milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "verified": {
+                      "description": "Whether the output is registry verified.",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "operation_id",
+                    "application_id",
+                    "service_name",
+                    "state",
+                    "verified",
                     "created_at_ms",
                     "updated_at_ms"
                   ],
@@ -2294,7 +2752,7 @@
         "type": "object"
       },
       "ResolvedSource": {
-        "description": "Immutable image resolution used by the Docker runtime.",
+        "description": "Immutable source resolution used by the Docker runtime.",
         "oneOf": [
           {
             "description": "A requested image resolved to an immutable repository digest.",
@@ -2316,6 +2774,56 @@
             },
             "required": [
               "requested",
+              "digest_reference",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A Git source built and verified as an immutable registry image.",
+            "properties": {
+              "commit": {
+                "description": "Commit checked out by the builder.",
+                "type": "string"
+              },
+              "context": {
+                "description": "Relative build context selected by the manifest.",
+                "type": "string"
+              },
+              "digest_reference": {
+                "description": "Registry-verified immutable image reference.",
+                "type": "string"
+              },
+              "dockerfile": {
+                "description": "Relative Dockerfile selected by the manifest.",
+                "type": "string"
+              },
+              "registry_reference": {
+                "description": "Mutable tag used to publish the build.",
+                "type": "string"
+              },
+              "repository": {
+                "description": "HTTPS repository URL selected by the manifest.",
+                "type": "string"
+              },
+              "requested_reference": {
+                "description": "Git reference selected by the manifest.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "git"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository",
+              "requested_reference",
+              "commit",
+              "context",
+              "dockerfile",
+              "registry_reference",
               "digest_reference",
               "type"
             ],
@@ -2699,6 +3207,41 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "A Git checkout built and pushed to the configured registry.",
+            "properties": {
+              "context": {
+                "description": "Relative build context within the checkout.",
+                "type": "string"
+              },
+              "dockerfile": {
+                "description": "Relative Dockerfile path within the context.",
+                "type": "string"
+              },
+              "reference": {
+                "description": "Git branch, tag, or ref to fetch.",
+                "type": "string"
+              },
+              "repository": {
+                "description": "HTTPS repository URL.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "git"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository",
+              "reference",
+              "context",
+              "dockerfile",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -2721,6 +3264,38 @@
             },
             "required": [
               "image",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Fetch a Git repository and build its Dockerfile.",
+            "properties": {
+              "context": {
+                "description": "Relative build context within the checkout.",
+                "type": "string"
+              },
+              "dockerfile": {
+                "description": "Relative Dockerfile path within the context.",
+                "type": "string"
+              },
+              "reference": {
+                "description": "Git branch, tag, or ref to fetch.",
+                "type": "string"
+              },
+              "repository": {
+                "description": "HTTPS repository URL.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "git"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository",
               "type"
             ],
             "type": "object"
@@ -3887,6 +4462,108 @@
         "summary": "Get application status"
       }
     },
+    "/api/v1/builds/{id}": {
+      "get": {
+        "operationId": "getBuild",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_BuildView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          }
+        },
+        "summary": "Get source build status"
+      }
+    },
+    "/api/v1/builds/{id}/logs": {
+      "get": {
+        "operationId": "getBuildLogs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return entries after this sequence number.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum number of entries.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "format": "int32",
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_BuildLogView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          }
+        },
+        "summary": "Read source build logs"
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "operationId": "openApiDocument",
@@ -3963,6 +4640,43 @@
           }
         },
         "summary": "Get an operation"
+      }
+    },
+    "/api/v1/operations/{id}/builds": {
+      "get": {
+        "operationId": "getOperationBuilds",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_BuildView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiErrorResponse"
+          }
+        },
+        "summary": "List builds for an operation"
       }
     },
     "/api/v1/secrets": {

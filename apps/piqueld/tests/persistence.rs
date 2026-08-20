@@ -1,6 +1,9 @@
 //! Fresh-database coverage for the supported durable lifecycle.
 
-use piqueld::store::{ApplicationState, SCHEMA_VERSION, SqliteStore, WorkState};
+use piqueld::store::{
+    ApplicationState, BuildArtifactRepository, BuildRepository, SCHEMA_VERSION, SqliteStore,
+    WorkState,
+};
 use piqueld_core::resource::{ResolutionSet, ResolvedSource, compile_application};
 use piqueld_core::{ApplicationId, InstanceId, parse_toml};
 use sqlx::{Connection, SqliteConnection};
@@ -73,7 +76,7 @@ async fn fresh_database_persists_resolved_state_and_retains_volumes() {
     let store = SqliteStore::open(&database)
         .await
         .expect("fresh database opens");
-    assert_eq!(SCHEMA_VERSION, 2);
+    assert_eq!(SCHEMA_VERSION, 3);
 
     let application = application();
     let resolved = resolved(&application, store.instance_id());
@@ -350,4 +353,48 @@ async fn delete_requests_reuse_active_operations_and_reset_terminal_operations()
         assert_eq!(operation.state, WorkState::Pending);
         assert_eq!(steps[0].action, action);
     }
+}
+
+#[tokio::test]
+async fn verified_build_output_and_bounded_logs_are_durable() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let store = SqliteStore::open(directory.path().join("control-plane.db"))
+        .await
+        .expect("fresh database opens");
+    let application = application();
+    let resolved = resolved(&application, store.instance_id());
+    let mutation = store
+        .create(&application, &resolved, &["build_image".into()])
+        .await
+        .expect("application is created");
+    let build = store
+        .record_prepared_build(
+            &mutation.operation_id,
+            &application.id,
+            "web",
+            &"a".repeat(40),
+            "127.0.0.1:5000/instance/app/web:tag",
+            &format!("127.0.0.1:5000/instance/app/web@sha256:{}", "b".repeat(64)),
+            &format!("sha256:{}", "c".repeat(64)),
+            &format!("sha256:{}", "d".repeat(64)),
+            &[piqueld::build::BuildLogEntry {
+                sequence: 1,
+                timestamp_ms: 1,
+                message: "build complete".into(),
+            }],
+        )
+        .await
+        .expect("verified build is recorded");
+    assert_eq!(build.state, WorkState::Succeeded);
+    assert_eq!(
+        store
+            .builds_for_operation(&mutation.operation_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let artifact = store.build_artifact(&build.id).await.unwrap();
+    assert!(artifact.verified);
+    assert_eq!(store.build_logs(&build.id, 0, 10).await.unwrap().len(), 1);
 }

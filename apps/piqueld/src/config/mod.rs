@@ -19,6 +19,8 @@ pub struct DaemonConfig {
     pub database: DatabaseConfig,
     /// Docker Engine connection and bootstrap policy.
     pub docker: DockerConfig,
+    /// Local OCI registry endpoint used for built images.
+    pub registry: RegistryConfig,
     /// Reconciliation scheduling limits.
     pub reconciliation: ReconciliationConfig,
     /// References to credentials kept outside the database and configuration.
@@ -69,7 +71,21 @@ impl DaemonConfig {
         }
         absolute_file("database.path", &self.database.path)?;
         absolute_file("docker.socket", &self.docker.socket)?;
+        if self.registry.address.port() == 0 {
+            return Err(ConfigError::Invalid(
+                "registry.address port must be greater than zero".into(),
+            ));
+        }
+        if !self.registry.address.ip().is_loopback() {
+            return Err(ConfigError::Invalid(
+                "registry.address must use a loopback address".into(),
+            ));
+        }
+        absolute_directory("registry.data_dir", &self.registry.data_dir)?;
         if let Some(reference) = &self.credentials.encryption_key {
+            reference.validate()?;
+        }
+        if let Some(reference) = &self.credentials.git_token {
             reference.validate()?;
         }
         if self.server.http_listen.port() == 0 {
@@ -84,6 +100,7 @@ impl DaemonConfig {
         }
         if self.reconciliation.scan_interval_seconds == 0
             || self.reconciliation.max_parallel_operations == 0
+            || self.reconciliation.max_parallel_builds == 0
         {
             return Err(ConfigError::Invalid(
                 "reconciliation interval and concurrency limit must be greater than zero".into(),
@@ -180,6 +197,25 @@ impl Default for DockerConfig {
     }
 }
 
+/// Local OCI registry configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RegistryConfig {
+    /// Loopback registry endpoint used for built images.
+    pub address: SocketAddr,
+    /// Persistent directory reserved for registry data.
+    pub data_dir: PathBuf,
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            address: "127.0.0.1:5000".parse().expect("constant socket address"),
+            data_dir: PathBuf::from("/var/lib/piqueld/registry"),
+        }
+    }
+}
+
 /// Reconciliation scheduling limits.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -188,6 +224,18 @@ pub struct ReconciliationConfig {
     pub scan_interval_seconds: u64,
     /// Global cap on concurrently mutating application operations.
     pub max_parallel_operations: usize,
+    /// Global cap on concurrent image builds.
+    pub max_parallel_builds: usize,
+}
+
+impl Default for ReconciliationConfig {
+    fn default() -> Self {
+        Self {
+            scan_interval_seconds: 60,
+            max_parallel_operations: 4,
+            max_parallel_builds: 1,
+        }
+    }
 }
 
 /// References to credentials owned by systemd or a protected host file.
@@ -196,6 +244,8 @@ pub struct ReconciliationConfig {
 pub struct CredentialsConfig {
     /// Optional external master-encryption-key reference.
     pub encryption_key: Option<CredentialReference>,
+    /// Optional protected HTTPS Git bearer-token reference.
+    pub git_token: Option<CredentialReference>,
 }
 
 /// A credential source that contains a reference, never inline secret material.
@@ -253,15 +303,6 @@ impl fmt::Debug for CredentialReference {
                 .debug_struct("SystemdCredential")
                 .field("name", name)
                 .finish(),
-        }
-    }
-}
-
-impl Default for ReconciliationConfig {
-    fn default() -> Self {
-        Self {
-            scan_interval_seconds: 60,
-            max_parallel_operations: 4,
         }
     }
 }

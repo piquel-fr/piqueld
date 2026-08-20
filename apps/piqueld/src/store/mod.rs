@@ -4,6 +4,7 @@
 //! compile-time checked repository queries.
 
 mod application;
+mod build;
 mod operation;
 mod secret;
 mod status;
@@ -11,6 +12,7 @@ mod status;
 pub(crate) use secret::{SecretDeleteResult, SecretMetadataRow, SecretWrite};
 
 use crate::operations::OperationError;
+use async_trait::async_trait;
 use piqueld_core::{
     ApplicationId, NormalizedApplication, ResolutionSet, compile_application,
     resource::ResolvedApplication,
@@ -446,6 +448,134 @@ pub struct OperationStep {
     pub finished_at_ms: Option<i64>,
 }
 
+/// Durable source build row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Build {
+    /// Stable build identifier.
+    pub id: String,
+    /// Owning application operation.
+    pub operation_id: String,
+    /// Application whose service is being built.
+    pub application_id: ApplicationId,
+    /// Logical service name.
+    pub service_name: String,
+    /// Current build lifecycle state.
+    pub state: WorkState,
+    /// Resolved Git commit, when the source was fetched.
+    pub source_commit: Option<String>,
+    /// Mutable registry tag pushed by the build.
+    pub image_reference: Option<String>,
+    /// Registry-verified immutable image reference.
+    pub image_digest: Option<String>,
+    /// Stable failure code, when present.
+    pub error_code: Option<String>,
+    /// Safe failure message, when present.
+    pub error_message: Option<String>,
+    /// Creation timestamp in Unix milliseconds.
+    pub created_at_ms: i64,
+    /// Last update timestamp in Unix milliseconds.
+    pub updated_at_ms: i64,
+    /// Start timestamp in Unix milliseconds.
+    pub started_at_ms: Option<i64>,
+    /// Completion timestamp in Unix milliseconds.
+    pub finished_at_ms: Option<i64>,
+}
+
+/// Build identity and context hash persisted with a build.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildArtifact {
+    /// Owning build identifier.
+    pub build_id: String,
+    /// Canonical build identity hash.
+    pub build_key: String,
+    /// Deterministic tar context hash.
+    pub context_hash: String,
+    /// Whether the output has been verified by the registry.
+    pub verified: bool,
+    /// Verification timestamp in Unix milliseconds.
+    pub verified_at_ms: Option<i64>,
+}
+
+/// One bounded build log entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildLog {
+    /// Owning build identifier.
+    pub build_id: String,
+    /// Monotonic build-local sequence number.
+    pub sequence: u64,
+    /// Log timestamp in Unix milliseconds.
+    pub timestamp_ms: i64,
+    /// Redacted log message.
+    pub message: String,
+}
+
+/// Durable build lifecycle persistence contract.
+#[async_trait]
+pub trait BuildRepository: Send + Sync {
+    /// Creates a pending build for a service in an active operation.
+    async fn create_build(
+        &self,
+        operation_id: &str,
+        application_id: &ApplicationId,
+        service_name: &str,
+    ) -> Result<Build, StoreError>;
+    /// Reads one build.
+    async fn build(&self, id: &str) -> Result<Build, StoreError>;
+    /// Reads all builds belonging to an operation.
+    async fn builds_for_operation(&self, operation_id: &str) -> Result<Vec<Build>, StoreError>;
+    /// Records the output produced by a running build.
+    async fn record_build_output(
+        &self,
+        id: &str,
+        source_commit: &str,
+        image_reference: &str,
+        image_digest: &str,
+    ) -> Result<(), StoreError>;
+    /// Transitions one build while enforcing durable invariants.
+    async fn transition_build(
+        &self,
+        id: &str,
+        from: WorkState,
+        to: WorkState,
+        error: Option<(&str, &str)>,
+    ) -> Result<(), StoreError>;
+    /// Removes a bounded number of old terminal builds.
+    async fn prune_finished_before(&self, cutoff_ms: i64, limit: u32) -> Result<u64, StoreError>;
+}
+
+/// Build artifact cache and log persistence contract.
+#[async_trait]
+pub trait BuildArtifactRepository: Send + Sync {
+    /// Records an unverified build identity.
+    async fn record_build_identity(
+        &self,
+        build_id: &str,
+        build_key: &str,
+        context_hash: &str,
+    ) -> Result<(), StoreError>;
+    /// Marks a running build's output as registry verified.
+    async fn mark_build_verified(&self, build_id: &str) -> Result<(), StoreError>;
+    /// Looks up a verified reusable build by identity.
+    async fn verified_build_for_key(&self, build_key: &str) -> Result<Option<Build>, StoreError>;
+    /// Reads one artifact row.
+    async fn build_artifact(&self, build_id: &str) -> Result<BuildArtifact, StoreError>;
+    /// Appends one bounded log entry.
+    async fn append_build_log(
+        &self,
+        build_id: &str,
+        sequence: u64,
+        timestamp_ms: i64,
+        message: &str,
+    ) -> Result<(), StoreError>;
+    /// Reads a bounded page of build logs after a cursor.
+    async fn build_logs(
+        &self,
+        build_id: &str,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<BuildLog>, StoreError>;
+}
+
 /// A bounded page of internal application rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationPage {
@@ -616,6 +746,11 @@ impl SqliteStore {
             )
             .fetch_optional(&mut *connection)
             .await,
+            "builds" => {
+                sqlx::query_scalar!(r#"SELECT 1 AS "present!: i64" FROM builds WHERE id=?1"#, id)
+                    .fetch_optional(&mut *connection)
+                    .await
+            }
             _ => return Err(StoreError::Database),
         }
         .map_err(StoreError::database)?
@@ -763,6 +898,22 @@ fn new_id(prefix: &str) -> String {
 }
 fn valid_bounded_text(value: &str, max_len: usize) -> bool {
     !value.is_empty() && value.len() <= max_len && !value.chars().any(char::is_control)
+}
+fn valid_logical_name(value: &str) -> bool {
+    (1..=63).contains(&value.len())
+        && value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !value.ends_with('-')
+}
+fn valid_error(error: Option<(&str, &str)>) -> bool {
+    error.is_none_or(|(code, message)| {
+        valid_bounded_text(code, 64) && valid_bounded_text(message, 2048)
+    })
 }
 fn validate_operation_steps(steps: &[String]) -> Result<(), StoreError> {
     if steps

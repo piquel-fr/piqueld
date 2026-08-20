@@ -28,6 +28,7 @@ use tower_http::{
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
+    build::{BuildError, BuildLogEntry},
     config::default_ui_dir,
     docker::DockerError,
     secrets::{SecretError, SecretService},
@@ -35,6 +36,7 @@ use crate::{
 };
 
 mod applications;
+mod builds;
 mod openapi;
 mod operations;
 mod secrets;
@@ -53,6 +55,27 @@ pub struct PreparedApplication {
     pub resolved: ResolvedApplication,
     /// Runtime resources observed before planning.
     pub observed: ObservedApplication,
+    /// Build outputs prepared before the mutation was journaled.
+    pub builds: Vec<PreparedBuild>,
+}
+
+/// Registry-verified build output ready to be attached to a durable operation.
+#[derive(Clone, Debug)]
+pub struct PreparedBuild {
+    /// Logical service name.
+    pub service_name: String,
+    /// Resolved source commit.
+    pub source_commit: String,
+    /// Mutable registry tag.
+    pub image_reference: String,
+    /// Immutable registry digest reference.
+    pub image_digest: String,
+    /// Canonical build identity hash.
+    pub build_key: String,
+    /// Deterministic context archive hash.
+    pub context_hash: String,
+    /// Redacted bounded build logs.
+    pub logs: Vec<BuildLogEntry>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +90,9 @@ pub enum BoundaryError {
     /// Logical-secret resolution failed.
     #[error("logical-secret resolution failed")]
     Secrets(#[from] SecretError),
+    /// Git source preparation or registry verification failed.
+    #[error("source build failed")]
+    Build(#[from] BuildError),
 }
 
 /// Source resolution, runtime observation, and execution seam supplied by Plan 06.
@@ -236,6 +262,11 @@ impl From<BoundaryError> for ApiError {
                 "application_compilation_failed",
                 "application compilation failed",
             ),
+            BoundaryError::Build(_) => Self::new(
+                StatusCode::BAD_GATEWAY,
+                "runtime_request_failed",
+                "runtime request failed",
+            ),
             BoundaryError::Secrets(error) => error.into(),
         }
     }
@@ -388,6 +419,9 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::status))
         .routes(routes!(operations::get))
+        .routes(routes!(builds::get))
+        .routes(routes!(builds::operation_builds))
+        .routes(routes!(builds::logs))
         .routes(routes!(secrets::list, secrets::create_header))
         .routes(routes!(
             secrets::get,

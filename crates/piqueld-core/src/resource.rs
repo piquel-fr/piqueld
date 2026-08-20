@@ -154,7 +154,7 @@ impl FromStr for Sha256Digest {
     }
 }
 
-/// Immutable image resolution used by the Docker runtime.
+/// Immutable source resolution used by the Docker runtime.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResolvedSource {
@@ -165,6 +165,23 @@ pub enum ResolvedSource {
         /// The immutable image reference used at runtime.
         digest_reference: String,
     },
+    /// A Git source built and verified as an immutable registry image.
+    Git {
+        /// HTTPS repository URL selected by the manifest.
+        repository: String,
+        /// Git reference selected by the manifest.
+        requested_reference: String,
+        /// Commit checked out by the builder.
+        commit: String,
+        /// Relative build context selected by the manifest.
+        context: String,
+        /// Relative Dockerfile selected by the manifest.
+        dockerfile: String,
+        /// Mutable tag used to publish the build.
+        registry_reference: String,
+        /// Registry-verified immutable image reference.
+        digest_reference: String,
+    },
 }
 
 impl ResolvedSource {
@@ -173,6 +190,9 @@ impl ResolvedSource {
     pub fn digest_reference(&self) -> &str {
         match self {
             Self::Image {
+                digest_reference, ..
+            }
+            | Self::Git {
                 digest_reference, ..
             } => digest_reference,
         }
@@ -213,6 +233,20 @@ pub enum ResolutionRequirement {
         /// Requested image reference.
         reference: String,
     },
+    /// Resolve a Git source before building it.
+    ResolveGit {
+        /// Logical service requesting resolution.
+        service: String,
+        /// HTTPS repository URL.
+        repository: String,
+        /// Git reference.
+        reference: String,
+    },
+    /// Build and push a resolved Git checkout.
+    BuildAndPush {
+        /// Logical service requesting a build.
+        service: String,
+    },
     /// Provide a generation for a referenced logical secret.
     ProvideSecretGeneration {
         /// Logical secret name.
@@ -229,11 +263,26 @@ pub fn preview_resolution(
     let mut requirements = Vec::new();
     for service in &app.spec.services {
         if !resolutions.sources.contains_key(&service.name) {
-            let Source::Image { image } = &service.source;
-            requirements.push(ResolutionRequirement::ResolveImage {
-                service: service.name.clone(),
-                reference: image.clone(),
-            });
+            match &service.source {
+                Source::Image { image } => requirements.push(ResolutionRequirement::ResolveImage {
+                    service: service.name.clone(),
+                    reference: image.clone(),
+                }),
+                Source::Git {
+                    repository,
+                    reference,
+                    ..
+                } => {
+                    requirements.push(ResolutionRequirement::ResolveGit {
+                        service: service.name.clone(),
+                        repository: repository.clone(),
+                        reference: reference.clone(),
+                    });
+                    requirements.push(ResolutionRequirement::BuildAndPush {
+                        service: service.name.clone(),
+                    });
+                }
+            }
         }
         for secret in &service.secrets {
             if !resolutions.secrets.contains_key(&secret.source)
@@ -623,6 +672,12 @@ fn unresolved_errors(
                 resource: service,
                 message: "service image has not been resolved to an immutable digest".into(),
             },
+            ResolutionRequirement::ResolveGit { service, .. }
+            | ResolutionRequirement::BuildAndPush { service } => CompileError {
+                code: "source_unresolved".into(),
+                resource: service,
+                message: "Git source has not been built into a verified image".into(),
+            },
             ResolutionRequirement::ProvideSecretGeneration { logical_name } => CompileError {
                 code: "secret_generation_unresolved".into(),
                 resource: logical_name,
@@ -645,6 +700,33 @@ fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
                 && immutable_digest_reference(digest_reference)
                 && same_image_repository(image, digest_reference)
         }
+        (
+            Source::Git {
+                repository,
+                reference,
+                context,
+                dockerfile,
+            },
+            ResolvedSource::Git {
+                repository: resolved_repository,
+                requested_reference,
+                commit,
+                context: resolved_context,
+                dockerfile: resolved_dockerfile,
+                registry_reference,
+                digest_reference,
+            },
+        ) => {
+            repository == resolved_repository
+                && reference == requested_reference
+                && context == resolved_context
+                && dockerfile == resolved_dockerfile
+                && valid_commit(commit)
+                && mutable_image_reference(registry_reference)
+                && immutable_digest_reference(digest_reference)
+                && same_image_repository(registry_reference, digest_reference)
+        }
+        _ => false,
     }
 }
 
@@ -770,6 +852,14 @@ fn immutable_digest_reference(reference: &str) -> bool {
                         .bytes()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
             })
+}
+
+fn mutable_image_reference(reference: &str) -> bool {
+    valid_image_reference(reference) && !reference.contains('@')
+}
+
+fn valid_commit(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn same_image_repository(requested: &str, resolved: &str) -> bool {

@@ -8,6 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
 };
+use url::Url;
 use utoipa::ToSchema;
 
 /// The only application API version supported by the Plan 06A product.
@@ -92,6 +93,32 @@ pub enum SourceInput {
         /// Image reference.
         image: String,
     },
+    /// Fetch a Git repository and build its Dockerfile.
+    Git {
+        /// HTTPS repository URL.
+        repository: String,
+        /// Git branch, tag, or ref to fetch.
+        #[serde(default = "default_git_reference")]
+        reference: String,
+        /// Relative build context within the checkout.
+        #[serde(default = "default_context")]
+        context: String,
+        /// Relative Dockerfile path within the context.
+        #[serde(default = "default_dockerfile")]
+        dockerfile: String,
+    },
+}
+
+fn default_git_reference() -> String {
+    "main".into()
+}
+
+fn default_context() -> String {
+    ".".into()
+}
+
+fn default_dockerfile() -> String {
+    "Dockerfile".into()
 }
 
 /// User-declared named volume.
@@ -291,6 +318,17 @@ pub enum Source {
         /// Image reference requested by the user.
         image: String,
     },
+    /// A Git checkout built and pushed to the configured registry.
+    Git {
+        /// HTTPS repository URL.
+        repository: String,
+        /// Git branch, tag, or ref to fetch.
+        reference: String,
+        /// Relative build context within the checkout.
+        context: String,
+        /// Relative Dockerfile path within the context.
+        dockerfile: String,
+    },
 }
 
 /// Canonical named volume.
@@ -419,6 +457,10 @@ fn safe_decode_path(path: &str) -> String {
         "resources",
         "type",
         "image",
+        "repository",
+        "reference",
+        "context",
+        "dockerfile",
         "volume",
         "target",
         "mode",
@@ -538,15 +580,41 @@ fn validate_services(
                 "replicas must be between 1 and 100",
             );
         }
-        if let SourceInput::Image { image } = &service.source
-            && !valid_image_reference(image)
-        {
-            error(
-                errors,
-                "image_invalid",
-                &format!("{base}.source.image"),
-                "image must be a valid registry reference without credentials or a URL scheme",
-            );
+        match &service.source {
+            SourceInput::Image { image } if !valid_image_reference(image) => {
+                error(
+                    errors,
+                    "image_invalid",
+                    &format!("{base}.source.image"),
+                    "image must be a valid registry reference without credentials or a URL scheme",
+                );
+            }
+            SourceInput::Git {
+                repository,
+                reference,
+                context,
+                dockerfile,
+            } => {
+                if !valid_git_repository(repository) {
+                    error(
+                        errors,
+                        "git_repository_unsupported",
+                        &format!("{base}.source.repository"),
+                        "only HTTPS Git repositories without credentials are supported",
+                    );
+                }
+                if !valid_git_reference(reference) {
+                    error(
+                        errors,
+                        "git_reference_invalid",
+                        &format!("{base}.source.reference"),
+                        "Git reference must use safe Git ref syntax",
+                    );
+                }
+                validate_relative_path(context, &format!("{base}.source.context"), errors);
+                validate_relative_path(dockerfile, &format!("{base}.source.dockerfile"), errors);
+            }
+            SourceInput::Image { .. } => {}
         }
         validate_environment(&service.environment, &base, errors);
         let mount_targets = validate_mounts(&service.mounts, &base, volume_names, errors);
@@ -813,6 +881,17 @@ fn convert_spec(input: ApplicationSpecInput) -> ApplicationSpec {
                 name: service.name,
                 source: match service.source {
                     SourceInput::Image { image } => Source::Image { image },
+                    SourceInput::Git {
+                        repository,
+                        reference,
+                        context,
+                        dockerfile,
+                    } => Source::Git {
+                        repository,
+                        reference,
+                        context,
+                        dockerfile,
+                    },
                 },
                 replicas: service.replicas,
                 environment: service.environment,
@@ -1024,6 +1103,17 @@ impl NormalizedApplication {
                             Source::Image { image } => SourceInput::Image {
                                 image: image.clone(),
                             },
+                            Source::Git {
+                                repository,
+                                reference,
+                                context,
+                                dockerfile,
+                            } => SourceInput::Git {
+                                repository: repository.clone(),
+                                reference: reference.clone(),
+                                context: context.clone(),
+                                dockerfile: dockerfile.clone(),
+                            },
                         },
                         replicas: service.replicas,
                         environment: service.environment.clone(),
@@ -1169,6 +1259,71 @@ pub(crate) fn valid_image_reference(value: &str) -> bool {
     repository_components
         .iter()
         .all(|component| valid_repository_component(component))
+}
+
+fn valid_git_repository(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 2048
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return false;
+    }
+    Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port() != Some(0)
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
+}
+
+fn valid_git_reference(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 1024
+        && value != "@"
+        && !value.starts_with('/')
+        && !value.ends_with(['/', '.'])
+        && !value.contains("..")
+        && !value.contains("@{")
+        && !value.contains("//")
+        && !value.chars().any(|character| {
+            character.is_whitespace()
+                || character.is_control()
+                || matches!(character, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        })
+        && value.split('/').all(|component| {
+            !component.starts_with('.')
+                && !std::path::Path::new(component)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("lock"))
+        })
+}
+
+fn validate_relative_path(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
+    let components = value.split('/').collect::<Vec<_>>();
+    let valid = value == "."
+        || (!value.is_empty()
+            && !value.starts_with('/')
+            && !value.ends_with('/')
+            && value.len() <= 4096
+            && components.iter().all(|component| {
+                !component.is_empty()
+                    && component.len() <= 255
+                    && *component != "."
+                    && *component != ".."
+            }));
+    if !valid || value.contains('\\') || value.chars().any(char::is_control) {
+        error(
+            errors,
+            "source_path_unsafe",
+            path,
+            "source paths must be relative and cannot traverse parent directories",
+        );
+    }
 }
 
 fn valid_registry_authority(value: &str) -> bool {
