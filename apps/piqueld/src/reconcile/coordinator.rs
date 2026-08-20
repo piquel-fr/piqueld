@@ -1,7 +1,7 @@
 use super::{
     ActionKind, ApplicationState, Arc, CancellationToken, DockerApi, Duration, MAX_PAGE_SIZE,
-    Notify, OperationScheduler, PlanAction, PlanRequest, ReconcileHandler, SchedulerError,
-    SqliteStore, StoreError, StoredApplication, plan,
+    Notify, OperationScheduler, Plan, PlanAction, PlanRequest, ReconcileHandler, SchedulerError,
+    SqliteStore, StoreError, StoredApplication,
 };
 
 /// Runs startup recovery, apply/delete wakes, and periodic full scans. Multiple
@@ -98,7 +98,7 @@ async fn scan_and_run<D: DockerApi>(
                     continue;
                 }
             };
-            let runtime_plan = plan(
+            let runtime_plan = Plan::from_request(
                 &PlanRequest::Reconcile {
                     desired: application.resolved.clone(),
                 },
@@ -175,7 +175,7 @@ async fn retry_delete<D: DockerApi>(
             return Ok(());
         }
     };
-    let deletion_plan = plan(
+    let deletion_plan = Plan::from_request(
         &PlanRequest::Delete {
             application_id: application.application.id.clone(),
             instance_id: resolved.instance_id.clone(),

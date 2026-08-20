@@ -10,11 +10,11 @@ use crate::{
     },
 };
 use piqueld_core::{
-    InstanceId, NormalizedApplication, PlanAction, PlanRequest, ResolutionSet, compile_application,
+    InstanceId, NormalizedApplication, Plan, PlanAction, PlanRequest, ResolutionSet,
+    compile_application,
     manifest::Source,
-    plan,
     planner::ActionKind,
-    resource::{Convergence, INGRESS_NETWORK, ResolvedSource},
+    resource::{Convergence, ResolvedSource},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
@@ -83,16 +83,6 @@ pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
         OperationError::DockerConfigurationConflict
     } else {
         OperationError::OwnershipConflict
-    }
-}
-
-pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
-    if has_diagnostic(plan, "unowned_name_collision") {
-        "runtime reconciliation is blocked by an ownership conflict"
-    } else if has_diagnostic(plan, "immutable_configuration_drift") {
-        "runtime reconciliation is blocked by immutable Docker configuration"
-    } else {
-        "runtime reconciliation is blocked by an ownership conflict"
     }
 }
 

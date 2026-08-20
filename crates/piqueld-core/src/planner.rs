@@ -762,12 +762,6 @@ impl Plan {
     }
 }
 
-/// Builds a plan for a request and the current observed state.
-#[must_use]
-pub fn plan(request: &PlanRequest, observed: &ObservedApplication) -> Plan {
-    Plan::from_request(request, observed)
-}
-
 fn sorted_by_name<T, F>(values: &[T], name: F) -> Vec<&T>
 where
     F: Fn(&T) -> &str,
@@ -808,9 +802,6 @@ fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<Strin
     }
     if found.command != desired.command || found.arguments != desired.arguments {
         fields.push("process".into());
-    }
-    if !unordered_eq(&found.ports, &desired.ports) {
-        fields.push("ports".into());
     }
     if !unordered_eq(&found.mounts, &desired.mounts) {
         fields.push("mounts".into());

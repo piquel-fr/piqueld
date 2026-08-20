@@ -2,7 +2,7 @@ use super::blocked_plan_error;
 use super::coordinator::plan_requires_execution;
 use super::{
     ApplicationState, CancellationToken, DockerApi, Operation, OperationError, OperationHandler,
-    OperationKind, PlanRequest, ReconcileHandler, StepState, StoredApplication, plan,
+    OperationKind, Plan, PlanRequest, ReconcileHandler, StepState, StoredApplication,
 };
 use async_trait::async_trait;
 
@@ -160,7 +160,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
         let observed = self
             .observe_with_retry(&operation.application_id, cancellation, deadline)
             .await?;
-        let current = plan(request, &observed);
+        let current = Plan::from_request(request, &observed);
         if current.is_blocked() {
             return Err(blocked_plan_error(&current));
         }
@@ -326,7 +326,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
         let observed = self
             .observe_with_retry(&operation.application_id, cancellation, deadline)
             .await?;
-        let current = plan(request, &observed);
+        let current = Plan::from_request(request, &observed);
         let error = if current.is_blocked() {
             blocked_plan_error(&current)
         } else if plan_requires_execution(&current) {

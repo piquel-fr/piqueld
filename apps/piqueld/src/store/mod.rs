@@ -379,6 +379,7 @@ pub struct ApplicationStatus {
     /// Last update timestamp in Unix milliseconds.
     pub updated_at_ms: i64,
 }
+
 /// Durable operation row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Operation {
@@ -442,6 +443,7 @@ pub struct ApplicationPage {
     /// Cursor for the next page, when more rows remain.
     pub next_cursor: Option<String>,
 }
+
 /// Result of an atomic desired-state mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MutationResult {

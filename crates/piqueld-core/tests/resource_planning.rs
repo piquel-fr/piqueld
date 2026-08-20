@@ -6,7 +6,7 @@ use piqueld_core::resource::{
     ObservedVolume, ResolutionRequirement, ResolutionSet, ResolvedSource, TaskState,
     compile_application, preview_resolution,
 };
-use piqueld_core::{ApplicationId, InstanceId, parse_toml};
+use piqueld_core::{ApplicationId, InstanceId, Plan, parse_toml};
 
 fn application() -> piqueld_core::NormalizedApplication {
     parse_toml(include_str!("fixtures/manifests/prebuilt.toml"))
@@ -99,7 +99,7 @@ fn image_resolution_is_the_only_pending_compilation_input() {
 fn planner_creates_only_supported_runtime_actions() {
     let app = application();
     let desired = compile_application(&app, instance(), &resolutions()).unwrap();
-    let plan = piqueld_core::plan(
+    let plan = Plan::from_request(
         &PlanRequest::Reconcile {
             desired: desired.clone(),
         },
@@ -127,14 +127,14 @@ fn converged_services_need_no_work_and_delete_retains_volumes() {
     let app = application();
     let desired = compile_application(&app, instance(), &resolutions()).unwrap();
     let observed = observed(&desired);
-    let plan = piqueld_core::plan(
+    let plan = Plan::from_request(
         &PlanRequest::Reconcile {
             desired: desired.clone(),
         },
         &observed,
     );
     assert!(!plan.has_mutations());
-    let deletion = piqueld_core::plan(
+    let deletion = Plan::from_request(
         &PlanRequest::Delete {
             application_id: desired.id.clone(),
             instance_id: desired.instance_id.clone(),

@@ -13,8 +13,8 @@ use piqueld_client::{
     ReplaceApplicationRequest, ReplacePlanRequest,
 };
 use piqueld_core::{
-    ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, PlanAction, PlanRequest,
-    ResolutionSet, compile_application, plan, preview_resolution,
+    ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, Plan, PlanAction,
+    PlanRequest, ResolutionSet, compile_application, preview_resolution,
     resource::{ResolvedApplication, ResolvedSource},
 };
 use serde::Deserialize;
@@ -169,7 +169,7 @@ pub(super) async fn create(
     }
     reject_name_collision(&state, &app, None).await?;
     let prepared = state.runtime.prepare(&app).await?;
-    let plan = plan(
+    let plan = Plan::from_request(
         &PlanRequest::Reconcile {
             desired: prepared.resolved.clone(),
         },
@@ -243,7 +243,7 @@ pub(super) async fn replace(
     let app = validated.normalize(id.clone());
     reject_name_collision(&state, &app, Some(&id)).await?;
     let prepared = state.runtime.prepare(&app).await?;
-    let plan = plan(
+    let plan = Plan::from_request(
         &PlanRequest::Reconcile {
             desired: prepared.resolved.clone(),
         },
@@ -307,7 +307,7 @@ pub(super) async fn delete(
     generation(request.expected_generation, current.generation)?;
     let observed = state.runtime.observe(&current).await?;
     let instance = InstanceId::parse(&state.instance_id).map_err(StoreError::corrupt)?;
-    let plan = plan(
+    let plan = Plan::from_request(
         &PlanRequest::Delete {
             application_id: id.clone(),
             instance_id: instance,
@@ -459,7 +459,7 @@ async fn preview_plan(
     } else {
         None
     };
-    Ok(plan(
+    Ok(Plan::from_request(
         &PlanRequest::Preview {
             unresolved,
             desired,
@@ -558,7 +558,7 @@ pub(super) async fn reconcile(
     }
     let desired = current.resolved.clone();
     let observed = state.runtime.observe(&current).await?;
-    let plan = plan(&PlanRequest::Reconcile { desired }, &observed);
+    let plan = Plan::from_request(&PlanRequest::Reconcile { desired }, &observed);
     if plan.is_blocked() {
         return Err(ApiError::new(
             StatusCode::CONFLICT,

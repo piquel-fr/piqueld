@@ -11,7 +11,7 @@ use piqueld_core::resource::{
     ObservedTask, ObservedVolume, ResolutionSet, ResolvedApplication, ResolvedSource, TaskState,
     compile_application,
 };
-use piqueld_core::{ApplicationId, InstanceId, PlanAction, parse_toml, plan};
+use piqueld_core::{ApplicationId, InstanceId, Plan, PlanAction, parse_toml};
 use sqlx::{Connection, SqliteConnection};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
@@ -223,7 +223,7 @@ impl SchedulerHarness {
         desired: ResolvedApplication,
         observed: &ObservedApplication,
     ) -> piqueld_core::Plan {
-        plan(&PlanRequest::Reconcile { desired }, observed)
+        Plan::from_request(&PlanRequest::Reconcile { desired }, observed)
     }
 
     async fn create(&self) -> piqueld::store::MutationResult {
@@ -352,7 +352,7 @@ impl SchedulerHarness {
             .observe(&self.application.id)
             .await
             .expect("delete observation");
-        let deletion_plan = plan(
+        let deletion_plan = Plan::from_request(
             &PlanRequest::Delete {
                 application_id: self.application.id.clone(),
                 instance_id: desired.instance_id.clone(),
@@ -476,7 +476,7 @@ async fn scheduler_refuses_a_foreign_same_name_service() {
         ]),
         ..observed_service(&resolved.services[0])
     };
-    let initial_plan = plan(
+    let initial_plan = Plan::from_request(
         &PlanRequest::Reconcile {
             desired: resolved.clone(),
         },
