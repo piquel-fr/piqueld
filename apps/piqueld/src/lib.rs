@@ -1,15 +1,10 @@
 //! Daemon bootstrap and internal module boundaries.
 
 pub mod api;
-mod auth;
-mod build;
 pub mod config;
-mod docker;
+pub mod docker;
 pub mod operations;
-mod proxy;
-mod reconcile;
-mod registry;
-mod secrets;
+pub mod reconcile;
 pub mod store;
 
 use thiserror::Error;
@@ -26,13 +21,12 @@ pub enum RuntimeError {
 
 /// Waits until the supplied cancellation token is cancelled.
 ///
-/// Long-running controllers added in later increments will receive child tokens
-/// rooted at this token.
+/// Long-running controller tasks receive child tokens rooted at this token.
 ///
 /// # Errors
 ///
-/// Returns a runtime error if a controller cannot shut down cleanly in a later
-/// implementation. The foundation wait itself is infallible.
+/// The wait itself is infallible; the result keeps process shutdown consistent
+/// with the signal-handler boundary.
 pub async fn run_until_cancelled(cancellation: CancellationToken) -> Result<(), RuntimeError> {
     info!("daemon started");
     cancellation.cancelled().await;
@@ -56,13 +50,15 @@ pub async fn cancel_on_shutdown_signal(
         tokio::select! {
             result = tokio::signal::ctrl_c() => result.map_err(RuntimeError::Signal)?,
             _ = terminate.recv() => {},
+            () = cancellation.cancelled() => return Ok(()),
         }
     }
 
     #[cfg(not(unix))]
-    tokio::signal::ctrl_c()
-        .await
-        .map_err(RuntimeError::Signal)?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result.map_err(RuntimeError::Signal)?,
+        () = cancellation.cancelled() => return Ok(()),
+    }
 
     cancellation.cancel();
     Ok(())

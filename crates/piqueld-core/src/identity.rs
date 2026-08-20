@@ -1,5 +1,4 @@
 //! Stable application identity and deterministic Docker-safe names.
-#![allow(missing_docs)]
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use sha2::{Digest, Sha256};
@@ -77,10 +76,12 @@ impl FromStr for ApplicationId {
 /// Managed Docker resource category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceKind {
+    /// A private overlay network.
     Network,
+    /// A Swarm service.
     Service,
+    /// A persistent Docker volume.
     Volume,
-    Secret,
 }
 
 impl ResourceKind {
@@ -89,7 +90,6 @@ impl ResourceKind {
             Self::Network => "network",
             Self::Service => "service",
             Self::Volume => "volume",
-            Self::Secret => "secret",
         }
     }
 }
@@ -108,14 +108,18 @@ pub fn docker_resource_name(
     )
 }
 
-/// Produces a stable Traefik router name no longer than 63 bytes.
+/// Returns the readable name prefix shared by all resources of an application.
 #[must_use]
-pub fn router_name(id: &ApplicationId, host: &str, service: &str, port: u16) -> String {
-    bounded_name(
-        "piqueld-router",
-        &[id.as_str(), host, service, &port.to_string()],
-        63,
-    )
+pub fn docker_resource_readable_prefix(id: &ApplicationId) -> String {
+    let head_len = 63usize.saturating_sub("piqueld".len() + 12 + 2);
+    let mut head = sanitize(id.as_str())
+        .chars()
+        .take(head_len)
+        .collect::<String>();
+    while head.ends_with('-') {
+        head.pop();
+    }
+    format!("piqueld-{head}-")
 }
 
 fn bounded_name(prefix: &str, parts: &[&str], limit: usize) -> String {
@@ -172,6 +176,13 @@ mod tests {
                 && a.bytes()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
         );
+    }
+
+    #[test]
+    fn readable_prefix_matches_names_with_a_trailing_hyphen_at_the_limit() {
+        let id = ApplicationId::parse(format!("{}-a", "a".repeat(41))).unwrap();
+        let name = docker_resource_name(&id, ResourceKind::Network, None);
+        assert!(name.starts_with(&docker_resource_readable_prefix(&id)));
     }
 
     #[test]

@@ -8,7 +8,3 @@ replicas = 0
 [spec.services.source]
 type = "image"
 image = "bad image"
-[[spec.routes]]
-host = "invalid"
-service = "missing"
-port = 0
