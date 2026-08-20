@@ -82,36 +82,10 @@ pub(crate) fn render_plan(plan: &PlanView, output: &mut impl Write) -> io::Resul
     Ok(())
 }
 
-pub(crate) fn render_plan_stderr(plan: &PlanView) {
-    eprintln!(
-        "plan: {} action(s), {} mutation(s), {} destructive action(s), {} blocking conflict(s)",
-        plan.plan.summary.action_count,
-        plan.plan.summary.mutation_count,
-        plan.plan.summary.destructive_count,
-        plan.plan.summary.blocking_conflicts,
-    );
-    for action in &plan.plan.actions {
-        eprintln!(
-            "  {:>3} [{:?}] {} ({})",
-            action.sequence,
-            action.risk,
-            action.human_description(),
-            reason_text(&action.reason),
-        );
-    }
-    for diagnostic in &plan.plan.diagnostics {
-        eprintln!(
-            "  diagnostic {} [{}]: {}{}",
-            diagnostic.code,
-            diagnostic.resource,
-            diagnostic.message,
-            if diagnostic.blocking {
-                " (blocking)"
-            } else {
-                ""
-            },
-        );
-    }
+pub(crate) fn render_plan_stderr(plan: &PlanView) -> io::Result<()> {
+    let stderr = io::stderr();
+    let mut output = stderr.lock();
+    render_plan(plan, &mut output)
 }
 
 pub(crate) fn blocked_plan_error(plan: &PlanView) -> CliError {
