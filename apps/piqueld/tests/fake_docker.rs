@@ -59,6 +59,7 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
         command: desired.command.clone(),
         arguments: desired.arguments.clone(),
         mounts: desired.mounts.clone(),
+        secrets: desired.secrets.clone(),
         healthcheck: desired.healthcheck.clone(),
         resources: desired.resources.clone(),
         networks: desired.networks.clone(),
@@ -149,6 +150,28 @@ impl DockerApi for FakeDocker {
         Ok(())
     }
 
+    async fn ensure_secret(
+        &self,
+        desired: &piqueld_core::resource::DesiredSecret,
+        _plaintext: &[u8],
+    ) -> Result<(), DockerError> {
+        let mut observed = self.observed.lock().await;
+        if !observed
+            .secrets
+            .iter()
+            .any(|secret| secret.name == desired.name)
+        {
+            observed
+                .secrets
+                .push(piqueld_core::resource::ObservedSecret {
+                    name: desired.name.clone(),
+                    labels: desired.labels.clone(),
+                    in_use: false,
+                });
+        }
+        Ok(())
+    }
+
     async fn remove_service(
         &self,
         name: &str,
@@ -182,6 +205,19 @@ impl DockerApi for FakeDocker {
             return Err(DockerError::OwnershipConflict);
         }
         observed.networks.retain(|network| network.name != name);
+        Ok(())
+    }
+
+    async fn remove_secret(
+        &self,
+        name: &str,
+        _ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        self.observed
+            .lock()
+            .await
+            .secrets
+            .retain(|secret| secret.name != name);
         Ok(())
     }
 }
@@ -225,6 +261,7 @@ impl SchedulerHarness {
             )]
             .into_iter()
             .collect(),
+            secrets: std::collections::BTreeMap::default(),
         };
         let resolved = compile_application(
             &application,
@@ -494,6 +531,7 @@ async fn scheduler_refuses_a_foreign_same_name_service() {
         )]
         .into_iter()
         .collect(),
+        secrets: std::collections::BTreeMap::default(),
     };
     let resolved = compile_application(
         &application,

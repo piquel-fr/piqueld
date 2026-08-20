@@ -95,6 +95,26 @@
             "type": "object"
           },
           {
+            "description": "Ensure a desired Swarm secret exists.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "ensure_secret"
+                ],
+                "type": "string"
+              },
+              "secret": {
+                "$ref": "#/components/schemas/DesiredSecret",
+                "description": "Secret state to create or verify."
+              }
+            },
+            "required": [
+              "secret",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
             "description": "Ensure a desired service exists.",
             "properties": {
               "action": {
@@ -155,6 +175,26 @@
             "type": "object"
           },
           {
+            "description": "Wait until a secret is no longer in use.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "wait_for_secret_unused"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "description": "Docker secret name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
             "description": "Remove a service.",
             "properties": {
               "action": {
@@ -195,6 +235,26 @@
             "type": "object"
           },
           {
+            "description": "Remove an obsolete Swarm secret.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "remove_secret"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "description": "Docker secret name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
             "description": "Retain a volume by policy.",
             "properties": {
               "action": {
@@ -210,6 +270,26 @@
             },
             "required": [
               "name",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Wait for a newly generated secret to be adopted.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "await_secret_generation"
+                ],
+                "type": "string"
+              },
+              "logical_name": {
+                "description": "Logical secret name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "logical_name",
               "action"
             ],
             "type": "object"
@@ -278,6 +358,21 @@
               "reason": {
                 "enum": [
                   "convergence_pending"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A secret generation changed and the service must adopt the new Swarm secret.",
+            "properties": {
+              "reason": {
+                "enum": [
+                  "secret_generation_changed"
                 ],
                 "type": "string"
               }
@@ -628,6 +723,70 @@
         ],
         "type": "object"
       },
+      "DesiredSecret": {
+        "additionalProperties": false,
+        "description": "Desired Swarm secret state.",
+        "properties": {
+          "generation": {
+            "$ref": "#/components/schemas/Sha256Digest",
+            "description": "Desired secret content generation."
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Expected ownership labels.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "logical_name": {
+            "description": "Logical secret name.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Randomized immutable Swarm secret name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "logical_name",
+          "generation",
+          "name",
+          "labels"
+        ],
+        "type": "object"
+      },
+      "DesiredSecretMount": {
+        "additionalProperties": false,
+        "description": "Desired secret mount in a service.",
+        "properties": {
+          "logical_name": {
+            "description": "Logical secret name.",
+            "type": "string"
+          },
+          "mode": {
+            "description": "File mode presented in the container.",
+            "type": "string"
+          },
+          "swarm_name": {
+            "description": "Randomized Docker Swarm secret name.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Container target path.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "logical_name",
+          "swarm_name",
+          "target",
+          "mode"
+        ],
+        "type": "object"
+      },
       "DesiredService": {
         "additionalProperties": false,
         "description": "Desired Docker service state.",
@@ -720,6 +879,13 @@
               }
             ]
           },
+          "secrets": {
+            "description": "Swarm secret mounts.",
+            "items": {
+              "$ref": "#/components/schemas/DesiredSecretMount"
+            },
+            "type": "array"
+          },
           "source": {
             "$ref": "#/components/schemas/ResolvedSource",
             "description": "Immutable source resolution used by the service."
@@ -735,6 +901,7 @@
           "command",
           "arguments",
           "mounts",
+          "secrets",
           "networks",
           "labels"
         ],
@@ -1147,6 +1314,80 @@
         ],
         "type": "object"
       },
+      "Envelope_Page_SecretMetadata": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Cursor-paginated API response.",
+            "properties": {
+              "items": {
+                "description": "Items in this page.",
+                "items": {
+                  "description": "Metadata for a logical secret; plaintext is never returned.",
+                  "properties": {
+                    "created_at_ms": {
+                      "description": "Creation timestamp in Unix milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "generation": {
+                      "description": "Monotonically increasing value generation.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "name": {
+                      "description": "Logical secret name.",
+                      "type": "string"
+                    },
+                    "references": {
+                      "description": "Application services that reference this secret.",
+                      "items": {
+                        "$ref": "#/components/schemas/SecretReferenceView"
+                      },
+                      "type": "array"
+                    },
+                    "updated_at_ms": {
+                      "description": "Last-update timestamp in Unix milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "value_is_set": {
+                      "description": "Whether the secret currently has an encrypted value.",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "value_is_set",
+                    "generation",
+                    "created_at_ms",
+                    "updated_at_ms",
+                    "references"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_PlanView": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -1172,6 +1413,60 @@
               "application_id",
               "proposed_generation",
               "plan"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_SecretMetadata": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Metadata for a logical secret; plaintext is never returned.",
+            "properties": {
+              "created_at_ms": {
+                "description": "Creation timestamp in Unix milliseconds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "generation": {
+                "description": "Monotonically increasing value generation.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "description": "Logical secret name.",
+                "type": "string"
+              },
+              "references": {
+                "description": "Application services that reference this secret.",
+                "items": {
+                  "$ref": "#/components/schemas/SecretReferenceView"
+                },
+                "type": "array"
+              },
+              "updated_at_ms": {
+                "description": "Last-update timestamp in Unix milliseconds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "value_is_set": {
+                "description": "Whether the secret currently has an encrypted value.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "value_is_set",
+              "generation",
+              "created_at_ms",
+              "updated_at_ms",
+              "references"
             ],
             "type": "object"
           }
@@ -2080,6 +2375,128 @@
         },
         "type": "object"
       },
+      "SecretMetadata": {
+        "description": "Metadata for a logical secret; plaintext is never returned.",
+        "properties": {
+          "created_at_ms": {
+            "description": "Creation timestamp in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "generation": {
+            "description": "Monotonically increasing value generation.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Logical secret name.",
+            "type": "string"
+          },
+          "references": {
+            "description": "Application services that reference this secret.",
+            "items": {
+              "$ref": "#/components/schemas/SecretReferenceView"
+            },
+            "type": "array"
+          },
+          "updated_at_ms": {
+            "description": "Last-update timestamp in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "value_is_set": {
+            "description": "Whether the secret currently has an encrypted value.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "value_is_set",
+          "generation",
+          "created_at_ms",
+          "updated_at_ms",
+          "references"
+        ],
+        "type": "object"
+      },
+      "SecretReference": {
+        "additionalProperties": false,
+        "description": "Canonical logical secret mount.",
+        "properties": {
+          "mode": {
+            "description": "File mode expressed as an octal string.",
+            "type": "string"
+          },
+          "source": {
+            "description": "Logical secret name.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Effective container target path.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "SecretReferenceInput": {
+        "additionalProperties": false,
+        "description": "User-declared logical secret mount.",
+        "properties": {
+          "mode": {
+            "description": "File mode expressed as an octal string.",
+            "type": "string"
+          },
+          "source": {
+            "description": "Logical secret name.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Optional container target path or filename below `/run/secrets`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "SecretReferenceView": {
+        "description": "One application service that references a logical secret.",
+        "properties": {
+          "application_id": {
+            "description": "Stable application identifier.",
+            "type": "string"
+          },
+          "application_name": {
+            "description": "Human-readable application name.",
+            "type": "string"
+          },
+          "deployed": {
+            "description": "Whether this reference is present in deployed state.",
+            "type": "boolean"
+          },
+          "service": {
+            "description": "Manifest service name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id",
+          "application_name",
+          "service",
+          "deployed"
+        ],
+        "type": "object"
+      },
       "Service": {
         "additionalProperties": false,
         "description": "Canonical service definition.",
@@ -2147,6 +2564,13 @@
               }
             ]
           },
+          "secrets": {
+            "description": "Logical secret mounts.",
+            "items": {
+              "$ref": "#/components/schemas/SecretReference"
+            },
+            "type": "array"
+          },
           "source": {
             "$ref": "#/components/schemas/Source",
             "description": "Prebuilt image source."
@@ -2159,7 +2583,8 @@
           "environment",
           "command",
           "arguments",
-          "mounts"
+          "mounts",
+          "secrets"
         ],
         "type": "object"
       },
@@ -2230,6 +2655,13 @@
               }
             ]
           },
+          "secrets": {
+            "description": "Logical secret mounts.",
+            "items": {
+              "$ref": "#/components/schemas/SecretReferenceInput"
+            },
+            "type": "array"
+          },
           "source": {
             "$ref": "#/components/schemas/SourceInput",
             "description": "Prebuilt container image source."
@@ -2240,6 +2672,10 @@
           "source"
         ],
         "type": "object"
+      },
+      "Sha256Digest": {
+        "description": "Explicitly tagged lowercase SHA-256 digest.",
+        "type": "string"
       },
       "Source": {
         "description": "Canonical prebuilt image source.",
@@ -3527,6 +3963,460 @@
           }
         },
         "summary": "Get an operation"
+      }
+    },
+    "/api/v1/secrets": {
+      "get": {
+        "operationId": "listSecrets",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_SecretMetadata"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "List logical secret metadata"
+      },
+      "post": {
+        "operationId": "createSecret",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Secret-Name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SecretMetadata"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Create an encrypted logical secret"
+      }
+    },
+    "/api/v1/secrets/{name}": {
+      "delete": {
+        "operationId": "deleteSecret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted; no content is returned"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Delete an unreferenced logical secret"
+      },
+      "get": {
+        "operationId": "getSecret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SecretMetadata"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Get logical secret metadata"
+      },
+      "post": {
+        "operationId": "createNamedSecret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SecretMetadata"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Create an encrypted logical secret"
+      },
+      "put": {
+        "operationId": "replaceSecret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "maxLength": 63,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SecretMetadata"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Rotate an encrypted logical secret"
       }
     },
     "/api/v1/system/status": {

@@ -1,10 +1,11 @@
 use super::{
     ActionKind, ApplicationState, Arc, CancellationToken, DockerApi, Duration, MAX_PAGE_SIZE,
-    Notify, OperationScheduler, Plan, PlanAction, PlanRequest, ReconcileHandler, RetryPolicy,
-    SchedulerError, SqliteStore, StoreError, StoredApplication, blocked_plan_message,
+    Notify, OperationScheduler, PlanAction, PlanRequest, ReconcileHandler, RetryPolicy,
+    SchedulerError, SecretService, SqliteStore, StoreError, StoredApplication,
+    blocked_plan_message,
 };
 use crate::store::ApplicationStatus;
-use piqueld_core::resource::ObservedApplication;
+use piqueld_core::{plan, resource::ObservedApplication};
 
 /// Runs startup recovery, apply/delete wakes, and periodic full scans. Multiple
 /// wakes collapse through `Notify`, keeping polling work bounded.
@@ -19,6 +20,7 @@ pub async fn run_coordinator<D: DockerApi>(
     wake: Arc<Notify>,
     interval: Duration,
     cancellation: CancellationToken,
+    secret_service: Option<Arc<SecretService>>,
 ) -> Result<(), SchedulerError> {
     loop {
         match scheduler.recover_and_run(cancellation.child_token()).await {
@@ -32,14 +34,21 @@ pub async fn run_coordinator<D: DockerApi>(
             }
         }
     }
-    run_scan_until_success(&scheduler, &store, &docker, &cancellation).await?;
+    run_scan_until_success(
+        &scheduler,
+        &store,
+        &docker,
+        &cancellation,
+        secret_service.as_deref(),
+    )
+    .await?;
     let mut scan = tokio::time::interval(interval);
     scan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             () = cancellation.cancelled() => return Ok(()),
-            () = wake.notified() => run_scan_until_success(&scheduler, &store, &docker, &cancellation).await?,
-            _ = scan.tick() => run_scan_until_success(&scheduler, &store, &docker, &cancellation).await?,
+            () = wake.notified() => run_scan_until_success(&scheduler, &store, &docker, &cancellation, secret_service.as_deref()).await?,
+            _ = scan.tick() => run_scan_until_success(&scheduler, &store, &docker, &cancellation, secret_service.as_deref()).await?,
         }
     }
 }
@@ -49,12 +58,13 @@ async fn run_scan_until_success<D: DockerApi>(
     store: &SqliteStore,
     docker: &D,
     cancellation: &CancellationToken,
+    secret_service: Option<&SecretService>,
 ) -> Result<(), SchedulerError> {
     let retry = RetryPolicy::default();
     let mut delay = retry.initial_delay;
     let mut logged_failure = false;
     loop {
-        match scan_and_run(scheduler, store, docker, cancellation).await {
+        match scan_and_run(scheduler, store, docker, cancellation, secret_service).await {
             Ok(()) => return Ok(()),
             Err(error) => {
                 if logged_failure {
@@ -78,6 +88,7 @@ async fn scan_and_run<D: DockerApi>(
     store: &SqliteStore,
     docker: &D,
     cancellation: &CancellationToken,
+    secret_service: Option<&SecretService>,
 ) -> Result<(), SchedulerError> {
     scheduler.run_until_idle(cancellation.child_token()).await?;
     let mut cursor = None;
@@ -86,6 +97,9 @@ async fn scan_and_run<D: DockerApi>(
         for application in page.items {
             if cancellation.is_cancelled() {
                 return Ok(());
+            }
+            if should_defer_secret_recovery(secret_service, &application).await {
+                continue;
             }
             scan_application(store, docker, &application).await?;
         }
@@ -120,7 +134,7 @@ async fn scan_reconcile_application<D: DockerApi>(
     let Some((observed, status)) = load_reconcile_context(store, docker, application).await? else {
         return Ok(());
     };
-    let runtime_plan = Plan::from_request(
+    let runtime_plan = plan(
         &PlanRequest::Reconcile {
             desired: application.resolved.clone(),
         },
@@ -215,6 +229,31 @@ async fn record_recovered_status(
         .await
 }
 
+async fn should_defer_secret_recovery(
+    secret_service: Option<&SecretService>,
+    application: &StoredApplication,
+) -> bool {
+    let Some(secret_service) = secret_service else {
+        return false;
+    };
+    match secret_service.synchronize_application(application).await {
+        Ok(false) => false,
+        Ok(true) => {
+            // The durable replacement owns the next generation. Re-read it on the
+            // following scan before planning runtime work.
+            true
+        }
+        Err(error) => {
+            tracing::warn!(
+                application_id = %application.application.id,
+                %error,
+                "secret generation recovery deferred"
+            );
+            true
+        }
+    }
+}
+
 async fn retry_delete<D: DockerApi>(
     store: &SqliteStore,
     docker: &D,
@@ -232,7 +271,7 @@ async fn retry_delete<D: DockerApi>(
             return Ok(());
         }
     };
-    let deletion_plan = Plan::from_request(
+    let deletion_plan = plan(
         &PlanRequest::Delete {
             application_id: application.application.id.clone(),
             instance_id: resolved.instance_id.clone(),

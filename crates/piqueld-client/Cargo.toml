@@ -21,6 +21,7 @@ bytes.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+rustix.workspace = true
 tokio.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

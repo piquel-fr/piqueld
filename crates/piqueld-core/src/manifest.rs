@@ -70,6 +70,9 @@ pub struct ServiceInput {
     /// Persistent volume mounts.
     #[serde(default)]
     pub mounts: Vec<MountInput>,
+    /// Logical secret mounts.
+    #[serde(default)]
+    pub secrets: Vec<SecretReferenceInput>,
     /// Optional container health check.
     pub healthcheck: Option<HealthCheckInput>,
     /// Optional CPU and memory limits.
@@ -110,6 +113,23 @@ pub struct MountInput {
     /// Whether the mount is read-only.
     #[serde(default)]
     pub read_only: bool,
+}
+
+/// User-declared logical secret mount.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretReferenceInput {
+    /// Logical secret name.
+    pub source: String,
+    /// Optional container target path or filename below `/run/secrets`.
+    pub target: Option<String>,
+    /// File mode expressed as an octal string.
+    #[serde(default = "default_secret_mode")]
+    pub mode: String,
+}
+
+fn default_secret_mode() -> String {
+    "0400".into()
 }
 
 /// User-declared container health check.
@@ -254,6 +274,8 @@ pub struct Service {
     pub arguments: Vec<String>,
     /// Persistent volume mounts.
     pub mounts: Vec<Mount>,
+    /// Logical secret mounts.
+    pub secrets: Vec<SecretReference>,
     /// Optional health check.
     pub healthcheck: Option<HealthCheck>,
     /// Optional CPU and memory limits.
@@ -289,6 +311,18 @@ pub struct Mount {
     pub target: String,
     /// Whether the mount is read-only.
     pub read_only: bool,
+}
+
+/// Canonical logical secret mount.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretReference {
+    /// Logical secret name.
+    pub source: String,
+    /// Effective container target path.
+    pub target: String,
+    /// File mode expressed as an octal string.
+    pub mode: String,
 }
 
 /// Canonical service health check.
@@ -380,12 +414,14 @@ fn safe_decode_path(path: &str) -> String {
         "command",
         "arguments",
         "mounts",
+        "secrets",
         "healthcheck",
         "resources",
         "type",
         "image",
         "volume",
         "target",
+        "mode",
         "read_only",
         "port",
         "path",
@@ -513,7 +549,8 @@ fn validate_services(
             );
         }
         validate_environment(&service.environment, &base, errors);
-        validate_mounts(&service.mounts, &base, volume_names, errors);
+        let mount_targets = validate_mounts(&service.mounts, &base, volume_names, errors);
+        validate_secrets(&service.secrets, &base, &mount_targets, errors);
         validate_process_arguments(&service.command, &format!("{base}.command"), errors);
         validate_process_arguments(&service.arguments, &format!("{base}.arguments"), errors);
         if service
@@ -565,7 +602,7 @@ fn validate_mounts(
     base: &str,
     volume_names: &BTreeSet<String>,
     errors: &mut Vec<ValidationError>,
-) {
+) -> BTreeSet<String> {
     let mut targets = BTreeSet::new();
     for (index, mount) in mounts.iter().enumerate() {
         let path = format!("{base}.mounts[{index}]");
@@ -584,6 +621,47 @@ fn validate_mounts(
                 "mount_target_duplicate",
                 &format!("{path}.target"),
                 "mount target is duplicated in this service",
+            );
+        }
+    }
+    targets
+}
+
+fn validate_secrets(
+    secrets: &[SecretReferenceInput],
+    base: &str,
+    mount_targets: &BTreeSet<String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut targets = BTreeSet::new();
+    for (index, secret) in secrets.iter().enumerate() {
+        let path = format!("{base}.secrets[{index}]");
+        validate_name(&secret.source, &format!("{path}.source"), errors);
+        let target = secret.target.as_deref().unwrap_or(&secret.source);
+        validate_secret_target(target, &format!("{path}.target"), errors);
+        let effective_target = effective_secret_target(target);
+        if !targets.insert(effective_target.clone()) {
+            error(
+                errors,
+                "secret_target_duplicate",
+                &format!("{path}.target"),
+                "secret target is duplicated in this service",
+            );
+        }
+        if mount_targets.contains(&effective_target) {
+            error(
+                errors,
+                "target_collision",
+                &format!("{path}.target"),
+                "secret target conflicts with a volume mount target in this service",
+            );
+        }
+        if !valid_mode(&secret.mode) {
+            error(
+                errors,
+                "secret_mode_invalid",
+                &format!("{path}.mode"),
+                "secret mode must be 0 plus three octal digits, grant read access, and grant no write access",
             );
         }
     }
@@ -749,6 +827,17 @@ fn convert_spec(input: ApplicationSpecInput) -> ApplicationSpec {
                         read_only: mount.read_only,
                     })
                     .collect(),
+                secrets: service
+                    .secrets
+                    .into_iter()
+                    .map(|secret| SecretReference {
+                        source: secret.source.clone(),
+                        target: effective_secret_target(
+                            secret.target.as_deref().unwrap_or(&secret.source),
+                        ),
+                        mode: secret.mode,
+                    })
+                    .collect(),
                 healthcheck: service.healthcheck.map(|health| match health {
                     HealthCheckInput::Http {
                         port,
@@ -818,6 +907,7 @@ fn normalize_spec(spec: &mut ApplicationSpec) {
         .sort_by(|left, right| left.name.cmp(&right.name));
     for service in &mut spec.services {
         service.mounts.sort();
+        service.secrets.sort();
     }
     spec.volumes.sort();
 }
@@ -874,6 +964,48 @@ impl NormalizedApplication {
         toml::to_string_pretty(&self.clone().normalize().to_manifest())
     }
 
+    /// Returns the logical secret names referenced by this application.
+    #[must_use]
+    pub fn logical_secret_references(&self) -> BTreeSet<&str> {
+        self.spec
+            .services
+            .iter()
+            .flat_map(|service| service.secrets.iter().map(|secret| secret.source.as_str()))
+            .collect()
+    }
+
+    /// Validates that every referenced logical secret exists.
+    ///
+    /// The callback receives names only; secret values never cross this domain
+    /// boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns one validation error for each missing logical secret reference.
+    pub fn validate_secret_references(
+        &self,
+        exists: impl Fn(&str) -> bool,
+    ) -> Result<(), ValidationErrors> {
+        let mut errors = Vec::new();
+        for (service_index, service) in self.spec.services.iter().enumerate() {
+            for (secret_index, secret) in service.secrets.iter().enumerate() {
+                if !exists(&secret.source) {
+                    error(
+                        &mut errors,
+                        "logical_secret_missing",
+                        &format!("spec.services[{service_index}].secrets[{secret_index}].source"),
+                        "logical secret does not exist",
+                    );
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ValidationErrors(errors))
+        }
+    }
+
     fn to_manifest(&self) -> ApplicationManifest {
         ApplicationManifest {
             api_version: self.api_version.clone(),
@@ -904,6 +1036,15 @@ impl NormalizedApplication {
                                 volume: mount.volume.clone(),
                                 target: mount.target.clone(),
                                 read_only: mount.read_only,
+                            })
+                            .collect(),
+                        secrets: service
+                            .secrets
+                            .iter()
+                            .map(|secret| SecretReferenceInput {
+                                source: secret.source.clone(),
+                                target: Some(secret.target.clone()),
+                                mode: secret.mode.clone(),
                             })
                             .collect(),
                         healthcheck: service.healthcheck.as_ref().map(|health| match health {
@@ -1124,6 +1265,43 @@ fn validate_absolute_path(value: &str, path: &str, errors: &mut Vec<ValidationEr
             "mount target must be an absolute, normalized container path below root",
         );
     }
+}
+
+fn validate_secret_target(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
+    if value.starts_with('/') {
+        validate_absolute_path(value, path, errors);
+    } else if value.is_empty()
+        || value.contains('/')
+        || value.contains('\\')
+        || value == "."
+        || value == ".."
+        || value.len() > 255
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        error(
+            errors,
+            "secret_target_unsafe",
+            path,
+            "secret target must be a safe filename or absolute normalized container path",
+        );
+    }
+}
+
+fn effective_secret_target(value: &str) -> String {
+    if value.starts_with('/') {
+        value.to_owned()
+    } else {
+        format!("/run/secrets/{value}")
+    }
+}
+
+fn valid_mode(value: &str) -> bool {
+    value.len() == 4
+        && value.starts_with('0')
+        && value.bytes().all(|byte| matches!(byte, b'0'..=b'7'))
+        && u16::from_str_radix(value, 8).is_ok_and(|mode| mode & 0o222 == 0 && mode & 0o444 != 0)
 }
 
 fn valid_env_name(value: &str) -> bool {

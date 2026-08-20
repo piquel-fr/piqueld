@@ -681,7 +681,7 @@ impl SqliteStore {
         let id_value = id.as_str();
         let row = sqlx::query_as!(
             ApplicationRow,
-            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE id=?1 AND deleted_at_ms IS NULL"#,
+            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",deployed_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE id=?1 AND deleted_at_ms IS NULL"#,
             id_value
         )
         .fetch_optional(&self.pool)
@@ -695,6 +695,39 @@ impl SqliteStore {
         Ok(stored)
     }
 
+    /// Records the desired runtime resolution after a generation has converged.
+    ///
+    /// This deployed snapshot is kept separately from current desired state so
+    /// secret deletion and retired-generation pruning cannot race an in-flight
+    /// service update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::IllegalTransition`] when the application generation
+    /// is no longer current, or a storage error when the update fails.
+    pub async fn mark_deployed(
+        &self,
+        id: &ApplicationId,
+        generation: u64,
+    ) -> Result<(), StoreError> {
+        let id_value = id.as_str();
+        let generation = generation_i64(generation)?;
+        let changed = sqlx::query!(
+            "UPDATE applications SET deployed_json=resolved_json WHERE id=?1 AND generation=?2 AND delete_intent=0 AND deleted_at_ms IS NULL",
+            id_value,
+            generation,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::IllegalTransition)
+        }
+    }
+
     /// Finds one live application by its user-facing name.
     ///
     /// # Errors
@@ -703,7 +736,7 @@ impl SqliteStore {
     pub async fn find_by_name(&self, name: &str) -> Result<Option<StoredApplication>, StoreError> {
         let row = sqlx::query_as!(
             ApplicationRow,
-            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE name=?1 AND deleted_at_ms IS NULL"#,
+            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",deployed_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE name=?1 AND deleted_at_ms IS NULL"#,
             name
         )
         .fetch_optional(&self.pool)
@@ -741,7 +774,7 @@ impl SqliteStore {
             let after = after.as_str();
             sqlx::query_as!(
                 ApplicationRow,
-                r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE id > ?1 AND deleted_at_ms IS NULL ORDER BY id LIMIT ?2"#,
+                r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",deployed_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE id > ?1 AND deleted_at_ms IS NULL ORDER BY id LIMIT ?2"#,
                 after,
                 fetch_limit
             )
@@ -750,7 +783,7 @@ impl SqliteStore {
         } else {
             sqlx::query_as!(
                 ApplicationRow,
-                r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE deleted_at_ms IS NULL ORDER BY id LIMIT ?1"#,
+                r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",deployed_json,generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE deleted_at_ms IS NULL ORDER BY id LIMIT ?1"#,
                 fetch_limit
             )
             .fetch_all(&self.pool)
@@ -859,7 +892,7 @@ impl SqliteStore {
         let application_id = app.id.as_str();
         let expected_generation_db = generation_i64(expected_generation)?;
         let changed = sqlx::query!(
-            "UPDATE OR IGNORE applications SET name=?1,generation=?2,desired_json=?3,resolved_json=?4,spec_hash=?5,updated_at_ms=?6 WHERE id=?7 AND generation=?8 AND delete_intent=0",
+            "UPDATE OR IGNORE applications SET name=?1,generation=?2,desired_json=?3,resolved_json=?4,deployed_json=NULL,spec_hash=?5,updated_at_ms=?6 WHERE id=?7 AND generation=?8 AND delete_intent=0",
             app_name,
             new_generation,
             desired,

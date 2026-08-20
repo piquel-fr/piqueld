@@ -1,12 +1,215 @@
 use super::{
     APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder,
-    DesiredNetwork, DesiredService, DesiredVolume, DockerApi, DockerError, HashMap,
+    DesiredNetwork, DesiredSecret, DesiredService, DesiredVolume, DockerApi, DockerError, HashMap,
     InspectNetworkOptions, InspectServiceOptions, Ipam, ListNetworksOptionsBuilder,
     ListServicesOptionsBuilder, ListTasksOptionsBuilder, ListVolumesOptionsBuilder,
-    NetworkCreateRequest, ObservedApplication, ObservedNetwork, ObservedVolume, SERVICE_LABEL,
-    SwarmInitRequest, SwarmState, TryStreamExt, VolumeCreateOptions, async_trait,
+    NetworkCreateRequest, ObservedApplication, ObservedNetwork, ObservedSecret, ObservedVolume,
+    SECRET_LABEL, SERVICE_LABEL, SwarmInitRequest, SwarmState, TryStreamExt, VolumeCreateOptions,
+    async_trait,
 };
+use base64::Engine as _;
 use piqueld_core::resource::image_repository;
+
+impl BollardDocker {
+    async fn observe_secret_resources(
+        &self,
+        services: &[bollard::models::Service],
+        application: &ApplicationId,
+    ) -> Result<Vec<ObservedSecret>, DockerError> {
+        let used = services
+            .iter()
+            .filter_map(|service| service.spec.as_ref())
+            .flat_map(|spec| {
+                spec.task_template
+                    .as_ref()
+                    .and_then(|task| task.container_spec.as_ref())
+                    .and_then(|container| container.secrets.as_ref())
+                    .into_iter()
+                    .flatten()
+            })
+            .filter_map(|reference| reference.secret_name.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        Ok(Self::map_request(
+            "list secrets",
+            self.docker
+                .list_secrets(None::<bollard::query_parameters::ListSecretsOptions>)
+                .await,
+        )?
+        .into_iter()
+        .filter_map(|secret| {
+            let spec = secret.spec?;
+            let name = spec.name?;
+            let labels = spec.labels.unwrap_or_default().into_iter().collect();
+            Self::relevant(&name, &labels, application).then_some(ObservedSecret {
+                in_use: used.contains(&name),
+                name,
+                labels,
+            })
+        })
+        .collect())
+    }
+
+    async fn resolve_service_secret_ids(
+        &self,
+        desired: &DesiredService,
+        spec: &mut super::ServiceSpec,
+    ) -> Result<(), DockerError> {
+        if desired.secrets.is_empty() {
+            return Ok(());
+        }
+        let ids = Self::map_request(
+            "list service secrets",
+            self.docker
+                .list_secrets(None::<bollard::query_parameters::ListSecretsOptions>)
+                .await,
+        )?
+        .into_iter()
+        .filter_map(|secret| Some((secret.spec?.name?, secret.id?)))
+        .collect::<BTreeMap<_, _>>();
+        let references = spec
+            .task_template
+            .as_mut()
+            .and_then(|task| task.container_spec.as_mut())
+            .and_then(|container| container.secrets.as_mut())
+            .ok_or(DockerError::Request("build service secret references"))?;
+        for reference in references {
+            let name = reference
+                .secret_name
+                .as_ref()
+                .ok_or(DockerError::Request("build service secret references"))?;
+            reference.secret_id = Some(
+                ids.get(name)
+                    .cloned()
+                    .ok_or(DockerError::Request("resolve service secret identity"))?,
+            );
+        }
+        Ok(())
+    }
+}
+
+impl BollardDocker {
+    async fn observe_networks(
+        &self,
+        application: &ApplicationId,
+    ) -> Result<(Vec<ObservedNetwork>, HashMap<String, String>), DockerError> {
+        let raw_networks = Self::map_request(
+            "list networks",
+            self.docker
+                .list_networks(Some(ListNetworksOptionsBuilder::default().build()))
+                .await,
+        )?;
+        let network_names = raw_networks
+            .iter()
+            .filter_map(|network| Some((network.id.clone()?, network.name.clone()?)))
+            .collect::<HashMap<_, _>>();
+        let networks = raw_networks
+            .into_iter()
+            .filter_map(|network| {
+                let runtime_configuration_matches = Self::network_configuration_matches(&network);
+                let name = network.name?;
+                Some(ObservedNetwork {
+                    name,
+                    runtime_configuration_matches,
+                    labels: network.labels.unwrap_or_default().into_iter().collect(),
+                })
+            })
+            .filter(|resource| Self::relevant(&resource.name, &resource.labels, application))
+            .collect();
+        Ok((networks, network_names))
+    }
+
+    async fn observe_volumes(
+        &self,
+        application: &ApplicationId,
+    ) -> Result<Vec<ObservedVolume>, DockerError> {
+        Ok(Self::map_request(
+            "list volumes",
+            self.docker
+                .list_volumes(Some(ListVolumesOptionsBuilder::default().build()))
+                .await,
+        )?
+        .volumes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|volume| {
+            let runtime_configuration_matches = Self::volume_configuration_matches(&volume);
+            ObservedVolume {
+                name: volume.name,
+                runtime_configuration_matches,
+                labels: volume.labels.into_iter().collect(),
+            }
+        })
+        .filter(|resource| Self::relevant(&resource.name, &resource.labels, application))
+        .collect())
+    }
+
+    fn observe_services(
+        raw_services: Vec<bollard::models::Service>,
+        all_tasks: &[bollard::models::Task],
+        network_names: &HashMap<String, String>,
+        secrets: &[ObservedSecret],
+        application: &ApplicationId,
+    ) -> Result<Vec<super::ObservedService>, DockerError> {
+        let mut services = raw_services
+            .into_iter()
+            .filter_map(|service| {
+                let id = service.id.clone()?;
+                let spec = service.spec?;
+                let name = spec.name.clone()?;
+                let labels: BTreeMap<_, _> = spec
+                    .labels
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                if !Self::relevant(&name, &labels, application) {
+                    return None;
+                }
+                let tasks = all_tasks
+                    .iter()
+                    .filter(|task| task.service_id.as_deref() == Some(&id))
+                    .map(Self::observe_task)
+                    .collect::<Vec<_>>();
+                Some(Self::observe_service(
+                    &spec,
+                    tasks,
+                    service.update_status.and_then(|u| u.state),
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for service in &mut services {
+            for target in &mut service.networks {
+                if let Some(name) = network_names.get(target) {
+                    *target = name.clone();
+                }
+            }
+        }
+        let logical_by_name = secrets
+            .iter()
+            .filter_map(|secret| {
+                secret
+                    .labels
+                    .get(SECRET_LABEL)
+                    .map(|logical| (secret.name.clone(), logical.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for service in &mut services {
+            Self::apply_secret_logical_names(service, &logical_by_name);
+        }
+        Ok(services)
+    }
+
+    fn apply_secret_logical_names(
+        service: &mut super::ObservedService,
+        logical_by_name: &BTreeMap<String, String>,
+    ) {
+        for mount in &mut service.secrets {
+            if let Some(logical) = logical_by_name.get(&mount.swarm_name) {
+                mount.logical_name.clone_from(logical);
+            }
+        }
+    }
+}
 
 #[async_trait]
 impl DockerApi for BollardDocker {
@@ -92,58 +295,10 @@ impl DockerApi for BollardDocker {
         &self,
         application: &ApplicationId,
     ) -> Result<ObservedApplication, DockerError> {
+        let (networks, network_names) = self.observe_networks(application).await?;
+        let volumes = self.observe_volumes(application).await?;
         let application_filter =
             || HashMap::from([("label", vec![format!("{APPLICATION_LABEL}={application}")])]);
-        let raw_networks = Self::map_request(
-            "list networks",
-            self.docker
-                .list_networks(Some(
-                    ListNetworksOptionsBuilder::default()
-                        .filters(&application_filter())
-                        .build(),
-                ))
-                .await,
-        )?;
-        let network_names = raw_networks
-            .iter()
-            .filter_map(|network| Some((network.id.clone()?, network.name.clone()?)))
-            .collect::<HashMap<_, _>>();
-        let networks = raw_networks
-            .into_iter()
-            .filter_map(|network| {
-                let runtime_configuration_matches = Self::network_configuration_matches(&network);
-                let name = network.name?;
-                Some(ObservedNetwork {
-                    name,
-                    runtime_configuration_matches,
-                    labels: network.labels.unwrap_or_default().into_iter().collect(),
-                })
-            })
-            .filter(|r| Self::relevant(&r.name, &r.labels, application))
-            .collect();
-        let volumes = Self::map_request(
-            "list volumes",
-            self.docker
-                .list_volumes(Some(
-                    ListVolumesOptionsBuilder::default()
-                        .filters(&application_filter())
-                        .build(),
-                ))
-                .await,
-        )?
-        .volumes
-        .unwrap_or_default()
-        .into_iter()
-        .map(|volume| {
-            let runtime_configuration_matches = Self::volume_configuration_matches(&volume);
-            ObservedVolume {
-                name: volume.name,
-                runtime_configuration_matches,
-                labels: volume.labels.into_iter().collect(),
-            }
-        })
-        .filter(|r| Self::relevant(&r.name, &r.labels, application))
-        .collect();
         let listed_services = Self::map_request(
             "list services",
             self.docker
@@ -176,43 +331,20 @@ impl DockerApi for BollardDocker {
                 ))
                 .await,
         )?;
-        let mut services = raw_services
-            .into_iter()
-            .filter_map(|service| {
-                let id = service.id.clone()?;
-                let spec = service.spec?;
-                let name = spec.name.clone()?;
-                let labels: BTreeMap<_, _> = spec
-                    .labels
-                    .clone()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect();
-                if !Self::relevant(&name, &labels, application) {
-                    return None;
-                }
-                let tasks = all_tasks
-                    .iter()
-                    .filter(|task| task.service_id.as_deref() == Some(&id))
-                    .map(Self::observe_task)
-                    .collect::<Vec<_>>();
-                Some(Self::observe_service(
-                    &spec,
-                    tasks,
-                    service.update_status.and_then(|u| u.state),
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        for service in &mut services {
-            for target in &mut service.networks {
-                if let Some(name) = network_names.get(target) {
-                    *target = name.clone();
-                }
-            }
-        }
+        let secrets = self
+            .observe_secret_resources(&raw_services, application)
+            .await?;
+        let services = Self::observe_services(
+            raw_services,
+            &all_tasks,
+            &network_names,
+            &secrets,
+            application,
+        )?;
         Ok(ObservedApplication {
             networks,
             volumes,
+            secrets,
             services,
         })
     }
@@ -315,6 +447,58 @@ impl DockerApi for BollardDocker {
         .map(|_| ())
     }
 
+    async fn ensure_secret(
+        &self,
+        desired: &DesiredSecret,
+        plaintext: &[u8],
+    ) -> Result<(), DockerError> {
+        if !desired.has_valid_identity() || plaintext.is_empty() || plaintext.len() > 500 * 1024 {
+            return Err(DockerError::OwnershipConflict);
+        }
+        let existing = Self::map_request(
+            "find secret by name",
+            self.docker
+                .list_secrets(None::<bollard::query_parameters::ListSecretsOptions>)
+                .await,
+        )?
+        .into_iter()
+        .find(|secret| {
+            secret.spec.as_ref().and_then(|spec| spec.name.as_deref())
+                == Some(desired.name.as_str())
+        });
+        if let Some(secret) = existing {
+            let labels = secret
+                .spec
+                .and_then(|spec| spec.labels)
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<BTreeMap<_, _>>();
+            return if Self::owns_named_secret(
+                &labels,
+                &desired.labels,
+                &desired.name,
+                &desired.logical_name,
+            ) {
+                Ok(())
+            } else {
+                Err(DockerError::OwnershipConflict)
+            };
+        }
+        let data = base64::engine::general_purpose::STANDARD.encode(plaintext);
+        Self::map_request(
+            "create secret",
+            self.docker
+                .create_secret(super::SecretSpec {
+                    name: Some(desired.name.clone()),
+                    labels: Some(desired.labels.clone().into_iter().collect()),
+                    data: Some(data),
+                    ..Default::default()
+                })
+                .await,
+        )
+        .map(|_| ())
+    }
+
     async fn ensure_service(&self, desired: &DesiredService) -> Result<(), DockerError> {
         if !desired.has_valid_identity() {
             return Err(DockerError::OwnershipConflict);
@@ -330,7 +514,8 @@ impl DockerApi for BollardDocker {
                 ))
                 .await,
         )?;
-        let spec = Self::service_spec(desired)?;
+        let mut spec = Self::service_spec(desired)?;
+        self.resolve_service_secret_ids(desired, &mut spec).await?;
         if let Some(existing) = matches
             .into_iter()
             .find(|s| s.spec.as_ref().and_then(|s| s.name.as_deref()) == Some(&desired.name))
@@ -378,7 +563,13 @@ impl DockerApi for BollardDocker {
                     *target = name.clone();
                 }
             }
-            if observed.matches(desired) {
+            let logical_by_name = desired
+                .secrets
+                .iter()
+                .map(|secret| (secret.swarm_name.clone(), secret.logical_name.clone()))
+                .collect::<BTreeMap<_, _>>();
+            Self::apply_secret_logical_names(&mut observed, &logical_by_name);
+            if observed.semantically_matches(desired) {
                 return Ok(());
             }
             let version = existing
@@ -462,6 +653,46 @@ impl DockerApi for BollardDocker {
                 status_code: 404, ..
             }) => Ok(()),
             Err(error) => Err(DockerError::request("delete network", error)),
+        }
+    }
+
+    async fn remove_secret(
+        &self,
+        name: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        let existing = Self::map_request(
+            "find secret by name",
+            self.docker
+                .list_secrets(None::<bollard::query_parameters::ListSecretsOptions>)
+                .await,
+        )?
+        .into_iter()
+        .find(|secret| secret.spec.as_ref().and_then(|spec| spec.name.as_deref()) == Some(name));
+        let Some(secret) = existing else {
+            return Ok(());
+        };
+        let id = secret
+            .id
+            .ok_or(DockerError::Request("read existing secret identity"))?;
+        let labels = secret
+            .spec
+            .and_then(|spec| spec.labels)
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        let logical_name = labels
+            .get(SECRET_LABEL)
+            .ok_or(DockerError::OwnershipConflict)?;
+        if !Self::owns_named_secret(&labels, ownership, name, logical_name) {
+            return Err(DockerError::OwnershipConflict);
+        }
+        match self.docker.delete_secret(&id).await {
+            Ok(())
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
+            Err(error) => Err(DockerError::request("delete secret", error)),
         }
     }
 }

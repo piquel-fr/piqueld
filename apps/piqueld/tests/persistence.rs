@@ -56,6 +56,7 @@ fn resolved(
         )]
         .into_iter()
         .collect(),
+        secrets: std::collections::BTreeMap::default(),
     };
     compile_application(
         application,
@@ -72,7 +73,7 @@ async fn fresh_database_persists_resolved_state_and_retains_volumes() {
     let store = SqliteStore::open(&database)
         .await
         .expect("fresh database opens");
-    assert_eq!(SCHEMA_VERSION, 1);
+    assert_eq!(SCHEMA_VERSION, 2);
 
     let application = application();
     let resolved = resolved(&application, store.instance_id());

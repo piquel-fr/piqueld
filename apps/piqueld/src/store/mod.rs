@@ -5,7 +5,10 @@
 
 mod application;
 mod operation;
+mod secret;
 mod status;
+
+pub(crate) use secret::{SecretDeleteResult, SecretMetadataRow, SecretWrite};
 
 use crate::operations::OperationError;
 use piqueld_core::{
@@ -354,6 +357,8 @@ pub struct StoredApplication {
     pub application: NormalizedApplication,
     /// Immutable runtime resolution persisted with the desired generation.
     pub resolved: ResolvedApplication,
+    /// Last runtime resolution known to have converged, when available.
+    pub deployed: Option<ResolvedApplication>,
     /// Monotonic application generation.
     pub generation: u64,
     /// Hash of the normalized desired specification.
@@ -798,6 +803,20 @@ fn validate_resolved(
             .iter()
             .map(|service| (service.logical_name.clone(), service.source.clone()))
             .collect(),
+        secrets: resolved
+            .secrets
+            .iter()
+            .map(|secret| {
+                (
+                    secret.logical_name.clone(),
+                    piqueld_core::SecretGeneration {
+                        logical_name: secret.logical_name.clone(),
+                        generation: secret.generation.clone(),
+                        swarm_name: secret.name.clone(),
+                    },
+                )
+            })
+            .collect(),
     };
     let rebuilt = compile_application(app, resolved.instance_id.clone(), &resolutions)
         .map_err(|errors| StoreError::corrupt(CompilationErrors(errors)))?;
@@ -830,12 +849,31 @@ fn decode_application(
     Ok(app)
 }
 
+fn decode_deployed(
+    json: &str,
+    application_id: &ApplicationId,
+    instance_id: &str,
+) -> Result<ResolvedApplication, StoreError> {
+    let decoded: ResolvedApplication = serde_json::from_str(json).map_err(StoreError::corrupt)?;
+    if decoded.id != *application_id
+        || decoded.instance_id.as_str() != instance_id
+        || !valid_sha256(&decoded.spec_hash)
+    {
+        return Err(StoreError::Corrupt);
+    }
+    if serde_json::to_string(&decoded).map_err(StoreError::corrupt)? != json {
+        return Err(StoreError::Corrupt);
+    }
+    Ok(decoded)
+}
+
 #[derive(Debug)]
 struct ApplicationRow {
     id: String,
     name: String,
     desired_json: String,
     resolved_json: String,
+    deployed_json: Option<String>,
     generation: i64,
     spec_hash: String,
     delete_intent: i64,
@@ -854,9 +892,15 @@ impl ApplicationRow {
         if serde_json::to_string(&decoded).map_err(StoreError::corrupt)? != self.resolved_json {
             return Err(StoreError::Corrupt);
         }
+        let application_id = application.id.clone();
         Ok(StoredApplication {
             application,
             resolved: decoded,
+            deployed: self
+                .deployed_json
+                .as_deref()
+                .map(|json| decode_deployed(json, &application_id, instance_id))
+                .transpose()?,
             generation: u64::try_from(self.generation).map_err(StoreError::corrupt)?,
             spec_hash: self.spec_hash,
             delete_intent: self.delete_intent == 1,

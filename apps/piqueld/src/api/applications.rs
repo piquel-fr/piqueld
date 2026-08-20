@@ -599,7 +599,21 @@ fn reusable_resolutions(
             reusable.then(|| (service.name.clone(), resolved.source.clone()))
         })
         .collect();
-    ResolutionSet { sources }
+    let secrets = current
+        .secrets
+        .iter()
+        .map(|secret| {
+            (
+                secret.logical_name.clone(),
+                piqueld_core::SecretGeneration {
+                    logical_name: secret.logical_name.clone(),
+                    generation: secret.generation.clone(),
+                    swarm_name: secret.name.clone(),
+                },
+            )
+        })
+        .collect();
+    ResolutionSet { sources, secrets }
 }
 
 async fn reject_name_collision(

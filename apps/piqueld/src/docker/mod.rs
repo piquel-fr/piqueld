@@ -8,12 +8,13 @@ use bollard::{
     Docker,
     models::{
         HealthConfig, Ipam, Limit, Mount, MountTypeEnum, NetworkAttachmentConfig,
-        NetworkCreateRequest, ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated,
+        NetworkCreateRequest, SecretSpec, ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated,
         ServiceSpecRollbackConfig, ServiceSpecRollbackConfigFailureActionEnum,
         ServiceSpecRollbackConfigOrderEnum, ServiceSpecUpdateConfig,
         ServiceSpecUpdateConfigFailureActionEnum, ServiceSpecUpdateConfigOrderEnum,
-        SwarmInitRequest, TaskSpec, TaskSpecContainerSpec, TaskSpecResources,
-        TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum, VolumeCreateOptions,
+        SwarmInitRequest, TaskSpec, TaskSpecContainerSpec, TaskSpecContainerSpecFile,
+        TaskSpecContainerSpecSecrets, TaskSpecResources, TaskSpecRestartPolicy,
+        TaskSpecRestartPolicyConditionEnum, VolumeCreateOptions,
     },
     query_parameters::{
         CreateImageOptionsBuilder, InspectNetworkOptions, InspectServiceOptions,
@@ -24,8 +25,9 @@ use bollard::{
 use futures_util::TryStreamExt;
 use piqueld_core::manifest::{HealthCheck, ResourceLimits};
 use piqueld_core::resource::{
-    APPLICATION_LABEL, Convergence, DesiredMount, DesiredNetwork, DesiredService, DesiredVolume,
-    INSTANCE_LABEL, MANAGED_LABEL, ObservedNetwork, ObservedService, ObservedTask, ObservedVolume,
+    APPLICATION_LABEL, Convergence, DesiredMount, DesiredNetwork, DesiredSecret,
+    DesiredSecretMount, DesiredService, DesiredVolume, INSTANCE_LABEL, MANAGED_LABEL,
+    ObservedNetwork, ObservedSecret, ObservedService, ObservedTask, ObservedVolume, SECRET_LABEL,
     SERVICE_LABEL, SPEC_HASH_LABEL, TaskDiagnostic, TaskState, valid_logical_name,
 };
 use piqueld_core::{
@@ -89,6 +91,12 @@ pub trait DockerApi: Send + Sync + 'static {
     async fn ensure_network(&self, desired: &DesiredNetwork) -> Result<(), DockerError>;
     /// Creates or verifies a managed volume.
     async fn ensure_volume(&self, desired: &DesiredVolume) -> Result<(), DockerError>;
+    /// Creates or verifies a managed Swarm secret.
+    async fn ensure_secret(
+        &self,
+        desired: &DesiredSecret,
+        plaintext: &[u8],
+    ) -> Result<(), DockerError>;
     /// Creates or updates a managed service.
     async fn ensure_service(&self, desired: &DesiredService) -> Result<(), DockerError>;
     /// Removes a managed service after rechecking its ownership.
@@ -99,6 +107,12 @@ pub trait DockerApi: Send + Sync + 'static {
     ) -> Result<(), DockerError>;
     /// Removes a managed private network after rechecking its ownership.
     async fn remove_network(
+        &self,
+        name: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError>;
+    /// Removes a managed Swarm secret after rechecking ownership.
+    async fn remove_secret(
         &self,
         name: &str,
         ownership: &BTreeMap<String, String>,

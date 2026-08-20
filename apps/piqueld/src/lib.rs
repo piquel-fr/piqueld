@@ -5,6 +5,7 @@ pub mod config;
 pub mod docker;
 pub mod operations;
 pub mod reconcile;
+pub mod secrets;
 pub mod store;
 
 use thiserror::Error;

@@ -16,9 +16,10 @@ pub use manifest::{
     APPLICATION_API_VERSION, APPLICATION_KIND, NormalizedApplication, ValidatedApplication,
     ValidationError, ValidationErrors, parse_json, parse_toml,
 };
-pub use planner::{Plan, PlanAction, PlanDiagnostic, PlanRequest};
+pub use planner::{Plan, PlanAction, PlanDiagnostic, PlanRequest, plan};
 pub use resource::{
-    CompileError, DesiredApplication, InstanceId, InstanceIdError, ObservedApplication,
-    ResolutionSet, Sha256Digest, Sha256DigestError, compile_application, image_repository,
-    preview_resolution, valid_logical_name,
+    CompileError, DesiredApplication, DesiredSecret, DesiredSecretMount, InstanceId,
+    InstanceIdError, ObservedApplication, ObservedSecret, ResolutionSet, SecretGeneration,
+    Sha256Digest, Sha256DigestError, compile_application, image_repository, preview_resolution,
+    valid_logical_name,
 };

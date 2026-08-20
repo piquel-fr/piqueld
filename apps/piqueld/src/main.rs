@@ -7,6 +7,7 @@ use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::operations::OperationScheduler;
 use piqueld::reconcile::{DockerRuntime, ReconcileHandler, run_coordinator};
+use piqueld::secrets::{MasterKey, SecretService};
 use piqueld::store::SqliteStore;
 use piqueld_core::InstanceId;
 use std::{
@@ -43,6 +44,15 @@ async fn main() -> Result<()> {
             .context("failed to open control-plane state")?,
     );
 
+    let secret_service = config
+        .credentials
+        .encryption_key
+        .as_ref()
+        .map(MasterKey::load)
+        .transpose()
+        .context("failed to load logical-secret encryption key")?
+        .map(|key| Arc::new(SecretService::new(Arc::clone(&store), key)));
+
     let docker = {
         let docker = Arc::new(
             BollardDocker::connect(&config.docker.socket)
@@ -60,16 +70,17 @@ async fn main() -> Result<()> {
 
     let wake = Arc::new(tokio::sync::Notify::new());
 
-    let runtime = Arc::new(DockerRuntime::new(
-        Arc::clone(&docker),
-        instance,
-        Arc::clone(&wake),
-    ));
+    let mut runtime = DockerRuntime::new(Arc::clone(&docker), instance, Arc::clone(&wake));
+    if let Some(service) = &secret_service {
+        runtime = runtime.with_secret_service(Arc::clone(service));
+    }
+    let runtime = Arc::new(runtime);
 
-    let handler = Arc::new(ReconcileHandler::new(
-        Arc::clone(&docker),
-        Arc::clone(&store),
-    ));
+    let mut handler = ReconcileHandler::new(Arc::clone(&docker), Arc::clone(&store));
+    if let Some(service) = &secret_service {
+        handler = handler.with_secret_service(Arc::clone(service));
+    }
+    let handler = Arc::new(handler);
 
     let scheduler = Arc::new(OperationScheduler::new(
         Arc::clone(&store),
@@ -82,7 +93,10 @@ async fn main() -> Result<()> {
         .ui_dir
         .clone()
         .unwrap_or_else(piqueld::config::default_ui_dir);
-    let state = ApiState::new(Arc::clone(&store), runtime).with_ui_dir(ui_dir);
+    let mut state = ApiState::new(Arc::clone(&store), runtime).with_ui_dir(ui_dir);
+    if let Some(service) = &secret_service {
+        state = state.with_secret_service(Arc::clone(service));
+    }
 
     // cancellation token for workers
     let cancellation = CancellationToken::new();
@@ -99,6 +113,7 @@ async fn main() -> Result<()> {
             Arc::clone(&wake),
             scan_interval,
             controller_token,
+            secret_service,
         )
         .await;
         controller_cancellation.cancel();

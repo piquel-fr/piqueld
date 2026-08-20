@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use std::{
+    fmt,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -20,6 +21,8 @@ pub struct DaemonConfig {
     pub docker: DockerConfig,
     /// Reconciliation scheduling limits.
     pub reconciliation: ReconciliationConfig,
+    /// References to credentials kept outside the database and configuration.
+    pub credentials: CredentialsConfig,
 }
 
 impl DaemonConfig {
@@ -66,6 +69,9 @@ impl DaemonConfig {
         }
         absolute_file("database.path", &self.database.path)?;
         absolute_file("docker.socket", &self.docker.socket)?;
+        if let Some(reference) = &self.credentials.encryption_key {
+            reference.validate()?;
+        }
         if self.server.http_listen.port() == 0 {
             return Err(ConfigError::Invalid(
                 "server.http_listen port must be greater than zero".into(),
@@ -182,6 +188,73 @@ pub struct ReconciliationConfig {
     pub scan_interval_seconds: u64,
     /// Global cap on concurrently mutating application operations.
     pub max_parallel_operations: usize,
+}
+
+/// References to credentials owned by systemd or a protected host file.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CredentialsConfig {
+    /// Optional external master-encryption-key reference.
+    pub encryption_key: Option<CredentialReference>,
+}
+
+/// A credential source that contains a reference, never inline secret material.
+#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CredentialReference {
+    /// A protected absolute file outside the Nix store.
+    File {
+        /// Absolute path to the protected credential file.
+        path: PathBuf,
+    },
+    /// A basename exposed in `$CREDENTIALS_DIRECTORY` by systemd.
+    SystemdCredential {
+        /// Systemd credential basename.
+        name: String,
+    },
+}
+
+impl CredentialReference {
+    fn validate(&self) -> Result<(), ConfigError> {
+        match self {
+            Self::File { path } => {
+                absolute_file("credentials.encryption_key.path", path)?;
+                if path.starts_with("/nix/store") {
+                    return Err(ConfigError::Invalid(
+                        "credentials.encryption_key.path must be outside the Nix store".into(),
+                    ));
+                }
+            }
+            Self::SystemdCredential { name }
+                if name.is_empty()
+                    || name == "."
+                    || name == ".."
+                    || name.len() > 255
+                    || name.contains(['/', '\\', '\0']) =>
+            {
+                return Err(ConfigError::Invalid(
+                    "systemd credential name must be a non-empty basename".into(),
+                ));
+            }
+            Self::SystemdCredential { .. } => {}
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for CredentialReference {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::File { .. } => formatter
+                .debug_struct("File")
+                .field("path", &"[REDACTED]")
+                .finish(),
+            Self::SystemdCredential { name } => formatter
+                .debug_struct("SystemdCredential")
+                .field("name", name)
+                .finish(),
+        }
+    }
 }
 
 impl Default for ReconciliationConfig {

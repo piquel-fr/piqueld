@@ -14,6 +14,10 @@ piquelctl plan --file application.toml
 piquelctl apply --file application.toml
 piquelctl delete <name-or-id>
 piquelctl operation <operation-id>
+piquelctl secret list
+piquelctl secret set <name> --stdin
+piquelctl secret set <name> --file <private-file>
+piquelctl secret delete <name>
 ```
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit loopback
@@ -43,6 +47,9 @@ written to stderr, so stdout remains valid JSON.
 | `delete` | `{ "accepted": AcceptedOperation, "operation": OperationView, "volumes_retained": true }` |
 | `operation --no-wait` | `OperationView` |
 | `operation` | `OperationView` |
+| `secret list` | `{ "items": [SecretMetadata] }` |
+| `secret set` | `SecretMetadata` (metadata only) |
+| `secret delete` | `{ "deleted": true, "name": "..." }` |
 
 The DTO fields and error envelope are defined by the versioned API and the
 `piqueld-client` crate. CLI errors are reported on stderr and never mixed into
@@ -68,12 +75,19 @@ By default, `apply`, `delete`, and `operation` poll the accepted operation every
 Pressing Ctrl-C ends only the local wait; it does not cancel the server-side
 operation, which can still be inspected with `piquelctl operation <id>`.
 
+Secret values are accepted only from a noninteractive stdin pipe or a private,
+regular, symlink-free file. They are never accepted as command arguments,
+printed in output, included in errors, or returned by the API. `secret list`
+shows metadata and references only. `secret delete` requires confirmation (or
+`--yes`) and refuses locally when the secret is still referenced by an
+application service.
+
 The commonly useful exit codes are 0 for success, 1 for a general error, 2 for
 usage or input errors, 3 for generation conflicts, 4 for unavailable or timed
 out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.
 
-Profiles and configuration files, authentication and tokens, secrets, builds,
+Profiles and configuration files, authentication and tokens, builds,
 registries, routes, logs, state transfer, SSE, shell completion, editor flows,
 conflict merging, and elaborate stable exit categories remain deferred to the
 later CLI plan.

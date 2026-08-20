@@ -53,7 +53,10 @@ impl RuntimeBoundary for FakeRuntime {
         let resolved = compile_application(
             application,
             self.instance.clone(),
-            &ResolutionSet { sources },
+            &ResolutionSet {
+                sources,
+                secrets: std::collections::BTreeMap::default(),
+            },
         )
         .map_err(BoundaryError::Compilation)?;
         Ok(PreparedApplication {

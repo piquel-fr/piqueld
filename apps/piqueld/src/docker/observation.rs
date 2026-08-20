@@ -1,8 +1,9 @@
 use super::policy::ServiceRuntimePolicy;
 use super::{
-    BTreeMap, BollardDocker, Convergence, DesiredMount, DockerError, HealthCheck, HealthConfig,
-    MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND, ObservedService, ObservedTask,
-    ResourceLimits, ServiceSpec, TaskDiagnostic, TaskSpecContainerSpec, TaskState,
+    BTreeMap, BollardDocker, Convergence, DesiredMount, DesiredSecretMount, DockerError,
+    HealthCheck, HealthConfig, MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND,
+    ObservedService, ObservedTask, ResourceLimits, ServiceSpec, TaskDiagnostic,
+    TaskSpecContainerSpec, TaskState,
 };
 
 impl BollardDocker {
@@ -83,6 +84,7 @@ impl BollardDocker {
             command: container.command.clone().unwrap_or_default(),
             arguments: container.args.clone().unwrap_or_default(),
             mounts: BollardDocker::observed_mounts(container),
+            secrets: BollardDocker::observed_secret_mounts(container),
             healthcheck: container
                 .health_check
                 .as_ref()
@@ -124,6 +126,29 @@ impl BollardDocker {
                     volume_name: mount.source?,
                     target: mount.target?,
                     read_only: mount.read_only.unwrap_or(false),
+                })
+            })
+            .collect()
+    }
+
+    pub(super) fn observed_secret_mounts(
+        container: &TaskSpecContainerSpec,
+    ) -> Vec<DesiredSecretMount> {
+        container
+            .secrets
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|secret| {
+                let swarm_name = secret.secret_name.or(secret.secret_id)?;
+                let file = secret.file?;
+                let target = file.name?;
+                let mode = file.mode.map(|mode| format!("0{mode:o}"))?;
+                Some(DesiredSecretMount {
+                    logical_name: swarm_name.clone(),
+                    swarm_name,
+                    target,
+                    mode,
                 })
             })
             .collect()

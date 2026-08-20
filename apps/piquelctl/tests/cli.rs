@@ -6,7 +6,7 @@ use std::{
     fs,
     io::{Read, Write},
     net::TcpListener,
-    os::unix::net::UnixListener,
+    os::unix::{fs::PermissionsExt, net::UnixListener},
     path::PathBuf,
     process::{Command, Output, Stdio},
     sync::{Arc, Mutex},
@@ -286,6 +286,7 @@ fn app_view(id: &str, name: &str, generation: u64) -> Value {
                     "command": [],
                     "arguments": [],
                     "mounts": [],
+                    "secrets": [],
                     "healthcheck": null,
                     "resources": null
                 }],
@@ -303,6 +304,17 @@ fn app_view(id: &str, name: &str, generation: u64) -> Value {
 fn page(items: Vec<Value>, next_cursor: Option<&str>) -> Value {
     let items = items.into_iter().collect::<Vec<_>>();
     json!({"items": items, "next_cursor": next_cursor})
+}
+
+fn secret_metadata(name: &str, references: Vec<Value>) -> Value {
+    json!({
+        "name": name,
+        "value_is_set": true,
+        "generation": 1,
+        "created_at_ms": 1,
+        "updated_at_ms": 1,
+        "references": references,
+    })
 }
 
 fn status(id: &str, generation: u64, state: &str) -> Value {
@@ -388,6 +400,77 @@ fn status_works_over_tcp_and_unix_with_clean_json() {
         assert!(output.stderr.is_empty());
         let _ = server.finish();
     }
+}
+
+#[test]
+fn secret_list_and_set_keep_plaintext_out_of_output() {
+    let directory = tempdir().expect("secret directory");
+    let path = directory.path().join("secret.txt");
+    let canary = b"do-not-print-this-secret";
+    fs::write(&path, canary).expect("secret file");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("private secret file");
+    let server = start_server(false, 3, move |request| match request.path.as_str() {
+        "/api/v1/secrets?limit=100" => Reply::json(page(
+            vec![secret_metadata("database-password", Vec::new())],
+            None,
+        )),
+        "/api/v1/secrets/database-password" if request.method == "GET" => {
+            Reply::error("404 Not Found", "secret_not_found", Value::Null)
+        }
+        "/api/v1/secrets/database-password" if request.method == "POST" => {
+            assert_eq!(
+                request.headers.get("content-type"),
+                Some(&"application/octet-stream".to_owned())
+            );
+            assert_eq!(request.body, canary);
+            Reply::json(secret_metadata("database-password", Vec::new()))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+
+    let output = run(&server, &["secret", "list"]);
+    let listed = assert_json_success(&output);
+    assert_eq!(listed["items"][0]["name"], "database-password");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("do-not-print"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("do-not-print"));
+
+    let output = run(
+        &server,
+        &[
+            "secret",
+            "set",
+            "database-password",
+            "--file",
+            path.to_str().expect("secret path"),
+        ],
+    );
+    let set = assert_json_success(&output);
+    assert_eq!(set["name"], "database-password");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("do-not-print"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("do-not-print"));
+    let _ = server.finish();
+}
+
+#[test]
+fn secret_delete_refuses_referenced_metadata_before_mutation() {
+    let server = start_server(false, 1, move |request| {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/api/v1/secrets/database-password");
+        Reply::json(secret_metadata(
+            "database-password",
+            vec![json!({
+                "application_id": "app-notes-01",
+                "application_name": "notes",
+                "service": "web",
+                "deployed": true,
+            })],
+        ))
+    });
+    let output = run(&server, &["secret", "delete", "database-password", "--yes"]);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("still referenced"));
+    let _ = server.finish();
 }
 
 #[test]
