@@ -79,7 +79,8 @@ impl<D: DockerApi> ReconcileHandler<D> {
                     error @ (DockerError::OwnershipConflict
                     | DockerError::ConfigurationConflict
                     | DockerError::NotManager
-                    | DockerError::IncompatibleSwarm),
+                    | DockerError::IncompatibleSwarm
+                    | DockerError::Validation(_)),
                 ) => {
                     tracing::error!(error = %error, "Docker operation rejected");
                     return Err(error.into());
