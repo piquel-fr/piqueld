@@ -50,3 +50,22 @@ fn removed_data_directory_is_not_accepted_as_configuration() {
 fn built_in_defaults_are_valid() {
     assert!(DaemonConfig::validated_default().is_ok());
 }
+
+#[test]
+fn trusted_identity_and_browser_origins_fail_closed() {
+    assert!(matches!(
+        DaemonConfig::from_toml("[security]\ntrust_tailscale_headers = true"),
+        Err(ConfigError::Invalid(_))
+    ));
+    let trusted = DaemonConfig::from_toml(
+        "[security]\ntrusted_loopback_proxy = true\ntrust_tailscale_headers = true\nallowed_origins = ['https://admin.example']",
+    );
+    assert!(trusted.is_ok());
+    for origin in ["*", "https://example.test/path", "file:///tmp/x"] {
+        let source = format!("[security]\nallowed_origins = ['{origin}']");
+        assert!(matches!(
+            DaemonConfig::from_toml(&source),
+            Err(ConfigError::Invalid(_))
+        ));
+    }
+}

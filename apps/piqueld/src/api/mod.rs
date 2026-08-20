@@ -29,8 +29,9 @@ use tower_http::{
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
+    auth::AccessPolicy,
     build::{BuildError, BuildLogEntry},
-    config::default_ui_dir,
+    config::{SecurityConfig, default_ui_dir},
     docker::DockerError,
     proxy::IngressError,
     secrets::{SecretError, SecretService},
@@ -107,6 +108,11 @@ pub enum BoundaryError {
 pub trait RuntimeBoundary: Send + Sync + 'static {
     /// Wakes the reconciler after a mutation requests an immediate scan.
     fn trigger_reconciliation(&self) {}
+    /// Checks runtime and managed-infrastructure readiness without creating
+    /// resources or exposing lower-level dependency errors.
+    async fn readiness(&self) -> RuntimeReadiness {
+        RuntimeReadiness::unavailable()
+    }
     /// Resolves mutable inputs and captures an initial runtime observation.
     async fn prepare(
         &self,
@@ -141,6 +147,30 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     }
 }
 
+#[derive(Clone, Debug)]
+/// Sanitized readiness state returned by the runtime boundary.
+pub struct RuntimeReadiness {
+    /// Whether Docker is reachable.
+    pub docker: bool,
+    /// Whether Docker is an active single-node Swarm manager.
+    pub swarm_manager: bool,
+    /// Whether registry and ingress dependencies are ready.
+    pub infrastructure: bool,
+    /// Sanitized operator-facing reason when readiness is false.
+    pub reason: Option<String>,
+}
+
+impl RuntimeReadiness {
+    fn unavailable() -> Self {
+        Self {
+            docker: false,
+            swarm_manager: false,
+            infrastructure: false,
+            reason: Some("runtime dependencies are unavailable".into()),
+        }
+    }
+}
+
 /// Shared state for API handlers.
 #[derive(Clone)]
 pub struct ApiState {
@@ -154,6 +184,7 @@ pub struct ApiState {
         Arc<tokio::sync::Mutex<std::collections::BTreeMap<String, (String, i64)>>>,
     import_lock: Arc<tokio::sync::Mutex<()>>,
     ui_dir: std::path::PathBuf,
+    metrics_enabled: bool,
 }
 
 impl ApiState {
@@ -172,6 +203,7 @@ impl ApiState {
             )),
             import_lock: Arc::new(tokio::sync::Mutex::new(())),
             ui_dir: default_ui_dir(),
+            metrics_enabled: false,
         }
     }
 
@@ -179,6 +211,13 @@ impl ApiState {
     #[must_use]
     pub fn with_ui_dir(mut self, path: std::path::PathBuf) -> Self {
         self.ui_dir = path;
+        self
+    }
+
+    /// Enables the low-cardinality Prometheus endpoint.
+    #[must_use]
+    pub fn with_metrics(mut self, enabled: bool) -> Self {
+        self.metrics_enabled = enabled;
         self
     }
 
@@ -476,15 +515,44 @@ impl IntoResponse for ApiError {
 
 /// Builds the Plan 06 HTTP router.
 pub fn router(state: ApiState) -> Router {
-    build_router(state, true)
+    let security = SecurityConfig::default();
+    router_with_policy(
+        state,
+        AccessPolicy::unix(&security),
+        security.max_body_bytes,
+    )
 }
 
 /// Builds the API-only router used by the Unix-socket client transport.
 pub fn api_router(state: ApiState) -> Router {
-    build_router(state, false)
+    let security = SecurityConfig::default();
+    api_router_with_policy(
+        state,
+        AccessPolicy::unix(&security),
+        security.max_body_bytes,
+    )
 }
 
-fn build_router(state: ApiState, serve_ui: bool) -> Router {
+/// Builds the browser/API router with an explicit listener security policy.
+pub fn router_with_policy(state: ApiState, policy: AccessPolicy, max_body_bytes: usize) -> Router {
+    build_router(state, policy, max_body_bytes, true)
+}
+
+/// Builds the API-only router with an explicit listener security policy.
+pub fn api_router_with_policy(
+    state: ApiState,
+    policy: AccessPolicy,
+    max_body_bytes: usize,
+) -> Router {
+    build_router(state, policy, max_body_bytes, false)
+}
+
+fn build_router(
+    state: ApiState,
+    policy: AccessPolicy,
+    max_body_bytes: usize,
+    serve_ui: bool,
+) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     let (router, openapi) = documented_router().split_for_parts();
     let router = router.method_not_allowed_fallback(method_not_allowed);
@@ -495,12 +563,29 @@ fn build_router(state: ApiState, serve_ui: bool) -> Router {
     };
     router
         .with_state(state)
-        .layer(DefaultBodyLimit::max(crate::transfer::MAX_ARCHIVE_BYTES))
+        .layer(DefaultBodyLimit::max(
+            max_body_bytes.min(crate::transfer::MAX_ARCHIVE_BYTES),
+        ))
         .layer(Extension(Arc::new(openapi)))
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
         .layer(middleware::from_fn(bind_error_request_id))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
-        .layer(TraceLayer::new_for_http())
+        // Never record the raw URI: query strings are operator input and can
+        // accidentally contain credentials or archive confirmation material.
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request| {
+                tracing::info_span!(
+                    "http_request",
+                    method = %request.method(),
+                    request_id = request
+                        .headers()
+                        .get("x-request-id")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("unavailable")
+                )
+            }),
+        )
+        .layer(middleware::from_fn_with_state(policy, crate::auth::enforce))
 }
 
 // Public endpoints must be registered through `routes!` here so Axum and the
@@ -510,6 +595,9 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(system::status))
         .routes(routes!(system::capabilities))
         .routes(routes!(system::health))
+        .routes(routes!(system::health_v1))
+        .routes(routes!(system::readiness))
+        .routes(routes!(system::metrics))
         .routes(routes!(openapi::openapi))
         .routes(routes!(applications::list, applications::create))
         .routes(routes!(applications::plan_create))

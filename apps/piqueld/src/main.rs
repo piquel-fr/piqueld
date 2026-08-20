@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use piqueld::api::ApiState;
+use piqueld::auth::{AccessPolicy, load_bearer};
 use piqueld::build::{
     BollardBuildKit, BuildExecutor, BuildService, DEFAULT_MAX_CONTEXT_BYTES, GixGitSource,
     ProtectedGitCredentials, SourceBuilder,
@@ -43,58 +44,22 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let config = load_config(args.config.as_deref())?;
     piqueld::config::init_tracing().context("failed to initialize tracing")?;
-
-    let store = Arc::new(
-        SqliteStore::open(&config.database.path)
-            .await
-            .context("failed to open control-plane state")?,
-    );
-
-    let secret_service = config
+    let bearer = config
         .credentials
-        .encryption_key
+        .bearer_token
         .as_ref()
-        .map(MasterKey::load)
+        .map(load_bearer)
         .transpose()
-        .context("failed to load logical-secret encryption key")?
-        .map(|key| Arc::new(SecretService::new(Arc::clone(&store), key)));
-
-    let docker = {
-        let docker = Arc::new(
-            BollardDocker::connect(&config.docker.socket)
-                .context("failed to connect to Docker Engine")?,
-        );
-        docker
-            .ensure_swarm(config.docker.auto_initialize_swarm)
-            .await
-            .context("Docker Engine is not an active single-node Swarm manager")?;
-        docker
-    };
-
-    let instance = InstanceId::parse(store.instance_id().to_owned())
-        .context("stored instance identity is invalid")?;
-
-    let wake = Arc::new(tokio::sync::Notify::new());
-
-    let ingress_spec = IngressSpec {
-        instance_id: instance.clone(),
-        image: config.traefik.image.clone(),
-        published_port: config.traefik.published_port,
-        docker_socket: config.docker.socket.clone(),
-    };
-    let ingress_controller: Arc<dyn IngressApi> = Arc::new(TraefikController::new(docker.client()));
-    ingress_controller
-        .ensure(&ingress_spec)
-        .await
-        .context("failed to ensure managed Traefik ingress")?;
-
-    let mut runtime = DockerRuntime::new(Arc::clone(&docker), instance, Arc::clone(&wake));
-    runtime = runtime.with_source_builder(build_source_builder(&config, &docker, &store)?);
-    runtime = runtime.with_ingress(Arc::clone(&ingress_controller), ingress_spec.clone());
-    if let Some(service) = &secret_service {
-        runtime = runtime.with_secret_service(Arc::clone(service));
-    }
-    let runtime = Arc::new(runtime);
+        .context("failed to load administrative bearer credential")?;
+    let RuntimeServices {
+        store,
+        docker,
+        secret_service,
+        runtime,
+        ingress_controller,
+        ingress_spec,
+        wake,
+    } = initialize_services(&config).await?;
 
     let mut handler = ReconcileHandler::new(Arc::clone(&docker), Arc::clone(&store));
     if let Some(service) = &secret_service {
@@ -113,7 +78,9 @@ async fn main() -> Result<()> {
         .ui_dir
         .clone()
         .unwrap_or_else(piqueld::config::default_ui_dir);
-    let mut state = ApiState::new(&store, runtime).with_ui_dir(ui_dir);
+    let mut state = ApiState::new(&store, runtime)
+        .with_ui_dir(ui_dir)
+        .with_metrics(config.observability.metrics);
     if let Some(service) = &secret_service {
         state = state.with_secret_service(Arc::clone(service));
     }
@@ -151,15 +118,89 @@ async fn main() -> Result<()> {
         result
     });
 
+    let (tcp_policy, unix_policy) = AccessPolicy::listener_pair(bearer.as_ref(), &config.security);
+    drop(bearer);
     let tcp_api = spawn_tcp_api(
         config.server.http_listen,
         state.clone(),
+        tcp_policy,
+        config.security.max_body_bytes,
         cancellation.clone(),
     )
     .await?;
-    let unix_api = spawn_unix_api(config.server.unix_socket, state, cancellation.clone()).await?;
+    let unix_api = spawn_unix_api(
+        config.server.unix_socket,
+        state,
+        unix_policy,
+        config.security.max_body_bytes,
+        cancellation.clone(),
+    )
+    .await?;
 
     await_workers(cancellation, signal_task, tcp_api, unix_api, controller).await
+}
+
+struct RuntimeServices {
+    store: Arc<SqliteStore>,
+    docker: Arc<BollardDocker>,
+    secret_service: Option<Arc<SecretService>>,
+    runtime: Arc<DockerRuntime<BollardDocker>>,
+    ingress_controller: Arc<dyn IngressApi>,
+    ingress_spec: IngressSpec,
+    wake: Arc<tokio::sync::Notify>,
+}
+
+async fn initialize_services(config: &DaemonConfig) -> Result<RuntimeServices> {
+    let store = Arc::new(
+        SqliteStore::open(&config.database.path)
+            .await
+            .context("failed to open control-plane state")?,
+    );
+    let secret_service = config
+        .credentials
+        .encryption_key
+        .as_ref()
+        .map(MasterKey::load)
+        .transpose()
+        .context("failed to load logical-secret encryption key")?
+        .map(|key| Arc::new(SecretService::new(Arc::clone(&store), key)));
+    let docker = Arc::new(
+        BollardDocker::connect(&config.docker.socket)
+            .context("failed to connect to Docker Engine")?,
+    );
+    docker
+        .ensure_swarm(config.docker.auto_initialize_swarm)
+        .await
+        .context("Docker Engine is not an active single-node Swarm manager")?;
+    let instance = InstanceId::parse(store.instance_id().to_owned())
+        .context("stored instance identity is invalid")?;
+    let ingress_spec = IngressSpec {
+        instance_id: instance.clone(),
+        image: config.traefik.image.clone(),
+        published_port: config.traefik.published_port,
+        docker_socket: config.docker.socket.clone(),
+    };
+    let ingress_controller: Arc<dyn IngressApi> = Arc::new(TraefikController::new(docker.client()));
+    ingress_controller
+        .ensure(&ingress_spec)
+        .await
+        .context("failed to ensure managed Traefik ingress")?;
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let mut runtime = DockerRuntime::new(Arc::clone(&docker), instance, Arc::clone(&wake));
+    runtime = runtime.with_source_builder(build_source_builder(config, &docker, &store)?);
+    runtime = runtime.with_ingress(Arc::clone(&ingress_controller), ingress_spec.clone());
+    if let Some(service) = &secret_service {
+        runtime = runtime.with_secret_service(Arc::clone(service));
+    }
+    Ok(RuntimeServices {
+        store,
+        docker,
+        secret_service,
+        runtime: Arc::new(runtime),
+        ingress_controller,
+        ingress_spec,
+        wake,
+    })
 }
 
 async fn await_workers(
@@ -258,6 +299,8 @@ fn build_source_builder(
 async fn spawn_tcp_api(
     address: std::net::SocketAddr,
     state: ApiState,
+    policy: AccessPolicy,
+    max_body_bytes: usize,
     cancellation: CancellationToken,
 ) -> Result<tokio::task::JoinHandle<Result<(), std::io::Error>>> {
     let listener = TcpListener::bind(address)
@@ -265,9 +308,12 @@ async fn spawn_tcp_api(
         .context("failed to bind HTTP API")?;
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
-        let result = axum::serve(listener, piqueld::api::router(state))
-            .with_graceful_shutdown(async move { shutdown.cancelled().await })
-            .await;
+        let result = axum::serve(
+            listener,
+            piqueld::api::router_with_policy(state, policy, max_body_bytes),
+        )
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
+        .await;
         cancellation.cancel();
         result
     }))
@@ -276,6 +322,8 @@ async fn spawn_tcp_api(
 async fn spawn_unix_api(
     path: PathBuf,
     state: ApiState,
+    policy: AccessPolicy,
+    max_body_bytes: usize,
     cancellation: CancellationToken,
 ) -> Result<tokio::task::JoinHandle<Result<(), std::io::Error>>> {
     if let Some(parent) = path.parent() {
@@ -312,9 +360,12 @@ async fn spawn_unix_api(
         .context("failed to restrict Unix API socket permissions")?;
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
-        let result = axum::serve(listener, piqueld::api::api_router(state))
-            .with_graceful_shutdown(async move { shutdown.cancelled().await })
-            .await;
+        let result = axum::serve(
+            listener,
+            piqueld::api::api_router_with_policy(state, policy, max_body_bytes),
+        )
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
+        .await;
         cancellation.cancel();
         result
     }))

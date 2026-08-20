@@ -726,6 +726,25 @@ impl SqliteStore {
         self.pool.acquire().await.map_err(StoreError::database)
     }
 
+    /// Executes a bounded, read-only dependency probe without exposing `SQLx`
+    /// details to the readiness endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error when the probe cannot execute or does not
+    /// return the expected sentinel value.
+    pub async fn probe(&self) -> Result<(), StoreError> {
+        let value = sqlx::query_scalar!(r#"SELECT 1 AS "value!: i64""#)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| StoreError::Database)?;
+        if value == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::Database)
+        }
+    }
+
     async fn begin_immediate(&self) -> Result<Transaction<'static, Sqlite>, StoreError> {
         self.pool
             .begin_with("BEGIN IMMEDIATE")

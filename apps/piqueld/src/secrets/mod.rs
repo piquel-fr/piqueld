@@ -107,9 +107,24 @@ impl MasterKey {
             rustix::fs::Mode::empty(),
             rustix::fs::ResolveFlags::NO_SYMLINKS | rustix::fs::ResolveFlags::NO_MAGICLINKS,
         )
+        .or_else(|error| {
+            if error == rustix::io::Errno::NOSYS
+                && matches!(reference, CredentialReference::SystemdCredential { .. })
+            {
+                rustix::fs::open(
+                    &path,
+                    rustix::fs::OFlags::RDONLY
+                        | rustix::fs::OFlags::CLOEXEC
+                        | rustix::fs::OFlags::NOFOLLOW,
+                    rustix::fs::Mode::empty(),
+                )
+            } else {
+                Err(error)
+            }
+        })
         .map_err(|_| SecretError::KeyPermissions)?;
         let mut file = File::from(descriptor);
-        validate_key_file(&file)?;
+        validate_key_file(&file, reference)?;
         let canonical = fs::canonicalize(&path).map_err(|_| SecretError::KeyUnavailable)?;
         if canonical.starts_with("/nix/store") {
             return Err(SecretError::KeyPermissions);
@@ -646,12 +661,13 @@ fn append_references(
     }
 }
 
-fn validate_key_file(file: &File) -> Result<(), SecretError> {
+fn validate_key_file(file: &File, reference: &CredentialReference) -> Result<(), SecretError> {
     let metadata = file.metadata().map_err(|_| SecretError::KeyUnavailable)?;
     let effective_uid = rustix::process::geteuid().as_raw();
+    let protected_file = metadata.mode().trailing_zeros() >= 6
+        && (metadata.uid() == 0 || metadata.uid() == effective_uid);
     if !metadata.is_file()
-        || metadata.mode() & 0o077 != 0
-        || (metadata.uid() != 0 && metadata.uid() != effective_uid)
+        || (matches!(reference, CredentialReference::File { .. }) && !protected_file)
     {
         return Err(SecretError::KeyPermissions);
     }

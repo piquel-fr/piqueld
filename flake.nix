@@ -13,13 +13,22 @@
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
     {
+      nixosModules.default =
+        { lib, pkgs, ... }:
+        {
+          imports = [ (import ./nix/module.nix) ];
+          services.piqueld.package = lib.mkDefault self.packages.${pkgs.system}.piqueld;
+          services.piqueld.cliPackage = lib.mkDefault self.packages.${pkgs.system}.piquelctl;
+          services.piqueld.uiPackage = lib.mkDefault self.packages.${pkgs.system}.piqueld-ui;
+        };
+
       packages = forAllSystems (
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
           rustTarget = pkgs.stdenv.hostPlatform.rust.rustcTarget;
         in
-        {
+        rec {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "piqueld";
             version = "0.1.0";
@@ -63,6 +72,19 @@
             '';
             doCheck = true;
           };
+          release = default;
+          piqueld = pkgs.runCommand "piqueld-daemon-0.1.0" { } ''
+            mkdir -p "$out/bin"
+            cp ${release}/bin/piqueld "$out/bin/piqueld"
+          '';
+          piquelctl = pkgs.runCommand "piquelctl-0.1.0" { } ''
+            mkdir -p "$out/bin"
+            cp ${release}/bin/piquelctl "$out/bin/piquelctl"
+          '';
+          piqueld-ui = pkgs.runCommand "piqueld-ui-0.1.0" { } ''
+            mkdir -p "$out/share/piqueld"
+            cp -R ${release}/share/piqueld/ui "$out/share/piqueld/ui"
+          '';
         }
       );
 
@@ -70,6 +92,22 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          moduleConfig =
+            (nixpkgs.lib.nixosSystem {
+              inherit system;
+              modules = [
+                (import ./nix/module.nix)
+                {
+                  services.piqueld = {
+                    enable = true;
+                    package = pkgs.emptyDirectory;
+                    cliPackage = pkgs.emptyDirectory;
+                    uiPackage = pkgs.emptyDirectory;
+                  };
+                  system.stateVersion = "26.05";
+                }
+              ];
+            }).config.environment.etc."piqueld/config.toml".source;
         in
         {
           package = self.packages.${system}.default;
@@ -113,6 +151,18 @@
                 fi
                 touch "$out"
               '';
+          module-config = pkgs.runCommand "piqueld-module-config" { } ''
+            if awk '
+              /^\[/ { in_section = 1 }
+              !in_section && /^data_dir[[:space:]]*=/ { found = 1 }
+              END { exit !found }
+            ' ${moduleConfig}; then
+              echo "NixOS module emitted the removed top-level data_dir option" >&2
+              exit 1
+            fi
+            grep -q '^path = "/var/lib/piqueld/piqueld.db"' ${moduleConfig}
+            touch "$out"
+          '';
         }
       );
 

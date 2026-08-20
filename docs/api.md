@@ -17,6 +17,9 @@ Supported resources and actions are:
 
 - `GET /health` (unversioned liveness response)
 - `GET /api/v1/system/status`
+- `GET /api/v1/system/health` (authenticated liveness response)
+- `GET /api/v1/system/readiness` (authenticated dependency readiness)
+- `GET /api/v1/system/metrics` (optional authenticated Prometheus text)
 - `GET /api/v1/openapi.json`
 - `GET /api/v1/applications` and `GET /api/v1/applications/{id}`
 - `GET /api/v1/applications/{id}/detail` (desired state, runtime summary, latest operation, and bounded diagnostics)
@@ -67,3 +70,15 @@ shell. The asset reader rejects traversal and symlink resolution, enforces a
 16 MiB bound, supports HEAD and one byte range, caches only fingerprinted
 assets, and applies CSP plus browser hardening headers. Missing extensionful
 assets remain 404s. The Unix router has no static fallback.
+
+## Transport security
+
+The Unix socket uses filesystem ownership and mode `0660`. Loopback TCP is
+fail-closed unless a protected bearer token is configured or an explicitly
+trusted loopback proxy is enabled for a validated `Tailscale-User-Login`
+identity. Credential files are opened without symlink traversal, must be
+private regular files outside `/nix/store`, and are zeroized after loading.
+Allowed browser origins are exact HTTP(S) origins; wildcard CORS is not
+accepted. Header/body limits, request deadlines, a shared concurrency budget,
+and sanitized errors apply to both listeners. Authentication and proxy identity
+headers are removed before tracing and handlers run.

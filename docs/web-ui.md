@@ -25,8 +25,8 @@ because the current API does not expose a separate build SSE route.
 
 The TCP listener serves the dashboard; the Unix socket remains API-only. The
 browser client uses same-origin requests with no cookies, browser persistence,
-telemetry, or CORS dependency. Authentication and public binding remain
-outside this loopback-oriented prototype's scope.
+or telemetry. It relies on the daemon's configured bearer or trusted-proxy
+transport policy; it never stores credentials or secret values.
 
 ## Development
 
