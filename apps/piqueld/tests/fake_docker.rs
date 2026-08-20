@@ -58,6 +58,7 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
         environment: desired.environment.clone(),
         command: desired.command.clone(),
         arguments: desired.arguments.clone(),
+        ports: desired.ports.clone(),
         mounts: desired.mounts.clone(),
         secrets: desired.secrets.clone(),
         healthcheck: desired.healthcheck.clone(),

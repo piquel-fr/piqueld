@@ -2,8 +2,9 @@
 
 use crate::{
     api::{BoundaryError, PreparedApplication, RuntimeBoundary},
-    docker::{DockerApi, DockerError},
+    docker::{DockerApi, DockerError, RuntimeLogQuery},
     operations::{OperationError, OperationHandler, OperationScheduler, SchedulerError},
+    proxy::{InfrastructureState, IngressApi, IngressSpec},
     secrets::SecretService,
     store::{
         ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, SqliteStore, StepState,

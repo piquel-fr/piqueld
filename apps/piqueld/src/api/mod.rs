@@ -7,11 +7,12 @@ use axum::{
     extract::{Request, State},
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Response, sse::Event},
 };
+use futures_util::{Stream, stream};
 use piqueld_client::{
-    AcceptedOperation, CreateApplicationRequest, Envelope, ErrorBody, PlanApplicationRequest,
-    ReplaceApplicationRequest,
+    AcceptedOperation, ApplicationLogsOptions, ContainerLogView, CreateApplicationRequest,
+    Envelope, ErrorBody, PlanApplicationRequest, ReplaceApplicationRequest, ServiceStatusView,
 };
 use piqueld_core::{
     ApplicationId, ApplicationIdError, CompileError, NormalizedApplication, ObservedApplication,
@@ -20,7 +21,7 @@ use piqueld_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc, time::Duration};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
@@ -31,6 +32,7 @@ use crate::{
     build::{BuildError, BuildLogEntry},
     config::default_ui_dir,
     docker::DockerError,
+    proxy::IngressError,
     secrets::{SecretError, SecretService},
     store::{SqliteStore, StoreError, StoredApplication},
 };
@@ -93,6 +95,9 @@ pub enum BoundaryError {
     /// Git source preparation or registry verification failed.
     #[error("source build failed")]
     Build(#[from] BuildError),
+    /// Managed ingress infrastructure failed to converge.
+    #[error("ingress infrastructure failed")]
+    Ingress(#[from] IngressError),
 }
 
 /// Source resolution, runtime observation, and execution seam supplied by Plan 06.
@@ -110,6 +115,28 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
         &self,
         application: &StoredApplication,
     ) -> Result<ObservedApplication, BoundaryError>;
+    /// Returns bounded service convergence status for a stored application.
+    async fn runtime_status(
+        &self,
+        _application: &StoredApplication,
+    ) -> Result<Vec<ServiceStatusView>, BoundaryError> {
+        Ok(Vec::new())
+    }
+    /// Returns managed infrastructure status for an application, when relevant.
+    async fn infrastructure_status(
+        &self,
+        _application: &StoredApplication,
+    ) -> Result<Option<String>, BoundaryError> {
+        Ok(None)
+    }
+    /// Returns bounded, presentation-safe application logs.
+    async fn application_logs(
+        &self,
+        _application: &StoredApplication,
+        _options: &ApplicationLogsOptions,
+    ) -> Result<Vec<ContainerLogView>, BoundaryError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Shared state for API handlers.
@@ -267,6 +294,11 @@ impl From<BoundaryError> for ApiError {
                 "runtime_request_failed",
                 "runtime request failed",
             ),
+            BoundaryError::Ingress(_) => Self::new(
+                StatusCode::BAD_GATEWAY,
+                "runtime_request_failed",
+                "runtime request failed",
+            ),
             BoundaryError::Secrets(error) => error.into(),
         }
     }
@@ -418,6 +450,8 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::plan_replace))
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::status))
+        .routes(routes!(applications::logs))
+        .routes(routes!(applications::events))
         .routes(routes!(operations::get))
         .routes(routes!(builds::get))
         .routes(routes!(builds::operation_builds))
@@ -689,4 +723,60 @@ fn hex(bytes: &[u8]) -> String {
         value.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     value
+}
+
+pub(crate) type EventStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
+
+pub(crate) struct StateEventSnapshot {
+    pub(crate) data: String,
+    pub(crate) event: &'static str,
+    pub(crate) terminal: bool,
+}
+
+/// Polls one durable/current-state snapshot and emits it only when its cursor
+/// changes. Both status and log streams use this bounded replay model.
+pub(crate) fn current_state_stream<F, Fut>(
+    kind: &'static str,
+    last: Option<String>,
+    fetch: F,
+) -> EventStream
+where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: Future<Output = Option<StateEventSnapshot>> + Send,
+{
+    Box::pin(stream::unfold(
+        (fetch, last, false),
+        move |(fetch, last, done)| async move {
+            if done {
+                return None;
+            }
+            loop {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                let snapshot = fetch().await?;
+                let event_id = current_state_event_id(kind, &snapshot.data);
+                if last.as_deref() == Some(event_id.as_str()) {
+                    continue;
+                }
+                let terminal = snapshot.terminal;
+                let event = Event::default()
+                    .id(event_id.clone())
+                    .event(snapshot.event)
+                    .data(snapshot.data);
+                return Some((Ok(event), (fetch, Some(event_id), terminal)));
+            }
+        },
+    ))
+}
+
+pub(crate) fn current_state_event_id(kind: &str, data: &str) -> String {
+    let digest = Sha256::digest(format!("piqueld-sse/v1\0{kind}\0{data}").as_bytes());
+    format!("{kind}-{}", hex(&digest[..16]))
+}
+
+pub(crate) fn last_event_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.len() <= 128 && !value.contains('\0'))
+        .map(str::to_owned)
 }

@@ -2,10 +2,10 @@ use super::{
     APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder,
     DesiredNetwork, DesiredSecret, DesiredService, DesiredVolume, DockerApi, DockerError, HashMap,
     InspectNetworkOptions, InspectServiceOptions, Ipam, ListNetworksOptionsBuilder,
-    ListServicesOptionsBuilder, ListTasksOptionsBuilder, ListVolumesOptionsBuilder,
-    NetworkCreateRequest, ObservedApplication, ObservedNetwork, ObservedSecret, ObservedVolume,
-    SECRET_LABEL, SERVICE_LABEL, SwarmInitRequest, SwarmState, TryStreamExt, VolumeCreateOptions,
-    async_trait,
+    ListServicesOptionsBuilder, ListTasksOptions, ListTasksOptionsBuilder,
+    ListVolumesOptionsBuilder, NetworkCreateRequest, ObservedApplication, ObservedNetwork,
+    ObservedSecret, ObservedVolume, ResourceKind, SECRET_LABEL, SERVICE_LABEL, StreamExt,
+    SwarmInitRequest, SwarmState, TryStreamExt, VolumeCreateOptions, async_trait,
 };
 use base64::Engine as _;
 use piqueld_core::resource::image_repository;
@@ -374,7 +374,12 @@ impl DockerApi for BollardDocker {
                 .into_iter()
                 .collect::<BTreeMap<_, _>>();
             let wrong_resource_role = labels.contains_key(SERVICE_LABEL);
-            if !Self::owns(&labels, &desired.labels) || wrong_resource_role {
+            let labels_match = if desired.ingress {
+                labels == desired.labels
+            } else {
+                Self::owns(&labels, &desired.labels)
+            };
+            if !labels_match || wrong_resource_role {
                 return Err(DockerError::OwnershipConflict);
             }
             if !runtime_configuration_matches {
@@ -656,6 +661,156 @@ impl DockerApi for BollardDocker {
         }
     }
 
+    async fn application_logs(
+        &self,
+        instance: &super::InstanceId,
+        application: &ApplicationId,
+        query: &super::RuntimeLogQuery,
+    ) -> Result<Vec<super::RuntimeLogRecord>, DockerError> {
+        if query.tail == 0
+            || query.tail > 1_000
+            || query.max_bytes == 0
+            || query.max_bytes > 1_048_576
+        {
+            return Err(DockerError::Request("validate application log query"));
+        }
+        let services = Self::map_request(
+            "list application services for logs",
+            self.docker
+                .list_services(Some(
+                    ListServicesOptionsBuilder::default().status(true).build(),
+                ))
+                .await,
+        )?;
+        let service_names = services
+            .into_iter()
+            .filter_map(|service| {
+                let id = service.id?;
+                let spec = service.spec?;
+                let name = spec.name?;
+                let labels = spec
+                    .labels
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect::<BTreeMap<_, _>>();
+                let logical = labels.get(SERVICE_LABEL)?;
+                (name
+                    == super::docker_resource_name(
+                        application,
+                        ResourceKind::Service,
+                        Some(logical),
+                    )
+                    && labels.get(APPLICATION_LABEL).map(String::as_str)
+                        == Some(application.as_str())
+                    && labels.get(super::MANAGED_LABEL).map(String::as_str) == Some("true")
+                    && labels.get(super::INSTANCE_LABEL).map(String::as_str)
+                        == Some(instance.as_str())
+                    && labels
+                        .get(super::SPEC_HASH_LABEL)
+                        .is_some_and(|hash| Self::valid_spec_hash(hash)))
+                .then(|| (id, logical.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut tasks = Self::map_request(
+            "list application tasks for logs",
+            self.docker.list_tasks(None::<ListTasksOptions>).await,
+        )?;
+        tasks.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut output = Vec::new();
+        let mut used = 0usize;
+        for task in tasks {
+            let Some(service) = task
+                .service_id
+                .as_deref()
+                .and_then(|service_id| service_names.get(service_id))
+            else {
+                continue;
+            };
+            let Some(task_id) = task.id else { continue };
+            let Some(container_id) = task
+                .status
+                .as_ref()
+                .and_then(|status| status.container_status.as_ref())
+                .and_then(|status| status.container_id.clone())
+            else {
+                continue;
+            };
+            let since = i32::try_from(query.since_seconds).unwrap_or(i32::MAX);
+            let tail = query.tail.to_string();
+            let mut logs = self.docker.logs(
+                &container_id,
+                Some(
+                    super::LogsOptionsBuilder::default()
+                        .stdout(true)
+                        .stderr(true)
+                        .since(since)
+                        .timestamps(true)
+                        .tail(&tail)
+                        .build(),
+                ),
+            );
+            while let Some(item) = logs.next().await {
+                let item = match item {
+                    Ok(item) => item,
+                    Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 404,
+                        ..
+                    }) => break,
+                    Err(error) => return Err(DockerError::request("read container logs", error)),
+                };
+                let stream = match &item {
+                    bollard::container::LogOutput::StdOut { .. } => "stdout",
+                    bollard::container::LogOutput::StdErr { .. } => "stderr",
+                    bollard::container::LogOutput::Console { .. } => "console",
+                    bollard::container::LogOutput::StdIn { .. } => "stdin",
+                };
+                let raw = item.to_string();
+                let (timestamp, message) = raw
+                    .trim_end_matches(['\r', '\n'])
+                    .split_once(' ')
+                    .map_or_else(
+                        || (String::new(), raw.trim_end().to_owned()),
+                        |(time, message)| (time.to_owned(), message.to_owned()),
+                    );
+                let display_message = strip_ansi_controls(&message);
+                used = used.saturating_add(
+                    service.len()
+                        + task_id.len()
+                        + container_id.len()
+                        + timestamp.len()
+                        + stream.len()
+                        + message.len()
+                        + display_message.len()
+                        + 128,
+                );
+                if used > query.max_bytes {
+                    break;
+                }
+                output.push(super::RuntimeLogRecord {
+                    service: service.clone(),
+                    task_id: task_id.clone(),
+                    container_id: container_id.clone(),
+                    timestamp,
+                    stream: stream.into(),
+                    message,
+                    display_message,
+                });
+            }
+            if used > query.max_bytes {
+                break;
+            }
+        }
+        output.sort_by(|left, right| {
+            left.timestamp
+                .cmp(&right.timestamp)
+                .then(left.task_id.cmp(&right.task_id))
+        });
+        if output.len() > query.tail {
+            output.drain(..output.len() - query.tail);
+        }
+        Ok(output)
+    }
+
     async fn remove_secret(
         &self,
         name: &str,
@@ -695,4 +850,26 @@ impl DockerApi for BollardDocker {
             Err(error) => Err(DockerError::request("delete secret", error)),
         }
     }
+}
+
+fn strip_ansi_controls(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            } else {
+                chars.next();
+            }
+        } else if character == '\t' || !character.is_control() {
+            output.push(character);
+        }
+    }
+    output
 }

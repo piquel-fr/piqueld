@@ -29,6 +29,8 @@ pub const SERVICE_LABEL: &str = "io.piqueld.service";
 pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
 /// Label carrying the logical secret identity.
 pub const SECRET_LABEL: &str = "io.piqueld.secret";
+/// Shared overlay network used by the managed Traefik ingress service.
+pub const INGRESS_NETWORK: &str = "piqueld-ingress";
 
 /// Error returned when an instance identifier violates its storage invariant.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -336,6 +338,9 @@ impl Ownership {
 pub struct DesiredNetwork {
     /// Canonical Docker resource name.
     pub name: String,
+    /// Whether this is the shared ingress network.
+    #[serde(default)]
+    pub ingress: bool,
     /// Expected ownership labels.
     pub labels: BTreeMap<String, String>,
 }
@@ -344,6 +349,17 @@ impl DesiredNetwork {
     /// Returns whether the network has a canonical name and identity.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
+        if self.ingress {
+            return self.name == INGRESS_NETWORK
+                && self.labels.get(MANAGED_LABEL).map(String::as_str) == Some("true")
+                && self
+                    .labels
+                    .get(INSTANCE_LABEL)
+                    .is_some_and(|instance| InstanceId::parse(instance.clone()).is_ok())
+                && !self.labels.contains_key(APPLICATION_LABEL)
+                && !self.labels.contains_key(SERVICE_LABEL)
+                && !self.labels.contains_key(SPEC_HASH_LABEL);
+        }
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
             return false;
         };
@@ -466,6 +482,8 @@ pub struct DesiredService {
     pub command: Vec<String>,
     /// Arguments passed to the command.
     pub arguments: Vec<String>,
+    /// Ports exposed to the ingress controller.
+    pub ports: Vec<u16>,
     /// Persistent volume mounts.
     pub mounts: Vec<DesiredMount>,
     /// Swarm secret mounts.
@@ -592,16 +610,14 @@ pub fn compile_application(
         spec_hash: spec_hash.clone(),
     };
     let private_network = docker_resource_name(&app.id, ResourceKind::Network, None);
+    let ingress_network = INGRESS_NETWORK;
     let referenced_secrets = referenced_secrets(app);
     Ok(DesiredApplication {
         id: app.id.clone(),
         name: app.metadata.name.clone(),
         instance_id,
         spec_hash,
-        networks: vec![DesiredNetwork {
-            name: private_network.clone(),
-            labels: ownership.labels(),
-        }],
+        networks: compile_networks(app, ingress_network, &private_network, &ownership),
         volumes: app
             .spec
             .volumes
@@ -617,7 +633,16 @@ pub fn compile_application(
             .spec
             .services
             .iter()
-            .map(|service| compile_service(service, app, resolutions, &ownership, &private_network))
+            .map(|service| {
+                compile_service(
+                    service,
+                    app,
+                    resolutions,
+                    &ownership,
+                    &private_network,
+                    ingress_network,
+                )
+            })
             .collect(),
     })
 }
@@ -736,10 +761,22 @@ fn compile_service(
     resolutions: &ResolutionSet,
     application_ownership: &Ownership,
     private_network: &str,
+    ingress_network: &str,
 ) -> DesiredService {
     let source = resolutions.sources[&service.name].clone();
+    let routed = app
+        .spec
+        .routes
+        .iter()
+        .any(|route| route.service == service.name);
+    let mut networks = vec![private_network.to_owned()];
+    if routed {
+        networks.push(ingress_network.to_owned());
+    }
     let mut ownership = application_ownership.clone();
     ownership.service = Some(service.name.clone());
+    let mut labels = ownership.labels();
+    compile_traefik_labels(app, &service.name, ingress_network, &mut labels);
     DesiredService {
         logical_name: service.name.clone(),
         name: docker_resource_name(&app.id, ResourceKind::Service, Some(&service.name)),
@@ -749,6 +786,7 @@ fn compile_service(
         environment: service.environment.clone(),
         command: service.command.clone(),
         arguments: service.arguments.clone(),
+        ports: service.ports.clone(),
         mounts: service
             .mounts
             .iter()
@@ -774,9 +812,88 @@ fn compile_service(
             .collect(),
         healthcheck: service.healthcheck.clone(),
         resources: service.resources.clone(),
-        networks: vec![private_network.into()],
-        labels: ownership.labels(),
+        networks,
+        labels,
     }
+}
+
+fn compile_networks(
+    app: &NormalizedApplication,
+    ingress_network: &str,
+    private_network: &str,
+    ownership: &Ownership,
+) -> Vec<DesiredNetwork> {
+    let private = DesiredNetwork {
+        name: private_network.into(),
+        ingress: false,
+        labels: ownership.labels(),
+    };
+    if app.spec.routes.is_empty() {
+        vec![private]
+    } else {
+        vec![
+            DesiredNetwork {
+                name: ingress_network.into(),
+                ingress: true,
+                labels: BTreeMap::from([
+                    (MANAGED_LABEL.into(), "true".into()),
+                    (INSTANCE_LABEL.into(), ownership.instance_id.to_string()),
+                ]),
+            },
+            private,
+        ]
+    }
+}
+
+fn compile_traefik_labels(
+    app: &NormalizedApplication,
+    service: &str,
+    ingress_network: &str,
+    labels: &mut BTreeMap<String, String>,
+) {
+    let routes = app
+        .spec
+        .routes
+        .iter()
+        .filter(|route| route.service == service);
+    let mut found = false;
+    for route in routes {
+        found = true;
+        let router = router_name(&app.id, &route.host, service, route.port);
+        let backend = format!("{router}-backend");
+        labels.insert("traefik.enable".into(), "true".into());
+        labels.insert("traefik.swarm.network".into(), ingress_network.into());
+        labels.insert(
+            format!("traefik.http.routers.{router}.rule"),
+            format!("Host(`{}`)", route.host),
+        );
+        labels.insert(
+            format!("traefik.http.routers.{router}.entrypoints"),
+            "web".into(),
+        );
+        labels.insert(
+            format!("traefik.http.routers.{router}.service"),
+            backend.clone(),
+        );
+        labels.insert(
+            format!("traefik.http.services.{backend}.loadbalancer.server.port"),
+            route.port.to_string(),
+        );
+    }
+    if !found {
+        labels.retain(|key, _| !key.starts_with("traefik."));
+    }
+}
+
+fn router_name(application: &ApplicationId, host: &str, service: &str, port: u16) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(application.as_str().as_bytes());
+    hasher.update([0]);
+    hasher.update(host.as_bytes());
+    hasher.update([0]);
+    hasher.update(service.as_bytes());
+    hasher.update(port.to_be_bytes());
+    format!("r{}", lower_hex(&hasher.finalize()[..8]))
 }
 
 fn compile_secrets(
@@ -999,6 +1116,14 @@ impl ObservedNetwork {
         desired: &DesiredNetwork,
         application: &DesiredApplication,
     ) -> bool {
+        if desired.ingress {
+            return self.name == desired.name
+                && self.labels.get(MANAGED_LABEL).map(String::as_str) == Some("true")
+                && self.labels.get(INSTANCE_LABEL).map(String::as_str)
+                    == Some(application.instance_id.as_str())
+                && !self.labels.contains_key(APPLICATION_LABEL)
+                && !self.labels.contains_key(SERVICE_LABEL);
+        }
         OwnershipState::from_labels(&self.labels, &application.instance_id, &application.id)
             == OwnershipState::Owned
             && self.name == desired.name
@@ -1074,6 +1199,8 @@ pub struct ObservedService {
     pub command: Vec<String>,
     /// Observed command arguments.
     pub arguments: Vec<String>,
+    /// Ports exposed by the service endpoint.
+    pub ports: Vec<u16>,
     /// Persistent mounts observed on the service.
     pub mounts: Vec<DesiredMount>,
     /// Secret mounts observed on the service.
@@ -1109,6 +1236,7 @@ impl ObservedService {
             && self.environment == desired.environment
             && self.command == desired.command
             && self.arguments == desired.arguments
+            && self.ports == desired.ports
             && unordered_eq(&self.mounts, &desired.mounts)
             && unordered_eq(&self.secrets, &desired.secrets)
             && self.healthcheck == desired.healthcheck

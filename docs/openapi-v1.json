@@ -568,6 +568,13 @@
         "additionalProperties": false,
         "description": "Canonical resource specification.",
         "properties": {
+          "routes": {
+            "description": "Canonical HTTP routes.",
+            "items": {
+              "$ref": "#/components/schemas/Route"
+            },
+            "type": "array"
+          },
           "services": {
             "description": "Canonical services.",
             "items": {
@@ -585,7 +592,8 @@
         },
         "required": [
           "services",
-          "volumes"
+          "volumes",
+          "routes"
         ],
         "type": "object"
       },
@@ -593,6 +601,14 @@
         "additionalProperties": false,
         "description": "User-provided application resource lists.",
         "properties": {
+          "routes": {
+            "default": [],
+            "description": "Declared HTTP routes through the managed ingress controller.",
+            "items": {
+              "$ref": "#/components/schemas/RouteInput"
+            },
+            "type": "array"
+          },
           "services": {
             "default": [],
             "description": "Declared services.",
@@ -619,6 +635,13 @@
             "description": "Stable application identifier.",
             "type": "string"
           },
+          "infrastructure": {
+            "description": "Current managed-ingress infrastructure state, when routing is used.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "message": {
             "description": "Optional safe status message.",
             "type": [
@@ -634,6 +657,13 @@
               "integer",
               "null"
             ]
+          },
+          "services": {
+            "description": "Bounded runtime status for each desired service.",
+            "items": {
+              "$ref": "#/components/schemas/ServiceStatusView"
+            },
+            "type": "array"
           },
           "state": {
             "description": "Machine-readable lifecycle state.",
@@ -818,6 +848,49 @@
         ],
         "type": "object"
       },
+      "ContainerLogView": {
+        "description": "One bounded, sanitized application log record.",
+        "properties": {
+          "container_id": {
+            "description": "Container identifier.",
+            "type": "string"
+          },
+          "display_message": {
+            "description": "Terminal-control-free presentation text.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Original bounded message.",
+            "type": "string"
+          },
+          "service": {
+            "description": "Logical service name.",
+            "type": "string"
+          },
+          "stream": {
+            "description": "Output stream name.",
+            "type": "string"
+          },
+          "task_id": {
+            "description": "Swarm task identifier.",
+            "type": "string"
+          },
+          "timestamp": {
+            "description": "Docker-provided timestamp.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "task_id",
+          "container_id",
+          "timestamp",
+          "stream",
+          "message",
+          "display_message"
+        ],
+        "type": "object"
+      },
       "CreateApplicationRequest": {
         "additionalProperties": false,
         "description": "Request to create an application.",
@@ -876,6 +949,10 @@
         "additionalProperties": false,
         "description": "Desired private overlay network state.",
         "properties": {
+          "ingress": {
+            "description": "Whether this is the shared ingress network.",
+            "type": "boolean"
+          },
           "labels": {
             "additionalProperties": {
               "type": "string"
@@ -1036,6 +1113,15 @@
             },
             "type": "array"
           },
+          "ports": {
+            "description": "Ports exposed to the ingress controller.",
+            "items": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
           "replicas": {
             "description": "Desired replica count.",
             "format": "int32",
@@ -1074,6 +1160,7 @@
           "environment",
           "command",
           "arguments",
+          "ports",
           "mounts",
           "secrets",
           "networks",
@@ -1233,6 +1320,13 @@
                 "description": "Stable application identifier.",
                 "type": "string"
               },
+              "infrastructure": {
+                "description": "Current managed-ingress infrastructure state, when routing is used.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "message": {
                 "description": "Optional safe status message.",
                 "type": [
@@ -1248,6 +1342,13 @@
                   "integer",
                   "null"
                 ]
+              },
+              "services": {
+                "description": "Bounded runtime status for each desired service.",
+                "items": {
+                  "$ref": "#/components/schemas/ServiceStatusView"
+                },
+                "type": "array"
               },
               "state": {
                 "description": "Machine-readable lifecycle state.",
@@ -1964,6 +2065,61 @@
               "instance_id"
             ],
             "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_Vec_ContainerLogView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "items": {
+              "description": "One bounded, sanitized application log record.",
+              "properties": {
+                "container_id": {
+                  "description": "Container identifier.",
+                  "type": "string"
+                },
+                "display_message": {
+                  "description": "Terminal-control-free presentation text.",
+                  "type": "string"
+                },
+                "message": {
+                  "description": "Original bounded message.",
+                  "type": "string"
+                },
+                "service": {
+                  "description": "Logical service name.",
+                  "type": "string"
+                },
+                "stream": {
+                  "description": "Output stream name.",
+                  "type": "string"
+                },
+                "task_id": {
+                  "description": "Swarm task identifier.",
+                  "type": "string"
+                },
+                "timestamp": {
+                  "description": "Docker-provided timestamp.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "service",
+                "task_id",
+                "container_id",
+                "timestamp",
+                "stream",
+                "message",
+                "display_message"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -2883,6 +3039,58 @@
         },
         "type": "object"
       },
+      "Route": {
+        "additionalProperties": false,
+        "description": "Canonical HTTP route.",
+        "properties": {
+          "host": {
+            "description": "Canonical hostname matched by the route.",
+            "type": "string"
+          },
+          "port": {
+            "description": "Container port receiving the route.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "service": {
+            "description": "Logical service receiving the route.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "service",
+          "port"
+        ],
+        "type": "object"
+      },
+      "RouteInput": {
+        "additionalProperties": false,
+        "description": "User-declared HTTP route.",
+        "properties": {
+          "host": {
+            "description": "Hostname matched by the route.",
+            "type": "string"
+          },
+          "port": {
+            "description": "Container port receiving the route.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "service": {
+            "description": "Logical service receiving the route.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "service",
+          "port"
+        ],
+        "type": "object"
+      },
       "SecretMetadata": {
         "description": "Metadata for a logical secret; plaintext is never returned.",
         "properties": {
@@ -3055,6 +3263,15 @@
             "description": "Logical service name.",
             "type": "string"
           },
+          "ports": {
+            "description": "Container ports exposed to the managed ingress controller.",
+            "items": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
           "replicas": {
             "description": "Desired replica count.",
             "format": "int32",
@@ -3091,6 +3308,7 @@
           "environment",
           "command",
           "arguments",
+          "ports",
           "mounts",
           "secrets"
         ],
@@ -3146,6 +3364,15 @@
             "description": "Logical service name.",
             "type": "string"
           },
+          "ports": {
+            "description": "Container ports exposed to the managed ingress controller.",
+            "items": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
           "replicas": {
             "description": "Desired replica count.",
             "format": "int32",
@@ -3178,6 +3405,45 @@
         "required": [
           "name",
           "source"
+        ],
+        "type": "object"
+      },
+      "ServiceStatusView": {
+        "description": "Runtime status for one application service.",
+        "properties": {
+          "desired_replicas": {
+            "description": "Desired replicas from the normalized application.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "diagnostic": {
+            "description": "Sanitized runtime diagnostic, when one is available.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "running_replicas": {
+            "description": "Running replicas currently reported by Docker.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "service": {
+            "description": "Logical service name.",
+            "type": "string"
+          },
+          "state": {
+            "description": "Runtime convergence category.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "desired_replicas",
+          "running_replicas",
+          "state"
         ],
         "type": "object"
       },
@@ -4119,6 +4385,190 @@
           }
         },
         "summary": "Get desired and observed application state"
+      }
+    },
+    "/api/v1/applications/{id}/events": {
+      "get": {
+        "operationId": "watchApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Server-Sent Events"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Watch application status events"
+      }
+    },
+    "/api/v1/applications/{id}/logs": {
+      "get": {
+        "operationId": "applicationLogs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Include records newer than this many seconds.",
+            "in": "query",
+            "name": "since_seconds",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum records returned.",
+            "in": "query",
+            "name": "tail",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "format": "int32",
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum approximate response size.",
+            "in": "query",
+            "name": "max_bytes",
+            "required": false,
+            "schema": {
+              "default": 262144,
+              "format": "int32",
+              "maximum": 1048576,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Keep the connection open and emit a new bounded snapshot when it changes.",
+            "in": "query",
+            "name": "follow",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Vec_ContainerLogView"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Read bounded application logs"
       }
     },
     "/api/v1/applications/{id}/plan": {

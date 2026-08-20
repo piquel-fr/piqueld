@@ -18,11 +18,11 @@ use bollard::{
     },
     query_parameters::{
         CreateImageOptionsBuilder, InspectNetworkOptions, InspectServiceOptions,
-        ListNetworksOptionsBuilder, ListNodesOptions, ListServicesOptionsBuilder,
-        ListTasksOptionsBuilder, ListVolumesOptionsBuilder,
+        ListNetworksOptionsBuilder, ListNodesOptions, ListServicesOptionsBuilder, ListTasksOptions,
+        ListTasksOptionsBuilder, ListVolumesOptionsBuilder, LogsOptionsBuilder,
     },
 };
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use piqueld_core::manifest::{HealthCheck, ResourceLimits};
 use piqueld_core::resource::{
     APPLICATION_LABEL, Convergence, DesiredMount, DesiredNetwork, DesiredSecret,
@@ -31,7 +31,7 @@ use piqueld_core::resource::{
     SERVICE_LABEL, SPEC_HASH_LABEL, TaskDiagnostic, TaskState, valid_logical_name,
 };
 use piqueld_core::{
-    ApplicationId, ObservedApplication, ResourceKind, docker_resource_name,
+    ApplicationId, InstanceId, ObservedApplication, ResourceKind, docker_resource_name,
     docker_resource_readable_prefix,
 };
 use std::{
@@ -73,6 +73,36 @@ pub enum SwarmState {
     Ready,
     /// The local engine was initialized as a compatible Swarm manager.
     Initialized,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Bounds for a multiplexed application log read.
+pub struct RuntimeLogQuery {
+    /// Earliest included Unix timestamp.
+    pub since_seconds: i64,
+    /// Maximum number of records returned.
+    pub tail: usize,
+    /// Maximum approximate serialized response size.
+    pub max_bytes: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One application-owned task log record.
+pub struct RuntimeLogRecord {
+    /// Logical service name.
+    pub service: String,
+    /// Swarm task identifier.
+    pub task_id: String,
+    /// Container identifier.
+    pub container_id: String,
+    /// Docker-provided timestamp.
+    pub timestamp: String,
+    /// Output stream name.
+    pub stream: String,
+    /// Original bounded message.
+    pub message: String,
+    /// Terminal-control-free presentation text.
+    pub display_message: String,
 }
 
 #[async_trait]
@@ -117,4 +147,14 @@ pub trait DockerApi: Send + Sync + 'static {
         name: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError>;
+    /// Reads bounded logs from application-owned task containers.
+    async fn application_logs(
+        &self,
+        instance: &InstanceId,
+        application: &ApplicationId,
+        query: &RuntimeLogQuery,
+    ) -> Result<Vec<RuntimeLogRecord>, DockerError> {
+        let _ = (instance, application, query);
+        Err(DockerError::Request("read application logs"))
+    }
 }

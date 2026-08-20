@@ -14,10 +14,11 @@ pub mod secrets;
 pub mod system;
 
 pub use applications::{
-    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
-    CreateApplicationRequest, DeleteApplicationRequest, DiagnosticView, ExpectedGeneration,
-    ListApplicationsOptions, ObservedApplicationView, ObservedServiceView, PlanApplicationRequest,
-    PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
+    AcceptedOperation, ApplicationDetailView, ApplicationLogsOptions, ApplicationStatusView,
+    ApplicationView, ContainerLogView, CreateApplicationRequest, DeleteApplicationRequest,
+    DiagnosticView, ExpectedGeneration, ListApplicationsOptions, ObservedApplicationView,
+    ObservedServiceView, PlanApplicationRequest, PlanView, ReplaceApplicationRequest,
+    ReplacePlanRequest, ServiceStatusView,
 };
 pub use builds::{BuildLogView, BuildView};
 pub use operations::{OperationStepView, OperationView};
@@ -96,6 +97,17 @@ pub struct ErrorBody {
     pub details: serde_json::Value,
     /// Server-generated request identifier.
     pub request_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+/// One parsed server-sent event.
+pub struct SseEvent {
+    /// Event identifier, when supplied by the server.
+    pub id: Option<String>,
+    /// Event type, when supplied by the server.
+    pub event: Option<String>,
+    /// Event data payload.
+    pub data: String,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -386,6 +398,76 @@ impl Client {
         })
         .await
     }
+
+    /// Opens one reconnectable SSE stream. The caller owns the cursor and can
+    /// pass the last received event ID into a new stream after a disconnect.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn watch_events(
+        &self,
+        path: String,
+        last_event_id: Option<&str>,
+    ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let client = self.clone();
+        let last = last_event_id.map(str::to_owned);
+        tokio::spawn(async move {
+            let mut headers = vec![("accept", "text/event-stream")];
+            if let Some(value) = last.as_deref() {
+                headers.push(("last-event-id", value));
+            }
+            let response = match client
+                .raw_request::<()>(Method::GET, &path, None, &headers)
+                .await
+            {
+                Ok(response) if response.status().is_success() => response,
+                Ok(response) => {
+                    let error = tokio::time::timeout(client.timeout, decode_api_error(response))
+                        .await
+                        .unwrap_or_else(|_| ClientError::transport("SSE error response timed out"));
+                    let _ = tx.send(Err(error)).await;
+                    return;
+                }
+                Err(error) => {
+                    let _ = tx.send(Err(error)).await;
+                    return;
+                }
+            };
+            let mut body = response.into_body();
+            let mut decoder = SseDecoder::default();
+            loop {
+                let frame = tokio::select! {
+                    () = tx.closed() => return,
+                    frame = body.frame() => frame,
+                };
+                let Some(frame) = frame else { return };
+                let Ok(frame) = frame else {
+                    let _ = tx
+                        .send(Err(ClientError::transport("SSE response failed")))
+                        .await;
+                    return;
+                };
+                if let Ok(data) = frame.into_data() {
+                    if decoder.buffer.len() + data.len() > 2 * 1_048_576 {
+                        let _ = tx.send(Err(ClientError::Decode)).await;
+                        return;
+                    }
+                    let events = match decoder.push(&data) {
+                        Ok(events) => events,
+                        Err(error) => {
+                            let _ = tx.send(Err(error)).await;
+                            return;
+                        }
+                    };
+                    for event in events {
+                        if tx.send(Ok(event)).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        rx
+    }
 }
 
 impl ClientError {
@@ -499,8 +581,123 @@ fn path_segment(value: &str) -> String {
     encoded
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct SseDecoder {
+    buffer: Vec<u8>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SseDecoder {
+    fn push(&mut self, data: &[u8]) -> Result<Vec<SseEvent>, ClientError> {
+        self.buffer.extend_from_slice(data);
+        let mut events = Vec::new();
+        while let Some((end, separator_len)) = sse_block_boundary(&self.buffer) {
+            let block = self.buffer[..end].to_vec();
+            self.buffer.drain(..end + separator_len);
+            let block = std::str::from_utf8(&block).map_err(|_| ClientError::Decode)?;
+            if let Some(event) = parse_sse(block) {
+                events.push(event);
+            }
+        }
+        Ok(events)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sse_block_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
+    let mut position = 0;
+    while position < buffer.len() {
+        let Some(first_len) = sse_line_ending_len(buffer, position) else {
+            position += 1;
+            continue;
+        };
+        let next = position + first_len;
+        if let Some(second_len) = sse_line_ending_len(buffer, next) {
+            return Some((position, first_len + second_len));
+        }
+        position = next;
+    }
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sse_line_ending_len(buffer: &[u8], position: usize) -> Option<usize> {
+    match buffer.get(position) {
+        Some(b'\r') if buffer.get(position + 1) == Some(&b'\n') => Some(2),
+        Some(b'\n' | b'\r') => Some(1),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_sse(block: &str) -> Option<SseEvent> {
+    let mut id = None;
+    let mut event = None;
+    let mut data = Vec::new();
+    for line in block.split(['\r', '\n']) {
+        let (field, value) = line.split_once(':').map_or((line, ""), |(field, value)| {
+            (field, value.strip_prefix(' ').unwrap_or(value))
+        });
+        match field {
+            "id" if !value.contains('\0') => id = Some(value.to_owned()),
+            "event" => event = Some(value.to_owned()),
+            "data" => data.push(value),
+            _ => {}
+        }
+    }
+    (!data.is_empty()).then(|| SseEvent {
+        id,
+        event,
+        data: data.join("\n"),
+    })
+}
+
 /// Returns the client crate version embedded at build time.
 #[must_use]
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sse_decoder_handles_split_crlf_frames_and_multiline_data() {
+        let mut decoder = SseDecoder::default();
+        assert!(
+            decoder
+                .push(b"id: 42\r\nevent: application\r\ndata: {\"state\":")
+                .unwrap()
+                .is_empty()
+        );
+        let events = decoder.push(b"\"ready\"}\r\ndata: next\r\n\r\n").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id.as_deref(), Some("42"));
+        assert_eq!(events[0].event.as_deref(), Some("application"));
+        assert_eq!(events[0].data, "{\"state\":\"ready\"}\nnext");
+    }
+
+    #[test]
+    fn sse_decoder_ignores_comments_and_rejects_nul_cursors() {
+        let mut decoder = SseDecoder::default();
+        let events = decoder
+            .push(b": keepalive\n id: ignored\nid: bad\0cursor\nevent: logs\ndata: []\n\n")
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, None);
+        assert_eq!(events[0].event.as_deref(), Some("logs"));
+        assert_eq!(events[0].data, "[]");
+    }
+
+    #[test]
+    fn sse_decoder_reports_invalid_utf8_only_for_complete_frames() {
+        let mut decoder = SseDecoder::default();
+        assert!(decoder.push(b"data: ").unwrap().is_empty());
+        assert!(matches!(
+            decoder.push(&[0xff, b'\n', b'\n']),
+            Err(ClientError::Decode)
+        ));
+    }
 }

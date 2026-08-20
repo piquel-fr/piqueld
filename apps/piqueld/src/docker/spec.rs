@@ -7,6 +7,7 @@ use super::{
     TaskSpecContainerSpecSecrets, TaskSpecResources, TaskSpecRestartPolicy,
     TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
 };
+use bollard::models::{EndpointPortConfig, EndpointPortConfigProtocolEnum, EndpointSpec};
 
 impl BollardDocker {
     /// Builds the complete Docker service specification from desired state.
@@ -18,6 +19,20 @@ impl BollardDocker {
             name: Some(desired.name.clone()),
             labels: Some(desired.labels.clone().into_iter().collect()),
             task_template: Some(Self::task_spec(desired)?),
+            endpoint_spec: (!desired.ports.is_empty()).then(|| EndpointSpec {
+                ports: Some(
+                    desired
+                        .ports
+                        .iter()
+                        .map(|port| EndpointPortConfig {
+                            protocol: Some(EndpointPortConfigProtocolEnum::TCP),
+                            target_port: Some(i64::from(*port)),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            }),
             mode: Some(ServiceSpecMode {
                 replicated: Some(ServiceSpecModeReplicated {
                     replicas: Some(i64::from(desired.replicas)),

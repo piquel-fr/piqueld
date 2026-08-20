@@ -5,6 +5,7 @@ pub mod build;
 pub mod config;
 pub mod docker;
 pub mod operations;
+pub mod proxy;
 pub mod reconcile;
 pub mod registry;
 pub mod secrets;

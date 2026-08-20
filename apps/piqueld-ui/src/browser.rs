@@ -11,7 +11,8 @@ use leptos::{
 };
 use piqueld_client::{
     ApplicationDetailView, ApplicationStatusView, ApplicationView, Client, ClientError,
-    DiagnosticView, ListApplicationsOptions, ObservedServiceView, Page, Source, SystemStatus,
+    DiagnosticView, ListApplicationsOptions, ObservedServiceView, Page, ServiceStatusView, Source,
+    SystemStatus,
 };
 use std::{cell::RefCell, rc::Rc};
 use web_sys::window as browser_window;
@@ -331,6 +332,11 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals) -> Vie
         .iter()
         .map(observed_service_view)
         .collect_view();
+    let runtime_services = status
+        .services
+        .iter()
+        .map(service_status_view)
+        .collect_view();
     let diagnostics_view = diagnostics.iter().map(diagnostic_view).collect_view();
     let operation_view = operation.map(|operation| {
         let steps = operation.steps.iter().map(|step| {
@@ -366,6 +372,8 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals) -> Vie
                 <div><dt>"Desired generation"</dt><dd>{detail.application.generation}</dd></div>
                 <div><dt>"Observed generation"</dt><dd>{status.observed_generation.map_or_else(|| "Not observed".into(), |generation| generation.to_string())}</dd></div>
                 <div><dt>"Networks / volumes"</dt><dd>{format!("{} / {}", observed.network_count, observed.volume_count)}</dd></div>
+                <div><dt>"Ingress"</dt><dd>{status.infrastructure.clone().unwrap_or_else(|| "not used".into())}</dd></div>
+                <div><dt>"Routes"</dt><dd>{app.spec.routes.len()}</dd></div>
             </dl>
             <p class="detail-state"><span class=format!("health-badge {}", health_class(health))>{health.label()}</span> {status.message.clone().unwrap_or_else(|| "No additional daemon diagnostic.".into())}</p>
             <div class="detail-refresh"><button class="button button-secondary" type="button" on:click=move |_| refresh_detail()>{"Refresh detail"}</button></div>
@@ -376,6 +384,14 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals) -> Vie
             <section class="subsection" aria-labelledby="observed-title">
                 <h3 id="observed-title">"Observed services"</h3>
                 <ul class="service-list">{observed_services}</ul>
+            </section>
+            <section class="subsection" aria-labelledby="runtime-title">
+                <h3 id="runtime-title">"Runtime status"</h3>
+                {if runtime_services.is_empty() {
+                    view! { <p class="muted">"Runtime status is not available yet."</p> }.into_view()
+                } else {
+                    view! { <ul class="service-list">{runtime_services}</ul> }.into_view()
+                }}
             </section>
             <section class="subsection" aria-labelledby="diagnostic-title">
                 <h3 id="diagnostic-title">"Reconciliation diagnostics"</h3>
@@ -389,6 +405,17 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals) -> Vie
         </div>
     }
     .into_view()
+}
+
+fn service_status_view(service: &ServiceStatusView) -> View {
+    let diagnostic = service.diagnostic.clone();
+    view! {
+        <li class="service-row service-observed">
+            <div><strong>{service.service.clone()}</strong><span class="muted">{service.state.clone()}</span></div>
+            <div class="observed-replicas">{format!("{} / {} running", service.running_replicas, service.desired_replicas)}</div>
+            {diagnostic.map(|message| view! { <p class="inline-diagnostic">{message}</p> })}
+        </li>
+    }.into_view()
 }
 
 fn observed_service_view(service: &ObservedServiceView) -> View {
