@@ -22,7 +22,7 @@ header.
 
 Supported resources and actions are:
 
-- `GET /health` (unversioned liveness response)
+- `GET /health` (unversioned liveness response outside the OpenAPI contract)
 - `GET /api/v1/system/status`
 - `GET /api/v1/openapi.json`
 - `GET /api/v1/applications` and `GET /api/v1/applications/{id}`
@@ -63,8 +63,10 @@ workflow is documented in [`docs/piquelctl.md`](piquelctl.md). Authentication,
 mutating browser controls, and additional transports are outside this product
 slice.
 
-The TCP router gives exact API, health, and OpenAPI routes precedence over the
-static dashboard. Unknown `/api`, `/health`, and `/openapi` paths remain JSON
-errors; only non-reserved extensionless browser paths receive the dashboard
-shell. Missing extensionful assets remain 404s. The Unix router has no static
-fallback.
+The TCP router composes the API, `/health`, and the optional dashboard. When UI
+assets are enabled, `/` and `/dashboard` permanently redirect to
+`/dashboard/`; the dashboard serves its static files below that prefix and
+falls back to its shell for extensionless Leptos routes. Unknown `/api/...`
+paths remain structured JSON errors, while paths outside `/api` and
+`/dashboard` remain ordinary 404s. The Unix router uses the API routes directly
+and has no health, dashboard, or static fallback.

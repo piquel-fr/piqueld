@@ -14,24 +14,34 @@ binding.
 
 ## Development
 
-Install the target and Trunk once, or use the corresponding tools from
-`nix develop`:
+Install the WASM target, Docker, and the UI tools once, or use the corresponding
+tools from `nix develop`:
 
 ```console
 rustup target add wasm32-unknown-unknown
 cargo install trunk --locked
 ```
 
-Start the daemon on its default loopback address, then run the UI development
-server:
+Docker is required because the development daemon connects to the real Docker
+Engine and reconciles a single-node Swarm. Start the complete development
+toolchain with one command:
 
 ```console
-just ui-dev
+just dev
 ```
 
-`trunk` serves the UI locally and proxies its `/api` requests to
-`http://127.0.0.1:7845`, so the browser still exercises same-origin-style API
-paths. A direct transport compile is available with:
+This starts `piqueld` from `config/piqueld.example.toml`, Tailwind in watch
+mode, and Trunk with `/api/` proxied unchanged to
+`http://127.0.0.1:7845/api/`. `just dev` serves the watched dashboard at
+`http://127.0.0.1:8080/` and accepts the canonical `/dashboard/` path as well.
+It reloads the UI after Rust or CSS changes. Set `TRUNK_SERVE_ADDRESS` when
+the dev server must be reachable from another interface, for example:
+
+```bash
+TRUNK_SERVE_ADDRESS="$(tailscale ip -4)" just dev
+```
+
+A direct transport compile is available with:
 
 ```console
 just ui-check
@@ -39,9 +49,10 @@ just ui-check
 
 ## Production assets
 
-The source files `apps/piqueld-ui/index.html`, `style.css`, and the Rust UI are
-committed. Trunk-generated HTML/CSS/WASM/JavaScript loader assets are build
-outputs and are not committed. Build them with:
+The source files `apps/piqueld-ui/index.html`, `tailwind.css`, and the Rust UI
+are committed. Tailwind's generated CSS and Trunk-generated
+HTML/WASM/JavaScript loader assets are build outputs and are not committed.
+Build them with:
 
 ```console
 just ui-build
@@ -49,21 +60,28 @@ sudo install -d /usr/share/piqueld/ui
 sudo cp -R target/piqueld-ui-dist/. /usr/share/piqueld/ui/
 ```
 
-The default configuration leaves `server.ui_dir` unset. Deployments can select
-another absolute directory in `[server]`; that explicit override always wins.
-The Nix package builds the same release bundle, installs it under its own
-`$out/share/piqueld/ui`, and wraps `piqueld` with that path. Users do not need
-to discover or copy the store path into configuration.
+After copying the bundle, set `server.ui_dir = "/usr/share/piqueld/ui"` (or
+pass `--ui-dir`) so the daemon serves it; there is no implicit filesystem
+fallback.
 
-The normal package contains only the operator-facing `piqueld` and `piquelctl`
-binaries, the example configuration, and the dashboard assets. The
+The default configuration leaves `server.ui_dir` unset. Deployments can select
+another absolute directory in `[server]` or through `--ui-dir`; the command
+line always wins. The combined Nix package builds the same release bundle and
+installs it under `$out/share/piqueld/ui`; point `server.ui_dir` or `--ui-dir`
+at that directory to serve it. The `.#daemon` output contains only the daemon,
+and the `.#cli` output contains only `piquelctl`; neither includes UI assets or
+UI build tooling.
+
+The combined package contains only the operator-facing `piqueld` and
+`piquelctl` binaries, the example configuration, and the dashboard assets. The
 `generate_openapi` helper and the native `piqueld-ui` placeholder are not
 installed.
 
-The TCP router serves existing assets and uses `index.html` only for
-extensionless, non-reserved browser paths. API, health, OpenAPI, and unknown API
-paths never receive the SPA shell. If the bundle is absent, the browser route
-returns a clear 503 message and missing extensionful files remain 404s.
+The TCP router serves existing assets below `/dashboard/` and uses `index.html`
+only for extensionless dashboard paths. API, health, and unknown paths never
+receive the SPA shell. If UI assets are configured but missing or incomplete,
+dashboard requests return a clear 503 message. With UI assets disabled, root
+and dashboard routes are not registered and the process is API-only.
 
 The dashboard performs one initial refresh, then bounded sequential pagination
 (20 items per page, at most 20 pages) and application status reads. Background

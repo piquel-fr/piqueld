@@ -37,9 +37,14 @@ result as the public API. `apply` waits for the durable operation by default;
 
 ## Dashboard and cleanup
 
-On this branch the daemon serves only the HTTP API; the read-only dashboard
-arrives with the Plan 06C package, which will serve it at
-`http://127.0.0.1:7845/` for inspecting the same state as `piquelctl`.
+The combined package serves the read-only dashboard from the same daemon
+process. After building that package, open
+`http://127.0.0.1:7845/dashboard/` in a browser and use the overview,
+application list, and detail routes to inspect the same state as `piquelctl`.
+
+The daemon-only package contains no UI assets and serves the API only. The
+real daemon, including `just dev`, still requires access to a local Docker
+Engine and a single-node Swarm.
 
 When finished, delete the application and note that its named volumes are
 retained:
