@@ -150,7 +150,7 @@ pub(super) async fn create(
     // There is exactly one active daemon in the prototype. Serializing create
     // preparation prevents concurrent retries from duplicating image-resolution
     // work before the durable binding can be committed.
-    let _create_guard = state.create_lock.lock().await;
+    let _mutation_guard = state.mutation_guard().await;
     if let Some(mutation) = state
         .store
         .create_idempotency(&id, &key_hash, &request_hash)
@@ -243,6 +243,9 @@ pub(super) async fn replace(
             mutation_request_hash("replace", &id, expected, Some(&spec_hash)),
         )
     });
+    // Serialize the idempotency lookup through the binding commit so a
+    // concurrent retry cannot duplicate the keyed replacement.
+    let _mutation_guard = state.mutation_guard().await;
     if let Some((key_hash, request_hash)) = &key_binding
         && let Some(mutation) = state
             .store
@@ -343,6 +346,9 @@ pub(super) async fn delete(
             mutation_request_hash("delete", &id, request.expected_generation, None),
         )
     });
+    // Serialize the idempotency lookup through the binding commit so a
+    // concurrent retry cannot duplicate the keyed deletion.
+    let _mutation_guard = state.mutation_guard().await;
     if let Some((key_hash, request_hash)) = &key_binding
         && let Some(mutation) = state
             .store

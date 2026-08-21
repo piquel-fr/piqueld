@@ -85,7 +85,7 @@ pub struct ApiState {
     store: Arc<SqliteStore>,
     runtime: Arc<dyn RuntimeBoundary>,
     instance_id: String,
-    create_lock: Arc<tokio::sync::Mutex<()>>,
+    mutation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ApiState {
@@ -96,8 +96,14 @@ impl ApiState {
             instance_id: store.instance_id().to_owned(),
             store,
             runtime,
-            create_lock: Arc::new(tokio::sync::Mutex::new(())),
+            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Serializes mutation preparation so the idempotency lookup-through-commit
+    /// window cannot race with a concurrent retry of the same key.
+    pub(super) async fn mutation_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutation_lock.lock().await
     }
 }
 
@@ -375,15 +381,19 @@ fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 fn optional_idempotency_key(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
-    let Some(key) = header_text(headers, "idempotency-key") else {
+    let Some(value) = headers.get("idempotency-key") else {
         return Ok(None);
     };
+    let invalid = ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "idempotency_key_invalid",
+        "Idempotency-Key is invalid",
+    );
+    let Ok(key) = value.to_str() else {
+        return Err(invalid);
+    };
     if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "idempotency_key_invalid",
-            "Idempotency-Key is invalid",
-        ));
+        return Err(invalid);
     }
     Ok(Some(key))
 }

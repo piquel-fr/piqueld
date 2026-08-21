@@ -944,7 +944,16 @@ impl SqliteStore {
         )
         .execute(&mut **tx)
         .await
-        .map_err(StoreError::database)?;
+        .map_err(|error| {
+            if error.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation)
+            {
+                // Another request bound this key first; treat it as a replay
+                // conflict instead of an opaque storage failure.
+                StoreError::IdempotencyConflict
+            } else {
+                StoreError::database(error)
+            }
+        })?;
         Ok(())
     }
 
