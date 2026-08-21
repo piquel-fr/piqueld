@@ -56,6 +56,7 @@ uuid = { version = "1.17.0", features = ["v7"] }
 gloo-net = { version = "0.6.0", default-features = false }
 gloo-timers = "0.3.0"
 leptos = { version = "0.6.15", default-features = false }
+leptos_router = { version = "0.6.15", default-features = false }
 web-sys = "=0.3.103"
 
 proptest = "1.6.0"

@@ -1,4 +1,4 @@
-//! Leptos client-side-rendered dashboard components.
+//! Leptos client-side-rendered dashboard routes and shared data services.
 
 use crate::state::{
     ApplicationHealth, ConnectionState, DataState, MAX_PAGES, PAGE_LIMIT, PaginationState,
@@ -6,9 +6,11 @@ use crate::state::{
 };
 use gloo_timers::future::TimeoutFuture;
 use leptos::{
-    CollectView, IntoView, RwSignal, SignalGet, SignalGetUntracked, SignalSet, View, component,
-    create_rw_signal, ev, mount_to_body, on_cleanup, spawn_local, view, window_event_listener,
+    CollectView, DynAttrs, IntoView, RwSignal, SignalGet, SignalGetUntracked, SignalSet,
+    SignalWith, View, component, create_effect, create_rw_signal, ev, mount_to_body, on_cleanup,
+    provide_context, spawn_local, view, window_event_listener,
 };
+use leptos_router::{A, Outlet, Redirect, Route, Router, Routes, TrailingSlash, use_params_map};
 use piqueld_client::{
     ApplicationDetailView, ApplicationStatusView, ApplicationView, Client, ClientError,
     DiagnosticView, ListApplicationsOptions, ObservedServiceView, Page, Source, SystemStatus,
@@ -52,30 +54,70 @@ struct DashboardSignals {
     detail_error: RwSignal<Option<String>>,
 }
 
-/// Mounts the CSR application into the document body.
-pub fn mount() {
-    mount_to_body(|| view! { <Dashboard/> });
+impl DashboardSignals {
+    fn new() -> Self {
+        Self {
+            system: create_rw_signal(None),
+            applications: create_rw_signal(Vec::new()),
+            connection: create_rw_signal(ConnectionState::Loading),
+            data_state: create_rw_signal(DataState::Loading),
+            refresh_error: create_rw_signal(None),
+            refreshing: create_rw_signal(false),
+            pagination_incomplete: create_rw_signal(false),
+            selected_id: create_rw_signal(None),
+            detail: create_rw_signal(None),
+            detail_loading: create_rw_signal(false),
+            detail_request: create_rw_signal(0),
+            detail_error: create_rw_signal(None),
+        }
+    }
 }
 
 type Refresh = Rc<dyn Fn()>;
-type SelectApplication = Rc<dyn Fn(String)>;
+
+#[derive(Clone)]
+struct DashboardContext {
+    signals: DashboardSignals,
+    client: Client,
+    refresh: Refresh,
+}
+
+/// Mounts the CSR application into the document body.
+pub fn mount() {
+    mount_to_body(|| view! { <App/> });
+}
 
 #[component]
-fn Dashboard() -> impl IntoView {
-    let signals = DashboardSignals {
-        system: create_rw_signal(None),
-        applications: create_rw_signal(Vec::new()),
-        connection: create_rw_signal(ConnectionState::Loading),
-        data_state: create_rw_signal(DataState::Loading),
-        refresh_error: create_rw_signal(None),
-        refreshing: create_rw_signal(false),
-        pagination_incomplete: create_rw_signal(false),
-        selected_id: create_rw_signal(None),
-        detail: create_rw_signal(None),
-        detail_loading: create_rw_signal(false),
-        detail_request: create_rw_signal(0),
-        detail_error: create_rw_signal(None),
-    };
+fn App() -> impl IntoView {
+    view! {
+        <Router trailing_slash=TrailingSlash::Exact fallback=|| view! { <NotFoundPage/> }>
+            <Routes>
+                <Route path="/" view=DashboardLayout>
+                    <Route path="/" view=OverviewPage/>
+                    <Route path="/applications" view=ApplicationsPage/>
+                    <Route path="/applications/:id" view=ApplicationDetailPage/>
+                </Route>
+                <Route path="/dashboard" view=DashboardLayout>
+                    <Route path="" view=DashboardRedirect/>
+                    <Route path="/" view=OverviewPage/>
+                    <Route path="/applications" view=ApplicationsPage/>
+                    <Route path="/applications/:id" view=ApplicationDetailPage/>
+                    <Route path="/*any" view=NotFoundPage/>
+                </Route>
+                <Route path="/*any" view=NotFoundPage/>
+            </Routes>
+        </Router>
+    }
+}
+
+#[component]
+fn DashboardRedirect() -> impl IntoView {
+    view! { <Redirect path="/dashboard/"/> }
+}
+
+#[component]
+fn DashboardLayout() -> impl IntoView {
+    let signals = DashboardSignals::new();
     let client = Client::browser();
     let controller = Rc::new(RefCell::new(PollController::new()));
     controller.borrow_mut().set_hidden(document_hidden());
@@ -87,15 +129,12 @@ fn Dashboard() -> impl IntoView {
             start_refresh(client.clone(), signals, Rc::clone(&controller), true);
         })
     };
-
-    let select: SelectApplication = {
-        let client = client.clone();
-        Rc::new(move |id: String| {
-            signals.selected_id.set(Some(id.clone()));
-            signals.detail.set(None);
-            load_detail(client.clone(), signals, id);
-        })
+    let context = DashboardContext {
+        signals,
+        client: client.clone(),
+        refresh: Rc::clone(&refresh),
     };
+    provide_context(context.clone());
 
     let visibility_listener = {
         let controller = Rc::clone(&controller);
@@ -108,49 +147,50 @@ fn Dashboard() -> impl IntoView {
     start_refresh(client.clone(), signals, Rc::clone(&controller), true);
     spawn_poll_loop(client, signals, controller);
 
-    dashboard_view(signals, &refresh, select)
-}
-
-fn dashboard_view(signals: DashboardSignals, refresh: &Refresh, select: SelectApplication) -> View {
     view! {
         <a class="skip-link" href="#dashboard-main">"Skip to main content"</a>
-        {dashboard_header(signals, Rc::clone(refresh))}
+        {dashboard_header(&context)}
 
-        <main id="dashboard-main" tabindex="-1">
-            <section class="notice notice-info" aria-labelledby="read-only-title">
-                <h2 id="read-only-title">"Read-only view"</h2>
-                <p>"This dashboard shows daemon and application state. Use "<code>"piquelctl"</code>" for plan, apply, reconcile, and delete operations."</p>
+        <main id="dashboard-main" class="mx-auto w-[calc(100%-2rem)] max-w-[1180px] pb-8" tabindex="-1">
+            <section class="mb-4 rounded-xl border border-line border-l-4 border-l-accent bg-surface p-4 shadow-panel" aria-labelledby="read-only-title">
+                <h2 id="read-only-title" class="mb-1 text-lg font-bold">"Read-only view"</h2>
+                <p class="mb-0">"This dashboard shows daemon and application state. Use "<code>"piquelctl"</code>" for plan, apply, reconcile, and delete operations."</p>
             </section>
 
             {system_summary(signals)}
-            {refresh_error(signals, Rc::clone(refresh))}
+            {refresh_error(&context)}
             {stale_notice(signals)}
 
-            <div class="dashboard-grid">
-                {applications_panel(signals, select)}
-
-                <ApplicationDetail signals=signals/>
-            </div>
+            <Outlet/>
         </main>
-        <footer class="site-footer">"piqueld · loopback dashboard · API v1"</footer>
+        <footer class="mx-auto w-[calc(100%-2rem)] max-w-[1180px] pb-8 text-sm text-muted">"piqueld · loopback dashboard · API v1"</footer>
     }
-    .into_view()
 }
 
-fn dashboard_header(signals: DashboardSignals, refresh: Refresh) -> View {
+fn dashboard_context() -> DashboardContext {
+    leptos::use_context().expect("dashboard routes are descendants of DashboardLayout")
+}
+
+fn dashboard_header(context: &DashboardContext) -> View {
+    let signals = context.signals;
+    let refresh = Rc::clone(&context.refresh);
     view! {
-        <header class="site-header">
+        <header class="site-header mx-auto flex w-[calc(100%-2rem)] max-w-[1180px] flex-col items-start justify-between gap-4 py-5 sm:flex-row sm:items-end sm:py-8">
             <div>
-                <p class="eyebrow">"PIQUELD CONTROL PLANE"</p>
-                <h1>"Dashboard"</h1>
+                <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"PIQUELD CONTROL PLANE"</p>
+                <h1 class="mb-0 text-4xl font-extrabold tracking-[-.04em] sm:text-5xl">"Dashboard"</h1>
+                <nav class="mt-3 flex flex-wrap gap-2" aria-label="Dashboard navigation">
+                    <A class="rounded-md px-2 py-1 text-sm font-bold text-accent hover:bg-surface-muted" href="/dashboard/">"Overview"</A>
+                    <A class="rounded-md px-2 py-1 text-sm font-bold text-accent hover:bg-surface-muted" href="/dashboard/applications">"Applications"</A>
+                </nav>
             </div>
-            <div class="header-actions">
-                <p class="daemon-status" role="status" aria-live="polite">
-                    <span class:status-ok=move || signals.connection.get() == ConnectionState::Reachable class:status-bad=move || matches!(signals.connection.get(), ConnectionState::Failed | ConnectionState::Unreachable) class="status-dot" aria-hidden="true"></span>
+            <div class="header-actions flex flex-wrap items-center justify-start gap-3 sm:justify-end">
+                <p class="m-0 flex items-center gap-2 font-bold text-muted" role="status" aria-live="polite">
+                    <span class=move || status_dot_class(signals.connection.get()) aria-hidden="true"></span>
                     "Daemon: " {move || connection_label(signals.connection.get())}
                 </p>
                 <button
-                    class="button button-secondary"
+                    class="rounded-md border border-line bg-surface px-3 py-2 font-bold text-accent-strong hover:border-accent disabled:cursor-wait disabled:opacity-60"
                     type="button"
                     disabled=move || signals.refreshing.get()
                     on:click=move |_| refresh()
@@ -163,18 +203,117 @@ fn dashboard_header(signals: DashboardSignals, refresh: Refresh) -> View {
     .into_view()
 }
 
+#[component]
+fn OverviewPage() -> impl IntoView {
+    let context = dashboard_context();
+    let signals = context.signals;
+    view! {
+        <section class="space-y-4" aria-labelledby="overview-title">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"AT A GLANCE"</p>
+                    <h2 id="overview-title" class="mb-0 text-2xl font-bold">"Overview"</h2>
+                </div>
+                <A class="rounded-md border border-line bg-surface px-3 py-2 font-bold text-accent-strong hover:border-accent" href="/dashboard/applications">"View applications"</A>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-3">
+                <div class="rounded-xl border border-line bg-surface p-4 shadow-panel">
+                    <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"APPLICATIONS"</p>
+                    <p class="text-3xl font-extrabold" aria-live="polite">{move || signals.applications.get().len()}</p>
+                    <p class="mb-0 text-sm text-muted">"Desired applications"</p>
+                </div>
+                <div class="rounded-xl border border-line bg-surface p-4 shadow-panel">
+                    <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"CONNECTION"</p>
+                    <p class="text-3xl font-extrabold">{move || connection_label(signals.connection.get())}</p>
+                    <p class="mb-0 text-sm text-muted">"Latest API refresh"</p>
+                </div>
+                <div class="rounded-xl border border-line bg-surface p-4 shadow-panel">
+                    <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"DATA"</p>
+                    <p class="text-3xl font-extrabold">{move || data_state_label(signals.data_state.get())}</p>
+                    <p class="mb-0 text-sm text-muted">"Current dashboard view"</p>
+                </div>
+            </div>
+            {compact_applications(signals)}
+        </section>
+    }
+}
+
+#[component]
+fn ApplicationsPage() -> impl IntoView {
+    let context = dashboard_context();
+    applications_panel(context.signals)
+}
+
+#[component]
+fn ApplicationDetailPage() -> impl IntoView {
+    let context = dashboard_context();
+    let signals = context.signals;
+    let params = use_params_map();
+    let client = context.client.clone();
+
+    create_effect(move |_| {
+        let id = params.with(|params| params.get("id").cloned());
+        let Some(id) = id else {
+            return;
+        };
+        if signals.selected_id.get_untracked().as_deref() == Some(id.as_str())
+            && signals.detail.get_untracked().is_some()
+        {
+            return;
+        }
+        signals.selected_id.set(Some(id.clone()));
+        signals.detail.set(None);
+        load_detail(client.clone(), signals, id);
+    });
+
+    view! {
+        <section class="rounded-xl border border-line bg-surface p-5 shadow-panel" aria-labelledby="detail-title">
+            <div class="mb-4 flex items-start justify-between gap-3">
+                <div>
+                    <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"OBSERVED STATE"</p>
+                    <h2 id="detail-title" class="mb-0 text-2xl font-bold">"Application detail"</h2>
+                </div>
+                <A class="rounded-md px-2 py-1 text-sm font-bold text-accent hover:bg-surface-muted" href="/dashboard/applications">"Back to applications"</A>
+            </div>
+            {move || {
+                let detail = signals.detail.get();
+                if signals.detail_loading.get() && detail.is_none() {
+                    view! { <p class="rounded-lg border border-line bg-surface-muted p-5" role="status">"Loading application detail…"</p> }.into_view()
+                } else if let Some(detail) = detail {
+                    detail_view(&detail, signals, context.client.clone())
+                } else {
+                    let message = signals.detail_error.get().unwrap_or_else(|| "Application detail is unavailable.".into());
+                    view! { <div class="rounded-lg border border-line bg-surface-muted p-5" role="alert"><h3 class="mb-1 text-lg font-bold">"Detail unavailable"</h3><p class="mb-0">{message}</p></div> }.into_view()
+                }
+            }}
+        </section>
+    }
+}
+
+#[component]
+fn NotFoundPage() -> impl IntoView {
+    view! {
+        <section class="rounded-xl border border-line bg-surface p-6 shadow-panel" aria-labelledby="not-found-title">
+            <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"NOT FOUND"</p>
+            <h2 id="not-found-title" class="mb-2 text-2xl font-bold">"Dashboard page not found"</h2>
+            <p class="mb-4 text-muted">"Choose a known dashboard destination to continue."</p>
+            <A class="rounded-md border border-line bg-surface px-3 py-2 font-bold text-accent-strong hover:border-accent" href="/dashboard/">"Return to overview"</A>
+        </section>
+    }
+}
+
 fn system_summary(signals: DashboardSignals) -> View {
     view! {
         {move || signals.system.get().map(|system| view! {
-            <section class="system-summary" aria-labelledby="system-title">
+            <section class="mb-4 flex flex-col justify-between gap-4 rounded-xl border border-line bg-surface p-4 shadow-panel sm:flex-row sm:items-center" aria-labelledby="system-title">
                 <div>
-                    <p class="eyebrow">"DAEMON"</p>
-                    <h2 id="system-title">"Available"</h2>
+                    <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"DAEMON"</p>
+                    <h2 id="system-title" class="mb-0 text-xl font-bold">"Available"</h2>
                 </div>
-                <dl class="summary-list">
-                    <div><dt>"Version"</dt><dd>{system.daemon_version}</dd></div>
-                    <div><dt>"API"</dt><dd>{system.api_version}</dd></div>
-                    <div><dt>"Instance"</dt><dd><code>{short_id(&system.instance_id)}</code></dd></div>
+                <dl class="grid w-full gap-3 sm:w-auto sm:grid-cols-3">
+                    <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Version"</dt><dd class="mt-1">{system.daemon_version}</dd></div>
+                    <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"API"</dt><dd class="mt-1">{system.api_version}</dd></div>
+                    <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Instance"</dt><dd class="mt-1"><code>{short_id(&system.instance_id)}</code></dd></div>
                 </dl>
             </section>
         })}
@@ -182,15 +321,17 @@ fn system_summary(signals: DashboardSignals) -> View {
     .into_view()
 }
 
-fn refresh_error(signals: DashboardSignals, refresh: Refresh) -> View {
+fn refresh_error(context: &DashboardContext) -> View {
+    let signals = context.signals;
+    let refresh = Rc::clone(&context.refresh);
     view! {
         {move || signals.refresh_error.get().map(|message| {
             let retry = Rc::clone(&refresh);
             view! {
-                <div class="notice notice-error" role="alert" aria-live="assertive">
-                    <h2>{if signals.connection.get() == ConnectionState::Unreachable { "Daemon unreachable" } else { "Refresh failed" }}</h2>
-                    <p>{message}</p>
-                    <button class="button button-secondary" type="button" on:click=move |_| retry()>{"Try again"}</button>
+                <div class="mb-4 rounded-xl border border-line border-l-4 border-l-bad bg-surface p-4 shadow-panel" role="alert" aria-live="assertive">
+                    <h2 class="mb-1 text-lg font-bold">{if signals.connection.get() == ConnectionState::Unreachable { "Daemon unreachable" } else { "Refresh failed" }}</h2>
+                    <p class="mb-2">{message}</p>
+                    <button class="rounded-md border border-line bg-surface px-3 py-2 font-bold text-accent-strong hover:border-accent" type="button" on:click=move |_| retry()>"Try again"</button>
                 </div>
             }
         })}
@@ -201,101 +342,111 @@ fn refresh_error(signals: DashboardSignals, refresh: Refresh) -> View {
 fn stale_notice(signals: DashboardSignals) -> View {
     view! {
         {move || (signals.data_state.get() == DataState::Stale).then(|| view! {
-            <p class="stale-banner" role="status">"Showing the last successful view; the latest refresh failed."</p>
+            <p class="mb-4 rounded-lg border border-warn bg-warn-bg p-3 text-warn" role="status">"Showing the last successful view; the latest refresh failed."</p>
         })}
     }
     .into_view()
 }
 
-fn applications_panel(signals: DashboardSignals, select: SelectApplication) -> View {
+fn compact_applications(signals: DashboardSignals) -> View {
     view! {
-        <section class="applications-panel" aria-labelledby="applications-title">
-            <div class="section-heading">
+        <section class="rounded-xl border border-line bg-surface p-5 shadow-panel" aria-labelledby="summary-applications-title">
+            <div class="mb-4 flex items-start justify-between gap-3">
                 <div>
-                    <p class="eyebrow">"DESIRED STATE"</p>
-                    <h2 id="applications-title">"Applications"</h2>
+                    <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"DESIRED STATE"</p>
+                    <h2 id="summary-applications-title" class="mb-0 text-xl font-bold">"Applications"</h2>
                 </div>
-                <p class="muted">{move || format!("{} shown", signals.applications.get().len())}</p>
+                <A class="rounded-md px-2 py-1 text-sm font-bold text-accent hover:bg-surface-muted" href="/dashboard/applications">"See all"</A>
+            </div>
+            {move || match signals.data_state.get() {
+                DataState::Loading => view! { <p class="rounded-lg border border-line bg-surface-muted p-5" role="status">"Loading applications…"</p> }.into_view(),
+                DataState::Empty => view! { <p class="rounded-lg border border-line bg-surface-muted p-5">"No applications are configured yet."</p> }.into_view(),
+                DataState::Ready | DataState::Stale => view! {
+                    <ul class="grid gap-3 sm:grid-cols-2" aria-label="Application summary">
+                        {move || signals.applications.get().into_iter().take(4).map(compact_application_card).collect_view()}
+                    </ul>
+                }.into_view(),
+            }}
+        </section>
+    }
+    .into_view()
+}
+
+fn compact_application_card(row: ApplicationRow) -> View {
+    let id = row.application.application.id.to_string();
+    let name = row.application.application.metadata.name.clone();
+    let health = row_health(&row);
+    view! {
+        <li class="rounded-lg border border-line bg-surface-muted p-3">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h3 class="mb-1 font-bold">{name}</h3>
+                    <p class="mb-0 text-sm text-muted"><code>{short_id(&id)}</code></p>
+                </div>
+                <span class=health_class(health)>{health.label()}</span>
+            </div>
+        </li>
+    }
+    .into_view()
+}
+
+fn applications_panel(signals: DashboardSignals) -> View {
+    view! {
+        <section class="rounded-xl border border-line bg-surface p-5 shadow-panel" aria-labelledby="applications-title">
+            <div class="mb-4 flex items-start justify-between gap-3">
+                <div>
+                    <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"DESIRED STATE"</p>
+                    <h2 id="applications-title" class="mb-0 text-2xl font-bold">"Applications"</h2>
+                </div>
+                <p class="m-0 text-sm text-muted">{move || format!("{} shown", signals.applications.get().len())}</p>
             </div>
             {move || signals.pagination_incomplete.get().then(|| view! {
-                <p class="stale-banner" role="status">"Application list incomplete: the dashboard stopped at a safe pagination bound or repeated cursor. Use piquelctl for the complete list."</p>
+                <p class="mb-4 rounded-lg border border-warn bg-warn-bg p-3 text-warn" role="status">"Application list incomplete: the dashboard stopped at a safe pagination bound or repeated cursor. Use piquelctl for the complete list."</p>
             })}
             {move || match signals.data_state.get() {
-                DataState::Loading => view! { <p class="state-panel" role="status">"Loading applications…"</p> }.into_view(),
-                DataState::Empty => view! { <div class="state-panel"><h3>"No applications"</h3><p>"The daemon has no desired applications yet. Use piquelctl to create one."</p></div> }.into_view(),
+                DataState::Loading => view! { <p class="rounded-lg border border-line bg-surface-muted p-5" role="status">"Loading applications…"</p> }.into_view(),
+                DataState::Empty => view! { <div class="rounded-lg border border-line bg-surface-muted p-5"><h3 class="mb-1 text-lg font-bold">"No applications"</h3><p class="mb-0">"The daemon has no desired applications yet. Use piquelctl to create one."</p></div> }.into_view(),
                 DataState::Ready | DataState::Stale => ().into_view(),
             }}
-            <ul class="application-list" aria-label="Application list">
-                {move || signals.applications.get().into_iter().map(|row| application_card(&row, signals, Rc::clone(&select))).collect_view()}
+            <ul class="application-list grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Application list">
+                {move || signals.applications.get().into_iter().map(|row| application_card(&row, signals)).collect_view()}
             </ul>
         </section>
     }
     .into_view()
 }
 
-fn application_card(
-    row: &ApplicationRow,
-    signals: DashboardSignals,
-    select: SelectApplication,
-) -> View {
+fn application_card(row: &ApplicationRow, signals: DashboardSignals) -> View {
     let id = row.application.application.id.to_string();
-    let id_for_select = id.clone();
     let id_for_class = id.clone();
     let selected_id = signals.selected_id;
     let name = row.application.application.metadata.name.clone();
+    let name_for_label = name.clone();
     let health = row_health(row);
     let status_text = row_status_text(row);
     let desired_replicas = desired_replicas(&row.application);
+    let href = format!("/dashboard/applications/{id}");
     view! {
         <li>
-            <article class="application-card" class:selected=move || selected_id.get().as_deref() == Some(id_for_class.as_str())>
-                <div class="card-topline">
-                    <span class=format!("health-badge {}", health_class(health))>{health.label()}</span>
-                    <span class="generation">{format!("Generation {}", row.application.generation)}</span>
+            <article class="application-card flex h-full flex-col gap-2 rounded-lg border border-line bg-surface-muted p-4" class:selected=move || selected_id.get().as_deref() == Some(id_for_class.as_str())>
+                <div class="flex items-start justify-between gap-3">
+                    <span class=health_class(health)>{health.label()}</span>
+                    <span class="text-xs text-muted">{format!("Generation {}", row.application.generation)}</span>
                 </div>
-                <h3>{name}</h3>
-                <p class="muted"><code>{short_id(&id)}</code></p>
-                <dl class="card-facts">
-                    <div><dt>"Desired replicas"</dt><dd>{desired_replicas}</dd></div>
-                    <div><dt>"Observed state"</dt><dd>{status_text}</dd></div>
+                <h3 class="mb-0 text-lg font-bold">{name}</h3>
+                <p class="mb-0 text-sm text-muted"><code>{short_id(&id)}</code></p>
+                <dl class="my-1 grid grid-cols-2 gap-3">
+                    <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Desired replicas"</dt><dd class="mt-1">{desired_replicas}</dd></div>
+                    <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Observed state"</dt><dd class="mt-1">{status_text}</dd></div>
                 </dl>
-                <button class="button button-secondary card-action" type="button" aria-pressed=move || selected_id.get().as_deref() == Some(id.as_str()) on:click=move |_| select(id_for_select.clone())>{"View details"}</button>
+                <A class="mt-auto block w-full rounded-md border border-line bg-surface px-3 py-2 text-center font-bold text-accent-strong hover:border-accent" href=href attr:aria-label=format!("View details for {name_for_label}")>"View details"</A>
             </article>
         </li>
     }
     .into_view()
 }
 
-#[component]
-fn ApplicationDetail(signals: DashboardSignals) -> impl IntoView {
-    view! {
-        <section class="detail-panel" aria-labelledby="detail-title">
-            <div class="section-heading">
-                <div>
-                    <p class="eyebrow">"OBSERVED STATE"</p>
-                    <h2 id="detail-title">"Application detail"</h2>
-                </div>
-            </div>
-            {move || {
-                let selected = signals.selected_id.get();
-                let detail = signals.detail.get();
-                if selected.is_none() {
-                    view! { <p class="state-panel">"Select an application to inspect desired and observed state."</p> }.into_view()
-                } else if signals.detail_loading.get() && detail.is_none() {
-                    view! { <p class="state-panel" role="status">"Loading application detail…"</p> }.into_view()
-                } else if let Some(detail) = detail {
-                    detail_view(&detail, signals)
-                } else {
-                    let message = signals.detail_error.get().unwrap_or_else(|| "Application detail is unavailable.".into());
-                    view! { <div class="state-panel" role="alert"><h3>"Detail unavailable"</h3><p>{message}</p></div> }.into_view()
-                }
-            }}
-        </section>
-    }
-    .into_view()
-}
-
-fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals) -> View {
+fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client: Client) -> View {
     let app = detail.application.application.clone();
     let status = detail.status.clone();
     let operation = detail.latest_operation.clone();
@@ -314,9 +465,9 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals) -> Vie
             };
             let replicas = service.replicas;
             view! {
-                <li class="service-row">
-                    <div><strong>{name}</strong><span class="muted">{image}</span></div>
-                    <span class="replica-pill">{format!("{replicas} desired")}</span>
+                <li class="grid gap-3 rounded-lg border border-line p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                    <div><strong class="block break-words">{name}</strong><span class="break-words text-muted">{image}</span></div>
+                    <span class="rounded-full bg-surface-muted px-2 py-1 text-sm text-muted">{format!("{replicas} desired")}</span>
                 </li>
             }
         })
@@ -328,56 +479,59 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals) -> Vie
         .collect_view();
     let diagnostics_view = diagnostics.iter().map(diagnostic_view).collect_view();
     let operation_view = operation.map(|operation| {
-        let steps = operation.steps.iter().map(|step| {
-            let step_state = step.state.clone();
-            view! { <li><span>{step.action.clone()}</span><span class="muted">{step_state}</span></li> }
-        }).collect_view();
+        let steps = operation
+            .steps
+            .iter()
+            .map(|step| {
+                let step_state = step.state.clone();
+                view! { <li class="flex justify-between gap-3 rounded-md bg-surface-muted p-2"><span>{step.action.clone()}</span><span class="text-muted">{step_state}</span></li> }
+            })
+            .collect_view();
         view! {
-            <section class="subsection" aria-labelledby="operation-title">
-                <h3 id="operation-title">"Latest operation"</h3>
+            <section class="border-t border-line pt-4" aria-labelledby="operation-title">
+                <h3 id="operation-title" class="mb-2 text-lg font-bold">"Latest operation"</h3>
                 <p><strong>{operation.kind.clone()}</strong>" · "{operation.state.clone()}</p>
-                <ul class="step-list">{steps}</ul>
+                <ul class="grid gap-2">{steps}</ul>
             </section>
         }
     });
     let health = ApplicationHealth::from_server_state(&status.state);
     let refresh_detail = {
         let id = application_id.clone();
-        let client = Client::browser();
         move || load_detail(client.clone(), signals, id.clone())
     };
     view! {
-        <div class="detail-content">
+        <div class="grid gap-4">
             {move || signals.detail_error.get().map(|message| view! {
-                <p class="stale-banner" role="status">
+                <p class="rounded-lg border border-warn bg-warn-bg p-3 text-warn" role="status">
                     {format!("Showing the last successful detail; the latest detail refresh failed: {message}")}
                 </p>
             })}
-            <div class="detail-title-row">
-                <div><h3>{application_name}</h3><p class="muted"><code>{application_id}</code></p></div>
-                <span class=format!("health-badge {}", health_class(health))>{health.label()}</span>
+            <div class="detail-title-row flex items-start justify-between gap-3">
+                <div><h3 class="mb-1 text-xl font-bold">{application_name}</h3><p class="mb-0 text-sm text-muted"><code>{application_id}</code></p></div>
+                <span class=health_class(health)>{health.label()}</span>
             </div>
-            <dl class="detail-facts">
-                <div><dt>"Desired generation"</dt><dd>{detail.application.generation}</dd></div>
-                <div><dt>"Observed generation"</dt><dd>{status.observed_generation.map_or_else(|| "Not observed".into(), |generation| generation.to_string())}</dd></div>
-                <div><dt>"Networks / volumes"</dt><dd>{format!("{} / {}", observed.network_count, observed.volume_count)}</dd></div>
+            <dl class="grid gap-3 rounded-lg bg-surface-muted p-3 sm:grid-cols-3">
+                <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Desired generation"</dt><dd class="mt-1">{detail.application.generation}</dd></div>
+                <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Observed generation"</dt><dd class="mt-1">{status.observed_generation.map_or_else(|| "Not observed".into(), |generation| generation.to_string())}</dd></div>
+                <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Networks / volumes"</dt><dd class="mt-1">{format!("{} / {}", observed.network_count, observed.volume_count)}</dd></div>
             </dl>
-            <p class="detail-state"><span class=format!("health-badge {}", health_class(health))>{health.label()}</span> {status.message.clone().unwrap_or_else(|| "No additional daemon diagnostic.".into())}</p>
-            <div class="detail-refresh"><button class="button button-secondary" type="button" on:click=move |_| refresh_detail()>{"Refresh detail"}</button></div>
-            <section class="subsection" aria-labelledby="desired-title">
-                <h3 id="desired-title">"Desired services"</h3>
-                <ul class="service-list">{desired_services}</ul>
+            <p class="m-0 border-l-4 border-l-accent bg-surface-muted p-3"><span class=health_class(health)>{health.label()}</span> {status.message.clone().unwrap_or_else(|| "No additional daemon diagnostic.".into())}</p>
+            <div class="flex justify-end"><button class="rounded-md border border-line bg-surface px-3 py-2 font-bold text-accent-strong hover:border-accent disabled:cursor-wait disabled:opacity-60" type="button" disabled=move || signals.detail_loading.get() on:click=move |_| refresh_detail()>{move || if signals.detail_loading.get() { "Refreshing…" } else { "Refresh detail" }}</button></div>
+            <section class="border-t border-line pt-4" aria-labelledby="desired-title">
+                <h3 id="desired-title" class="mb-2 text-lg font-bold">"Desired services"</h3>
+                <ul class="grid gap-2">{desired_services}</ul>
             </section>
-            <section class="subsection" aria-labelledby="observed-title">
-                <h3 id="observed-title">"Observed services"</h3>
-                <ul class="service-list">{observed_services}</ul>
+            <section class="border-t border-line pt-4" aria-labelledby="observed-title">
+                <h3 id="observed-title" class="mb-2 text-lg font-bold">"Observed services"</h3>
+                <ul class="grid gap-2">{observed_services}</ul>
             </section>
-            <section class="subsection" aria-labelledby="diagnostic-title">
-                <h3 id="diagnostic-title">"Reconciliation diagnostics"</h3>
+            <section class="border-t border-line pt-4" aria-labelledby="diagnostic-title">
+                <h3 id="diagnostic-title" class="mb-2 text-lg font-bold">"Reconciliation diagnostics"</h3>
                 {if diagnostics.is_empty() {
-                    view! { <p class="muted">"No diagnostics reported."</p> }.into_view()
+                    view! { <p class="m-0 text-muted">"No diagnostics reported."</p> }.into_view()
                 } else {
-                    view! { <ul class="diagnostic-list">{diagnostics_view}</ul> }.into_view()
+                    view! { <ul class="grid gap-2">{diagnostics_view}</ul> }.into_view()
                 }}
             </section>
             {operation_view}
@@ -398,18 +552,17 @@ fn observed_service_view(service: &ObservedServiceView) -> View {
         .map(diagnostic_view)
         .collect_view();
     view! {
-        <li class="service-row service-observed">
-            <div><strong>{service.name.clone()}</strong><span class="muted">{image}</span></div>
-            <div class="observed-replicas"><span class=format!("health-badge {}", health_class(health))>{health.label()}</span><span>{format!("{} / {} healthy", service.healthy_replicas, service.desired_replicas)}</span></div>
-            {(!service.diagnostics.is_empty()).then(|| view! { <ul class="inline-diagnostics">{diagnostics}</ul> })}
+        <li class="grid gap-3 rounded-lg border border-line p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+            <div><strong class="block break-words">{service.name.clone()}</strong><span class="break-words text-muted">{image}</span></div>
+            <div class="flex flex-wrap items-center justify-start gap-2 text-sm text-muted sm:justify-end"><span class=health_class(health)>{health.label()}</span><span>{format!("{} / {} healthy", service.healthy_replicas, service.desired_replicas)}</span></div>
+            {(!service.diagnostics.is_empty()).then(|| view! { <ul class="col-span-full grid gap-2">{diagnostics}</ul> })}
         </li>
     }
     .into_view()
 }
 
 fn diagnostic_view(diagnostic: &DiagnosticView) -> View {
-    view! { <li><strong>{diagnostic.code.clone()}</strong><span>{diagnostic.message.clone()}</span></li> }
-        .into_view()
+    view! { <li class="flex gap-3 rounded-md bg-surface-muted p-2"><strong class="text-xs text-bad">{diagnostic.code.clone()}</strong><span class="break-words">{diagnostic.message.clone()}</span></li> }.into_view()
 }
 
 fn start_refresh(
@@ -584,6 +737,25 @@ fn connection_label(state: ConnectionState) -> &'static str {
     }
 }
 
+fn data_state_label(state: DataState) -> &'static str {
+    match state {
+        DataState::Loading => "Loading",
+        DataState::Ready => "Ready",
+        DataState::Empty => "Empty",
+        DataState::Stale => "Stale",
+    }
+}
+
+fn status_dot_class(state: ConnectionState) -> &'static str {
+    match state {
+        ConnectionState::Reachable => "inline-block h-3 w-3 rounded-full bg-ok",
+        ConnectionState::Failed | ConnectionState::Unreachable => {
+            "inline-block h-3 w-3 rounded-full bg-bad"
+        }
+        ConnectionState::Loading => "inline-block h-3 w-3 rounded-full bg-pending",
+    }
+}
+
 fn row_health(row: &ApplicationRow) -> ApplicationHealth {
     row.status_error.as_ref().map_or_else(
         || {
@@ -617,10 +789,18 @@ fn desired_replicas(application: &ApplicationView) -> u32 {
 
 fn health_class(health: ApplicationHealth) -> &'static str {
     match health {
-        ApplicationHealth::Converged => "health-converged",
-        ApplicationHealth::Degraded => "health-degraded",
-        ApplicationHealth::Failed => "health-failed",
-        ApplicationHealth::Pending => "health-pending",
+        ApplicationHealth::Converged => {
+            "inline-flex w-fit items-center rounded-full bg-ok-bg px-2 py-1 text-xs font-extrabold text-ok"
+        }
+        ApplicationHealth::Degraded => {
+            "inline-flex w-fit items-center rounded-full bg-warn-bg px-2 py-1 text-xs font-extrabold text-warn"
+        }
+        ApplicationHealth::Failed => {
+            "inline-flex w-fit items-center rounded-full bg-bad-bg px-2 py-1 text-xs font-extrabold text-bad"
+        }
+        ApplicationHealth::Pending => {
+            "inline-flex w-fit items-center rounded-full bg-pending-bg px-2 py-1 text-xs font-extrabold text-pending"
+        }
     }
 }
 
