@@ -90,6 +90,12 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         &self,
         application: &StoredApplication,
     ) -> Result<piqueld_core::ObservedApplication, BoundaryError> {
-        Ok(self.docker.observe(&application.application.id).await?)
+        tokio::time::timeout(
+            DOCKER_REQUEST_TIMEOUT,
+            self.docker.observe(&application.application.id),
+        )
+        .await
+        .map_err(|_| BoundaryError::Runtime(DockerError::Unavailable("observe application")))?
+        .map_err(BoundaryError::from)
     }
 }
