@@ -6,8 +6,8 @@ validate: fmt-check lint check test doc-test deny openapi-check boundary
 build:
     @cargo build --workspace --locked
 
-run:
-    @cargo run --package piqueld
+run *ARGS:
+    @cargo run --package piquelctl -- {{ARGS}}
 
 fmt:
     @cargo fmt --all
@@ -41,14 +41,17 @@ boundary:
 ui-check:
     @cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
 
-ui-dev:
-    @cd apps/piqueld-ui && env -u NO_COLOR trunk serve --proxy-backend=http://127.0.0.1:7845
-
 ui-build:
-    @cd apps/piqueld-ui && env -u NO_COLOR trunk build --release --public-url / --dist ../../target/piqueld-ui-dist
+    @mkdir -p apps/piqueld-ui/generated
+    @tailwindcss --input apps/piqueld-ui/tailwind.css --output apps/piqueld-ui/generated/style.css --minify
+    @cd apps/piqueld-ui && env -u NO_COLOR trunk build --release --public-url /dashboard/ --dist ../../target/piqueld-ui-dist
 
 ui-browser-smoke: ui-build
     @python3 ./scripts/plan06c-browser-smoke.py
+
+# Full local development: daemon, Tailwind, and Trunk are cleaned up together.
+dev:
+    @bash ./scripts/dev.sh
 
 # Explicitly mutating generation command.
 generate-openapi:

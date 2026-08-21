@@ -17,53 +17,96 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
+          lib = pkgs.lib;
           rustTarget = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+          mkPackage =
+            {
+              name,
+              binaries,
+              withUi,
+            }:
+            pkgs.rustPlatform.buildRustPackage {
+              pname = name;
+              version = "0.1.0";
+              src = lib.cleanSource self;
+              cargoLock.lockFile = ./Cargo.lock;
+              # The daemon package deliberately does not compile the workspace
+              # UI crate. The combined package builds the UI as a separate
+              # Trunk artifact below.
+              cargoBuildFlags = lib.concatMap (binary: [
+                "--package"
+                binary
+              ]) binaries;
+              cargoTestFlags = lib.concatMap (binary: [
+                "--package"
+                binary
+              ]) binaries;
+              nativeBuildInputs = [
+                pkgs.cmake
+                pkgs.lld
+                pkgs.pkg-config
+                pkgs.rustPlatform.bindgenHook
+              ]
+              ++ lib.optionals withUi [
+                pkgs.binaryen
+                pkgs.tailwindcss_4
+                pkgs.trunk
+                pkgs.wasm-bindgen-cli_0_2_126
+              ];
+              # Compile SQLx SQLite query macros against a disposable database
+              # provisioned by the daemon build script.
+              DATABASE_URL = "sqlite::memory:";
+              postBuild = lib.optionalString withUi ''
+                export HOME="$TMPDIR/trunk-home"
+                mkdir -p "$HOME" apps/piqueld-ui/generated
+                unset NO_COLOR
+                tailwindcss \
+                  --input apps/piqueld-ui/tailwind.css \
+                  --output apps/piqueld-ui/generated/style.css --minify
+                pushd apps/piqueld-ui
+                trunk build index.html \
+                  --release --offline=true --frozen \
+                  --public-url /dashboard/ --dist "$TMPDIR/piqueld-ui-dist"
+                popd
+              '';
+              installPhase = ''
+                runHook preInstall
+                ${lib.concatStringsSep "\n" (
+                  map (
+                    binary: ''install -Dm755 "target/${rustTarget}/release/${binary}" "$out/bin/${binary}"''
+                  ) binaries
+                )}
+                install -Dm644 config/piqueld.example.toml \
+                  "$out/share/piqueld/piqueld.example.toml"
+                ${lib.optionalString withUi ''
+                  mkdir -p "$out/share/piqueld/ui"
+                  cp -R "$TMPDIR/piqueld-ui-dist/." "$out/share/piqueld/ui/"
+                ''}
+                runHook postInstall
+              '';
+              doCheck = true;
+            };
         in
         {
-          default = pkgs.rustPlatform.buildRustPackage {
-            pname = "piqueld";
-            inherit version;
-            src = pkgs.lib.cleanSource self;
-            cargoLock.lockFile = ./Cargo.lock;
-            cargoBuildFlags = [ "--workspace" ];
-            nativeBuildInputs = [
-              pkgs.binaryen
-              pkgs.cmake
-              pkgs.lld
-              pkgs.makeWrapper
-              pkgs.pkg-config
-              pkgs.rustPlatform.bindgenHook
-              pkgs.trunk
-              pkgs.wasm-bindgen-cli_0_2_126
-            ];
-            # Compile SQLx SQLite query macros against a disposable database
-            # provisioned by the daemon build script.
-            DATABASE_URL = "sqlite::memory:";
-            postBuild = ''
-              export HOME="$TMPDIR/trunk-home"
-              mkdir -p "$HOME"
-              unset NO_COLOR
-              pushd apps/piqueld-ui
-              trunk build index.html \
-                --release --offline=true --frozen \
-                --public-url / --dist "$TMPDIR/piqueld-ui-dist"
-              popd
-            '';
-            installPhase = ''
-              runHook preInstall
-              install -Dm755 target/${rustTarget}/release/piqueld "$out/bin/piqueld"
-              install -Dm755 target/${rustTarget}/release/piquelctl "$out/bin/piquelctl"
-              install -Dm644 config/piqueld.example.toml \
-                "$out/share/piqueld/piqueld.example.toml"
-              mkdir -p "$out/share/piqueld/ui"
-              cp -R "$TMPDIR/piqueld-ui-dist/." "$out/share/piqueld/ui/"
-              wrapProgram "$out/bin/piqueld" \
-                --set PIQUELD_UI_DIR "$out/share/piqueld/ui"
-              runHook postInstall
-            '';
-            doCheck = true;
+          cli = mkPackage {
+            name = "piqueld-cli";
+            binaries = [ "piquelctl" ];
+            withUi = false;
           };
+          daemon = mkPackage {
+            name = "piqueld-daemon";
+            binaries = [ "piqueld" ];
+            withUi = false;
+          };
+          combined = mkPackage {
+            name = "piqueld";
+            binaries = [
+              "piqueld"
+              "piquelctl"
+            ];
+            withUi = true;
+          };
+          default = self.packages.${system}.combined;
         }
       );
 
@@ -74,6 +117,8 @@
         in
         {
           package = self.packages.${system}.default;
+          daemon-package = self.packages.${system}.daemon;
+          cli-package = self.packages.${system}.cli;
           formatting =
             pkgs.runCommand "piqueld-formatting"
               {
@@ -120,6 +165,7 @@
             packages = with pkgs; [
               cargo
               cargo-deny
+              cargo-watch
               binaryen
               clippy
               just
@@ -128,6 +174,7 @@
               pkg-config
               rustc
               rustfmt
+              tailwindcss_4
               trunk
               wasm-bindgen-cli_0_2_126
             ];
