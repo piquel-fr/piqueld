@@ -1,12 +1,15 @@
 # Minimal non-root development configuration.
-# The daemon creates the /tmp/piqueld-dev parent directories as needed.
+# The daemon creates the socket parent directory as needed and requires it to
+# be private: it must not be a symlink and must grant no access to group or
+# other users (mode 0700). Prefer a user-owned runtime directory such as
+# /run/user/<uid>/piqueld-dev over a shared path under /tmp.
 
 [server]
-unix_socket = "/tmp/piqueld-dev/piqueld.sock"
+unix_socket = "/run/user/1000/piqueld-dev/piqueld.sock"
 http_listen = "127.0.0.1:7845"
 
 [database]
-path = "/tmp/piqueld-dev/piqueld.db"
+path = "/run/user/1000/piqueld-dev/piqueld.db"
 
 [docker]
 socket = "/var/run/docker.sock"

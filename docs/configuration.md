@@ -13,8 +13,12 @@ production default file is absent, the daemon uses its validated built-in
 defaults and explains how to select the repository's complete development
 example with `--config config/piqueld.example.toml`.
 
-The development example uses `/tmp/piqueld-dev` for the Unix socket and SQLite
-database, while the production defaults are:
+The development example keeps its state under a user-owned runtime directory
+such as `/run/user/<uid>/piqueld-dev`; do not use a shared fixed path under
+`/tmp`. The daemon creates missing socket parent directories with mode `0700`
+and refuses to start when an existing parent is a symlink or grants any access
+to group or other users, so only the owning user can reach the Unix socket.
+The production defaults are:
 
 | Setting | Default |
 | --- | --- |

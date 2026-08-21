@@ -11,8 +11,9 @@ cargo build --release --package piqueld --package piquelctl
 cargo run --package piqueld -- --config config/piqueld.example.toml
 ```
 
-The example keeps the socket and database under `/tmp/piqueld-dev`, so it does
-not require root-owned `/run` or `/var/lib` directories. The daemon's production
+The example keeps the socket and database under a user-owned
+`/run/user/1000/piqueld-dev` directory, so it does not require root-owned
+`/run` or `/var/lib` paths; adjust `1000` to your UID. The daemon's production
 default is `/etc/piqueld/config.toml`; use `--config` when running as a
 non-root developer.
 
@@ -21,13 +22,13 @@ non-root developer.
 In a second terminal:
 
 ```console
-cargo run --package piquelctl -- --socket /tmp/piqueld-dev/piqueld.sock status
+cargo run --package piquelctl -- --socket /run/user/1000/piqueld-dev/piqueld.sock status
 cargo run --package piquelctl -- --url http://127.0.0.1:7845 status
-cargo run --package piquelctl -- --socket /tmp/piqueld-dev/piqueld.sock plan \
+cargo run --package piquelctl -- --socket /run/user/1000/piqueld-dev/piqueld.sock plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
-cargo run --package piquelctl -- --socket /tmp/piqueld-dev/piqueld.sock apply \
+cargo run --package piquelctl -- --socket /run/user/1000/piqueld-dev/piqueld.sock apply \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --yes
-cargo run --package piquelctl -- --socket /tmp/piqueld-dev/piqueld.sock show notes
+cargo run --package piquelctl -- --socket /run/user/1000/piqueld-dev/piqueld.sock show notes
 ```
 
 `status` reports the daemon version and `--json` produces the same structured
@@ -44,7 +45,7 @@ When finished, delete the application and note that its named volumes are
 retained:
 
 ```console
-cargo run --package piquelctl -- --socket /tmp/piqueld-dev/piqueld.sock delete notes --yes
+cargo run --package piquelctl -- --socket /run/user/1000/piqueld-dev/piqueld.sock delete notes --yes
 ```
 
 The retained named volumes are deliberate so deleting an application does not
