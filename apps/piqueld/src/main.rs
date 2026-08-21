@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use piqueld::api::ApiState;
+use piqueld::api::{ApiState, UiAssets};
 use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::operations::OperationScheduler;
@@ -30,6 +30,10 @@ struct Args {
     /// Read daemon configuration from this TOML file.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
+    /// Serve the dashboard from this asset directory, overriding
+    /// `server.ui_dir`.
+    #[arg(long, value_name = "PATH")]
+    ui_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -84,12 +88,8 @@ async fn main() -> Result<()> {
         config.reconciliation.max_parallel_operations,
     ));
 
-    let ui_dir = config
-        .server
-        .ui_dir
-        .clone()
-        .unwrap_or_else(piqueld::config::default_ui_dir);
-    let state = ApiState::new(Arc::clone(&store), runtime).with_ui_dir(ui_dir);
+    let ui_assets = UiAssets::resolve(args.ui_dir.as_deref().or(config.server.ui_dir.as_deref()));
+    let state = ApiState::new(Arc::clone(&store), runtime);
 
     // cancellation token for workers
     let cancellation = CancellationToken::new();
@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
 
     let tcp_api = match config.server.http_listen {
         Some(address) => Some(
-            spawn_tcp_api(address, state.clone(), cancellation.clone())
+            spawn_tcp_api(address, state.clone(), ui_assets, cancellation.clone())
                 .await
                 .with_context(|| format!("failed to bind HTTP API on {address}"))?,
         ),
@@ -195,6 +195,7 @@ fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> 
 async fn spawn_tcp_api(
     address: std::net::SocketAddr,
     state: ApiState,
+    ui_assets: UiAssets,
     cancellation: CancellationToken,
 ) -> Result<tokio::task::JoinHandle<Result<(), std::io::Error>>> {
     let listener = TcpListener::bind(address)
@@ -203,7 +204,7 @@ async fn spawn_tcp_api(
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(listener, piqueld::api::router(state))
+            axum::serve(listener, piqueld::api::web_router(state, ui_assets))
                 .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);

@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use axum::{body::Body, http::Request, serve};
 use http_body_util::BodyExt;
 use piqueld::api::{
-    ApiState, BoundaryError, PreparedApplication, RuntimeBoundary, api_router, router,
+    ApiState, BoundaryError, PreparedApplication, RuntimeBoundary, UiAssets, api_router, router,
+    web_router,
 };
 use piqueld::store::{SqliteStore, StoredApplication};
 use piqueld_client::{
@@ -194,8 +195,13 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     std::fs::write(ui_dir.join("app.js"), "console.log('dashboard');")
         .expect("dashboard asset is written");
 
-    let application = router(state(&temp).await.with_ui_dir(ui_dir));
+    let application = web_router(state(&temp).await, UiAssets::Directory(ui_dir));
+    assert_dashboard_routes(&application).await;
+    assert_api_routes(&application).await;
+    assert_api_only_and_ui_modes(&temp).await;
+}
 
+async fn assert_dashboard_routes(application: &axum::Router) {
     let root = response_text(
         application
             .clone()
@@ -204,13 +210,35 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
             .expect("root request succeeds"),
     )
     .await;
-    assert_eq!(root.0, axum::http::StatusCode::OK);
-    assert!(root.1.contains("dashboard-shell"));
+    assert_eq!(root.0, axum::http::StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(root.2.as_deref(), Some("/dashboard/"));
+
+    let dashboard_root = response_text(
+        application
+            .clone()
+            .oneshot(request("/dashboard"))
+            .await
+            .expect("dashboard root request succeeds"),
+    )
+    .await;
+    assert_eq!(dashboard_root.0, axum::http::StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(dashboard_root.2.as_deref(), Some("/dashboard/"));
+
+    let dashboard = response_text(
+        application
+            .clone()
+            .oneshot(request("/dashboard/"))
+            .await
+            .expect("dashboard request succeeds"),
+    )
+    .await;
+    assert_eq!(dashboard.0, axum::http::StatusCode::OK);
+    assert!(dashboard.1.contains("dashboard-shell"));
 
     let deep_link = response_text(
         application
             .clone()
-            .oneshot(request("/applications/notes"))
+            .oneshot(request("/dashboard/applications/notes"))
             .await
             .expect("deep link request succeeds"),
     )
@@ -221,7 +249,7 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     let asset = response_text(
         application
             .clone()
-            .oneshot(request("/app.js"))
+            .oneshot(request("/dashboard/app.js"))
             .await
             .expect("asset request succeeds"),
     )
@@ -232,7 +260,7 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     let missing_asset = response_text(
         application
             .clone()
-            .oneshot(request("/missing.js"))
+            .oneshot(request("/dashboard/missing.js"))
             .await
             .expect("missing asset request succeeds"),
     )
@@ -252,6 +280,19 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     assert!(api_error.1.contains("endpoint_not_found"));
     assert!(!api_error.1.contains("dashboard-shell"));
 
+    let outside = response_text(
+        application
+            .clone()
+            .oneshot(request("/unknown"))
+            .await
+            .expect("unknown web request succeeds"),
+    )
+    .await;
+    assert_eq!(outside.0, axum::http::StatusCode::NOT_FOUND);
+    assert!(!outside.1.contains("dashboard-shell"));
+}
+
+async fn assert_api_routes(application: &axum::Router) {
     let health = response_text(
         application
             .clone()
@@ -273,17 +314,72 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     .await;
     assert_eq!(openapi.0, axum::http::StatusCode::OK);
     assert!(openapi.1.contains("/api/v1/applications/{id}/detail"));
+}
 
-    let api_only = api_router(state(&temp).await);
+async fn assert_api_only_and_ui_modes(temp: &TempDir) {
+    let api_only = api_router(state(temp).await);
     let unix_root = response_text(
         api_only
+            .clone()
             .oneshot(request("/"))
             .await
             .expect("API-only root request succeeds"),
     )
     .await;
     assert_eq!(unix_root.0, axum::http::StatusCode::NOT_FOUND);
-    assert!(unix_root.1.contains("endpoint_not_found"));
+    assert!(!unix_root.1.contains("endpoint_not_found"));
+
+    let unix_health = response_text(
+        api_only
+            .clone()
+            .oneshot(request("/health"))
+            .await
+            .expect("API-only health request succeeds"),
+    )
+    .await;
+    assert_eq!(unix_health.0, axum::http::StatusCode::NOT_FOUND);
+
+    let api_only_error = response_text(
+        api_only
+            .oneshot(request("/api/v1/unknown"))
+            .await
+            .expect("API-only unknown request succeeds"),
+    )
+    .await;
+    assert_eq!(api_only_error.0, axum::http::StatusCode::NOT_FOUND);
+    assert!(api_only_error.1.contains("endpoint_not_found"));
+
+    let disabled = web_router(state(temp).await, UiAssets::Disabled);
+    let disabled_root = response_text(
+        disabled
+            .clone()
+            .oneshot(request("/"))
+            .await
+            .expect("disabled UI root request succeeds"),
+    )
+    .await;
+    assert_eq!(disabled_root.0, axum::http::StatusCode::NOT_FOUND);
+    let disabled_dashboard = response_text(
+        disabled
+            .oneshot(request("/dashboard/"))
+            .await
+            .expect("disabled UI dashboard request succeeds"),
+    )
+    .await;
+    assert_eq!(disabled_dashboard.0, axum::http::StatusCode::NOT_FOUND);
+
+    let missing = web_router(
+        state(temp).await,
+        UiAssets::Directory(temp.path().join("missing-ui")),
+    );
+    let unavailable = response_text(
+        missing
+            .oneshot(request("/dashboard/"))
+            .await
+            .expect("missing UI request succeeds"),
+    )
+    .await;
+    assert_eq!(unavailable.0, axum::http::StatusCode::SERVICE_UNAVAILABLE);
 }
 
 fn request(uri: &str) -> Request<Body> {
@@ -293,8 +389,15 @@ fn request(uri: &str) -> Request<Body> {
         .expect("request is valid")
 }
 
-async fn response_text(response: axum::response::Response) -> (axum::http::StatusCode, String) {
+async fn response_text(
+    response: axum::response::Response,
+) -> (axum::http::StatusCode, String, Option<String>) {
     let status = response.status();
+    let location = response
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let body = response
         .into_body()
         .collect()
@@ -304,6 +407,7 @@ async fn response_text(response: axum::response::Response) -> (axum::http::Statu
     (
         status,
         String::from_utf8(body.into_iter().collect()).expect("response is UTF-8"),
+        location,
     )
 }
 

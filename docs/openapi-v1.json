@@ -1419,17 +1419,6 @@
           }
         ]
       },
-      "HealthResponse": {
-        "properties": {
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
       "Metadata": {
         "description": "Canonical application metadata.",
         "properties": {
@@ -3537,30 +3526,6 @@
         },
         "summary": "Get daemon status"
       }
-    },
-    "/health": {
-      "get": {
-        "operationId": "health",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HealthResponse"
-                }
-              }
-            },
-            "description": "Daemon is serving requests"
-          }
-        },
-        "summary": "Check daemon health"
-      }
     }
-  },
-  "servers": [
-    {
-      "description": "Default loopback TCP endpoint; clients may also use the configured Unix socket.",
-      "url": "http://127.0.0.1:7845"
-    }
-  ]
+  }
 }

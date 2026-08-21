@@ -21,20 +21,11 @@ pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
     })
 }
 
-#[derive(utoipa::ToSchema, serde::Serialize)]
+#[derive(serde::Serialize)]
 struct HealthResponse {
     status: &'static str,
 }
 
-#[utoipa::path(
-    get,
-    path = "/health",
-    operation_id = "health",
-    summary = "Check daemon health",
-    responses(
-        (status = 200, description = "Daemon is serving requests", body = HealthResponse)
-    )
-)]
 pub(super) async fn health() -> impl IntoResponse {
     (StatusCode::OK, axum::Json(HealthResponse { status: "ok" }))
 }

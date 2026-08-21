@@ -4,10 +4,11 @@ use async_trait::async_trait;
 use axum::{
     Extension, Router,
     body::Body,
-    extract::{Request, State},
-    http::{HeaderMap, Method, StatusCode, header},
+    extract::Request,
+    http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
+    routing::get,
 };
 use piqueld_client::{
     AcceptedOperation, CreateApplicationRequest, Envelope, ErrorBody, PlanApplicationRequest,
@@ -28,7 +29,6 @@ use tower_http::{
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
-    config::default_ui_dir,
     docker::DockerError,
     store::{SqliteStore, StoreError, StoredApplication},
 };
@@ -40,6 +40,7 @@ mod system;
 mod ui;
 
 pub use openapi::openapi_document;
+pub use ui::UiAssets;
 
 const JSON: &str = "application/json";
 const TOML: &str = "application/toml";
@@ -88,7 +89,6 @@ pub struct ApiState {
     runtime: Arc<dyn RuntimeBoundary>,
     instance_id: String,
     mutation_lock: Arc<tokio::sync::Mutex<()>>,
-    ui_dir: std::path::PathBuf,
 }
 
 impl ApiState {
@@ -100,7 +100,6 @@ impl ApiState {
             store,
             runtime,
             mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
-            ui_dir: default_ui_dir(),
         }
     }
 
@@ -108,17 +107,6 @@ impl ApiState {
     /// window cannot race with a concurrent retry of the same key.
     pub(super) async fn mutation_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.mutation_lock.lock().await
-    }
-
-    /// Selects the production asset directory used by the loopback web listener.
-    #[must_use]
-    pub fn with_ui_dir(mut self, path: std::path::PathBuf) -> Self {
-        self.ui_dir = path;
-        self
-    }
-
-    pub(crate) fn ui_dir(&self) -> &std::path::Path {
-        &self.ui_dir
     }
 }
 
@@ -287,19 +275,42 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Builds the Plan 06 HTTP router.
+/// Builds the TCP router, optionally registering the dashboard routes.
 pub fn router(state: ApiState) -> Router {
-    build_router(state, true)
+    web_router(state, UiAssets::resolve(None))
 }
 
 /// Builds the API-only router used by the Unix-socket client transport.
 pub fn api_router(state: ApiState) -> Router {
-    build_router(state, false)
+    let (router, openapi) = documented_router().split_for_parts();
+    finish_router(router.fallback(api_fallback), state, openapi)
 }
 
-fn build_router(state: ApiState, serve_ui: bool) -> Router {
-    let request_id = header::HeaderName::from_static("x-request-id");
+/// Builds the TCP router from the API, liveness, and optional UI boundaries.
+pub fn web_router(state: ApiState, ui_assets: UiAssets) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
+    let router = router.merge(health_router());
+    let router = match ui_assets {
+        UiAssets::Disabled => router.fallback(api_fallback),
+        UiAssets::Directory(root) => router
+            .route("/", get(ui::redirect))
+            .route("/dashboard", get(ui::redirect))
+            .fallback(move |request: Request| ui_fallback(root.clone(), request)),
+    };
+    finish_router(router, state, openapi)
+}
+
+/// Builds the liveness-only route set. It is intentionally not part of Utoipa.
+pub fn health_router() -> Router<ApiState> {
+    Router::<ApiState>::new().route("/health", get(system::health))
+}
+
+fn finish_router(
+    router: Router<ApiState>,
+    state: ApiState,
+    openapi: utoipa::openapi::OpenApi,
+) -> Router {
+    let request_id = header::HeaderName::from_static("x-request-id");
     // 405 responses must advertise exactly the methods each matched endpoint
     // registers, so the values are derived from the OpenAPI document itself.
     let allow_routes = AllowRoutes::build(&openapi);
@@ -307,11 +318,6 @@ fn build_router(state: ApiState, serve_ui: bool) -> Router {
         let allow_routes = Arc::clone(&allow_routes);
         async move { method_not_allowed(&allow_routes, request.uri().path()) }
     });
-    let router = if serve_ui {
-        router.fallback(fallback)
-    } else {
-        router.fallback(api_fallback)
-    };
     router
         .with_state(state)
         .layer(Extension(Arc::new(openapi)))
@@ -375,7 +381,6 @@ fn allowed_host(raw: &str) -> bool {
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .routes(routes!(system::status))
-        .routes(routes!(system::health))
         .routes(routes!(openapi::openapi))
         .routes(routes!(applications::list, applications::create))
         .routes(routes!(applications::plan_create))
@@ -426,20 +431,26 @@ async fn bind_error_request_id(request: Request, next: Next) -> Response {
     Response::from_parts(parts, Body::from(bytes))
 }
 
-async fn fallback(State(state): State<ApiState>, request: Request) -> Response {
-    if ui::is_reserved_path(request.uri().path()) {
-        return api_fallback(request.method().clone()).await.into_response();
+async fn ui_fallback(root: std::path::PathBuf, request: Request) -> Response {
+    if ui::is_api_path(request.uri().path()) {
+        return api_fallback(request).await;
     }
-    ui::fallback(state.ui_dir().to_owned(), request).await
+    if request.uri().path().starts_with("/dashboard/") {
+        return ui::fallback(root, request).await;
+    }
+    ui::not_found()
 }
 
-async fn api_fallback(method: Method) -> ApiError {
-    let _ = method;
-    ApiError::new(
-        StatusCode::NOT_FOUND,
-        "endpoint_not_found",
-        "API endpoint was not found",
-    )
+async fn api_fallback(request: Request) -> Response {
+    if ui::is_api_path(request.uri().path()) {
+        return ApiError::new(
+            StatusCode::NOT_FOUND,
+            "endpoint_not_found",
+            "API endpoint was not found",
+        )
+        .into_response();
+    }
+    ui::not_found()
 }
 fn method_not_allowed(allow_routes: &AllowRoutes, path: &str) -> ApiError {
     let mut error = ApiError::new(

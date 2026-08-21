@@ -1,9 +1,9 @@
-//! Static dashboard assets and non-API SPA fallback handling.
+//! Optional static dashboard assets and client-side route fallback handling.
 
 use axum::{
     body::Body,
     extract::Request,
-    http::{HeaderValue, Method, StatusCode, header},
+    http::{HeaderValue, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
 use std::{path::Path, path::PathBuf};
@@ -15,28 +15,68 @@ const SECURITY_HEADERS: [(&str, &str); 2] = [
     ("referrer-policy", "no-referrer"),
 ];
 
-/// Returns whether a path is reserved for API, health, or documentation errors.
-pub(super) fn is_reserved_path(path: &str) -> bool {
-    path.contains('%')
-        || path == "/api"
-        || path.starts_with("/api/")
-        || path == "/health"
-        || path.starts_with("/health/")
-        || path == "/openapi.json"
-        || path.starts_with("/openapi/")
+/// Describes whether the optional dashboard bundle is available to the daemon.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UiAssets {
+    /// Do not register dashboard routes.
+    Disabled,
+    /// Serve the bundle from this directory.
+    Directory(PathBuf),
 }
 
-/// Serves existing assets and falls back to the dashboard shell only for
-/// extensionless, non-reserved browser routes.
-pub(super) async fn fallback(root: PathBuf, request: Request) -> Response {
+impl UiAssets {
+    /// Resolves UI availability once from configuration.
+    ///
+    /// A configured directory enables the UI even when it does not exist yet;
+    /// anything else disables the dashboard entirely.
+    #[must_use]
+    pub fn resolve(configured: Option<&Path>) -> Self {
+        configured.map_or(Self::Disabled, |path| Self::Directory(path.to_owned()))
+    }
+}
+
+/// Returns whether a path belongs to the versioned API namespace.
+pub(super) fn is_api_path(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/")
+}
+
+/// Returns a permanent redirect to the canonical dashboard root.
+pub(super) async fn redirect() -> impl IntoResponse {
+    axum::response::Redirect::permanent("/dashboard/")
+}
+
+/// Serves files below `/dashboard/` and falls back to the dashboard shell for
+/// extensionless Leptos routes.
+pub(super) async fn fallback(root: PathBuf, mut request: Request) -> Response {
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
 
-    let extensionless = Path::new(request.uri().path()).extension().is_none();
+    let index = root.join("index.html");
+    if !root.is_dir() || !index.is_file() {
+        return unavailable().into_response();
+    }
+
+    let original = request.uri().clone();
+    let Some(relative) = original.path().strip_prefix("/dashboard") else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let relative = if relative.is_empty() { "/" } else { relative };
+    let Ok(uri) = Uri::builder()
+        .path_and_query(match original.query() {
+            Some(query) => format!("{relative}?{query}"),
+            None => relative.to_owned(),
+        })
+        .build()
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    *request.uri_mut() = uri;
+
+    let extensionless = Path::new(&relative).extension().is_none();
     let mut response = if extensionless {
         ServeDir::new(&root)
-            .fallback(ServeFile::new(root.join("index.html")))
+            .fallback(ServeFile::new(&index))
             .oneshot(request)
             .await
             .into_response()
@@ -53,6 +93,10 @@ pub(super) async fn fallback(root: PathBuf, request: Request) -> Response {
         );
     }
     response
+}
+
+pub(super) fn not_found() -> Response<Body> {
+    StatusCode::NOT_FOUND.into_response()
 }
 
 fn unavailable() -> Response<Body> {

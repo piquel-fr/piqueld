@@ -130,9 +130,8 @@ pub struct ServerConfig {
     /// Optional loopback HTTP listener. Omitting it disables TCP.
     #[serde(default)]
     pub http_listen: Option<SocketAddr>,
-    /// Optional dashboard asset directory override. When absent, the daemon
-    /// uses the package-provided `PIQUELD_UI_DIR` wrapper value or its local
-    /// default.
+    /// Optional dashboard asset directory. When absent, the daemon is
+    /// API-only.
     pub ui_dir: Option<PathBuf>,
 }
 
