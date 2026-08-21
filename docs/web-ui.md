@@ -37,17 +37,6 @@ paths. A direct transport compile is available with:
 just ui-check
 ```
 
-The production bundle has a dependency-free Chromium smoke covering desktop
-and narrow layouts, empty and populated states, detail selection ordering,
-refresh failure and recovery, keyboard focus, and the absence of mutations:
-
-```console
-just ui-browser-smoke
-```
-
-Set `PIQUELD_BROWSER` when Chromium is not available under its usual command
-name.
-
 ## Production assets
 
 The source files `apps/piqueld-ui/index.html`, `style.css`, and the Rust UI are

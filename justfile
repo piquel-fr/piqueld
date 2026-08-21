@@ -46,9 +46,6 @@ ui-build:
     @tailwindcss --input apps/piqueld-ui/tailwind.css --output apps/piqueld-ui/generated/style.css --minify
     @cd apps/piqueld-ui && env -u NO_COLOR trunk build --release --public-url /dashboard/ --dist ../../target/piqueld-ui-dist
 
-ui-browser-smoke: ui-build
-    @python3 ./scripts/plan06c-browser-smoke.py
-
 # Full local development: daemon, Tailwind, and Trunk are cleaned up together.
 dev:
     @bash ./scripts/dev.sh
