@@ -9,27 +9,50 @@ mod support;
 use clap::Parser;
 use cli::Cli;
 use error::{CliError, ErrorKind, finish_error};
-use std::process::ExitCode;
-use tokio::time;
+use std::{process::ExitCode, time::Duration};
+use tokio::time::Instant;
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let timeout = cli.timeout;
-    match time::timeout(timeout, commands::run(&cli)).await {
-        Ok(Ok(())) => ExitCode::SUCCESS,
-        Ok(Err(error)) => finish_error(&cli, error),
-        Err(_) => finish_error(
-            &cli,
-            CliError::new(
-                ErrorKind::Unavailable,
-                format!(
-                    "command timed out after {}",
-                    support::format_duration(timeout)
-                ),
-            ),
-        ),
+    match run_with_timeout(&cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => finish_error(&cli, error),
     }
+}
+
+/// Bounds the command by `--timeout` while excluding interactive prompts:
+/// operator think time must not consume the network-phase budget.
+async fn run_with_timeout(cli: &Cli) -> Result<(), CliError> {
+    let command = commands::run(cli);
+    tokio::pin!(command);
+    let mut deadline = Instant::now() + cli.timeout;
+    loop {
+        if support::interaction_active() {
+            let paused_at = Instant::now();
+            support::wait_while_interacting().await;
+            deadline += paused_at.elapsed();
+            continue;
+        }
+        tokio::select! {
+            result = &mut command => return result,
+            // An interaction started or finished; re-evaluate from the top.
+            () = support::interaction_changed() => {}
+            () = tokio::time::sleep_until(deadline) => {
+                return Err(timeout_error(cli.timeout));
+            }
+        }
+    }
+}
+
+fn timeout_error(timeout: Duration) -> CliError {
+    CliError::new(
+        ErrorKind::Unavailable,
+        format!(
+            "command timed out after {}",
+            support::format_duration(timeout)
+        ),
+    )
 }
 
 #[cfg(test)]

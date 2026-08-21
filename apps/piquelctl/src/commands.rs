@@ -173,12 +173,13 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
     let name = manifest_name(&manifest, &args.file)?;
     let (plan, existing) = prepare_plan(client, &manifest, &name, args.expected_generation).await?;
+    render_plan_stderr(&plan).map_err(|error| {
+        CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
+    })?;
     if plan.plan.is_blocked() {
-        render_plan_stderr(&plan);
         return Err(blocked_plan_error(&plan));
     }
-    render_plan_stderr(&plan);
-    confirm(args.yes, &format!("Apply application {name:?}? [y/N] "))?;
+    confirm(args.yes, &format!("Apply application {name:?}? [y/N] ")).await?;
 
     let key = idempotency_key();
     let accepted = if let Some(application) = existing {
@@ -229,7 +230,8 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
             "Delete application {:?}? Named volumes will be retained. [y/N] ",
             application.application.metadata.name
         ),
-    )?;
+    )
+    .await?;
 
     let key = idempotency_key();
     let request = piqueld_client::DeleteApplicationRequest {
@@ -352,31 +354,20 @@ async fn find_by_name(client: &Client, name: &str) -> Result<Option<ApplicationV
 
 async fn resolve_application(client: &Client, name_or_id: &str) -> Result<ApplicationView> {
     if looks_like_application_id(name_or_id) {
-        return match client.application(name_or_id).await {
-            Ok(application) => Ok(application),
-            Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => Err(CliError::new(
-                ErrorKind::Input,
-                format!("application ID {name_or_id:?} was not found"),
-            )),
-            Err(error) => Err(error.into()),
-        };
+        match client.application(name_or_id).await {
+            Ok(application) => return Ok(application),
+            // The value may still be an application name, so fall through to
+            // the name lookup.
+            Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {}
+            Err(error) => return Err(error.into()),
+        }
     }
-    let matches = all_applications(client)
-        .await?
-        .into_iter()
-        .filter(|application| application.application.metadata.name == name_or_id)
-        .collect::<Vec<_>>();
-    match matches.len() {
-        0 => Err(CliError::new(
+    find_by_name(client, name_or_id).await?.ok_or_else(|| {
+        CliError::new(
             ErrorKind::Input,
-            format!("application name {name_or_id:?} was not found"),
-        )),
-        1 => Ok(matches.into_iter().next().expect("length checked")),
-        count => Err(CliError::new(
-            ErrorKind::Conflict,
-            format!("application name {name_or_id:?} matched {count} applications"),
-        )),
-    }
+            format!("application {name_or_id:?} was not found"),
+        )
+    })
 }
 
 async fn wait_for_operation(

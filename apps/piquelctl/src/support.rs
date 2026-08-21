@@ -8,9 +8,10 @@ use std::{
     future::Future,
     io::{self, IsTerminal, Write},
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
-use tokio::{fs, time};
+use tokio::{fs, sync::Notify, time};
 use uuid::Uuid;
 
 pub(crate) const DEFAULT_SOCKET: &str = "/run/piqueld/piqueld.sock";
@@ -19,7 +20,35 @@ pub(crate) const MAX_PAGINATION_PAGES: usize = 10_000;
 pub(crate) const PAGE_SIZE: u16 = 100;
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-pub(crate) fn confirm(yes: bool, prompt: &str) -> Result<()> {
+static INTERACTION_ACTIVE: AtomicBool = AtomicBool::new(false);
+static INTERACTION_CHANGED: Notify = Notify::const_new();
+
+fn set_interaction(active: bool) {
+    INTERACTION_ACTIVE.store(active, Ordering::SeqCst);
+    // `notify_one` stores a permit when no waiter is registered yet, so a
+    // transition can never be lost by the timeout supervisor.
+    INTERACTION_CHANGED.notify_one();
+}
+
+/// Returns whether an interactive prompt is currently waiting for operator
+/// input; the surrounding command timeout must not consume budget meanwhile.
+pub(crate) fn interaction_active() -> bool {
+    INTERACTION_ACTIVE.load(Ordering::SeqCst)
+}
+
+/// Resolves whenever the interaction flag changes.
+pub(crate) async fn interaction_changed() {
+    INTERACTION_CHANGED.notified().await;
+}
+
+/// Waits while an interactive prompt is open and resolves once none is.
+pub(crate) async fn wait_while_interacting() {
+    while interaction_active() {
+        interaction_changed().await;
+    }
+}
+
+pub(crate) async fn confirm(yes: bool, prompt: &str) -> Result<()> {
     if yes {
         return Ok(());
     }
@@ -29,20 +58,30 @@ pub(crate) fn confirm(yes: bool, prompt: &str) -> Result<()> {
             "confirmation is required in a non-interactive terminal; pass --yes",
         ));
     }
-    eprint!("{prompt}");
-    io::stderr().flush().map_err(|error| {
-        CliError::new(
-            ErrorKind::General,
-            format!("could not write prompt: {error}"),
-        )
-    })?;
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer).map_err(|error| {
+    let prompt = prompt.to_owned();
+    set_interaction(true);
+    let answer = tokio::task::spawn_blocking(move || -> io::Result<String> {
+        eprint!("{prompt}");
+        io::stderr().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        Ok(answer)
+    })
+    .await
+    .map_err(|error| {
         CliError::new(
             ErrorKind::General,
             format!("could not read confirmation: {error}"),
         )
-    })?;
+    })?
+    .map_err(|error| {
+        CliError::new(
+            ErrorKind::General,
+            format!("could not read confirmation: {error}"),
+        )
+    });
+    set_interaction(false);
+    let answer = answer?;
     if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         Ok(())
     } else {
