@@ -47,11 +47,9 @@ child_pids+=("$!")
 
 (
     cd apps/piqueld-ui
-    exec setsid env -u NO_COLOR trunk serve \
-        --public-url / \
-        --serve-base / \
-        --proxy-backend=http://127.0.0.1:7845/api/ \
-        --proxy-rewrite=/api/
+    exec setsid env -u NO_COLOR trunk watch \
+        --dist /tmp/piqueld-dev/ui \
+        --public-url /dashboard/
 ) &
 child_pids+=("$!")
 

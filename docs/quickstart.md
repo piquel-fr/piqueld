@@ -36,12 +36,14 @@ result as the public API. `apply` waits for the durable operation by default;
 
 ## Dashboard and cleanup
 
-The development toolchain serves the read-only dashboard from the same daemon:
-run `just dev` instead of the two commands above and open
-`http://127.0.0.1:8080/dashboard/` in a browser to inspect the overview,
-application list, and detail routes alongside `piquelctl`. Serving the
-dashboard from a release daemon requires the UI assets built by `just ui-build`
-and a configured `server.ui_dir`, as described in [`web-ui.md`](web-ui.md).
+The development toolchain serves the read-only dashboard through the running
+daemon, exactly like a deployment: run `just dev` instead of the two commands
+above, give Trunk a moment to produce the watched bundle, and open
+`http://127.0.0.1:7845/dashboard/` in a browser to inspect the overview,
+application list, and detail routes alongside `piquelctl`; refresh after Rust
+or CSS changes. Serving the dashboard from any other daemon requires the UI
+assets built by `just ui-build` and a configured `server.ui_dir`, as described
+in [`web-ui.md`](web-ui.md).
 
 When finished, delete the application and note that its named volumes are
 retained:

@@ -17,7 +17,7 @@ piquelctl operation <operation-id>
 ```
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit loopback
-HTTP origin such as `http://127.0.0.1:8080/`; the two transport options are
+HTTP origin such as `http://127.0.0.1:7845/`; the two transport options are
 mutually exclusive. The default socket is
 `/var/lib/piqueld/piqueld.sock`.
 

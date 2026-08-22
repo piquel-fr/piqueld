@@ -10,6 +10,7 @@
 # per-user and only exists for your own UID.
 data_dir = "/run/user/1000/piqueld"
 http_listen = "127.0.0.1:7845"
+ui_dir = "/tmp/piqueld-dev/ui"
 
 [docker]
 socket = "/var/run/docker.sock"

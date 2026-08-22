@@ -31,15 +31,11 @@ just dev
 ```
 
 This starts `piqueld` from `config/piqueld.example.toml`, Tailwind in watch
-mode, and Trunk with `/api/` proxied unchanged to
-`http://127.0.0.1:7845/api/`. `just dev` serves the watched dashboard at
-`http://127.0.0.1:8080/` and accepts the canonical `/dashboard/` path as well.
-It reloads the UI after Rust or CSS changes. Set `TRUNK_SERVE_ADDRESS` when
-the dev server must be reachable from another interface, for example:
-
-```bash
-TRUNK_SERVE_ADDRESS="$(tailscale ip -4)" just dev
-```
+mode, and Trunk watching the dashboard bundle into `/tmp/piqueld-dev/ui`. The
+daemon serves that watched output at `http://127.0.0.1:7845/dashboard/` through
+the same static-file path a release deployment uses, so development exercises
+the production serving behavior directly; refresh the browser after Rust or CSS
+changes.
 
 A direct transport compile is available with:
 
