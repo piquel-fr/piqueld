@@ -16,6 +16,7 @@ use std::{
 };
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/piqueld/config.toml";
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -56,6 +57,10 @@ async fn main() -> Result<()> {
             .await
             .context("failed to open control-plane state")?,
     );
+    info!(
+        path = %config.server.database_path().display(),
+        "opened control-plane state"
+    );
 
     let docker = connect_docker(&config.docker).await?;
 
@@ -89,6 +94,7 @@ async fn main() -> Result<()> {
     ));
 
     let ui_assets = UiAssets::resolve(args.ui_dir.as_deref().or(config.server.ui_dir.as_deref()));
+    log_ui_status(&ui_assets);
     let state = ApiState::new(Arc::clone(&store), runtime);
 
     // cancellation token for workers
@@ -160,7 +166,30 @@ async fn connect_docker(config: &piqueld::config::DockerConfig) -> Result<Arc<Bo
         .ensure_swarm(config.auto_initialize_swarm)
         .await
         .context("Docker Engine is not an active single-node Swarm manager")?;
+    info!(
+        socket = %config.socket.display(),
+        auto_initialize_swarm = config.auto_initialize_swarm,
+        "connected to Docker Engine as a single-node Swarm manager"
+    );
     Ok(docker)
+}
+
+/// Reports dashboard availability once at startup so misconfiguration is
+/// visible in the log without probing `/dashboard`.
+fn log_ui_status(ui_assets: &UiAssets) {
+    match ui_assets {
+        UiAssets::Disabled => info!("dashboard disabled: no server.ui_dir configured"),
+        UiAssets::Directory(root) => {
+            if root.join("index.html").is_file() {
+                info!(directory = %root.display(), "dashboard enabled");
+            } else {
+                warn!(
+                    directory = %root.display(),
+                    "dashboard directory has no index.html; /dashboard answers unavailable until the bundle is built"
+                );
+            }
+        }
+    }
 }
 
 fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> {
@@ -201,6 +230,7 @@ async fn spawn_tcp_api(
     let listener = TcpListener::bind(address)
         .await
         .context("failed to bind HTTP API")?;
+    info!(%address, "HTTP API listening");
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
@@ -248,6 +278,7 @@ async fn spawn_unix_api(
     tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
         .await
         .context("failed to restrict Unix API socket permissions")?;
+    info!(socket = %path.display(), "Unix API socket listening");
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
