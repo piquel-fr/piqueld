@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use thiserror::Error;
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Complete host-specific daemon bootstrap configuration.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -247,7 +247,11 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-/// Installs structured JSON tracing, filtered by `RUST_LOG` when present.
+/// Installs tracing filtered by `RUST_LOG` when present.
+///
+/// Interactive terminals receive plain-text events for readability; piped or
+/// supervised runs (systemd, containers, log collectors) receive structured
+/// JSON.
 ///
 /// # Errors
 ///
@@ -255,9 +259,15 @@ pub enum ConfigError {
 /// returned error is only from subscriber initialization, such as when another
 /// global subscriber is already installed.
 pub fn init_tracing() -> Result<(), tracing_subscriber::util::TryInitError> {
+    use std::io::IsTerminal as _;
+    let layer = if std::io::stdout().is_terminal() {
+        tracing_subscriber::fmt::layer().compact().boxed()
+    } else {
+        tracing_subscriber::fmt::layer().json().boxed()
+    };
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(tracing_subscriber::fmt::layer().json())
+        .with(layer)
         .try_init()
 }
 
