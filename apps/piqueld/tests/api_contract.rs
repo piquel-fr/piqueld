@@ -477,7 +477,7 @@ async fn reconcile_and_delete(client: &Client, created: &AcceptedOperation, gene
 // ---------------------------------------------------------------------------
 
 use http::{HeaderMap, HeaderValue, Method, Request as HttpRequest, StatusCode, Uri};
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper_util::rt::TokioIo;
 

@@ -4,7 +4,7 @@ use piqueld_core::{NormalizedApplication, Plan};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{Client, ClientError, OperationView, Page, path_segment};
+use crate::{Client, ClientError, OperationView, Page, client::path_segment};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Public application state returned by the API.
@@ -210,9 +210,9 @@ impl Client {
         }
         let query = query.finish();
         let path = if query.is_empty() {
-            "/api/v1/applications".to_owned()
+            format!("{}/applications", crate::API_PREFIX)
         } else {
-            format!("/api/v1/applications?{query}")
+            format!("{}/applications?{query}", crate::API_PREFIX)
         };
         self.send::<_, ()>(Method::GET, &path, None, &[]).await
     }
@@ -224,7 +224,7 @@ impl Client {
     pub async fn application(&self, id: &str) -> Result<ApplicationView, ClientError> {
         self.send::<_, ()>(
             Method::GET,
-            &format!("/api/v1/applications/{}", path_segment(id)),
+            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
             None,
             &[],
         )
@@ -238,7 +238,11 @@ impl Client {
     pub async fn application_detail(&self, id: &str) -> Result<ApplicationDetailView, ClientError> {
         self.send::<_, ()>(
             Method::GET,
-            &format!("/api/v1/applications/{}/detail", path_segment(id)),
+            &format!(
+                "{}/applications/{}/detail",
+                crate::API_PREFIX,
+                path_segment(id)
+            ),
             None,
             &[],
         )
@@ -256,7 +260,7 @@ impl Client {
     ) -> Result<AcceptedOperation, ClientError> {
         self.send(
             Method::POST,
-            "/api/v1/applications",
+            &format!("{}/applications", crate::API_PREFIX),
             Some(request),
             &[("idempotency-key", idempotency_key)],
         )
@@ -291,7 +295,7 @@ impl Client {
             .unwrap_or_default();
         self.send(
             Method::PUT,
-            &format!("/api/v1/applications/{}", path_segment(id)),
+            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
             Some(request),
             &headers,
         )
@@ -326,7 +330,7 @@ impl Client {
             .unwrap_or_default();
         self.send(
             Method::DELETE,
-            &format!("/api/v1/applications/{}", path_segment(id)),
+            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
             Some(request),
             &headers,
         )
@@ -343,7 +347,7 @@ impl Client {
     ) -> Result<PlanView, ClientError> {
         self.send(
             Method::POST,
-            "/api/v1/applications/plan",
+            &format!("{}/applications/plan", crate::API_PREFIX),
             Some(request),
             &[],
         )
@@ -361,7 +365,11 @@ impl Client {
     ) -> Result<PlanView, ClientError> {
         self.send(
             Method::POST,
-            &format!("/api/v1/applications/{}/plan", path_segment(id)),
+            &format!(
+                "{}/applications/{}/plan",
+                crate::API_PREFIX,
+                path_segment(id)
+            ),
             Some(request),
             &[],
         )
@@ -379,7 +387,11 @@ impl Client {
     ) -> Result<AcceptedOperation, ClientError> {
         self.send(
             Method::POST,
-            &format!("/api/v1/applications/{}/reconcile", path_segment(id)),
+            &format!(
+                "{}/applications/{}/reconcile",
+                crate::API_PREFIX,
+                path_segment(id)
+            ),
             Some(&ExpectedGeneration {
                 expected_generation,
             }),
@@ -395,7 +407,11 @@ impl Client {
     pub async fn application_status(&self, id: &str) -> Result<ApplicationStatusView, ClientError> {
         self.send::<_, ()>(
             Method::GET,
-            &format!("/api/v1/applications/{}/status", path_segment(id)),
+            &format!(
+                "{}/applications/{}/status",
+                crate::API_PREFIX,
+                path_segment(id)
+            ),
             None,
             &[],
         )
@@ -413,7 +429,7 @@ impl Client {
     ) -> Result<AcceptedOperation, ClientError> {
         self.send_text(
             Method::POST,
-            "/api/v1/applications",
+            &format!("{}/applications", crate::API_PREFIX),
             manifest,
             &[
                 ("content-type", "application/toml"),
@@ -459,7 +475,7 @@ impl Client {
         }
         self.send_text(
             Method::PUT,
-            &format!("/api/v1/applications/{}", path_segment(id)),
+            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
             manifest,
             &headers,
         )
@@ -473,7 +489,7 @@ impl Client {
     pub async fn plan_create_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
         self.send_text(
             Method::POST,
-            "/api/v1/applications/plan",
+            &format!("{}/applications/plan", crate::API_PREFIX),
             manifest,
             &[("content-type", "application/toml")],
         )
@@ -493,7 +509,11 @@ impl Client {
         let generation = expected_generation.to_string();
         self.send_text(
             Method::POST,
-            &format!("/api/v1/applications/{}/plan", path_segment(id)),
+            &format!(
+                "{}/applications/{}/plan",
+                crate::API_PREFIX,
+                path_segment(id)
+            ),
             manifest,
             &[
                 ("content-type", "application/toml"),
