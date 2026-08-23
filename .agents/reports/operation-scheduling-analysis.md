@@ -66,7 +66,7 @@ directions keyed to them.
 
 ## 2. Component map
 
-```
+```text
 HTTP handlers (api/applications.rs, api/operations.rs)
     │  validate manifest · resolve images via runtime.prepare() · build plan
     │  commit mutation + operation + steps + idempotency binding   ← BEGIN IMMEDIATE
@@ -189,7 +189,7 @@ CAS predicates:
 
 Self-transitions always allowed. Otherwise:
 
-```
+```text
 Pending   → Deploying | Deleting | Failed
 Deploying → Ready | Degraded | Failed | Deleting
 Ready     → Pending | Degraded | Deleting | Failed
@@ -219,7 +219,7 @@ overwrites whatever the executor last wrote (see §8-O).
 
 ### 4.2 Operation states (`WorkState::can_transition_to`, mod.rs:263-275)
 
-```
+```text
 Pending | Recovery → Running | Cancelled
 Running            → Recovery | Succeeded | Failed | Cancelled
 Succeeded | Failed | Cancelled      → terminal
@@ -254,7 +254,7 @@ and vice versa. Crash windows around it are enumerated in §7.3.
 
 Same shape as operations plus `skipped` (terminal):
 
-```
+```text
 Pending | Recovery → Running | Cancelled | Skipped
 Running            → Recovery | Succeeded | Failed | Cancelled
 ```
@@ -395,7 +395,7 @@ Claim failure surfaces as `StoreError::IllegalTransition` and is deliberately sw
 
 Per-step (`execute_step`, :159-207):
 
-```
+```text
 deadline = now + convergence_timeout (2 min)
 observed = observe_with_retry(...)                 // full Docker snapshot, retried
 current  = Plan::from_request(request, &observed)  // RE-PLAN from scratch
@@ -509,7 +509,7 @@ scan/recovery run. All scheduler selects are `biased` toward `token.cancelled()`
 
 | Await point | Durable outcome |
 | --- | --- |
-| Before permit/mutex acquired | none — op stays `pending|recovery`, redispatched next boot/run |
+| Before permit/mutex acquired | none — op stays `pending\|recovery`, redispatched next boot/run |
 | After claim, before/during execution | scheduler select wins → `Running → Recovery` (parked) |
 | Handler notices first (`retry()`/`wait_service` loops check `is_cancelled()`) | returns `Err(Cancelled)` → op journaled terminal **`Cancelled`** |
 
@@ -824,7 +824,7 @@ Decide what each public field means and make writers conform:
 | Create replay returns identical `operation_id`; status `pending` with no executor attached | tests/api_contract.rs:125-166 |
 | Replace bumps generation; plan preview reports `proposed_generation` | tests/api_contract.rs:169-197 |
 | Idempotent replays value-equal; stale replace → `GenerationConflict{expected,actual}` | tests/persistence.rs:145-238 |
-| Active delete reuse (`pending|running|recovery`); failed/cancelled reset with fresh steps | tests/persistence.rs:277-352 |
+| Active delete reuse (`pending\|running\|recovery`); failed/cancelled reset with fresh steps | tests/persistence.rs:277-352 |
 | Interrupted ops recover to `Succeeded`/`Ready` via `recover_and_run`; drift repair at same generation | tests/fake_docker.rs:277-326, 424-477 |
 | Matching reconcile performs no Docker update | tests/docker_integration.rs:160-169 |
 | `finalize_delete` refuses before op success | tests/persistence.rs:119-133 |

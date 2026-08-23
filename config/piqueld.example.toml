@@ -6,6 +6,8 @@
 # user-owned runtime directory such as /run/user/<uid>/piqueld over /tmp.
 
 [server]
+# Replace 1000 with your account's UID (`id -u`); the runtime directory is
+# per-user and only exists for your own UID.
 data_dir = "/run/user/1000/piqueld"
 http_listen = "127.0.0.1:7845"
 

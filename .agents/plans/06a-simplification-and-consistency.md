@@ -115,8 +115,11 @@ plans. Unsupported fields must not remain as accepted-but-blocked product surfac
 1. Make `just` the canonical, non-mutating local validation entry point. It should
    run strict formatting checks, Clippy with warnings denied, focused tests, docs,
    dependency/license checks, architecture-boundary checks, and an OpenAPI snapshot
-   check as applicable.
+   check as applicable. *(Completed with the accepted deviation recorded above:
+   the default `just` recipe regenerates the OpenAPI snapshot before validating;
+   `just validate` is the non-mutating entry point.)*
 2. Keep generated-output mutation behind an explicit `just generate` command.
+   *(Completed as `just generate-openapi`, per the same recorded deviation.)*
 3. Keep privileged Docker integration checks and Nix evaluation in explicit
    commands such as `just docker-test` and `just nix-check` when they cannot be part
    of the default portable check.
