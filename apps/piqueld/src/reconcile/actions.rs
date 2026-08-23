@@ -4,6 +4,22 @@ use super::{
 };
 use piqueld_core::ApplicationId;
 
+fn is_rejected(error: &DockerError) -> bool {
+    matches!(
+        error,
+        DockerError::OwnershipConflict
+            | DockerError::ConfigurationConflict
+            | DockerError::NotManager
+            | DockerError::IncompatibleSwarm
+            | DockerError::Validation(_)
+    )
+}
+
+fn rejected(error: DockerError) -> OperationError {
+    tracing::error!(error = ?error, "Docker operation rejected");
+    error.into()
+}
+
 impl<D: DockerApi> ReconcileHandler<D> {
     pub(super) async fn execute_action(
         &self,
@@ -68,30 +84,18 @@ impl<D: DockerApi> ReconcileHandler<D> {
         Fut: std::future::Future<Output = Result<(), DockerError>>,
     {
         let attempts = self.retry.attempts.max(1);
+        let retried_attempts = attempts - 1;
         let mut delay = self.retry.initial_delay;
-        for attempt in 0..attempts {
+        for attempt in 0..retried_attempts {
             if cancellation.is_cancelled() {
                 return Err(OperationError::Cancelled);
             }
             match call().await {
                 Ok(()) => return Ok(()),
-                Err(
-                    error @ (DockerError::OwnershipConflict
-                    | DockerError::ConfigurationConflict
-                    | DockerError::NotManager
-                    | DockerError::IncompatibleSwarm
-                    | DockerError::Validation(_)),
-                ) => {
-                    tracing::error!(error = %error, "Docker operation rejected");
-                    return Err(error.into());
-                }
-                Err(error) if attempt + 1 == attempts => {
-                    tracing::error!(error = %error, "Docker operation failed after retries");
-                    return Err(error.into());
-                }
+                Err(error) if is_rejected(&error) => return Err(rejected(error)),
                 Err(error) => {
                     tracing::warn!(
-                        error = %error,
+                        error = ?error,
                         attempt = attempt + 1,
                         "Docker operation failed; retrying"
                     );
@@ -100,9 +104,17 @@ impl<D: DockerApi> ReconcileHandler<D> {
                 }
             }
         }
-        Err(OperationError::DockerRequestFailed(
-            "execute retryable Docker operation",
-        ))
+        if cancellation.is_cancelled() {
+            return Err(OperationError::Cancelled);
+        }
+        match call().await {
+            Ok(()) => Ok(()),
+            Err(error) if is_rejected(&error) => Err(rejected(error)),
+            Err(error) => {
+                tracing::error!(error = ?error, "Docker operation failed after retries");
+                Err(error.into())
+            }
+        }
     }
     pub(super) async fn wait_service(
         &self,
@@ -143,24 +155,15 @@ impl<D: DockerApi> ReconcileHandler<D> {
             }
             match self.docker.observe(app).await {
                 Ok(observed) => return Ok(observed),
-                Err(
-                    error @ (DockerError::OwnershipConflict
-                    | DockerError::ConfigurationConflict
-                    | DockerError::NotManager
-                    | DockerError::IncompatibleSwarm
-                    | DockerError::Validation(_)),
-                ) => {
-                    tracing::error!(error = %error, "Docker observation rejected");
-                    return Err(error.into());
-                }
+                Err(error) if is_rejected(&error) => return Err(rejected(error)),
                 Err(error) => {
                     let now = tokio::time::Instant::now();
                     if now >= deadline {
-                        tracing::error!(error = %error, "Docker observation failed after retries");
+                        tracing::error!(error = ?error, "Docker observation failed after retries");
                         return Err(error.into());
                     }
                     let remaining = deadline.saturating_duration_since(now);
-                    tracing::warn!(error = %error, "Docker observation failed; retrying");
+                    tracing::warn!(error = ?error, "Docker observation failed; retrying");
                     tokio::select! {
                         () = cancellation.cancelled() => return Err(OperationError::Cancelled),
                         () = tokio::time::sleep(delay.min(remaining)) => {}

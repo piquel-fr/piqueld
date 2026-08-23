@@ -39,17 +39,25 @@ impl<D> ReconcileHandler<D> {
     }
 
     /// Replaces the retry policy used by this handler.
-    #[must_use]
     ///
     /// # Panics
     /// Panics when the policy has no attempts or its initial delay exceeds its
     /// maximum delay.
-    pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
-        if let Err(error) = retry.validate() {
-            panic!("invalid retry policy: {error}");
-        }
+    #[must_use]
+    pub fn with_retry_policy(self, retry: RetryPolicy) -> Self {
+        self.try_with_retry_policy(retry)
+            .expect("retry policy should be known-valid at the call site")
+    }
+
+    /// Replaces the retry policy after validating it.
+    ///
+    /// # Errors
+    /// Returns the validation error unchanged when the policy has no attempts
+    /// or its initial delay exceeds its maximum delay.
+    pub fn try_with_retry_policy(mut self, retry: RetryPolicy) -> Result<Self, RetryPolicyError> {
+        retry.validate()?;
         self.retry = retry;
-        self
+        Ok(self)
     }
 }
 
@@ -111,23 +119,39 @@ fn has_diagnostic(plan: &piqueld_core::Plan, code: &str) -> bool {
         .any(|diagnostic| diagnostic.code == code)
 }
 
-pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
+#[derive(Clone, Copy)]
+enum BlockedPlanClassification {
+    OwnershipConflict,
+    ConfigurationConflict,
+}
+
+fn blocked_plan_classification(plan: &piqueld_core::Plan) -> BlockedPlanClassification {
     if has_diagnostic(plan, "unowned_name_collision") {
-        OperationError::OwnershipConflict
+        BlockedPlanClassification::OwnershipConflict
     } else if has_diagnostic(plan, "immutable_configuration_drift") {
-        OperationError::DockerConfigurationConflict
+        BlockedPlanClassification::ConfigurationConflict
     } else {
-        OperationError::OwnershipConflict
+        BlockedPlanClassification::OwnershipConflict
+    }
+}
+
+pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
+    match blocked_plan_classification(plan) {
+        BlockedPlanClassification::OwnershipConflict => OperationError::OwnershipConflict,
+        BlockedPlanClassification::ConfigurationConflict => {
+            OperationError::DockerConfigurationConflict
+        }
     }
 }
 
 pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
-    if has_diagnostic(plan, "unowned_name_collision") {
-        "runtime reconciliation is blocked by an ownership conflict"
-    } else if has_diagnostic(plan, "immutable_configuration_drift") {
-        "runtime reconciliation is blocked by immutable Docker configuration"
-    } else {
-        "runtime reconciliation is blocked by an ownership conflict"
+    match blocked_plan_classification(plan) {
+        BlockedPlanClassification::OwnershipConflict => {
+            "runtime reconciliation is blocked by an ownership conflict"
+        }
+        BlockedPlanClassification::ConfigurationConflict => {
+            "runtime reconciliation is blocked by immutable Docker configuration"
+        }
     }
 }
 
