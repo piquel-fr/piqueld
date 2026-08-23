@@ -1,6 +1,6 @@
 use super::{
     BTreeSet, BollardDocker, HEALTH_RETRIES, HashMap, HealthCheck, HealthConfig, MountTypeEnum,
-    NANOSECONDS_PER_MILLISECOND, RESTART_DELAY, ROLLBACK_MONITOR, STOP_GRACE_PERIOD, ServiceSpec,
+    NANO_CPUS_PER_MILLICORE, RESTART_DELAY, ROLLBACK_MONITOR, STOP_GRACE_PERIOD, ServiceSpec,
     ServiceSpecRollbackConfig, ServiceSpecRollbackConfigFailureActionEnum,
     ServiceSpecRollbackConfigOrderEnum, ServiceSpecUpdateConfigFailureActionEnum,
     ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec,
@@ -151,9 +151,9 @@ impl ServiceRuntimePolicy {
                 .and_then(|resources| resources.limits.as_ref())
                 .is_none_or(|limits| {
                     limits.pids.is_none_or(|value| value == 0)
-                        && limits.nano_cpus.is_none_or(|value| {
-                            value >= 0 && value % NANOSECONDS_PER_MILLISECOND == 0
-                        })
+                        && limits
+                            .nano_cpus
+                            .is_none_or(|value| value >= 0 && value % NANO_CPUS_PER_MILLICORE == 0)
                         && limits.memory_bytes.is_none_or(|value| value >= 0)
                 })
             && task

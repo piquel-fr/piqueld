@@ -1,24 +1,25 @@
 use super::{
     APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, INSTANCE_LABEL, MANAGED_LABEL,
-    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name,
-    docker_resource_readable_prefix, valid_logical_name,
+    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name, valid_logical_name,
 };
 
 impl BollardDocker {
-    /// Returns whether a Docker resource can belong to this application.
+    /// Returns whether a Docker resource belongs to this application.
     ///
-    /// Resource names are truncated for Docker, so ownership labels remain the
-    /// authoritative fallback when the readable name prefix is ambiguous.
+    /// An existing application label is authoritative: resources labeled for
+    /// another application are never relevant, even when their names collide.
+    /// Unlabeled resources qualify only through an exact canonical name match
+    /// against this application's private network, the one resource name
+    /// derivable from the application identity alone.
     pub(super) fn relevant(
         name: &str,
         labels: &BTreeMap<String, String>,
         app: &ApplicationId,
     ) -> bool {
-        let prefix = docker_resource_readable_prefix(app);
-        name.starts_with(&prefix)
-            || labels
-                .get(APPLICATION_LABEL)
-                .is_some_and(|value| value == app.as_str())
+        match labels.get(APPLICATION_LABEL) {
+            Some(owner) => owner == app.as_str(),
+            None => name == docker_resource_name(app, ResourceKind::Network, None),
+        }
     }
 
     /// Checks the immutable overlay-network settings supported by piqueld.

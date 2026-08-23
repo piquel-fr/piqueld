@@ -28,10 +28,7 @@ use piqueld_core::resource::{
     INSTANCE_LABEL, MANAGED_LABEL, ObservedNetwork, ObservedService, ObservedTask, ObservedVolume,
     SERVICE_LABEL, SPEC_HASH_LABEL, TaskDiagnostic, TaskState, valid_logical_name,
 };
-use piqueld_core::{
-    ApplicationId, ObservedApplication, ResourceKind, docker_resource_name,
-    docker_resource_readable_prefix,
-};
+use piqueld_core::{ApplicationId, ObservedApplication, ResourceKind, docker_resource_name};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
@@ -40,7 +37,6 @@ use std::{
 
 /// Docker represents health-check and Swarm policy durations in nanoseconds.
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
-const NANOSECONDS_PER_MILLISECOND: i64 = 1_000_000;
 const NANO_CPUS_PER_MILLICORE: i64 = 1_000_000;
 const RESTART_DELAY: i64 = 2 * NANOSECONDS_PER_SECOND;
 const UPDATE_MONITOR: i64 = 30 * NANOSECONDS_PER_SECOND;
