@@ -6,8 +6,8 @@
     "services": [{
       "name": "web",
       "source": { "type": "image", "image": "ghcr.io/example/notes:1.4.0" },
-      "ports": [3000]
+      "mounts": [{ "volume": "data", "target": "/var/lib/notes" }]
     }],
-    "routes": [{ "host": "notes.example.com", "service": "web", "port": 3000 }]
+    "volumes": [{ "name": "data" }]
   }
 }

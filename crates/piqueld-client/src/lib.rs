@@ -1,10 +1,11 @@
 //! Typed asynchronous client and transport contracts for the versioned piqueld API.
-#![allow(missing_docs)]
-#![allow(clippy::missing_errors_doc, clippy::struct_excessive_bools)]
 
+/// Application CRUD and planning endpoints.
 pub mod applications;
 mod openapi;
+/// Operation inspection endpoints.
 pub mod operations;
+/// Control-plane status endpoints.
 pub mod system;
 
 pub use applications::{
@@ -13,7 +14,7 @@ pub use applications::{
     PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
 };
 pub use operations::{OperationStepView, OperationView};
-pub use system::{SystemCapabilities, SystemStatus};
+pub use system::SystemStatus;
 
 use bytes::Bytes;
 use http::{Method, Request, StatusCode, header};
@@ -31,33 +32,37 @@ use tokio::net::{TcpStream, UnixStream};
 use url::Url;
 use utoipa::ToSchema;
 
+/// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
 
+/// Successful API response envelope.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Envelope<T> {
+    /// Response payload.
     pub data: T,
 }
 
+/// Cursor-paginated API response.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct Page<T> {
+    /// Items in this page.
     pub items: Vec<T>,
+    /// Cursor for the next page, when more items are available.
     pub next_cursor: Option<String>,
 }
 
+/// Structured error returned by the API.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct ErrorBody {
+    /// Stable machine-readable error code.
     pub code: String,
+    /// Safe human-readable error message.
     pub message: String,
+    /// Optional structured error details.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub details: serde_json::Value,
+    /// Server-generated request identifier.
     pub request_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SseEvent {
-    pub id: Option<String>,
-    pub event: Option<String>,
-    pub data: String,
 }
 
 #[derive(Clone, Debug)]
@@ -71,27 +76,39 @@ enum Endpoint {
 }
 
 #[derive(Clone, Debug)]
+/// Configured asynchronous API client.
 pub struct Client {
     endpoint: Endpoint,
     timeout: Duration,
 }
 
 #[derive(Debug, Error)]
+/// Errors produced while making an API request.
 pub enum ClientError {
+    /// The endpoint URL or request could not be constructed.
     #[error("invalid API endpoint")]
     Endpoint,
+    /// The connection, protocol, or request timeout failed.
     #[error("API transport failed")]
     Transport,
+    /// The server returned a non-success response.
     #[error("API returned {status}: {error:?}")]
     Api {
+        /// HTTP response status.
         status: StatusCode,
+        /// Structured server error.
         error: ErrorBody,
     },
+    /// The server response could not be decoded.
     #[error("API returned an invalid response")]
     Decode,
 }
 
 impl Client {
+    /// Creates a client for an HTTP endpoint.
+    ///
+    /// # Errors
+    /// Returns [`ClientError::Endpoint`] when `base_url` is not a plain HTTP origin.
     pub fn tcp(base_url: &str) -> Result<Self, ClientError> {
         let url = Url::parse(base_url).map_err(|_| ClientError::Endpoint)?;
         if url.scheme() != "http"
@@ -120,6 +137,7 @@ impl Client {
         })
     }
 
+    /// Creates a client for a Unix-domain socket.
     #[must_use]
     pub fn unix(path: impl AsRef<Path>) -> Self {
         Self {
@@ -128,6 +146,7 @@ impl Client {
         }
     }
 
+    /// Overrides the per-request timeout.
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
@@ -254,69 +273,6 @@ impl Client {
         })
         .await
     }
-
-    fn watch_events(
-        &self,
-        path: String,
-        last_event_id: Option<&str>,
-    ) -> tokio::sync::mpsc::Receiver<Result<SseEvent, ClientError>> {
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
-        let client = self.clone();
-        let last = last_event_id.map(str::to_owned);
-        tokio::spawn(async move {
-            let mut headers = vec![("accept", "text/event-stream")];
-            if let Some(value) = last.as_deref() {
-                headers.push(("last-event-id", value));
-            }
-            let response = match client
-                .raw_request::<()>(Method::GET, &path, None, &headers)
-                .await
-            {
-                Ok(response) if response.status().is_success() => response,
-                Ok(response) => {
-                    let error = tokio::time::timeout(client.timeout, decode_api_error(response))
-                        .await
-                        .unwrap_or(ClientError::Transport);
-                    let _ = tx.send(Err(error)).await;
-                    return;
-                }
-                Err(error) => {
-                    let _ = tx.send(Err(error)).await;
-                    return;
-                }
-            };
-            let mut body = response.into_body();
-            let mut decoder = SseDecoder::default();
-            loop {
-                let frame = tokio::select! {
-                    () = tx.closed() => return,
-                    frame = body.frame() => frame,
-                };
-                let Some(frame) = frame else {
-                    return;
-                };
-                let Ok(frame) = frame else {
-                    let _ = tx.send(Err(ClientError::Transport)).await;
-                    return;
-                };
-                if let Ok(data) = frame.into_data() {
-                    let events = match decoder.push(&data) {
-                        Ok(events) => events,
-                        Err(error) => {
-                            let _ = tx.send(Err(error)).await;
-                            return;
-                        }
-                    };
-                    for event in events {
-                        if tx.send(Ok(event)).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-        });
-        rx
-    }
 }
 
 async fn decode_envelope<T: DeserializeOwned>(
@@ -340,7 +296,9 @@ async fn decode_envelope<T: DeserializeOwned>(
         .map_err(|_| ClientError::Decode)
 }
 
-async fn decode_api_error(response: hyper::Response<hyper::body::Incoming>) -> ClientError {
+pub(crate) async fn decode_api_error(
+    response: hyper::Response<hyper::body::Incoming>,
+) -> ClientError {
     let status = response.status();
     let payload = response
         .into_body()
@@ -377,115 +335,8 @@ fn path_segment(value: &str) -> String {
     encoded
 }
 
-#[derive(Default)]
-struct SseDecoder {
-    buffer: Vec<u8>,
-}
-
-impl SseDecoder {
-    fn push(&mut self, data: &[u8]) -> Result<Vec<SseEvent>, ClientError> {
-        self.buffer.extend_from_slice(data);
-        let mut events = Vec::new();
-        while let Some((end, separator_len)) = sse_block_boundary(&self.buffer) {
-            let block = self.buffer[..end].to_vec();
-            self.buffer.drain(..end + separator_len);
-            let block = std::str::from_utf8(&block).map_err(|_| ClientError::Decode)?;
-            if let Some(event) = parse_sse(block) {
-                events.push(event);
-            }
-        }
-        Ok(events)
-    }
-}
-
-fn sse_block_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
-    let mut position = 0;
-    while position < buffer.len() {
-        let Some(first_len) = sse_line_ending_len(buffer, position) else {
-            position += 1;
-            continue;
-        };
-        let next = position + first_len;
-        if let Some(second_len) = sse_line_ending_len(buffer, next) {
-            return Some((position, first_len + second_len));
-        }
-        position = next;
-    }
-    None
-}
-
-fn sse_line_ending_len(buffer: &[u8], position: usize) -> Option<usize> {
-    match buffer.get(position) {
-        Some(b'\r') if buffer.get(position + 1) == Some(&b'\n') => Some(2),
-        Some(b'\n' | b'\r') => Some(1),
-        _ => None,
-    }
-}
-
-fn parse_sse(block: &str) -> Option<SseEvent> {
-    let mut id = None;
-    let mut kind = None;
-    let mut data = Vec::new();
-    for line in block.split(['\r', '\n']) {
-        let (field, value) = line.split_once(':').map_or((line, ""), |(field, value)| {
-            (field, value.strip_prefix(' ').unwrap_or(value))
-        });
-        match field {
-            "id" if !value.contains('\0') => id = Some(value.to_owned()),
-            "event" => kind = Some(value.to_owned()),
-            "data" => data.push(value),
-            _ => {}
-        }
-    }
-    (!data.is_empty()).then(|| SseEvent {
-        id,
-        event: kind,
-        data: data.join("\n"),
-    })
-}
-
 /// Returns the client crate version embedded at build time.
 #[must_use]
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::SseDecoder;
-
-    #[test]
-    fn sse_decoder_preserves_utf8_split_across_frames() {
-        let mut decoder = SseDecoder::default();
-        assert!(
-            decoder
-                .push(b"event: operation\ndata: caf\xc3")
-                .unwrap()
-                .is_empty()
-        );
-
-        let events = decoder.push(b"\xa9\n\n").unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event.as_deref(), Some("operation"));
-        assert_eq!(events[0].data, "caf\u{e9}");
-
-        let events = decoder.push(b"data: mixed\r\n\n").unwrap();
-        assert_eq!(events[0].data, "mixed");
-    }
-
-    #[test]
-    fn sse_decoder_supports_all_line_endings_and_preserves_data_space() {
-        let mut decoder = SseDecoder::default();
-        let events = decoder
-            .push(b"id: current:one\revent: operation\rdata:  {\"state\":\"ready\"}\r\r")
-            .unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].id.as_deref(), Some("current:one"));
-        assert_eq!(events[0].event.as_deref(), Some("operation"));
-        assert_eq!(events[0].data, " {\"state\":\"ready\"}");
-
-        let events = decoder.push(b"data\n\n").unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].data, "");
-    }
 }

@@ -1,5 +1,4 @@
-//! Versioned HTTP/JSON API and streaming event boundary.
-#![allow(missing_docs)]
+//! Versioned HTTP/JSON API boundary.
 
 use async_trait::async_trait;
 use axum::{
@@ -8,31 +7,30 @@ use axum::{
     extract::Request,
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
-    response::{IntoResponse, Response, sse::Event},
+    response::{IntoResponse, Response},
 };
-use futures_util::{Stream, stream};
 use piqueld_client::{
     AcceptedOperation, CreateApplicationRequest, Envelope, ErrorBody, PlanApplicationRequest,
     ReplaceApplicationRequest,
 };
 use piqueld_core::{
-    ApplicationId, ApplicationIdError, NormalizedApplication, ObservedApplication,
+    ApplicationId, ApplicationIdError, CompileError, NormalizedApplication, ObservedApplication,
     resource::ResolvedApplication,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::sync::Arc;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-use crate::store::{SqliteStore, StoreError, StoredApplication};
-
-#[cfg(test)]
-mod tests;
+use crate::{
+    docker::DockerError,
+    store::{SqliteStore, StoreError, StoredApplication},
+};
 
 mod applications;
 mod openapi;
@@ -45,65 +43,43 @@ const JSON: &str = "application/json";
 const TOML: &str = "application/toml";
 
 #[derive(Clone, Debug)]
-pub struct RuntimeCapabilities {
-    pub source_resolution: bool,
-    pub runtime_observation: bool,
-    pub runtime_execution: bool,
-    pub reason: Option<String>,
-}
-
-#[derive(Clone, Debug)]
+/// Resolved desired state paired with the initial runtime observation.
 pub struct PreparedApplication {
+    /// Immutable desired application state.
     pub resolved: ResolvedApplication,
+    /// Runtime resources observed before planning.
     pub observed: ObservedApplication,
 }
 
 #[derive(Debug, thiserror::Error)]
+/// Errors crossing the runtime boundary.
 pub enum BoundaryError {
-    #[error("runtime capability is unavailable")]
-    Unavailable,
+    /// A Docker runtime request failed.
     #[error("runtime request failed")]
-    Failed,
+    Runtime(#[from] DockerError),
+    /// Resolved inputs could not be compiled into desired runtime resources.
+    #[error("application compilation failed")]
+    Compilation(Vec<CompileError>),
 }
 
 /// Source resolution, runtime observation, and execution seam supplied by Plan 06.
 #[async_trait]
 pub trait RuntimeBoundary: Send + Sync + 'static {
-    fn capabilities(&self) -> RuntimeCapabilities;
+    /// Wakes the reconciler after a mutation requests an immediate scan.
+    fn trigger_reconciliation(&self) {}
+    /// Resolves mutable inputs and captures an initial runtime observation.
     async fn prepare(
         &self,
         application: &NormalizedApplication,
     ) -> Result<PreparedApplication, BoundaryError>;
+    /// Captures current runtime state for a stored application.
     async fn observe(
         &self,
         application: &StoredApplication,
     ) -> Result<ObservedApplication, BoundaryError>;
 }
 
-/// Honest production boundary until Docker reconciliation lands in Plan 06.
-pub struct UnavailableRuntime;
-
-#[async_trait]
-impl RuntimeBoundary for UnavailableRuntime {
-    fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            source_resolution: false,
-            runtime_observation: false,
-            runtime_execution: false,
-            reason: Some("Docker source resolution and execution arrive in Plan 06".into()),
-        }
-    }
-    async fn prepare(
-        &self,
-        _: &NormalizedApplication,
-    ) -> Result<PreparedApplication, BoundaryError> {
-        Err(BoundaryError::Unavailable)
-    }
-    async fn observe(&self, _: &StoredApplication) -> Result<ObservedApplication, BoundaryError> {
-        Err(BoundaryError::Unavailable)
-    }
-}
-
+/// Shared state for API handlers.
 #[derive(Clone)]
 pub struct ApiState {
     store: Arc<SqliteStore>,
@@ -113,6 +89,7 @@ pub struct ApiState {
 }
 
 impl ApiState {
+    /// Creates API state backed by the given store and runtime adapter.
     #[must_use]
     pub fn new(store: Arc<SqliteStore>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
         Self {
@@ -120,14 +97,6 @@ impl ApiState {
             store,
             runtime,
             create_lock: Arc::new(tokio::sync::Mutex::new(())),
-        }
-    }
-
-    fn require_runtime_execution(&self) -> Result<(), ApiError> {
-        if self.runtime.capabilities().runtime_execution {
-            Ok(())
-        } else {
-            Err(BoundaryError::Unavailable.into())
         }
     }
 }
@@ -157,6 +126,18 @@ impl ApiError {
 
 impl From<StoreError> for ApiError {
     fn from(value: StoreError) -> Self {
+        if matches!(
+            &value,
+            StoreError::Database
+                | StoreError::DatabaseSource(_)
+                | StoreError::SchemaMismatch
+                | StoreError::SchemaMismatchSource(_)
+                | StoreError::PathSource(_)
+                | StoreError::Corrupt
+                | StoreError::CorruptSource(_)
+        ) {
+            tracing::error!(error = ?value, "storage request failed");
+        }
         match value {
             StoreError::NotFound => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
@@ -177,53 +158,50 @@ impl From<StoreError> for ApiError {
                 "the application was modified by another client",
             )
             .details(json!({"expected_generation": expected, "current_generation": actual})),
-            StoreError::MissingSecrets(names) => Self::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "logical_secret_missing",
-                "one or more referenced logical secrets do not exist",
-            )
-            .details(json!({"names": names})),
             StoreError::IllegalTransition => Self::new(
                 StatusCode::CONFLICT,
                 "application_state_conflict",
                 "the requested application transition is not allowed",
             ),
-            StoreError::InvalidInput => Self::new(
+            StoreError::InvalidInput | StoreError::InvalidInputSource(_) => Self::new(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
                 "the request is invalid",
             ),
-            StoreError::SchemaMismatch => Self::new(
+            StoreError::SchemaMismatch | StoreError::SchemaMismatchSource(_) => Self::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "schema_mismatch",
                 "database schema is incompatible",
             ),
-            StoreError::Corrupt => Self::new(
+            StoreError::Corrupt | StoreError::CorruptSource(_) => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "stored_state_corrupt",
                 "stored application state is corrupt",
             ),
-            StoreError::Database => Self::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "storage_unavailable",
-                "control-plane storage is unavailable",
-            ),
+            StoreError::Database | StoreError::DatabaseSource(_) | StoreError::PathSource(_) => {
+                Self::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "storage_unavailable",
+                    "control-plane storage is unavailable",
+                )
+            }
         }
     }
 }
 
 impl From<BoundaryError> for ApiError {
     fn from(value: BoundaryError) -> Self {
+        tracing::error!(error = ?value, "runtime boundary request failed");
         match value {
-            BoundaryError::Unavailable => Self::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "runtime_unavailable",
-                "runtime source resolution or execution is unavailable",
-            ),
-            BoundaryError::Failed => Self::new(
+            BoundaryError::Runtime(_) => Self::new(
                 StatusCode::BAD_GATEWAY,
                 "runtime_request_failed",
                 "runtime request failed",
+            ),
+            BoundaryError::Compilation(_) => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "application_compilation_failed",
+                "application compilation failed",
             ),
         }
     }
@@ -280,7 +258,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Builds the complete Plan 05 router. No later-plan endpoints are published.
+/// Builds the Plan 06A HTTP router.
 pub fn router(state: ApiState) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     let (router, openapi) = documented_router().split_for_parts();
@@ -300,7 +278,6 @@ pub fn router(state: ApiState) -> Router {
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .routes(routes!(system::status))
-        .routes(routes!(system::capabilities))
         .routes(routes!(openapi::openapi))
         .routes(routes!(applications::list, applications::create))
         .routes(routes!(applications::plan_create))
@@ -312,9 +289,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::plan_replace))
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::status))
-        .routes(routes!(applications::events))
         .routes(routes!(operations::get))
-        .routes(routes!(operations::events))
 }
 
 async fn bind_error_request_id(request: Request, next: Next) -> Response {
@@ -350,52 +325,6 @@ async fn bind_error_request_id(request: Request, next: Next) -> Response {
     }
     let bytes = serde_json::to_vec(&error).unwrap_or_else(|_| b"{}".to_vec());
     Response::from_parts(parts, Body::from(bytes))
-}
-
-type EventStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
-
-struct StateEventSnapshot {
-    data: String,
-    event: &'static str,
-    terminal: bool,
-}
-
-fn current_state_stream<F, Fut>(kind: &'static str, last: Option<String>, fetch: F) -> EventStream
-where
-    F: Fn() -> Fut + Send + 'static,
-    Fut: Future<Output = Option<StateEventSnapshot>> + Send,
-{
-    Box::pin(stream::unfold(
-        (fetch, last, false, true),
-        move |(fetch, last, done, reconnect)| async move {
-            if done {
-                return None;
-            }
-            loop {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                let snapshot = fetch().await?;
-                let event_id = current_state_event_id(kind, &snapshot.data);
-                if last.as_deref() == Some(event_id.as_str()) {
-                    if snapshot.terminal {
-                        return None;
-                    }
-                    continue;
-                }
-                if reconnect && last.is_some() {
-                    let reset = Event::default()
-                        .id(format!("reset:{event_id}"))
-                        .event("replay_reset")
-                        .data("{\"reason\":\"bounded_replay_exhausted\"}");
-                    return Some((Ok(reset), (fetch, None, false, false)));
-                }
-                let event = Event::default()
-                    .id(event_id.clone())
-                    .event(snapshot.event)
-                    .data(snapshot.data);
-                return Some((Ok(event), (fetch, Some(event_id), snapshot.terminal, false)));
-            }
-        },
-    ))
 }
 
 async fn fallback(method: Method) -> ApiError {
@@ -578,10 +507,6 @@ fn idempotent_application_id(key: &str) -> ApplicationId {
 fn idempotency_key_hash(key: &str) -> String {
     format!("sha256:{}", hex(&Sha256::digest(key.as_bytes())))
 }
-fn current_state_event_id(kind: &str, data: &str) -> String {
-    let digest = Sha256::digest(format!("piqueld-sse/v1\0{kind}\0{data}").as_bytes());
-    format!("current:{}", hex(&digest[..16]))
-}
 fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut value = String::with_capacity(bytes.len() * 2);
@@ -590,7 +515,4 @@ fn hex(bytes: &[u8]) -> String {
         value.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     value
-}
-fn last_event_id(headers: &HeaderMap) -> Option<String> {
-    header_text(headers, "last-event-id").map(str::to_owned)
 }

@@ -2,16 +2,20 @@
   "components": {
     "schemas": {
       "AcceptedOperation": {
+        "description": "Operation accepted by an application mutation endpoint.",
         "properties": {
           "application_id": {
+            "description": "Stable application identifier.",
             "type": "string"
           },
           "generation": {
+            "description": "Generation created by the mutation.",
             "format": "int64",
             "minimum": 1,
             "type": "integer"
           },
           "operation_id": {
+            "description": "Asynchronous operation identifier.",
             "type": "string"
           }
         },
@@ -23,8 +27,10 @@
         "type": "object"
       },
       "ActionKind": {
+        "description": "Concrete action that can appear in a runtime plan.",
         "oneOf": [
           {
+            "description": "Resolve an image source.",
             "properties": {
               "action": {
                 "enum": [
@@ -33,9 +39,11 @@
                 "type": "string"
               },
               "reference": {
+                "description": "Requested mutable image reference.",
                 "type": "string"
               },
               "service": {
+                "description": "Service whose image must be resolved.",
                 "type": "string"
               }
             },
@@ -47,68 +55,7 @@
             "type": "object"
           },
           {
-            "properties": {
-              "action": {
-                "enum": [
-                  "resolve_git"
-                ],
-                "type": "string"
-              },
-              "reference": {
-                "type": "string"
-              },
-              "repository": {
-                "type": "string"
-              },
-              "service": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "service",
-              "repository",
-              "reference",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "action": {
-                "enum": [
-                  "build_image"
-                ],
-                "type": "string"
-              },
-              "service": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "service",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "action": {
-                "enum": [
-                  "push_image"
-                ],
-                "type": "string"
-              },
-              "service": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "service",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
+            "description": "Ensure a desired network exists.",
             "properties": {
               "action": {
                 "enum": [
@@ -117,7 +64,8 @@
                 "type": "string"
               },
               "network": {
-                "$ref": "#/components/schemas/DesiredNetwork"
+                "$ref": "#/components/schemas/DesiredNetwork",
+                "description": "Network state to create or verify."
               }
             },
             "required": [
@@ -127,6 +75,7 @@
             "type": "object"
           },
           {
+            "description": "Ensure a desired volume exists.",
             "properties": {
               "action": {
                 "enum": [
@@ -135,7 +84,8 @@
                 "type": "string"
               },
               "volume": {
-                "$ref": "#/components/schemas/DesiredVolume"
+                "$ref": "#/components/schemas/DesiredVolume",
+                "description": "Volume state to create or verify."
               }
             },
             "required": [
@@ -145,24 +95,7 @@
             "type": "object"
           },
           {
-            "properties": {
-              "action": {
-                "enum": [
-                  "ensure_secret"
-                ],
-                "type": "string"
-              },
-              "secret": {
-                "$ref": "#/components/schemas/DesiredSecret"
-              }
-            },
-            "required": [
-              "secret",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
+            "description": "Ensure a desired service exists.",
             "properties": {
               "action": {
                 "enum": [
@@ -171,7 +104,8 @@
                 "type": "string"
               },
               "service": {
-                "$ref": "#/components/schemas/DesiredService"
+                "$ref": "#/components/schemas/DesiredService",
+                "description": "Service state to create or verify."
               }
             },
             "required": [
@@ -181,6 +115,7 @@
             "type": "object"
           },
           {
+            "description": "Wait for a service to converge.",
             "properties": {
               "action": {
                 "enum": [
@@ -189,6 +124,7 @@
                 "type": "string"
               },
               "service": {
+                "description": "Service whose convergence is awaited.",
                 "type": "string"
               }
             },
@@ -199,6 +135,7 @@
             "type": "object"
           },
           {
+            "description": "Wait for a service to be removed.",
             "properties": {
               "action": {
                 "enum": [
@@ -207,6 +144,7 @@
                 "type": "string"
               },
               "service": {
+                "description": "Service whose removal is awaited.",
                 "type": "string"
               }
             },
@@ -217,24 +155,7 @@
             "type": "object"
           },
           {
-            "properties": {
-              "action": {
-                "enum": [
-                  "wait_for_secret_unused"
-                ],
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "name",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
+            "description": "Remove a service.",
             "properties": {
               "action": {
                 "enum": [
@@ -243,6 +164,7 @@
                 "type": "string"
               },
               "name": {
+                "description": "Canonical service name to remove.",
                 "type": "string"
               }
             },
@@ -253,6 +175,7 @@
             "type": "object"
           },
           {
+            "description": "Remove a private network.",
             "properties": {
               "action": {
                 "enum": [
@@ -261,6 +184,7 @@
                 "type": "string"
               },
               "name": {
+                "description": "Canonical network name to remove.",
                 "type": "string"
               }
             },
@@ -271,24 +195,7 @@
             "type": "object"
           },
           {
-            "properties": {
-              "action": {
-                "enum": [
-                  "remove_secret"
-                ],
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "name",
-              "action"
-            ],
-            "type": "object"
-          },
-          {
+            "description": "Retain a volume by policy.",
             "properties": {
               "action": {
                 "enum": [
@@ -297,6 +204,7 @@
                 "type": "string"
               },
               "name": {
+                "description": "Canonical volume name intentionally left in place.",
                 "type": "string"
               }
             },
@@ -305,30 +213,14 @@
               "action"
             ],
             "type": "object"
-          },
-          {
-            "properties": {
-              "action": {
-                "enum": [
-                  "await_secret_generation"
-                ],
-                "type": "string"
-              },
-              "logical_name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "logical_name",
-              "action"
-            ],
-            "type": "object"
           }
         ]
       },
       "ActionReason": {
+        "description": "Reason explaining why a plan action is required.",
         "oneOf": [
           {
+            "description": "The desired resource does not exist.",
             "properties": {
               "reason": {
                 "enum": [
@@ -343,8 +235,10 @@
             "type": "object"
           },
           {
+            "description": "The observed resource differs from desired state.",
             "properties": {
               "fields": {
+                "description": "Desired fields that differ from the observation.",
                 "items": {
                   "type": "string"
                 },
@@ -364,6 +258,7 @@
             "type": "object"
           },
           {
+            "description": "The observed resource is no longer desired.",
             "properties": {
               "reason": {
                 "enum": [
@@ -378,6 +273,7 @@
             "type": "object"
           },
           {
+            "description": "The action waits for a prior runtime change.",
             "properties": {
               "reason": {
                 "enum": [
@@ -392,6 +288,7 @@
             "type": "object"
           },
           {
+            "description": "An image still needs immutable digest resolution.",
             "properties": {
               "reason": {
                 "enum": [
@@ -406,20 +303,7 @@
             "type": "object"
           },
           {
-            "properties": {
-              "reason": {
-                "enum": [
-                  "secret_generation_changed"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "reason"
-            ],
-            "type": "object"
-          },
-          {
+            "description": "The application is being deleted.",
             "properties": {
               "reason": {
                 "enum": [
@@ -434,6 +318,7 @@
             "type": "object"
           },
           {
+            "description": "The volume is intentionally retained.",
             "properties": {
               "reason": {
                 "enum": [
@@ -450,6 +335,7 @@
         ]
       },
       "ActionRisk": {
+        "description": "Risk classification for a plan action.",
         "enum": [
           "none",
           "availability",
@@ -464,19 +350,23 @@
       },
       "ApplicationManifest": {
         "additionalProperties": false,
-        "description": "Strict public application request and export shape.",
+        "description": "Strict public application manifest request and export shape.",
         "properties": {
           "api_version": {
+            "description": "API version string.",
             "type": "string"
           },
           "kind": {
+            "description": "Resource kind string.",
             "type": "string"
           },
           "metadata": {
-            "$ref": "#/components/schemas/MetadataInput"
+            "$ref": "#/components/schemas/MetadataInput",
+            "description": "User-provided metadata."
           },
           "spec": {
-            "$ref": "#/components/schemas/ApplicationSpecInput"
+            "$ref": "#/components/schemas/ApplicationSpecInput",
+            "description": "Desired application resources."
           }
         },
         "required": [
@@ -489,20 +379,17 @@
       },
       "ApplicationSpec": {
         "additionalProperties": false,
+        "description": "Canonical resource specification.",
         "properties": {
-          "routes": {
-            "items": {
-              "$ref": "#/components/schemas/Route"
-            },
-            "type": "array"
-          },
           "services": {
+            "description": "Canonical services.",
             "items": {
               "$ref": "#/components/schemas/Service"
             },
             "type": "array"
           },
           "volumes": {
+            "description": "Canonical named volumes.",
             "items": {
               "$ref": "#/components/schemas/Volume"
             },
@@ -511,23 +398,17 @@
         },
         "required": [
           "services",
-          "volumes",
-          "routes"
+          "volumes"
         ],
         "type": "object"
       },
       "ApplicationSpecInput": {
         "additionalProperties": false,
+        "description": "User-provided application resource lists.",
         "properties": {
-          "routes": {
-            "default": [],
-            "items": {
-              "$ref": "#/components/schemas/RouteInput"
-            },
-            "type": "array"
-          },
           "services": {
             "default": [],
+            "description": "Declared services.",
             "items": {
               "$ref": "#/components/schemas/ServiceInput"
             },
@@ -535,6 +416,7 @@
           },
           "volumes": {
             "default": [],
+            "description": "Declared named volumes.",
             "items": {
               "$ref": "#/components/schemas/VolumeInput"
             },
@@ -544,17 +426,21 @@
         "type": "object"
       },
       "ApplicationStatusView": {
+        "description": "Current application reconciliation status.",
         "properties": {
           "application_id": {
+            "description": "Stable application identifier.",
             "type": "string"
           },
           "message": {
+            "description": "Optional safe status message.",
             "type": [
               "string",
               "null"
             ]
           },
           "observed_generation": {
+            "description": "Last observed application generation.",
             "format": "int64",
             "minimum": 1,
             "type": [
@@ -563,9 +449,11 @@
             ]
           },
           "state": {
+            "description": "Machine-readable lifecycle state.",
             "type": "string"
           },
           "updated_at_ms": {
+            "description": "Last update timestamp in Unix milliseconds.",
             "format": "int64",
             "type": "integer"
           }
@@ -578,26 +466,33 @@
         "type": "object"
       },
       "ApplicationView": {
+        "description": "Public application state returned by the API.",
         "properties": {
           "application": {
-            "$ref": "#/components/schemas/NormalizedApplication"
+            "$ref": "#/components/schemas/NormalizedApplication",
+            "description": "Normalized application manifest."
           },
           "created_at_ms": {
+            "description": "Creation timestamp in Unix milliseconds.",
             "format": "int64",
             "type": "integer"
           },
           "delete_intent": {
+            "description": "Whether deletion has been requested.",
             "type": "boolean"
           },
           "generation": {
+            "description": "Monotonic application generation.",
             "format": "int64",
             "minimum": 1,
             "type": "integer"
           },
           "spec_hash": {
+            "description": "Hash of the normalized desired specification.",
             "type": "string"
           },
           "updated_at_ms": {
+            "description": "Last update timestamp in Unix milliseconds.",
             "format": "int64",
             "type": "integer"
           }
@@ -614,9 +509,11 @@
       },
       "CreateApplicationRequest": {
         "additionalProperties": false,
+        "description": "Request to create an application.",
         "properties": {
           "manifest": {
-            "$ref": "#/components/schemas/ApplicationManifest"
+            "$ref": "#/components/schemas/ApplicationManifest",
+            "description": "Application manifest to store and reconcile."
           }
         },
         "required": [
@@ -626,8 +523,10 @@
       },
       "DeleteApplicationRequest": {
         "additionalProperties": false,
+        "description": "Request to mark an application for deletion.",
         "properties": {
           "expected_generation": {
+            "description": "Generation that must still be current.",
             "format": "int64",
             "minimum": 1,
             "type": "integer"
@@ -640,14 +539,18 @@
       },
       "DesiredMount": {
         "additionalProperties": false,
+        "description": "Desired persistent volume mount in a service.",
         "properties": {
           "read_only": {
+            "description": "Whether the mount is read-only.",
             "type": "boolean"
           },
           "target": {
+            "description": "Container target path.",
             "type": "string"
           },
           "volume_name": {
+            "description": "Canonical Docker volume name.",
             "type": "string"
           }
         },
@@ -660,94 +563,42 @@
       },
       "DesiredNetwork": {
         "additionalProperties": false,
+        "description": "Desired private overlay network state.",
         "properties": {
-          "ingress": {
-            "type": "boolean"
-          },
           "labels": {
             "additionalProperties": {
               "type": "string"
             },
+            "description": "Expected ownership labels.",
             "propertyNames": {
               "type": "string"
             },
             "type": "object"
           },
           "name": {
+            "description": "Canonical Docker resource name.",
             "type": "string"
           }
         },
         "required": [
           "name",
-          "ingress",
           "labels"
-        ],
-        "type": "object"
-      },
-      "DesiredSecret": {
-        "additionalProperties": false,
-        "properties": {
-          "generation": {
-            "$ref": "#/components/schemas/Sha256Digest"
-          },
-          "labels": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "logical_name": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "logical_name",
-          "generation",
-          "name",
-          "labels"
-        ],
-        "type": "object"
-      },
-      "DesiredSecretMount": {
-        "additionalProperties": false,
-        "properties": {
-          "logical_name": {
-            "type": "string"
-          },
-          "mode": {
-            "type": "string"
-          },
-          "swarm_name": {
-            "type": "string"
-          },
-          "target": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "logical_name",
-          "swarm_name",
-          "target",
-          "mode"
         ],
         "type": "object"
       },
       "DesiredService": {
         "additionalProperties": false,
+        "description": "Desired Docker service state.",
         "properties": {
           "arguments": {
+            "description": "Arguments passed to the command.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "command": {
+            "description": "Container entrypoint command.",
             "items": {
               "type": "string"
             },
@@ -757,6 +608,7 @@
             "additionalProperties": {
               "type": "string"
             },
+            "description": "Environment variables keyed by name.",
             "propertyNames": {
               "type": "string"
             },
@@ -768,49 +620,49 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/HealthCheck"
+                "$ref": "#/components/schemas/HealthCheck",
+                "description": "Optional health check."
               }
             ]
           },
           "image": {
+            "description": "Digest-pinned image reference.",
             "type": "string"
           },
           "labels": {
             "additionalProperties": {
               "type": "string"
             },
+            "description": "Ownership labels.",
             "propertyNames": {
               "type": "string"
             },
             "type": "object"
           },
           "logical_name": {
+            "description": "Manifest-level service name.",
             "type": "string"
           },
           "mounts": {
+            "description": "Persistent volume mounts.",
             "items": {
               "$ref": "#/components/schemas/DesiredMount"
             },
             "type": "array"
           },
           "name": {
+            "description": "Canonical Docker service name.",
             "type": "string"
           },
           "networks": {
+            "description": "Canonical private network names attached to the service.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
-          "ports": {
-            "items": {
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "type": "array"
-          },
           "replicas": {
+            "description": "Desired replica count.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -821,18 +673,14 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/ResourceLimits"
+                "$ref": "#/components/schemas/ResourceLimits",
+                "description": "Optional CPU and memory limits."
               }
             ]
           },
-          "secrets": {
-            "items": {
-              "$ref": "#/components/schemas/DesiredSecretMount"
-            },
-            "type": "array"
-          },
           "source": {
-            "$ref": "#/components/schemas/ResolvedSource"
+            "$ref": "#/components/schemas/ResolvedSource",
+            "description": "Immutable source resolution used by the service."
           }
         },
         "required": [
@@ -844,9 +692,7 @@
           "environment",
           "command",
           "arguments",
-          "ports",
           "mounts",
-          "secrets",
           "networks",
           "labels"
         ],
@@ -854,20 +700,24 @@
       },
       "DesiredVolume": {
         "additionalProperties": false,
+        "description": "Desired persistent volume state.",
         "properties": {
           "labels": {
             "additionalProperties": {
               "type": "string"
             },
+            "description": "Expected ownership labels.",
             "propertyNames": {
               "type": "string"
             },
             "type": "object"
           },
           "logical_name": {
+            "description": "Manifest-level volume name.",
             "type": "string"
           },
           "name": {
+            "description": "Canonical Docker resource name.",
             "type": "string"
           }
         },
@@ -879,6 +729,7 @@
         "type": "object"
       },
       "DiagnosticSeverity": {
+        "description": "Severity of a planning diagnostic.",
         "enum": [
           "info",
           "warning",
@@ -887,18 +738,23 @@
         "type": "string"
       },
       "Envelope_AcceptedOperation": {
+        "description": "Successful API response envelope.",
         "properties": {
           "data": {
+            "description": "Operation accepted by an application mutation endpoint.",
             "properties": {
               "application_id": {
+                "description": "Stable application identifier.",
                 "type": "string"
               },
               "generation": {
+                "description": "Generation created by the mutation.",
                 "format": "int64",
                 "minimum": 1,
                 "type": "integer"
               },
               "operation_id": {
+                "description": "Asynchronous operation identifier.",
                 "type": "string"
               }
             },
@@ -916,19 +772,24 @@
         "type": "object"
       },
       "Envelope_ApplicationStatusView": {
+        "description": "Successful API response envelope.",
         "properties": {
           "data": {
+            "description": "Current application reconciliation status.",
             "properties": {
               "application_id": {
+                "description": "Stable application identifier.",
                 "type": "string"
               },
               "message": {
+                "description": "Optional safe status message.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
               "observed_generation": {
+                "description": "Last observed application generation.",
                 "format": "int64",
                 "minimum": 1,
                 "type": [
@@ -937,9 +798,11 @@
                 ]
               },
               "state": {
+                "description": "Machine-readable lifecycle state.",
                 "type": "string"
               },
               "updated_at_ms": {
+                "description": "Last update timestamp in Unix milliseconds.",
                 "format": "int64",
                 "type": "integer"
               }
@@ -958,28 +821,36 @@
         "type": "object"
       },
       "Envelope_ApplicationView": {
+        "description": "Successful API response envelope.",
         "properties": {
           "data": {
+            "description": "Public application state returned by the API.",
             "properties": {
               "application": {
-                "$ref": "#/components/schemas/NormalizedApplication"
+                "$ref": "#/components/schemas/NormalizedApplication",
+                "description": "Normalized application manifest."
               },
               "created_at_ms": {
+                "description": "Creation timestamp in Unix milliseconds.",
                 "format": "int64",
                 "type": "integer"
               },
               "delete_intent": {
+                "description": "Whether deletion has been requested.",
                 "type": "boolean"
               },
               "generation": {
+                "description": "Monotonic application generation.",
                 "format": "int64",
                 "minimum": 1,
                 "type": "integer"
               },
               "spec_hash": {
+                "description": "Hash of the normalized desired specification.",
                 "type": "string"
               },
               "updated_at_ms": {
+                "description": "Last update timestamp in Unix milliseconds.",
                 "format": "int64",
                 "type": "integer"
               }
@@ -1001,29 +872,36 @@
         "type": "object"
       },
       "Envelope_OperationView": {
+        "description": "Successful API response envelope.",
         "properties": {
           "data": {
+            "description": "Asynchronous operation and its execution steps.",
             "properties": {
               "application_id": {
+                "description": "Stable application identifier.",
                 "type": "string"
               },
               "created_at_ms": {
+                "description": "Creation timestamp in Unix milliseconds.",
                 "format": "int64",
                 "type": "integer"
               },
               "error_code": {
+                "description": "Stable failure code, when present.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
               "error_message": {
+                "description": "Safe failure message, when present.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
               "finished_at_ms": {
+                "description": "Completion timestamp in Unix milliseconds.",
                 "format": "int64",
                 "type": [
                   "integer",
@@ -1031,17 +909,21 @@
                 ]
               },
               "generation": {
+                "description": "Application generation associated with the operation.",
                 "format": "int64",
                 "minimum": 1,
                 "type": "integer"
               },
               "id": {
+                "description": "Stable operation identifier.",
                 "type": "string"
               },
               "kind": {
+                "description": "Machine-readable operation kind.",
                 "type": "string"
               },
               "started_at_ms": {
+                "description": "Start timestamp in Unix milliseconds.",
                 "format": "int64",
                 "type": [
                   "integer",
@@ -1049,15 +931,18 @@
                 ]
               },
               "state": {
+                "description": "Machine-readable operation state.",
                 "type": "string"
               },
               "steps": {
+                "description": "Ordered operation steps.",
                 "items": {
                   "$ref": "#/components/schemas/OperationStepView"
                 },
                 "type": "array"
               },
               "updated_at_ms": {
+                "description": "Last update timestamp in Unix milliseconds.",
                 "format": "int64",
                 "type": "integer"
               }
@@ -1081,31 +966,41 @@
         "type": "object"
       },
       "Envelope_Page_ApplicationView": {
+        "description": "Successful API response envelope.",
         "properties": {
           "data": {
+            "description": "Cursor-paginated API response.",
             "properties": {
               "items": {
+                "description": "Items in this page.",
                 "items": {
+                  "description": "Public application state returned by the API.",
                   "properties": {
                     "application": {
-                      "$ref": "#/components/schemas/NormalizedApplication"
+                      "$ref": "#/components/schemas/NormalizedApplication",
+                      "description": "Normalized application manifest."
                     },
                     "created_at_ms": {
+                      "description": "Creation timestamp in Unix milliseconds.",
                       "format": "int64",
                       "type": "integer"
                     },
                     "delete_intent": {
+                      "description": "Whether deletion has been requested.",
                       "type": "boolean"
                     },
                     "generation": {
+                      "description": "Monotonic application generation.",
                       "format": "int64",
                       "minimum": 1,
                       "type": "integer"
                     },
                     "spec_hash": {
+                      "description": "Hash of the normalized desired specification.",
                       "type": "string"
                     },
                     "updated_at_ms": {
+                      "description": "Last update timestamp in Unix milliseconds.",
                       "format": "int64",
                       "type": "integer"
                     }
@@ -1123,6 +1018,7 @@
                 "type": "array"
               },
               "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
                 "type": [
                   "string",
                   "null"
@@ -1141,16 +1037,21 @@
         "type": "object"
       },
       "Envelope_PlanView": {
+        "description": "Successful API response envelope.",
         "properties": {
           "data": {
+            "description": "Dry-run plan returned by the API.",
             "properties": {
               "application_id": {
+                "description": "Stable application identifier.",
                 "type": "string"
               },
               "plan": {
-                "$ref": "#/components/schemas/Plan"
+                "$ref": "#/components/schemas/Plan",
+                "description": "Ordered runtime plan."
               },
               "proposed_generation": {
+                "description": "Generation that would be created.",
                 "format": "int64",
                 "minimum": 1,
                 "type": "integer"
@@ -1169,54 +1070,22 @@
         ],
         "type": "object"
       },
-      "Envelope_SystemCapabilities": {
-        "properties": {
-          "data": {
-            "properties": {
-              "persistence": {
-                "type": "boolean"
-              },
-              "reason": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "runtime_execution": {
-                "type": "boolean"
-              },
-              "runtime_observation": {
-                "type": "boolean"
-              },
-              "source_resolution": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "persistence",
-              "source_resolution",
-              "runtime_observation",
-              "runtime_execution"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "data"
-        ],
-        "type": "object"
-      },
       "Envelope_SystemStatus": {
+        "description": "Successful API response envelope.",
         "properties": {
           "data": {
+            "description": "Current control-plane status.",
             "properties": {
               "api_version": {
+                "description": "Version of the exposed API.",
                 "type": "string"
               },
               "instance_id": {
+                "description": "Control-plane instance identifier.",
                 "type": "string"
               },
               "status": {
+                "description": "Machine-readable service status.",
                 "type": "string"
               }
             },
@@ -1234,15 +1103,21 @@
         "type": "object"
       },
       "ErrorBody": {
+        "description": "Structured error returned by the API.",
         "properties": {
           "code": {
+            "description": "Stable machine-readable error code.",
             "type": "string"
           },
-          "details": {},
+          "details": {
+            "description": "Optional structured error details."
+          },
           "message": {
+            "description": "Safe human-readable error message.",
             "type": "string"
           },
           "request_id": {
+            "description": "Server-generated request identifier.",
             "type": "string"
           }
         },
@@ -1255,8 +1130,10 @@
       },
       "ExpectedGeneration": {
         "additionalProperties": false,
+        "description": "Request carrying an optimistic-concurrency generation.",
         "properties": {
           "expected_generation": {
+            "description": "Generation that must still be current.",
             "format": "int64",
             "minimum": 1,
             "type": "integer"
@@ -1268,23 +1145,29 @@
         "type": "object"
       },
       "HealthCheck": {
+        "description": "Canonical service health check.",
         "oneOf": [
           {
+            "description": "HTTP health endpoint check.",
             "properties": {
               "interval_seconds": {
+                "description": "Probe interval in seconds.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
               },
               "path": {
+                "description": "HTTP path to probe.",
                 "type": "string"
               },
               "port": {
+                "description": "Container port to probe.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
               },
               "timeout_seconds": {
+                "description": "Probe timeout in seconds.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
@@ -1306,19 +1189,23 @@
             "type": "object"
           },
           {
+            "description": "Executable command health check.",
             "properties": {
               "command": {
+                "description": "Command and arguments to execute.",
                 "items": {
                   "type": "string"
                 },
                 "type": "array"
               },
               "interval_seconds": {
+                "description": "Probe interval in seconds.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
               },
               "timeout_seconds": {
+                "description": "Probe timeout in seconds.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
@@ -1341,23 +1228,29 @@
         ]
       },
       "HealthCheckInput": {
+        "description": "User-declared container health check.",
         "oneOf": [
           {
+            "description": "HTTP health endpoint check.",
             "properties": {
               "interval_seconds": {
+                "description": "Probe interval in seconds.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
               },
               "path": {
+                "description": "HTTP path to probe.",
                 "type": "string"
               },
               "port": {
+                "description": "Container port to probe.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
               },
               "timeout_seconds": {
+                "description": "Probe timeout in seconds.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
@@ -1376,19 +1269,23 @@
             "type": "object"
           },
           {
+            "description": "Executable command health check.",
             "properties": {
               "command": {
+                "description": "Command and arguments to execute.",
                 "items": {
                   "type": "string"
                 },
                 "type": "array"
               },
               "interval_seconds": {
+                "description": "Probe interval in seconds.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
               },
               "timeout_seconds": {
+                "description": "Probe timeout in seconds.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
@@ -1410,8 +1307,10 @@
       },
       "Metadata": {
         "additionalProperties": false,
+        "description": "Canonical application metadata.",
         "properties": {
           "name": {
+            "description": "User-facing application name.",
             "type": "string"
           }
         },
@@ -1422,8 +1321,10 @@
       },
       "MetadataInput": {
         "additionalProperties": false,
+        "description": "User-provided application metadata.",
         "properties": {
           "name": {
+            "description": "User-facing application name.",
             "type": "string"
           }
         },
@@ -1434,14 +1335,18 @@
       },
       "Mount": {
         "additionalProperties": false,
+        "description": "Canonical persistent volume mount.",
         "properties": {
           "read_only": {
+            "description": "Whether the mount is read-only.",
             "type": "boolean"
           },
           "target": {
+            "description": "Container target path.",
             "type": "string"
           },
           "volume": {
+            "description": "Referenced logical volume name.",
             "type": "string"
           }
         },
@@ -1454,14 +1359,18 @@
       },
       "MountInput": {
         "additionalProperties": false,
+        "description": "A persistent volume mount in a service.",
         "properties": {
           "read_only": {
+            "description": "Whether the mount is read-only.",
             "type": "boolean"
           },
           "target": {
+            "description": "Container target path.",
             "type": "string"
           },
           "volume": {
+            "description": "Referenced logical volume name.",
             "type": "string"
           }
         },
@@ -1476,19 +1385,24 @@
         "description": "Canonical desired application plus persistence-assigned identity.",
         "properties": {
           "api_version": {
+            "description": "API version string.",
             "type": "string"
           },
           "id": {
-            "$ref": "#/components/schemas/ApplicationId"
+            "$ref": "#/components/schemas/ApplicationId",
+            "description": "Stable application identity."
           },
           "kind": {
+            "description": "Resource kind string.",
             "type": "string"
           },
           "metadata": {
-            "$ref": "#/components/schemas/Metadata"
+            "$ref": "#/components/schemas/Metadata",
+            "description": "Canonical metadata."
           },
           "spec": {
-            "$ref": "#/components/schemas/ApplicationSpec"
+            "$ref": "#/components/schemas/ApplicationSpec",
+            "description": "Canonical resource specification."
           }
         },
         "required": [
@@ -1501,39 +1415,48 @@
         "type": "object"
       },
       "OperationStepView": {
+        "description": "One step in an asynchronous operation.",
         "properties": {
+          "action": {
+            "description": "Stable action name.",
+            "type": "string"
+          },
           "attempt": {
+            "description": "Number of execution attempts.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
           },
           "error_code": {
+            "description": "Stable failure code, when present.",
             "type": [
               "string",
               "null"
             ]
           },
           "error_message": {
+            "description": "Safe failure message, when present.",
             "type": [
               "string",
               "null"
             ]
           },
           "id": {
-            "type": "string"
-          },
-          "kind": {
+            "description": "Stable step identifier.",
             "type": "string"
           },
           "position": {
+            "description": "Position in the operation plan.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
           },
           "state": {
+            "description": "Machine-readable step state.",
             "type": "string"
           },
           "updated_at_ms": {
+            "description": "Last update timestamp in Unix milliseconds.",
             "format": "int64",
             "type": "integer"
           }
@@ -1541,7 +1464,7 @@
         "required": [
           "id",
           "position",
-          "kind",
+          "action",
           "state",
           "attempt",
           "updated_at_ms"
@@ -1549,27 +1472,33 @@
         "type": "object"
       },
       "OperationView": {
+        "description": "Asynchronous operation and its execution steps.",
         "properties": {
           "application_id": {
+            "description": "Stable application identifier.",
             "type": "string"
           },
           "created_at_ms": {
+            "description": "Creation timestamp in Unix milliseconds.",
             "format": "int64",
             "type": "integer"
           },
           "error_code": {
+            "description": "Stable failure code, when present.",
             "type": [
               "string",
               "null"
             ]
           },
           "error_message": {
+            "description": "Safe failure message, when present.",
             "type": [
               "string",
               "null"
             ]
           },
           "finished_at_ms": {
+            "description": "Completion timestamp in Unix milliseconds.",
             "format": "int64",
             "type": [
               "integer",
@@ -1577,17 +1506,21 @@
             ]
           },
           "generation": {
+            "description": "Application generation associated with the operation.",
             "format": "int64",
             "minimum": 1,
             "type": "integer"
           },
           "id": {
+            "description": "Stable operation identifier.",
             "type": "string"
           },
           "kind": {
+            "description": "Machine-readable operation kind.",
             "type": "string"
           },
           "started_at_ms": {
+            "description": "Start timestamp in Unix milliseconds.",
             "format": "int64",
             "type": [
               "integer",
@@ -1595,15 +1528,18 @@
             ]
           },
           "state": {
+            "description": "Machine-readable operation state.",
             "type": "string"
           },
           "steps": {
+            "description": "Ordered operation steps.",
             "items": {
               "$ref": "#/components/schemas/OperationStepView"
             },
             "type": "array"
           },
           "updated_at_ms": {
+            "description": "Last update timestamp in Unix milliseconds.",
             "format": "int64",
             "type": "integer"
           }
@@ -1622,21 +1558,25 @@
       },
       "Plan": {
         "additionalProperties": false,
+        "description": "Ordered runtime plan and its diagnostics.",
         "properties": {
           "actions": {
+            "description": "Ordered actions to execute.",
             "items": {
               "$ref": "#/components/schemas/PlanAction"
             },
             "type": "array"
           },
           "diagnostics": {
+            "description": "Diagnostics discovered during planning.",
             "items": {
               "$ref": "#/components/schemas/PlanDiagnostic"
             },
             "type": "array"
           },
           "summary": {
-            "$ref": "#/components/schemas/PlanSummary"
+            "$ref": "#/components/schemas/PlanSummary",
+            "description": "Aggregate action counts."
           }
         },
         "required": [
@@ -1648,23 +1588,30 @@
       },
       "PlanAction": {
         "additionalProperties": false,
+        "description": "One ordered action in a runtime plan.",
         "properties": {
           "destructive": {
+            "description": "Whether the action is destructive.",
             "type": "boolean"
           },
           "kind": {
-            "$ref": "#/components/schemas/ActionKind"
+            "$ref": "#/components/schemas/ActionKind",
+            "description": "Action details."
           },
           "mutates_runtime": {
+            "description": "Whether the action mutates runtime state.",
             "type": "boolean"
           },
           "reason": {
-            "$ref": "#/components/schemas/ActionReason"
+            "$ref": "#/components/schemas/ActionReason",
+            "description": "Why the action is present."
           },
           "risk": {
-            "$ref": "#/components/schemas/ActionRisk"
+            "$ref": "#/components/schemas/ActionRisk",
+            "description": "Risk classification."
           },
           "sequence": {
+            "description": "Stable action sequence number.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -1682,9 +1629,11 @@
       },
       "PlanApplicationRequest": {
         "additionalProperties": false,
+        "description": "Request to preview creation of an application.",
         "properties": {
           "manifest": {
-            "$ref": "#/components/schemas/ApplicationManifest"
+            "$ref": "#/components/schemas/ApplicationManifest",
+            "description": "Application manifest to plan."
           }
         },
         "required": [
@@ -1694,21 +1643,27 @@
       },
       "PlanDiagnostic": {
         "additionalProperties": false,
+        "description": "A planner diagnostic attached to a resource.",
         "properties": {
           "blocking": {
+            "description": "Whether the diagnostic blocks execution.",
             "type": "boolean"
           },
           "code": {
+            "description": "Stable machine-readable code.",
             "type": "string"
           },
           "message": {
+            "description": "Safe human-readable explanation.",
             "type": "string"
           },
           "resource": {
+            "description": "Resource associated with the diagnostic.",
             "type": "string"
           },
           "severity": {
-            "$ref": "#/components/schemas/DiagnosticSeverity"
+            "$ref": "#/components/schemas/DiagnosticSeverity",
+            "description": "Diagnostic severity."
           }
         },
         "required": [
@@ -1722,12 +1677,15 @@
       },
       "PlanSummary": {
         "additionalProperties": false,
+        "description": "Aggregate counts for a generated plan.",
         "properties": {
           "action_count": {
+            "description": "Total action count.",
             "minimum": 0,
             "type": "integer"
           },
           "blocking_conflicts": {
+            "description": "Count of blocking ownership conflicts.",
             "minimum": 0,
             "type": "integer"
           },
@@ -1736,16 +1694,19 @@
               "minimum": 0,
               "type": "integer"
             },
+            "description": "Action counts grouped by stable action name.",
             "propertyNames": {
               "type": "string"
             },
             "type": "object"
           },
           "destructive_count": {
+            "description": "Count of destructive actions.",
             "minimum": 0,
             "type": "integer"
           },
           "mutation_count": {
+            "description": "Count of runtime mutations.",
             "minimum": 0,
             "type": "integer"
           }
@@ -1760,14 +1721,18 @@
         "type": "object"
       },
       "PlanView": {
+        "description": "Dry-run plan returned by the API.",
         "properties": {
           "application_id": {
+            "description": "Stable application identifier.",
             "type": "string"
           },
           "plan": {
-            "$ref": "#/components/schemas/Plan"
+            "$ref": "#/components/schemas/Plan",
+            "description": "Ordered runtime plan."
           },
           "proposed_generation": {
+            "description": "Generation that would be created.",
             "format": "int64",
             "minimum": 1,
             "type": "integer"
@@ -1782,14 +1747,17 @@
       },
       "ReplaceApplicationRequest": {
         "additionalProperties": false,
+        "description": "Request to replace an application at an expected generation.",
         "properties": {
           "expected_generation": {
+            "description": "Generation that must still be current.",
             "format": "int64",
             "minimum": 1,
             "type": "integer"
           },
           "manifest": {
-            "$ref": "#/components/schemas/ApplicationManifest"
+            "$ref": "#/components/schemas/ApplicationManifest",
+            "description": "Replacement application manifest."
           }
         },
         "required": [
@@ -1800,14 +1768,17 @@
       },
       "ReplacePlanRequest": {
         "additionalProperties": false,
+        "description": "Request to preview replacing an application.",
         "properties": {
           "expected_generation": {
+            "description": "Generation that the plan is based on.",
             "format": "int64",
             "minimum": 1,
             "type": "integer"
           },
           "manifest": {
-            "$ref": "#/components/schemas/ApplicationManifest"
+            "$ref": "#/components/schemas/ApplicationManifest",
+            "description": "Replacement application manifest."
           }
         },
         "required": [
@@ -1817,13 +1788,17 @@
         "type": "object"
       },
       "ResolvedSource": {
+        "description": "Immutable image resolution used by the Docker runtime.",
         "oneOf": [
           {
+            "description": "A requested image resolved to an immutable repository digest.",
             "properties": {
               "digest_reference": {
+                "description": "The immutable image reference used at runtime.",
                 "type": "string"
               },
               "requested": {
+                "description": "The image reference requested by the user.",
                 "type": "string"
               },
               "type": {
@@ -1839,55 +1814,15 @@
               "type"
             ],
             "type": "object"
-          },
-          {
-            "properties": {
-              "commit": {
-                "type": "string"
-              },
-              "context": {
-                "type": "string"
-              },
-              "digest_reference": {
-                "type": "string"
-              },
-              "dockerfile": {
-                "type": "string"
-              },
-              "registry_reference": {
-                "type": "string"
-              },
-              "repository": {
-                "type": "string"
-              },
-              "requested_reference": {
-                "type": "string"
-              },
-              "type": {
-                "enum": [
-                  "git"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository",
-              "requested_reference",
-              "commit",
-              "context",
-              "dockerfile",
-              "registry_reference",
-              "digest_reference",
-              "type"
-            ],
-            "type": "object"
           }
         ]
       },
       "ResourceLimits": {
         "additionalProperties": false,
+        "description": "Canonical CPU and memory limits.",
         "properties": {
           "cpu_millis": {
+            "description": "CPU limit in millicores.",
             "format": "int32",
             "minimum": 0,
             "type": [
@@ -1896,8 +1831,10 @@
             ]
           },
           "memory_bytes": {
+            "description": "Memory limit in bytes.",
             "format": "int64",
-            "minimum": 0,
+            "maximum": 9223372036854775807,
+            "minimum": 1,
             "type": [
               "integer",
               "null"
@@ -1908,8 +1845,10 @@
       },
       "ResourceLimitsInput": {
         "additionalProperties": false,
+        "description": "Optional CPU and memory limits for a service.",
         "properties": {
           "cpu_millis": {
+            "description": "CPU limit in millicores.",
             "format": "int32",
             "minimum": 0,
             "type": [
@@ -1918,8 +1857,10 @@
             ]
           },
           "memory_bytes": {
+            "description": "Memory limit in bytes.",
             "format": "int64",
-            "minimum": 0,
+            "maximum": 9223372036854775807,
+            "minimum": 1,
             "type": [
               "integer",
               "null"
@@ -1928,101 +1869,19 @@
         },
         "type": "object"
       },
-      "Route": {
-        "additionalProperties": false,
-        "properties": {
-          "host": {
-            "type": "string"
-          },
-          "port": {
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "service": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "host",
-          "service",
-          "port"
-        ],
-        "type": "object"
-      },
-      "RouteInput": {
-        "additionalProperties": false,
-        "properties": {
-          "host": {
-            "type": "string"
-          },
-          "port": {
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "service": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "host",
-          "service",
-          "port"
-        ],
-        "type": "object"
-      },
-      "SecretReference": {
-        "additionalProperties": false,
-        "properties": {
-          "mode": {
-            "type": "string"
-          },
-          "source": {
-            "type": "string"
-          },
-          "target": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "source",
-          "target",
-          "mode"
-        ],
-        "type": "object"
-      },
-      "SecretReferenceInput": {
-        "additionalProperties": false,
-        "properties": {
-          "mode": {
-            "type": "string"
-          },
-          "source": {
-            "type": "string"
-          },
-          "target": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "source"
-        ],
-        "type": "object"
-      },
       "Service": {
         "additionalProperties": false,
+        "description": "Canonical service definition.",
         "properties": {
           "arguments": {
+            "description": "Arguments passed to the command.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "command": {
+            "description": "Container entrypoint command.",
             "items": {
               "type": "string"
             },
@@ -2032,6 +1891,7 @@
             "additionalProperties": {
               "type": "string"
             },
+            "description": "Environment variables keyed by name.",
             "propertyNames": {
               "type": "string"
             },
@@ -2043,28 +1903,24 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/HealthCheck"
+                "$ref": "#/components/schemas/HealthCheck",
+                "description": "Optional health check."
               }
             ]
           },
           "mounts": {
+            "description": "Persistent volume mounts.",
             "items": {
               "$ref": "#/components/schemas/Mount"
             },
             "type": "array"
           },
           "name": {
+            "description": "Logical service name.",
             "type": "string"
           },
-          "ports": {
-            "items": {
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "type": "array"
-          },
           "replicas": {
+            "description": "Desired replica count.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -2075,18 +1931,14 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/ResourceLimits"
+                "$ref": "#/components/schemas/ResourceLimits",
+                "description": "Optional CPU and memory limits."
               }
             ]
           },
-          "secrets": {
-            "items": {
-              "$ref": "#/components/schemas/SecretReference"
-            },
-            "type": "array"
-          },
           "source": {
-            "$ref": "#/components/schemas/Source"
+            "$ref": "#/components/schemas/Source",
+            "description": "Prebuilt image source."
           }
         },
         "required": [
@@ -2096,22 +1948,23 @@
           "environment",
           "command",
           "arguments",
-          "ports",
-          "mounts",
-          "secrets"
+          "mounts"
         ],
         "type": "object"
       },
       "ServiceInput": {
         "additionalProperties": false,
+        "description": "User-declared application service.",
         "properties": {
           "arguments": {
+            "description": "Arguments passed to the command.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "command": {
+            "description": "Container entrypoint command.",
             "items": {
               "type": "string"
             },
@@ -2121,6 +1974,7 @@
             "additionalProperties": {
               "type": "string"
             },
+            "description": "Environment variables keyed by name.",
             "propertyNames": {
               "type": "string"
             },
@@ -2132,28 +1986,24 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/HealthCheckInput"
+                "$ref": "#/components/schemas/HealthCheckInput",
+                "description": "Optional container health check."
               }
             ]
           },
           "mounts": {
+            "description": "Persistent volume mounts.",
             "items": {
               "$ref": "#/components/schemas/MountInput"
             },
             "type": "array"
           },
           "name": {
+            "description": "Logical service name.",
             "type": "string"
           },
-          "ports": {
-            "items": {
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "type": "array"
-          },
           "replicas": {
+            "description": "Desired replica count.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -2164,18 +2014,14 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/ResourceLimitsInput"
+                "$ref": "#/components/schemas/ResourceLimitsInput",
+                "description": "Optional CPU and memory limits."
               }
             ]
           },
-          "secrets": {
-            "items": {
-              "$ref": "#/components/schemas/SecretReferenceInput"
-            },
-            "type": "array"
-          },
           "source": {
-            "$ref": "#/components/schemas/SourceInput"
+            "$ref": "#/components/schemas/SourceInput",
+            "description": "Prebuilt container image source."
           }
         },
         "required": [
@@ -2184,14 +2030,14 @@
         ],
         "type": "object"
       },
-      "Sha256Digest": {
-        "type": "string"
-      },
       "Source": {
+        "description": "Canonical prebuilt image source.",
         "oneOf": [
           {
+            "description": "An image reference resolved by the Docker adapter before persistence.",
             "properties": {
               "image": {
+                "description": "Image reference requested by the user.",
                 "type": "string"
               },
               "type": {
@@ -2203,36 +2049,6 @@
             },
             "required": [
               "image",
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "context": {
-                "type": "string"
-              },
-              "dockerfile": {
-                "type": "string"
-              },
-              "reference": {
-                "type": "string"
-              },
-              "repository": {
-                "type": "string"
-              },
-              "type": {
-                "enum": [
-                  "git"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository",
-              "reference",
-              "context",
-              "dockerfile",
               "type"
             ],
             "type": "object"
@@ -2240,11 +2056,13 @@
         ]
       },
       "SourceInput": {
-        "description": "Exactly one supported service source. The tag makes image/Git exhaustive.",
+        "description": "The exhaustive set of deployable service sources.",
         "oneOf": [
           {
+            "description": "Pull a prebuilt image from a registry.",
             "properties": {
               "image": {
+                "description": "Image reference.",
                 "type": "string"
               },
               "type": {
@@ -2259,74 +2077,22 @@
               "type"
             ],
             "type": "object"
-          },
-          {
-            "properties": {
-              "context": {
-                "type": "string"
-              },
-              "dockerfile": {
-                "type": "string"
-              },
-              "reference": {
-                "type": "string"
-              },
-              "repository": {
-                "type": "string"
-              },
-              "type": {
-                "enum": [
-                  "git"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository",
-              "type"
-            ],
-            "type": "object"
           }
         ]
       },
-      "SystemCapabilities": {
-        "properties": {
-          "persistence": {
-            "type": "boolean"
-          },
-          "reason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "runtime_execution": {
-            "type": "boolean"
-          },
-          "runtime_observation": {
-            "type": "boolean"
-          },
-          "source_resolution": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "persistence",
-          "source_resolution",
-          "runtime_observation",
-          "runtime_execution"
-        ],
-        "type": "object"
-      },
       "SystemStatus": {
+        "description": "Current control-plane status.",
         "properties": {
           "api_version": {
+            "description": "Version of the exposed API.",
             "type": "string"
           },
           "instance_id": {
+            "description": "Control-plane instance identifier.",
             "type": "string"
           },
           "status": {
+            "description": "Machine-readable service status.",
             "type": "string"
           }
         },
@@ -2339,8 +2105,10 @@
       },
       "Volume": {
         "additionalProperties": false,
+        "description": "Canonical named volume.",
         "properties": {
           "name": {
+            "description": "Logical volume name.",
             "type": "string"
           }
         },
@@ -2351,8 +2119,10 @@
       },
       "VolumeInput": {
         "additionalProperties": false,
+        "description": "User-declared named volume.",
         "properties": {
           "name": {
+            "description": "Logical volume name.",
             "type": "string"
           }
         },
@@ -3016,86 +2786,6 @@
         "summary": "Replace an application"
       }
     },
-    "/api/v1/applications/{id}/events": {
-      "get": {
-        "operationId": "watchApplication",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 8,
-              "type": "string"
-            }
-          },
-          {
-            "description": "Last durable/current-state event ID received by the client.",
-            "in": "header",
-            "name": "Last-Event-ID",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/event-stream": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Server-Sent Events with durable/current-state IDs and bounded replay reset events."
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Watch application status events",
-        "x-sse-keepalive-seconds": 15
-      }
-    },
     "/api/v1/applications/{id}/plan": {
       "post": {
         "operationId": "planApplicationReplace",
@@ -3464,7 +3154,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "maxLength": 64,
+              "maxLength": 128,
               "minLength": 8,
               "type": "string"
             }
@@ -3513,105 +3203,6 @@
           }
         },
         "summary": "Get an operation"
-      }
-    },
-    "/api/v1/operations/{id}/events": {
-      "get": {
-        "operationId": "watchOperation",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 8,
-              "type": "string"
-            }
-          },
-          {
-            "description": "Last durable/current-state event ID received by the client.",
-            "in": "header",
-            "name": "Last-Event-ID",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/event-stream": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Server-Sent Events with durable/current-state IDs and bounded replay reset events."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Watch operation events",
-        "x-sse-keepalive-seconds": 15,
-        "x-sse-terminal-closes": true
-      }
-    },
-    "/api/v1/system/capabilities": {
-      "get": {
-        "operationId": "systemCapabilities",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_SystemCapabilities"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Get daemon capabilities"
       }
     },
     "/api/v1/system/status": {

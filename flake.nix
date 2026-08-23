@@ -29,8 +29,8 @@
               pkgs.pkg-config
               pkgs.rustPlatform.bindgenHook
             ];
-            # Compile the foundation SQLx SQLite query macros against a
-            # disposable database. Real migration metadata arrives in Plan 04.
+            # Compile SQLx SQLite query macros against a disposable database
+            # provisioned by the daemon build script.
             DATABASE_URL = "sqlite::memory:";
             doCheck = true;
           };

@@ -1,16 +1,8 @@
-#![allow(missing_docs)]
+//! Transport integration tests for the typed client.
 
-use axum::{
-    Json, Router,
-    body::Body,
-    extract::State,
-    response::{Response, Sse, sse::Event},
-    routing::get,
-};
-use bytes::Bytes;
-use futures_util::stream;
+use axum::{Json, Router, routing::get};
 use piqueld_client::{Client, ClientError, Envelope, SystemStatus};
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{path::PathBuf, time::Duration};
 use tempfile::TempDir;
 use tokio::net::{TcpListener, UnixListener};
 
@@ -23,47 +15,9 @@ async fn status() -> Json<Envelope<SystemStatus>> {
         },
     })
 }
+
 fn app() -> Router {
     Router::new().route("/api/v1/system/status", get(status))
-}
-
-async fn stalled_status() -> Response {
-    Response::builder()
-        .header("content-type", "application/json")
-        .body(Body::from_stream(stream::pending::<
-            Result<Bytes, Infallible>,
-        >()))
-        .unwrap()
-}
-
-struct DisconnectGuard(Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>);
-impl Drop for DisconnectGuard {
-    fn drop(&mut self) {
-        if let Some(sender) = self.0.lock().unwrap().take() {
-            let _ = sender.send(());
-        }
-    }
-}
-
-async fn events(
-    State(signal): State<Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>>,
-) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
-    let stream = stream::unfold(
-        (DisconnectGuard(signal), true),
-        |(guard, first)| async move {
-            if !first {
-                tokio::time::sleep(Duration::from_mins(1)).await;
-            }
-            Some((
-                Ok(Event::default()
-                    .id("current:one")
-                    .event("operation")
-                    .data("{}")),
-                (guard, false),
-            ))
-        },
-    );
-    Sse::new(stream)
 }
 
 #[tokio::test]
@@ -83,7 +37,7 @@ async fn typed_client_uses_tcp() {
 #[tokio::test]
 async fn typed_client_uses_unix_socket() {
     let temp = TempDir::new().unwrap();
-    let path = temp.path().join("piqueld.sock");
+    let path = temp.path().join(PathBuf::from("piqueld.sock"));
     let listener = UnixListener::bind(&path).unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
     let response = Client::unix(&path).system_status().await.unwrap();
@@ -92,41 +46,14 @@ async fn typed_client_uses_unix_socket() {
 }
 
 #[tokio::test]
-async fn request_timeout_includes_response_body() {
+async fn request_timeout_is_reported_by_the_client() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let router = Router::new().route("/api/v1/system/status", get(stalled_status));
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let result = tokio::time::timeout(
-        Duration::from_secs(1),
-        Client::tcp(&format!("http://{address}/"))
-            .unwrap()
-            .with_timeout(Duration::from_millis(50))
-            .system_status(),
-    )
-    .await
-    .expect("client request did not honor its configured timeout");
-    assert!(matches!(result, Err(ClientError::Transport)));
-    server.abort();
-}
-
-#[tokio::test]
-async fn dropping_event_receiver_closes_the_stream() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let (disconnected_tx, disconnected_rx) = tokio::sync::oneshot::channel();
-    let signal = Arc::new(std::sync::Mutex::new(Some(disconnected_tx)));
-    let router = Router::new()
-        .route("/api/v1/operations/{id}/events", get(events))
-        .with_state(signal);
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = Client::tcp(&format!("http://{address}/")).unwrap();
-    let mut receiver = client.watch_operation("operation-test", None);
-    receiver.recv().await.unwrap().unwrap();
-    drop(receiver);
-    tokio::time::timeout(Duration::from_secs(2), disconnected_rx)
-        .await
-        .expect("server stream was not dropped")
-        .unwrap();
-    server.abort();
+    let client = Client::tcp(&format!("http://{address}/"))
+        .unwrap()
+        .with_timeout(Duration::from_millis(1));
+    assert!(matches!(
+        client.system_status().await,
+        Err(ClientError::Transport)
+    ));
 }

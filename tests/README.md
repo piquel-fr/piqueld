@@ -1,6 +1,6 @@
 # Cross-cutting tests
 
-Workspace integration and NixOS VM tests will live here as their implementing
-increments add real behavior. Crate-specific integration tests remain beside their
-crate so `cargo test --workspace` discovers them naturally.
-
+Focused integration tests live beside the crate that owns the seam they exercise.
+The daemon tests cover a fresh SQLite lifecycle, the real Docker abstraction with
+an in-memory fake, and an opt-in isolated Docker qualification. The client tests
+cover the loopback TCP and Unix-socket transports.

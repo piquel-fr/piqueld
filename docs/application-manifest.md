@@ -1,44 +1,54 @@
-# Application manifest contract
+# Application manifest
 
-The prototype accepts strict TOML and JSON `piqueld.dev/v1alpha1` `Application`
-documents. Unknown fields and unsupported source types are errors. Names are 1–63
-lowercase ASCII letters, digits, or hyphens; they start with a letter and cannot end
-with a hyphen. Route hosts are fully qualified DNS hostnames. Ports are 1–65535 and
-replicas are 1–100. Every application declares at least one service.
+The supported document is a strict TOML or JSON
+`piqueld.dev/v1alpha1` `Application`. Unknown fields and unsupported source
+types are errors. The only service source is a prebuilt Docker/OCI image.
 
-Container mount targets are normalized absolute paths below `/`; volume and secret
-targets may not collide. Git context and Dockerfile paths are normalized relative
-paths and cannot contain parent traversal or backslashes. Only HTTP(S) Git
-repositories without embedded credentials are supported; SSH, build secrets,
-bind/host mounts, placement, and raw runtime/proxy options are rejected by the
-strict schema. Git repository query strings and fragments are rejected because they
-commonly carry credentials. Image values use Docker/OCI registry-reference syntax;
-URL schemes, user information, malformed tags, and malformed digests are rejected.
-Git references follow safe Git ref syntax; source and container paths also enforce
-conservative total and component length bounds.
+```toml
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
 
-Duplicate service ports normalize to one port. Secret modes use a leading zero and
-three octal permission digits, grant at least one read bit, and grant no write bits.
-Runtime strings and paths reject NUL or other control data where the downstream
-runtime cannot represent it safely. HTTP health paths are absolute normalized paths,
-and a resource-limit object must set CPU, memory, or both.
+[metadata]
+name = "notes"
 
-Defaults are replicas `1`, Git reference `main`, context `.`, Dockerfile
-`Dockerfile`, secret mode `0400`, and HTTP health-check path `/health`, interval 10s,
-timeout 3s. Services, volumes, routes, mounts, secrets, and ports are canonicalized;
-environment maps are key ordered. Command and argument order is preserved.
-Strict decode failures report the deepest known schema path without reflecting
-unknown, user-controlled field names into errors.
+[[spec.services]]
+name = "web"
+replicas = 1
 
-The specification hash is SHA-256 over a versioned canonical JSON envelope after
-validation, defaults, and normalization. Internal application IDs are assigned and
-persisted separately from editable metadata. Renaming an application therefore does
-not rename its owned resources. Docker and router names contain a truncated readable
-part plus a 12-hex SHA-256 suffix and never exceed 63 bytes.
-Canonical JSON, hashing, and TOML export defensively reapply canonical ordering.
+[spec.services.source]
+type = "image"
+image = "ghcr.io/example/notes:1.4.0"
 
-Manifests contain logical secret names and mount targets only. Secret existence is
-intentionally not checked by the pure parser; callers can inspect
-`logical_secret_references()` and validate those names against persistence later.
-Relative secret targets resolve below `/run/secrets`; collisions are checked against
-that effective path.
+[spec.services.environment]
+RUST_LOG = "info"
+
+[[spec.services.mounts]]
+volume = "data"
+target = "/var/lib/notes"
+
+[[spec.volumes]]
+name = "data"
+```
+
+Services support replicas, environment variables, command and argument arrays,
+health checks, CPU/memory limits, and mounts of declared named volumes. Named
+volumes are retained when an application is deleted. There are no manifest
+fields for builds, source repositories, credentials, secrets, routes, or
+published ports.
+
+Names are 1–63 lowercase ASCII letters, digits, or hyphens; they start with a
+letter and cannot end with a hyphen. Every application has at least one service.
+Image references reject URL schemes, credentials, malformed tags, and malformed
+digests. Mount targets are normalized absolute paths below `/`; environment
+names and runtime strings reject invalid control data. Health-check paths are
+absolute, and resource limits must specify CPU, memory, or both.
+
+Defaults are replicas `1`, empty command and arguments, writable mounts, and
+health-check values of path `/health`, interval `10` seconds, timeout `3`
+seconds, and `3` retries. Services, mounts, volumes, and environment maps are
+canonicalized before hashing. The specification hash is SHA-256 over a
+versioned canonical JSON envelope.
+
+The parser is pure. The Docker runtime resolves each image reference to an
+immutable digest before the application is committed. Resolved runtime state is
+internal persistence data and is not mixed into the public manifest DTOs.

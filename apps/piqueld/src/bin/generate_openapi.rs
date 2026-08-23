@@ -1,4 +1,4 @@
-//! Regenerates the checked-in Plan 05 `OpenAPI` snapshot.
+//! Generates or checks the checked-in API `OpenAPI` snapshot.
 
 use piqueld::api::openapi_document;
 
@@ -6,7 +6,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/openapi-v1.json");
     let mut document = serde_json::to_string_pretty(&openapi_document())?;
     document.push('\n');
-    std::fs::write(&path, document)?;
-    println!("wrote {}", path.display());
+    if std::env::args().any(|argument| argument == "--check") {
+        let existing = std::fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        if existing != document {
+            return Err(format!("{} is out of date", path.display()).into());
+        }
+        println!("{} is up to date", path.display());
+    } else {
+        std::fs::write(&path, document)?;
+        println!("wrote {}", path.display());
+    }
     Ok(())
 }
