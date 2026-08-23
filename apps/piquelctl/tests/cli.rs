@@ -745,14 +745,16 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
         assert_eq!(request.path, "/api/v1/operations/operation-01");
         Reply::json(operation("pending"))
     });
-    let mut command = Command::new(env!("CARGO_BIN_EXE_piquelctl"));
-    if let Endpoint::Tcp(url) = &interrupt_server.endpoint {
-        command.args(["--url", url]);
-    } else {
-        panic!("interrupt fixture uses TCP");
-    }
     let mut output = None;
     for _ in 0..3 {
+        // Rebuild the command each attempt; `Command::args` accumulates, so
+        // reusing one command would append duplicate arguments.
+        let mut command = Command::new(env!("CARGO_BIN_EXE_piquelctl"));
+        if let Endpoint::Tcp(url) = &interrupt_server.endpoint {
+            command.args(["--url", url]);
+        } else {
+            panic!("interrupt fixture uses TCP");
+        }
         let child = command
             .args(["--timeout", "5s", "operation", "operation-01"])
             .stdin(Stdio::null())

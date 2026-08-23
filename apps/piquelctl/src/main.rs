@@ -22,23 +22,33 @@ async fn main() -> ExitCode {
 }
 
 /// Bounds the command by `--timeout` while excluding interactive prompts:
-/// operator think time must not consume the network-phase budget.
+/// operator think time must not consume the network-phase budget. The command
+/// future stays polled even while a prompt is open so its completion and
+/// signal handling keep making progress.
 async fn run_with_timeout(cli: &Cli) -> Result<(), CliError> {
     let command = commands::run(cli);
     tokio::pin!(command);
     let mut deadline = Instant::now() + cli.timeout;
+    // Set while an interactive prompt is open; think time is excluded by
+    // shifting the deadline once the prompt closes again.
+    let mut interaction_started: Option<Instant> = None;
     loop {
-        if support::interaction_active() {
-            let paused_at = Instant::now();
-            support::wait_while_interacting().await;
-            deadline += paused_at.elapsed();
-            continue;
+        match (support::interaction_active(), interaction_started) {
+            (true, None) => interaction_started = Some(Instant::now()),
+            (false, Some(started)) => {
+                deadline += started.elapsed();
+                interaction_started = None;
+            }
+            _ => {}
         }
         tokio::select! {
             result = &mut command => return result,
             // An interaction started or finished; re-evaluate from the top.
             () = support::interaction_changed() => {}
-            () = tokio::time::sleep_until(deadline) => {
+            // The deadline is suspended while an interactive prompt is open.
+            () = tokio::time::sleep_until(deadline),
+                if !support::interaction_active() =>
+            {
                 return Err(timeout_error(cli.timeout));
             }
         }

@@ -41,13 +41,6 @@ pub(crate) async fn interaction_changed() {
     INTERACTION_CHANGED.notified().await;
 }
 
-/// Waits while an interactive prompt is open and resolves once none is.
-pub(crate) async fn wait_while_interacting() {
-    while interaction_active() {
-        interaction_changed().await;
-    }
-}
-
 pub(crate) async fn confirm(yes: bool, prompt: &str) -> Result<()> {
     if yes {
         return Ok(());
