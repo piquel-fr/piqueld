@@ -1,6 +1,6 @@
 # Read-only web dashboard
 
-Plan 06C adds a small client-side-rendered Leptos dashboard. It answers four
+piqueld ships a small client-side-rendered Leptos dashboard. It answers four
 questions: whether the daemon is reachable, which applications exist, what
 their desired and observed state is, and whether each application is converged,
 degraded, or failed. It has no mutation controls; the visible operator
@@ -100,6 +100,6 @@ Safari, or Edge release with WebAssembly, ES modules, Fetch, and standard CSS
 media-query support. Internet Explorer, JavaScript-disabled browsing, and
 older browsers without those primitives are outside the support target.
 
-The advanced Plan 12 UI remains deferred: forms, mutation workflows, secrets,
+The advanced UI remains deferred: forms, mutation workflows, secrets,
 logs and streams, state transfer, authentication, persistence, global state
 machinery, and richer navigation are intentionally not part of this dashboard.

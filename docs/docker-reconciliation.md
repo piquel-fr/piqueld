@@ -1,6 +1,6 @@
 # Docker reconciliation
 
-Plan 06A connects the daemon directly to Docker Engine through Bollard. Startup
+The daemon connects directly to Docker Engine through Bollard. Startup
 requires an active single-node Swarm manager; configuration may opt into
 initializing an inactive local engine. The supported workload is a prebuilt image
 resolved to a digest before persistence.

@@ -2,7 +2,7 @@
 
 `piqueld` uses SQLx's SQLite driver as its sole persistence engine. The current
 product has one baseline migration, `migrations/0001_control_plane.sql`, which
-creates the fresh Plan 06B schema: instance metadata, applications, application
+creates the fresh control-plane schema: instance metadata, applications, application
 status, durable operations, operation steps, and mutation idempotency bindings
 for create, replace, and delete requests.
 

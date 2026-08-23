@@ -9,6 +9,9 @@ build:
 run *ARGS:
     @cargo run --package piquelctl -- {{ARGS}}
 
+daemon *ARGS:
+    @cargo run --package piqueld --bin piqueld -- {{ARGS}}
+
 fmt:
     @cargo fmt --all
 

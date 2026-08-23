@@ -7,13 +7,12 @@ the engine can run a single-node Swarm.
 ## Build and start
 
 ```console
-nix build .#default
-./result/bin/piqueld --config ./result/share/piqueld/piqueld.example.toml
+just build
+just daemon --config config/piqueld.example.toml
 ```
 
-The example keeps the socket and database under a user-owned
-`/run/user/1000/piqueld` data directory, so it does not require root-owned
-`/run` or `/var/lib` paths; adjust `1000` to your UID. The daemon's production
+The example keeps the socket and database under `/tmp/piqueld-dev`, so it does
+not require root-owned `/run` or `/var/lib` directories. The daemon's production
 default is `/etc/piqueld/config.toml`; use `--config` when running as a
 non-root developer.
 
@@ -22,13 +21,13 @@ non-root developer.
 In a second terminal:
 
 ```console
-cargo run --package piquelctl -- --socket /run/user/1000/piqueld/piqueld.sock status
-cargo run --package piquelctl -- --url http://127.0.0.1:7845 status
-cargo run --package piquelctl -- --socket /run/user/1000/piqueld/piqueld.sock plan \
+just run --socket /tmp/piqueld-dev/piqueld.sock status
+just run --url http://127.0.0.1:7845 status
+just run --socket /tmp/piqueld-dev/piqueld.sock plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
-cargo run --package piquelctl -- --socket /run/user/1000/piqueld/piqueld.sock apply \
+just run --socket /tmp/piqueld-dev/piqueld.sock apply \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --yes
-cargo run --package piquelctl -- --socket /run/user/1000/piqueld/piqueld.sock show notes
+just run --socket /tmp/piqueld-dev/piqueld.sock show notes
 ```
 
 `status` reports the daemon version and `--json` produces the same structured
@@ -37,20 +36,18 @@ result as the public API. `apply` waits for the durable operation by default;
 
 ## Dashboard and cleanup
 
-The combined package serves the read-only dashboard from the same daemon
-process. After building that package, open
-`http://127.0.0.1:7845/dashboard/` in a browser and use the overview,
-application list, and detail routes to inspect the same state as `piquelctl`.
-
-The daemon-only package contains no UI assets and serves the API only. The
-real daemon, including `just dev`, still requires access to a local Docker
-Engine and a single-node Swarm.
+The development toolchain serves the read-only dashboard from the same daemon:
+run `just dev` instead of the two commands above and open
+`http://127.0.0.1:8080/dashboard/` in a browser to inspect the overview,
+application list, and detail routes alongside `piquelctl`. Serving the
+dashboard from a release daemon requires the UI assets built by `just ui-build`
+and a configured `server.ui_dir`, as described in [`web-ui.md`](web-ui.md).
 
 When finished, delete the application and note that its named volumes are
 retained:
 
 ```console
-cargo run --package piquelctl -- --socket /run/user/1000/piqueld/piqueld.sock delete notes --yes
+just run --socket /tmp/piqueld-dev/piqueld.sock delete notes --yes
 ```
 
 The retained named volumes are deliberate so deleting an application does not

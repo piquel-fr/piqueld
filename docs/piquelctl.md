@@ -1,6 +1,6 @@
 # `piquelctl`
 
-`piquelctl` is the small operator client for the Plan 06 workflow. It uses the
+`piquelctl` is the small operator client for piqueld. It uses the
 public `piqueld-client` contracts and talks to the daemon over a Unix socket by
 default.
 
