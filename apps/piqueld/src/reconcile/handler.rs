@@ -318,24 +318,15 @@ impl<D: DockerApi> ReconcileHandler<D> {
         if operation.kind == OperationKind::Delete {
             return Ok(());
         }
-        let status = self
+        match self
             .store
-            .status(&operation.application_id)
+            .mark_ready_if_current(&operation.application_id, operation.generation)
             .await
-            .map_err(journal_error)?;
-        if status.state != ApplicationState::Ready {
-            self.store
-                .set_status(
-                    &operation.application_id,
-                    status.state,
-                    ApplicationState::Ready,
-                    Some(operation.generation),
-                    Some("runtime converged"),
-                )
-                .await
-                .map_err(journal_error)?;
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(OperationError::Superseded),
+            Err(error) => Err(journal_error(error)),
         }
-        Ok(())
     }
 
     async fn finish_delete(

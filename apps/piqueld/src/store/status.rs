@@ -4,6 +4,7 @@ use super::{
     ApplicationId, ApplicationState, ApplicationStatus, SqliteStore, StoreError, generation_i64,
     now_ms, valid_bounded_text,
 };
+use sqlx::SqliteConnection;
 
 impl SqliteStore {
     /// Reads the durable lifecycle status for one application.
@@ -43,6 +44,72 @@ impl SqliteStore {
         observed_generation: Option<u64>,
         message: Option<&str>,
     ) -> Result<(), StoreError> {
+        let mut connection = self.connection().await?;
+        Self::set_status_on(&mut connection, id, from, to, observed_generation, message).await
+    }
+
+    /// Applies the readiness transition while `generation` still owns the application.
+    ///
+    /// The generation check and status write share one immediate transaction so a
+    /// concurrent replace or delete cannot interleave between them. Returns
+    /// `Ok(false)` without writing when a newer generation or deletion intent
+    /// owns the application; callers treat that outcome as superseded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the application is missing, its state cannot
+    /// reach ready, or the transaction fails.
+    pub(crate) async fn mark_ready_if_current(
+        &self,
+        id: &ApplicationId,
+        generation: u64,
+    ) -> Result<bool, StoreError> {
+        let expected_generation = generation_i64(generation)?;
+        let id_value = id.as_str();
+        let mut tx = self.begin_immediate().await?;
+        let application = sqlx::query!(
+            r#"SELECT generation AS "generation!",delete_intent AS "delete_intent!" FROM applications WHERE id=?1 AND deleted_at_ms IS NULL"#,
+            id_value
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .ok_or(StoreError::NotFound)?;
+        if application.generation != expected_generation || application.delete_intent == 1 {
+            return Ok(false);
+        }
+        let row = sqlx::query!(
+            r#"SELECT state AS "state!" FROM application_status WHERE application_id=?1"#,
+            id_value
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .ok_or(StoreError::Corrupt)?;
+        let from = ApplicationState::parse(&row.state)?;
+        if from != ApplicationState::Ready {
+            Self::set_status_on(
+                &mut tx,
+                id,
+                from,
+                ApplicationState::Ready,
+                Some(generation),
+                Some("runtime converged"),
+            )
+            .await?;
+        }
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(true)
+    }
+
+    async fn set_status_on(
+        connection: &mut SqliteConnection,
+        id: &ApplicationId,
+        from: ApplicationState,
+        to: ApplicationState,
+        observed_generation: Option<u64>,
+        message: Option<&str>,
+    ) -> Result<(), StoreError> {
         if !from.can_transition_to(to) {
             return Err(StoreError::IllegalTransition);
         }
@@ -60,7 +127,6 @@ impl SqliteStore {
         if message.is_some_and(|value| !valid_bounded_text(value, 2048)) {
             return Err(StoreError::InvalidInput);
         }
-        let mut connection = self.connection().await?;
         let observed_generation = observed_generation.map(generation_i64).transpose()?;
         let to_state = to.as_str();
         let from_state = from.as_str();
@@ -82,7 +148,7 @@ impl SqliteStore {
         if changed == 1 {
             Ok(())
         } else {
-            Err(Self::transition_miss(&mut connection, "application_status", id_value).await?)
+            Err(Self::transition_miss(&mut *connection, "application_status", id_value).await?)
         }
     }
 }
