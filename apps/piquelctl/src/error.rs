@@ -85,6 +85,7 @@ impl From<ClientError> for CliError {
             ClientError::Api { status, error } => {
                 let kind = match status.as_u16() {
                     400 | 404 | 413 | 415 | 422 => ErrorKind::Input,
+                    // 412 has no current producer; kept for forward compatibility.
                     409 | 412 => ErrorKind::Conflict,
                     502..=504 => ErrorKind::Unavailable,
                     _ => ErrorKind::General,

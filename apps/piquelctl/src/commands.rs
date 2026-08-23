@@ -10,6 +10,7 @@ use crate::{
         read_manifest, retry_transport, terminal_operation,
     },
 };
+use futures_util::StreamExt;
 use piqueld_client::{
     ApplicationView, Client, ClientError, ListApplicationsOptions, OperationView, Page, PlanView,
     Source,
@@ -63,11 +64,27 @@ async fn status(cli: &Cli, client: &Client) -> Result<()> {
 
 async fn list(cli: &Cli, client: &Client) -> Result<()> {
     let applications = all_applications(client).await?;
-    let mut rows = Vec::with_capacity(applications.len());
-    for application in applications {
-        let status = client
+    let statuses = futures_util::stream::iter(applications.iter().map(|application| async {
+        client
             .application_status(application.application.id.as_str())
-            .await?;
+            .await
+    }))
+    .buffered(8)
+    .collect::<Vec<_>>()
+    .await;
+    let mut rows = Vec::with_capacity(applications.len());
+    for (application, status) in applications.into_iter().zip(statuses) {
+        let status = match status {
+            Ok(status) => Some(status),
+            Err(error) if cli.json => return Err(error.into()),
+            Err(error) => {
+                eprintln!(
+                    "  {}: status unavailable: {}",
+                    application.application.metadata.name, error
+                );
+                None
+            }
+        };
         rows.push((application, status));
     }
     if cli.json {
@@ -86,15 +103,20 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
         println!("No applications.");
     } else {
         for (application, status) in rows {
+            let state = status
+                .as_ref()
+                .map_or_else(|| "unavailable".to_owned(), |status| status.state.clone());
             println!(
                 "{}\t{}\tgeneration {}\tdesired replicas {}\t{}",
                 application.application.metadata.name,
                 application.application.id,
                 application.generation,
                 desired_replicas(&application),
-                status.state,
+                state,
             );
-            if let Some(message) = status.message {
+            if let Some(status) = status
+                && let Some(message) = &status.message
+            {
                 eprintln!("  {}: {message}", application.application.metadata.name);
             }
         }
@@ -156,7 +178,7 @@ async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result
     if cli.json {
         emit_json(&plan)?;
         if plan.plan.is_blocked() {
-            return Err(blocked_plan_error(&plan));
+            return Err(blocked_plan_error(&plan, false));
         }
         return Ok(());
     }
@@ -164,7 +186,7 @@ async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result
         CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
     })?;
     if plan.plan.is_blocked() {
-        return Err(blocked_plan_error(&plan));
+        return Err(blocked_plan_error(&plan, true));
     }
     Ok(())
 }
@@ -177,7 +199,7 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
         CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
     })?;
     if plan.plan.is_blocked() {
-        return Err(blocked_plan_error(&plan));
+        return Err(blocked_plan_error(&plan, true));
     }
     confirm(args.yes, &format!("Apply application {name:?}? [y/N] ")).await?;
 

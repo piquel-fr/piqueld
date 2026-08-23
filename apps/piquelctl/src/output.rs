@@ -2,13 +2,10 @@ use crate::{
     cli::Cli,
     error::{CliError, ErrorKind, Result},
 };
-use piqueld_client::{OperationView, PlanView};
+use piqueld_client::{ActionReason, ActionRisk, OperationView, PlanView};
 use serde::Serialize;
 use serde_json::json;
-use std::{
-    fmt,
-    io::{self, Write},
-};
+use std::io::{self, Write};
 
 pub(crate) fn report_operation(operation: &OperationView) {
     eprintln!("operation {}: {}", operation.id, operation.state);
@@ -33,7 +30,13 @@ pub(crate) fn render_operation(cli: &Cli, operation: &OperationView) -> Result<(
         operation.application_id, operation.generation
     );
     for step in &operation.steps {
-        println!("  {} {}: {}", step.position, step.action, step.state);
+        println!(
+            "  {} {}: {} (attempt {})",
+            step.position, step.action, step.state, step.attempt
+        );
+        if let Some(message) = &step.error_message {
+            println!("      {message}");
+        }
     }
     if let Some(message) = &operation.error_message {
         eprintln!("diagnostic: {message}");
@@ -58,9 +61,9 @@ pub(crate) fn render_plan(plan: &PlanView, output: &mut impl Write) -> io::Resul
     for action in &plan.plan.actions {
         writeln!(
             output,
-            "  {:>3} [{:?}] {} ({})",
+            "  {:>3} [{}] {} ({})",
             action.sequence,
-            action.risk,
+            risk_text(action.risk),
             action.human_description(),
             reason_text(&action.reason),
         )?;
@@ -88,7 +91,7 @@ pub(crate) fn render_plan_stderr(plan: &PlanView) -> io::Result<()> {
     render_plan(plan, &mut output)
 }
 
-pub(crate) fn blocked_plan_error(plan: &PlanView) -> CliError {
+pub(crate) fn blocked_plan_error(plan: &PlanView, include_plan_details: bool) -> CliError {
     let codes = plan
         .plan
         .diagnostics
@@ -97,19 +100,40 @@ pub(crate) fn blocked_plan_error(plan: &PlanView) -> CliError {
         .map(|diagnostic| diagnostic.code.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    CliError::new(
+    let mut error = CliError::new(
         ErrorKind::Conflict,
         if codes.is_empty() {
             "plan contains blocking diagnostics".into()
         } else {
             format!("plan is blocked ({codes})")
         },
-    )
-    .with_details(json!({"plan": plan}))
+    );
+    if include_plan_details {
+        error = error.with_details(json!({"plan": plan}));
+    }
+    error
 }
 
-fn reason_text(reason: &impl fmt::Debug) -> String {
-    format!("{reason:?}")
+fn risk_text(risk: ActionRisk) -> &'static str {
+    match risk {
+        ActionRisk::None => "no risk",
+        ActionRisk::Availability => "availability",
+        ActionRisk::DataAdjacent => "data-adjacent",
+        ActionRisk::Destructive => "destructive",
+    }
+}
+
+fn reason_text(reason: &ActionReason) -> String {
+    match reason {
+        ActionReason::Missing => "missing".into(),
+        ActionReason::Drift { fields } if fields.is_empty() => "drift".into(),
+        ActionReason::Drift { fields } => format!("drift ({})", fields.join(", ")),
+        ActionReason::Obsolete => "obsolete".into(),
+        ActionReason::ConvergencePending => "convergence pending".into(),
+        ActionReason::ResolutionRequired => "resolution required".into(),
+        ActionReason::ApplicationDeletion => "application deletion".into(),
+        ActionReason::VolumeRetentionPolicy => "volume retention policy".into(),
+    }
 }
 
 pub(crate) fn emit_json<T: Serialize>(value: &T) -> Result<()> {

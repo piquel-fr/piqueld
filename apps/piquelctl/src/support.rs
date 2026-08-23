@@ -14,7 +14,7 @@ use std::{
 use tokio::{fs, sync::Notify, time};
 use uuid::Uuid;
 
-pub(crate) const DEFAULT_SOCKET: &str = "/run/piqueld/piqueld.sock";
+pub(crate) const DEFAULT_SOCKET: &str = "/var/lib/piqueld/piqueld.sock";
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) const MAX_PAGINATION_PAGES: usize = 10_000;
 pub(crate) const PAGE_SIZE: u16 = 100;
@@ -60,35 +60,45 @@ pub(crate) async fn confirm(yes: bool, prompt: &str) -> Result<()> {
     }
     let prompt = prompt.to_owned();
     set_interaction(true);
-    let answer = tokio::task::spawn_blocking(move || -> io::Result<String> {
+    let reader = tokio::task::spawn_blocking(move || -> io::Result<String> {
         eprint!("{prompt}");
         io::stderr().flush()?;
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
         Ok(answer)
-    })
-    .await
-    .map_err(|error| {
-        CliError::new(
-            ErrorKind::General,
-            format!("could not read confirmation: {error}"),
-        )
-    })?
-    .map_err(|error| {
-        CliError::new(
-            ErrorKind::General,
-            format!("could not read confirmation: {error}"),
-        )
     });
-    set_interaction(false);
-    let answer = answer?;
-    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        Ok(())
-    } else {
-        Err(CliError::new(
-            ErrorKind::Input,
-            "operation was not confirmed",
-        ))
+    tokio::select! {
+        answer = reader => {
+            set_interaction(false);
+            let answer = answer
+                .map_err(|error| {
+                    CliError::new(
+                        ErrorKind::General,
+                        format!("could not read confirmation: {error}"),
+                    )
+                })?
+                .map_err(|error| {
+                    CliError::new(
+                        ErrorKind::General,
+                        format!("could not read confirmation: {error}"),
+                    )
+                })?;
+            if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                Ok(())
+            } else {
+                Err(CliError::new(ErrorKind::Input, "operation was not confirmed"))
+            }
+        }
+        result = tokio::signal::ctrl_c() => {
+            // The blocking reader cannot be cancelled; exiting here keeps the
+            // conventional SIGINT exit code and avoids waiting on stdin.
+            if let Err(error) = result {
+                eprintln!("piquelctl: could not install Ctrl-C handler: {error}");
+            } else {
+                eprintln!("piquelctl: aborted by user");
+            }
+            std::process::exit(130);
+        }
     }
 }
 
@@ -191,18 +201,7 @@ pub(crate) fn desired_replicas(application: &ApplicationView) -> u32 {
 }
 
 pub(crate) fn looks_like_application_id(value: &str) -> bool {
-    (8..=64).contains(&value.len())
-        && value
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric())
-        && value
-            .bytes()
-            .last()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    piqueld_client::ApplicationId::parse(value).is_ok()
 }
 
 pub(crate) fn format_duration(duration: Duration) -> String {

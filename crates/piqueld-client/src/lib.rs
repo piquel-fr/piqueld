@@ -15,7 +15,8 @@ pub use applications::{
 };
 pub use operations::{OperationStepView, OperationView};
 pub use piqueld_core::manifest::Source;
-pub use piqueld_core::{ValidatedApplication, ValidationErrors};
+pub use piqueld_core::planner::{ActionReason, ActionRisk};
+pub use piqueld_core::{ApplicationId, ValidatedApplication, ValidationErrors};
 pub use system::SystemStatus;
 
 use bytes::Bytes;
@@ -34,9 +35,6 @@ use thiserror::Error;
 use tokio::net::{TcpStream, UnixStream};
 use url::{Host, Url};
 use utoipa::ToSchema;
-
-/// Versioned prefix used by all API endpoints.
-pub const API_PREFIX: &str = "/api/v1";
 
 /// Validates a TOML application manifest and returns its editable name.
 ///
@@ -77,6 +75,7 @@ pub struct ErrorBody {
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub details: serde_json::Value,
     /// Server-generated request identifier.
+    #[serde(default)]
     pub request_id: String,
 }
 
@@ -110,7 +109,7 @@ pub enum ClientError {
         message: String,
     },
     /// The server returned a non-success response.
-    #[error("API returned {status}: {error:?}")]
+    #[error("API returned {status}: {}", error.code)]
     Api {
         /// HTTP response status.
         status: StatusCode,

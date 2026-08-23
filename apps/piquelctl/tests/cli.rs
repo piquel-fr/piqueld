@@ -115,6 +115,8 @@ impl TestServer {
     }
 }
 
+const ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn start_server<F>(unix: bool, expected_requests: usize, handler: F) -> TestServer
 where
     F: FnMut(Request) -> Reply + Send + 'static,
@@ -128,20 +130,55 @@ where
     let (endpoint, join) = if unix {
         let path = directory.path().join("piqueld.sock");
         let listener = UnixListener::bind(&path).expect("Unix listener");
+        listener
+            .set_nonblocking(true)
+            .expect("non-blocking accept applies");
         let join = thread::spawn(move || {
-            for _ in 0..expected_requests {
-                let (stream, _) = listener.accept().expect("Unix connection");
-                serve_stream(stream, &records_for_thread, &handler_for_thread);
+            let mut deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
+            let mut served = 0;
+            while served < expected_requests {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        served += 1;
+                        deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
+                        serve_stream(stream, &records_for_thread, &handler_for_thread);
+                    }
+                    // A request-count mismatch must fail fast, not hang forever.
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
             }
         });
         (Endpoint::Unix(path), join)
     } else {
         let listener = TcpListener::bind("127.0.0.1:0").expect("TCP listener");
         let address = listener.local_addr().expect("TCP address");
+        listener
+            .set_nonblocking(true)
+            .expect("non-blocking accept applies");
         let join = thread::spawn(move || {
-            for _ in 0..expected_requests {
-                let (stream, _) = listener.accept().expect("TCP connection");
-                serve_stream(stream, &records_for_thread, &handler_for_thread);
+            let mut deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
+            let mut served = 0;
+            while served < expected_requests {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        served += 1;
+                        deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
+                        serve_stream(stream, &records_for_thread, &handler_for_thread);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
             }
         });
         (Endpoint::Tcp(format!("http://{address}/")), join)
@@ -392,34 +429,36 @@ fn status_works_over_tcp_and_unix_with_clean_json() {
 
 #[test]
 fn list_paginates_and_includes_reconciliation_status() {
-    let mut page_number = 0;
-    let server = start_server(false, 4, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100"
-        | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=100" => {
-            page_number += 1;
-            if page_number == 1 {
-                Reply::json(page(
-                    vec![app_view("app-first-01", "first", 1)],
-                    Some("v1:app-first-01"),
-                ))
-            } else {
-                Reply::json(page(vec![app_view("app-notes-01", "notes", 2)], None))
+    for unix in [false, true] {
+        let mut page_number = 0;
+        let server = start_server(unix, 4, move |request| match request.path.as_str() {
+            "/api/v1/applications?limit=100"
+            | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=100" => {
+                page_number += 1;
+                if page_number == 1 {
+                    Reply::json(page(
+                        vec![app_view("app-first-01", "first", 1)],
+                        Some("v1:app-first-01"),
+                    ))
+                } else {
+                    Reply::json(page(vec![app_view("app-notes-01", "notes", 2)], None))
+                }
             }
-        }
-        "/api/v1/applications/app-first-01/status" => {
-            Reply::json(status("app-first-01", 1, "ready"))
-        }
-        "/api/v1/applications/app-notes-01/status" => {
-            Reply::json(status("app-notes-01", 2, "degraded"))
-        }
-        path => panic!("unexpected path {path}"),
-    });
-    let output = run(&server, &["list"]);
-    let value = assert_json_success(&output);
-    assert_eq!(value["items"].as_array().expect("items").len(), 2);
-    assert_eq!(value["items"][1]["status"]["state"], "degraded");
-    assert!(output.stderr.is_empty());
-    let _ = server.finish();
+            "/api/v1/applications/app-first-01/status" => {
+                Reply::json(status("app-first-01", 1, "ready"))
+            }
+            "/api/v1/applications/app-notes-01/status" => {
+                Reply::json(status("app-notes-01", 2, "degraded"))
+            }
+            path => panic!("unexpected path {path}"),
+        });
+        let output = run(&server, &["list"]);
+        let value = assert_json_success(&output);
+        assert_eq!(value["items"].as_array().expect("items").len(), 2);
+        assert_eq!(value["items"][1]["status"]["state"], "degraded");
+        assert!(output.stderr.is_empty());
+        let _ = server.finish();
+    }
 }
 
 #[test]
@@ -487,49 +526,54 @@ fn replacement_plan_uses_the_current_generation() {
 
 #[test]
 fn plan_before_apply_confirmation_and_retry_key_are_exercised() {
-    let directory = tempdir().expect("manifest directory");
-    let manifest = write_manifest(&directory);
-    let mut mutation_requests = Vec::new();
-    let server = start_server(false, 4, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
-        "/api/v1/applications/plan" => Reply::json(plan("preview-00000001", 1)),
-        "/api/v1/applications" => {
-            mutation_requests.push(request.clone());
-            assert_eq!(request.body, MANIFEST.as_bytes());
-            if mutation_requests.len() == 1 {
-                Reply::dropped()
-            } else {
-                assert_eq!(
-                    request.headers.get("content-type"),
-                    Some(&"application/toml".to_owned())
-                );
-                assert!(!request.headers["idempotency-key"].is_empty());
-                Reply::accepted(accepted("app-notes-01", 1))
+    for unix in [false, true] {
+        let directory = tempdir().expect("manifest directory");
+        let manifest = write_manifest(&directory);
+        let mut mutation_requests = Vec::new();
+        let server = start_server(unix, 4, move |request| match request.path.as_str() {
+            "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+            "/api/v1/applications/plan" => Reply::json(plan("preview-00000001", 1)),
+            "/api/v1/applications" => {
+                mutation_requests.push(request.clone());
+                assert_eq!(request.body, MANIFEST.as_bytes());
+                if mutation_requests.len() == 1 {
+                    Reply::dropped()
+                } else {
+                    assert_eq!(
+                        request.headers.get("content-type"),
+                        Some(&"application/toml".to_owned())
+                    );
+                    assert!(!request.headers["idempotency-key"].is_empty());
+                    Reply::accepted(accepted("app-notes-01", 1))
+                }
             }
-        }
-        path => panic!("unexpected path {path}"),
-    });
-    let output = run(
-        &server,
-        &[
-            "apply",
-            "--file",
-            manifest.to_str().expect("manifest path"),
-            "--yes",
-            "--no-wait",
-        ],
-    );
-    let value = assert_json_success(&output);
-    assert_eq!(value["application_id"], "app-notes-01");
-    assert!(output.stderr.windows(1).next().is_some());
-    let records = server.finish();
-    let keys = records
-        .iter()
-        .filter(|request| request.path == "/api/v1/applications")
-        .map(|request| request.headers["idempotency-key"].clone())
-        .collect::<Vec<_>>();
-    assert_eq!(keys.len(), 2);
-    assert_eq!(keys[0], keys[1]);
+            path => panic!("unexpected path {path}"),
+        });
+        let output = run(
+            &server,
+            &[
+                "apply",
+                "--file",
+                manifest.to_str().expect("manifest path"),
+                "--yes",
+                "--no-wait",
+            ],
+        );
+        let value = assert_json_success(&output);
+        assert_eq!(value["application_id"], "app-notes-01");
+        assert!(
+            !output.stderr.is_empty(),
+            "the plan must be displayed on stderr"
+        );
+        let records = server.finish();
+        let keys = records
+            .iter()
+            .filter(|request| request.path == "/api/v1/applications")
+            .map(|request| request.headers["idempotency-key"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0], keys[1]);
+    }
 }
 
 #[test]
@@ -641,19 +685,21 @@ fn manifest_input_is_missing_or_oversized_before_network_use() {
 
 #[test]
 fn delete_reports_named_volume_retention_and_operation_completion() {
-    let server = start_server(false, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => {
-            Reply::json(page(vec![app_view("app-notes-01", "notes", 1)], None))
-        }
-        "/api/v1/applications/app-notes-01" => Reply::accepted(accepted("app-notes-01", 2)),
-        "/api/v1/operations/operation-01" => Reply::json(operation("succeeded")),
-        path => panic!("unexpected path {path}"),
-    });
-    let output = run(&server, &["delete", "notes", "--yes"]);
-    let value = assert_json_success(&output);
-    assert_eq!(value["volumes_retained"], true);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("named volumes are retained"));
-    let _ = server.finish();
+    for unix in [false, true] {
+        let server = start_server(unix, 3, move |request| match request.path.as_str() {
+            "/api/v1/applications?limit=100" => {
+                Reply::json(page(vec![app_view("app-notes-01", "notes", 1)], None))
+            }
+            "/api/v1/applications/app-notes-01" => Reply::accepted(accepted("app-notes-01", 2)),
+            "/api/v1/operations/operation-01" => Reply::json(operation("succeeded")),
+            path => panic!("unexpected path {path}"),
+        });
+        let output = run(&server, &["delete", "notes", "--yes"]);
+        let value = assert_json_success(&output);
+        assert_eq!(value["volumes_retained"], true);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("named volumes are retained"));
+        let _ = server.finish();
+    }
 }
 
 #[test]
@@ -705,21 +751,65 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     } else {
         panic!("interrupt fixture uses TCP");
     }
-    let child = command
-        .args(["--timeout", "5s", "operation", "operation-01"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("piquelctl child");
-    thread::sleep(Duration::from_millis(100));
-    Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
-        .status()
-        .expect("send SIGINT");
-    let output = child.wait_with_output().expect("interrupted child");
+    let mut output = None;
+    for _ in 0..3 {
+        let child = command
+            .args(["--timeout", "5s", "operation", "operation-01"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("piquelctl child");
+        thread::sleep(Duration::from_millis(150));
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .expect("send SIGINT");
+        let attempt = child.wait_with_output().expect("interrupted child");
+        // A signal death before the handler was installed is a startup race;
+        // retry instead of failing the test.
+        if attempt.status.code().is_some() {
+            output = Some(attempt);
+            break;
+        }
+    }
+    let output = output.expect("interrupted run reported an exit code");
     assert_eq!(output.status.code(), Some(130));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("was not cancelled"));
     let _ = interrupt_server.finish();
+}
+
+#[test]
+fn unknown_names_exit_with_input_error_and_no_mutation() {
+    let server = start_server(false, 1, move |request| match request.path.as_str() {
+        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(&server, &["show", "missing"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("was not found"));
+    let _ = server.finish();
+}
+
+#[test]
+fn ambiguous_names_report_the_match_count() {
+    let server = start_server(false, 1, move |request| match request.path.as_str() {
+        "/api/v1/applications?limit=100" => Reply::json(page(
+            vec![
+                app_view("app-notes-01", "notes", 1),
+                app_view("app-notes-02", "notes", 1),
+            ],
+            None,
+        )),
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(&server, &["show", "notes"]);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("matched 2 applications"));
+    let _ = server.finish();
 }
