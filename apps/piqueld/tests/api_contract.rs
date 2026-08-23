@@ -373,10 +373,6 @@ async fn transport_failures_are_structured_safe_and_request_ids_pair() {
     .await;
     assert_eq!(not_allowed.status, StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(not_allowed.code(), "method_not_allowed");
-    assert_eq!(
-        not_allowed.headers.get(http::header::ALLOW),
-        Some(&HeaderValue::from_static("GET, POST, PATCH, DELETE"))
-    );
 
     let bad_cursor = send_raw(
         Target::Tcp(address),
@@ -425,6 +421,45 @@ async fn transport_failures_are_structured_safe_and_request_ids_pair() {
         .and_then(|value| value.to_str().ok())
         .expect("request id header");
     assert_eq!(paired.request_id(), Some(header_id));
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn method_not_allowed_advertises_only_the_matched_route_methods() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+
+    // The Allow header advertises only the methods registered for the matched
+    // route; /api/v1/applications supports GET (list) and POST (create).
+    let collection = send_raw(
+        Target::Tcp(address),
+        Method::PUT,
+        "/api/v1/applications",
+        &[],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(
+        collection.headers.get(http::header::ALLOW),
+        Some(&HeaderValue::from_static("GET, POST"))
+    );
+
+    let by_id = send_raw(
+        Target::Tcp(address),
+        Method::POST,
+        "/api/v1/applications/app-notes-01",
+        &[],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(by_id.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        by_id.headers.get(http::header::ALLOW),
+        Some(&HeaderValue::from_static("GET, PUT, DELETE"))
+    );
 
     server.abort();
 }

@@ -276,8 +276,14 @@ impl IntoResponse for ApiError {
 pub fn router(state: ApiState) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     let (router, openapi) = documented_router().split_for_parts();
+    // 405 responses must advertise exactly the methods each matched endpoint
+    // registers, so the values are derived from the OpenAPI document itself.
+    let allow_routes = AllowRoutes::build(&openapi);
     router
-        .method_not_allowed_fallback(|| async { method_not_allowed().await })
+        .method_not_allowed_fallback(move |request: Request| {
+            let allow_routes = Arc::clone(&allow_routes);
+            async move { method_not_allowed(&allow_routes, request.uri().path()) }
+        })
         .fallback(fallback)
         .with_state(state)
         .layer(Extension(Arc::new(openapi)))
@@ -397,15 +403,81 @@ async fn fallback() -> ApiError {
         "API endpoint was not found",
     )
 }
-#[allow(clippy::unused_async)]
-async fn method_not_allowed() -> ApiError {
+fn method_not_allowed(allow_routes: &AllowRoutes, path: &str) -> ApiError {
     let mut error = ApiError::new(
         StatusCode::METHOD_NOT_ALLOWED,
         "method_not_allowed",
         "HTTP method is not allowed",
     );
-    error.allow = Some("GET, POST, PATCH, DELETE".into());
+    // The header advertises only methods registered for the matched route;
+    // when no documented route matches, the header is omitted.
+    error.allow = allow_routes.allow_for(path);
     error
+}
+
+/// Per-route `Allow` values derived from the `OpenAPI` document.
+#[derive(Clone)]
+struct AllowRoutes(Arc<[(Vec<String>, String)]>);
+
+impl AllowRoutes {
+    fn build(document: &utoipa::openapi::OpenApi) -> Arc<Self> {
+        let mut routes = Vec::new();
+        for (path, item) in &document.paths.paths {
+            let methods = Self::path_methods(item);
+            if !methods.is_empty() {
+                routes.push((
+                    path.split('/')
+                        .filter(|segment| !segment.is_empty())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>(),
+                    methods.join(", "),
+                ));
+            }
+        }
+        Arc::new(Self(routes.into()))
+    }
+
+    fn path_methods(item: &utoipa::openapi::path::PathItem) -> Vec<&'static str> {
+        let mut methods = Vec::new();
+        if item.get.is_some() {
+            methods.push("GET");
+        }
+        if item.post.is_some() {
+            methods.push("POST");
+        }
+        if item.put.is_some() {
+            methods.push("PUT");
+        }
+        if item.patch.is_some() {
+            methods.push("PATCH");
+        }
+        if item.delete.is_some() {
+            methods.push("DELETE");
+        }
+        if item.head.is_some() {
+            methods.push("HEAD");
+        }
+        methods
+    }
+
+    /// Returns the comma-separated methods for the first route template that
+    /// matches the concrete request path, or `None` when none does.
+    fn allow_for(&self, request_path: &str) -> Option<String> {
+        let segments: Vec<&str> = request_path
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        self.0
+            .iter()
+            .find(|(template, _)| {
+                template.len() == segments.len()
+                    && template
+                        .iter()
+                        .zip(&segments)
+                        .all(|(expected, actual)| expected.starts_with('{') || expected == actual)
+            })
+            .map(|(_, allow)| allow.clone())
+    }
 }
 
 fn ok<T: Serialize>(data: T) -> impl IntoResponse {
