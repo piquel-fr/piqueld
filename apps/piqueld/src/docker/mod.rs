@@ -9,11 +9,10 @@ use bollard::{
     models::{
         HealthConfig, Ipam, Limit, Mount, MountTypeEnum, NetworkAttachmentConfig,
         NetworkCreateRequest, ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated,
-        ServiceSpecRollbackConfig, ServiceSpecRollbackConfigFailureActionEnum,
-        ServiceSpecRollbackConfigOrderEnum, ServiceSpecUpdateConfig,
-        ServiceSpecUpdateConfigFailureActionEnum, ServiceSpecUpdateConfigOrderEnum,
-        SwarmInitRequest, TaskSpec, TaskSpecContainerSpec, TaskSpecResources,
-        TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum, VolumeCreateOptions,
+        ServiceSpecUpdateConfig, ServiceSpecUpdateConfigFailureActionEnum,
+        ServiceSpecUpdateConfigOrderEnum, SwarmInitRequest, TaskSpec, TaskSpecContainerSpec,
+        TaskSpecResources, TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum,
+        VolumeCreateOptions,
     },
     query_parameters::{
         CreateImageOptionsBuilder, InspectNetworkOptions, InspectServiceOptions,
@@ -21,12 +20,13 @@ use bollard::{
         ListTasksOptionsBuilder, ListVolumesOptionsBuilder,
     },
 };
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt, stream};
 use piqueld_core::manifest::{HealthCheck, ResourceLimits};
 use piqueld_core::resource::{
     APPLICATION_LABEL, Convergence, DesiredMount, DesiredNetwork, DesiredService, DesiredVolume,
     INSTANCE_LABEL, MANAGED_LABEL, ObservedNetwork, ObservedService, ObservedTask, ObservedVolume,
-    SERVICE_LABEL, SPEC_HASH_LABEL, TaskDiagnostic, TaskState, valid_logical_name,
+    SERVICE_LABEL, SPEC_HASH_LABEL, TaskDiagnostic, TaskState, image_repository,
+    valid_logical_name,
 };
 use piqueld_core::{
     ApplicationId, ObservedApplication, ResourceKind, docker_resource_name,
@@ -34,19 +34,33 @@ use piqueld_core::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    future::Future,
     path::Path,
     sync::Arc,
+    time::Duration,
 };
 
 /// Docker represents health-check and Swarm policy durations in nanoseconds.
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
-const NANOSECONDS_PER_MILLISECOND: i64 = 1_000_000;
 const NANO_CPUS_PER_MILLICORE: i64 = 1_000_000;
 const RESTART_DELAY: i64 = 2 * NANOSECONDS_PER_SECOND;
 const UPDATE_MONITOR: i64 = 30 * NANOSECONDS_PER_SECOND;
-const ROLLBACK_MONITOR: i64 = 5 * NANOSECONDS_PER_SECOND;
-const STOP_GRACE_PERIOD: i64 = 10 * NANOSECONDS_PER_SECOND;
 const HEALTH_RETRIES: i64 = 3;
+
+/// Upper bound for one adapter-level Docker request.
+///
+/// Bollard only bounds a request up to the response headers, so every adapter
+/// call additionally runs under this deadline; an elapsed deadline surfaces as
+/// unavailability.
+const DOCKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Concurrent per-service inspections performed during one observation.
+const OBSERVATION_INSPECT_CONCURRENCY: usize = 8;
+
+/// Resolution attempts made before an image tag is declared unstable.
+const IMAGE_RESOLVE_ATTEMPTS: usize = 3;
+/// Pause between resolution attempts after a suspected concurrent tag flip.
+const IMAGE_RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
 /// A shared connection to the Docker Engine.
@@ -103,4 +117,85 @@ pub trait DockerApi: Send + Sync + 'static {
         name: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError>;
+}
+
+#[async_trait]
+/// The image-registry operations required to resolve a reference to a digest.
+///
+/// Keeping this seam narrow lets the tag-stability verification run against
+/// deterministic in-memory doubles as well as the real Bollard connection.
+pub trait ImageSource: Send + Sync {
+    /// Lists the repository digests recorded locally for a reference, or
+    /// `None` when the reference is unknown to the engine.
+    async fn repo_digests(&self, reference: &str) -> Result<Option<Vec<String>>, DockerError>;
+    /// Pulls the reference into the local image store.
+    async fn pull(&self, reference: &str) -> Result<(), DockerError>;
+}
+
+/// Resolves an image reference to the repository digest recorded under its tag.
+///
+/// The pull races the tag's mutability, so the digests matching the requested
+/// repository are captured before and after the pull and must still overlap;
+/// otherwise the whole resolution restarts until [`IMAGE_RESOLVE_ATTEMPTS`] is
+/// exhausted. A reference previously unknown to the engine has no prior digests
+/// to protect, so its first successful pull is accepted directly.
+///
+/// # Errors
+///
+/// Returns the sanitized image-resolution error class when the engine fails,
+/// the pull never produces a matching digest, or the tag keeps flipping.
+pub async fn resolve_image_digest(
+    source: &(impl ImageSource + ?Sized),
+    reference: &str,
+) -> Result<String, DockerError> {
+    let repository = image_repository(reference)
+        .ok_or(DockerError::ImageResolution("parse image repository"))?;
+    for attempt in 0..IMAGE_RESOLVE_ATTEMPTS {
+        let before = matching_repo_digests(source, reference, &repository).await?;
+        source.pull(reference).await?;
+        let after = matching_repo_digests(source, reference, &repository).await?;
+        let Some(digest) = after
+            .iter()
+            .find(|digest| before.is_empty() || before.contains(*digest))
+            .cloned()
+        else {
+            if after.is_empty() {
+                return Err(DockerError::ImageResolution("find repository digest"));
+            }
+            if attempt + 1 < IMAGE_RESOLVE_ATTEMPTS {
+                tokio::time::sleep(IMAGE_RESOLVE_RETRY_DELAY).await;
+            }
+            continue;
+        };
+        return Ok(digest);
+    }
+    Err(DockerError::ImageResolution("confirm stable image digest"))
+}
+
+async fn matching_repo_digests(
+    source: &(impl ImageSource + ?Sized),
+    reference: &str,
+    repository: &str,
+) -> Result<BTreeSet<String>, DockerError> {
+    Ok(source
+        .repo_digests(reference)
+        .await?
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|digest| {
+            image_repository(digest).as_deref() == Some(repository)
+                && BollardDocker::valid_digest(digest)
+        })
+        .collect())
+}
+
+/// Bounds one adapter request, surfacing an elapsed deadline as unavailability.
+async fn bounded<T>(
+    what: &'static str,
+    fut: impl Future<Output = Result<T, DockerError>>,
+) -> Result<T, DockerError> {
+    match tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, fut).await {
+        Ok(result) => result,
+        Err(_) => Err(DockerError::Unavailable(what)),
+    }
 }

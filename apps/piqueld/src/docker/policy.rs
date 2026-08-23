@@ -1,17 +1,17 @@
 use super::{
-    BTreeSet, BollardDocker, HEALTH_RETRIES, HashMap, HealthCheck, HealthConfig, MountTypeEnum,
-    NANOSECONDS_PER_MILLISECOND, RESTART_DELAY, ROLLBACK_MONITOR, STOP_GRACE_PERIOD, ServiceSpec,
-    ServiceSpecRollbackConfig, ServiceSpecRollbackConfigFailureActionEnum,
-    ServiceSpecRollbackConfigOrderEnum, ServiceSpecUpdateConfigFailureActionEnum,
+    BTreeSet, BollardDocker, HEALTH_RETRIES, HealthCheck, HealthConfig, MountTypeEnum,
+    NANO_CPUS_PER_MILLICORE, RESTART_DELAY, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum,
     ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec,
     TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
 };
 
 /// The runtime policy emitted by the desired-service Docker specification builder.
 ///
-/// Docker may add harmless defaults while creating a service, so this policy
-/// accepts those defaults but rejects unsupported attachments and weakened
-/// update, restart, health-check, or resource settings as drift.
+/// This policy verifies exactly the fields piqueld authors — replication,
+/// update settings, the restart condition and delay, mounts, environment,
+/// network targets, health checks, and resource limits. Fields the builder
+/// never sets are ignored entirely, so engine-defaulted echo-back (which can
+/// vary between daemon versions) no longer registers as drift.
 pub(super) struct ServiceRuntimePolicy;
 
 impl ServiceRuntimePolicy {
@@ -29,16 +29,13 @@ impl ServiceRuntimePolicy {
             && Self::environment(container)
             && Self::networks(task)
             && Self::health(container)
-            && Self::container_configuration(container)
-            && Self::task_configuration(spec, task)
+            && Self::resource_limits(task)
     }
 
     fn restart_policy(task: &TaskSpec) -> bool {
         task.restart_policy.as_ref().is_some_and(|restart| {
             restart.condition == Some(TaskSpecRestartPolicyConditionEnum::ANY)
                 && restart.delay == Some(RESTART_DELAY)
-                && restart.max_attempts.is_none_or(|value| value == 0)
-                && restart.window.is_none_or(|value| value == 0)
         })
     }
 
@@ -54,12 +51,9 @@ impl ServiceRuntimePolicy {
     }
 
     fn replicated_mode(spec: &ServiceSpec) -> bool {
-        spec.mode.as_ref().is_some_and(|mode| {
-            mode.replicated.is_some()
-                && mode.global.is_none()
-                && mode.replicated_job.is_none()
-                && mode.global_job.is_none()
-        })
+        spec.mode
+            .as_ref()
+            .is_some_and(|mode| mode.replicated.is_some())
     }
 
     fn mounts(container: &TaskSpecContainerSpec) -> bool {
@@ -68,11 +62,6 @@ impl ServiceRuntimePolicy {
                 mount.typ == Some(MountTypeEnum::VOLUME)
                     && mount.source.as_ref().is_some_and(|value| !value.is_empty())
                     && mount.target.as_ref().is_some_and(|value| !value.is_empty())
-                    && mount.consistency.as_deref().is_none_or(str::is_empty)
-                    && mount.bind_options.is_none()
-                    && mount.volume_options.as_ref().is_none_or(Self::is_default)
-                    && mount.image_options.is_none()
-                    && mount.tmpfs_options.is_none()
             })
         })
     }
@@ -96,8 +85,6 @@ impl ServiceRuntimePolicy {
                     .target
                     .as_ref()
                     .is_some_and(|value| !value.is_empty() && targets.insert(value.as_str()))
-                    && network.aliases.as_ref().is_none_or(Vec::is_empty)
-                    && network.driver_opts.as_ref().is_none_or(HashMap::is_empty)
             })
         })
     }
@@ -109,77 +96,22 @@ impl ServiceRuntimePolicy {
             .is_none_or(Self::supported_health_config)
     }
 
-    fn container_configuration(container: &TaskSpecContainerSpec) -> bool {
-        container.labels.as_ref().is_none_or(HashMap::is_empty)
-            && container.hostname.as_deref().is_none_or(str::is_empty)
-            && container.dir.as_deref().is_none_or(str::is_empty)
-            && container.user.as_deref().is_none_or(str::is_empty)
-            && container.groups.as_ref().is_none_or(Vec::is_empty)
-            && container.privileges.as_ref().is_none_or(Self::is_default)
-            && !container.tty.unwrap_or(false)
-            && !container.open_stdin.unwrap_or(false)
-            && !container.read_only.unwrap_or(false)
-            && container.stop_signal.as_deref().is_none_or(str::is_empty)
-            && container
-                .stop_grace_period
-                .is_none_or(|value| value == STOP_GRACE_PERIOD)
-            && container.hosts.as_ref().is_none_or(Vec::is_empty)
-            && container.dns_config.as_ref().is_none_or(Self::is_default)
-            && container.oom_score_adj.is_none_or(|value| value == 0)
-            && container.configs.as_ref().is_none_or(Vec::is_empty)
-            && container.isolation.is_none_or(|value| {
-                matches!(
-                    value,
-                    bollard::models::TaskSpecContainerSpecIsolationEnum::EMPTY
-                        | bollard::models::TaskSpecContainerSpecIsolationEnum::DEFAULT
-                )
+    fn resource_limits(task: &TaskSpec) -> bool {
+        task.resources
+            .as_ref()
+            .and_then(|resources| resources.limits.as_ref())
+            .is_none_or(|limits| {
+                limits
+                    .nano_cpus
+                    .is_none_or(|value| value >= 0 && value % NANO_CPUS_PER_MILLICORE == 0)
+                    && limits.memory_bytes.is_none_or(|value| value >= 0)
             })
-            && !container.init.unwrap_or(false)
-            && container.sysctls.as_ref().is_none_or(HashMap::is_empty)
-            && container.capability_add.as_ref().is_none_or(Vec::is_empty)
-            && container.capability_drop.as_ref().is_none_or(Vec::is_empty)
-            && container.ulimits.as_ref().is_none_or(Vec::is_empty)
-    }
-
-    fn task_configuration(spec: &ServiceSpec, task: &TaskSpec) -> bool {
-        task.plugin_spec.is_none()
-            && task.network_attachment_spec.is_none()
-            && task.force_update.is_none_or(|value| value == 0)
-            && task
-                .resources
-                .as_ref()
-                .and_then(|resources| resources.limits.as_ref())
-                .is_none_or(|limits| {
-                    limits.pids.is_none_or(|value| value == 0)
-                        && limits.nano_cpus.is_none_or(|value| {
-                            value >= 0 && value % NANOSECONDS_PER_MILLISECOND == 0
-                        })
-                        && limits.memory_bytes.is_none_or(|value| value >= 0)
-                })
-            && task
-                .resources
-                .as_ref()
-                .and_then(|resources| resources.reservations.as_ref())
-                .is_none_or(Self::is_default)
-            && task.placement.as_ref().is_none_or(Self::is_default)
-            && task
-                .runtime
-                .as_deref()
-                .is_none_or(|runtime| runtime.is_empty() || runtime == "container")
-            && task.log_driver.as_ref().is_none_or(Self::is_default)
-            && spec
-                .rollback_config
-                .as_ref()
-                .is_none_or(Self::supported_rollback_config)
-            && spec.networks.as_ref().is_none_or(Vec::is_empty)
     }
 
     fn supported_health_config(health: &HealthConfig) -> bool {
         if health.retries != Some(HEALTH_RETRIES)
             || health.interval.is_none_or(|value| value <= 0)
             || health.timeout.is_none_or(|value| value <= 0)
-            || health.start_period.is_some_and(|value| value != 0)
-            || health.start_interval.is_some_and(|value| value != 0)
         {
             return false;
         }
@@ -213,25 +145,16 @@ impl ServiceRuntimePolicy {
             None => false,
         }
     }
-
-    fn supported_rollback_config(rollback: &ServiceSpecRollbackConfig) -> bool {
-        rollback.parallelism == Some(1)
-            && rollback.delay.is_none_or(|value| value == 0)
-            && rollback.failure_action == Some(ServiceSpecRollbackConfigFailureActionEnum::PAUSE)
-            && rollback.monitor == Some(ROLLBACK_MONITOR)
-            && rollback.max_failure_ratio == Some(0.0)
-            && rollback.order == Some(ServiceSpecRollbackConfigOrderEnum::STOP_FIRST)
-    }
-
-    fn is_default<T: Default + PartialEq>(value: &T) -> bool {
-        value == &T::default()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::docker::DockerError;
+    use bollard::models::ServiceSpecRollbackConfig;
+    use piqueld_core::manifest::ResourceLimits;
+    use piqueld_core::resource::{DesiredService, ResolvedSource};
+    use std::collections::BTreeMap;
 
     #[test]
     fn generated_http_health_check_round_trips_through_observation() {
@@ -267,5 +190,53 @@ mod tests {
             BollardDocker::health_config(&health_check),
             Err(DockerError::Validation("validate health check"))
         ));
+    }
+
+    #[test]
+    fn policy_verifies_exactly_the_authored_fields() {
+        let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
+        let desired = DesiredService {
+            logical_name: "web".into(),
+            name: "app-policy-web".into(),
+            source: ResolvedSource::Image {
+                requested: "ghcr.io/example/notes:1.4.0".into(),
+                digest_reference: image.clone(),
+            },
+            image,
+            replicas: 2,
+            environment: BTreeMap::from([("NOTES_PORT".into(), "8080".into())]),
+            command: vec!["/bin/notes".into()],
+            arguments: vec!["--listen".into(), "8080".into()],
+            mounts: Vec::new(),
+            healthcheck: None,
+            resources: Some(ResourceLimits {
+                cpu_millis: Some(250),
+                memory_bytes: Some(1024),
+            }),
+            networks: Vec::new(),
+            labels: BTreeMap::new(),
+        };
+        let authored = BollardDocker::service_spec(&desired).expect("authored specification");
+        assert!(ServiceRuntimePolicy::matches(&authored));
+
+        // Engine-defaulted fields piqueld never authors are ignored entirely.
+        let mut echoed = authored.clone();
+        echoed.rollback_config = Some(ServiceSpecRollbackConfig::default());
+        if let Some(container) = echoed
+            .task_template
+            .as_mut()
+            .and_then(|task| task.container_spec.as_mut())
+        {
+            container.stop_grace_period = Some(12_345);
+            container.hostname = Some("echoed".into());
+        }
+        assert!(ServiceRuntimePolicy::matches(&echoed));
+
+        // Drift in a field piqueld authors is still rejected.
+        let mut drifted = authored;
+        if let Some(update) = drifted.update_config.as_mut() {
+            update.parallelism = Some(4);
+        }
+        assert!(!ServiceRuntimePolicy::matches(&drifted));
     }
 }

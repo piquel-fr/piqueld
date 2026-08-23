@@ -35,6 +35,12 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
     );
     let socket = std::env::var("PIQUELD_DOCKER_SOCKET")
         .expect("PIQUELD_DOCKER_SOCKET must point at an isolated privileged daemon");
+    // Defense in depth: the default host socket is refused even when the
+    // isolation attestation variable is set.
+    assert_ne!(
+        socket, "/var/run/docker.sock",
+        "refusing to mutate the default host Docker socket"
+    );
     let docker = BollardDocker::connect(Path::new(&socket)).unwrap();
     docker.ensure_swarm(true).await.unwrap();
     let suffix = uuid::Uuid::now_v7().simple().to_string();
