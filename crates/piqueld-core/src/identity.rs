@@ -108,10 +108,19 @@ pub fn docker_resource_name(
     )
 }
 
+/// Length of the hexadecimal digest suffix in bounded Docker names.
+const NAME_SUFFIX_LEN: usize = 12;
+/// Number of hyphens bounding the readable head in bounded Docker names.
+const NAME_SEPARATOR_LEN: usize = 2;
+
 /// Returns the readable name prefix shared by all resources of an application.
+///
+/// Prefixes are advisory and not unique: distinct identities can sanitize to
+/// the same readable head, so ownership decisions must use labels and exact
+/// names instead.
 #[must_use]
 pub fn docker_resource_readable_prefix(id: &ApplicationId) -> String {
-    let head_len = 63usize.saturating_sub("piqueld".len() + 12 + 2);
+    let head_len = 63usize.saturating_sub("piqueld".len() + NAME_SUFFIX_LEN + NAME_SEPARATOR_LEN);
     let mut head = sanitize(id.as_str())
         .chars()
         .take(head_len)
@@ -131,8 +140,8 @@ fn bounded_name(prefix: &str, parts: &[&str], limit: usize) -> String {
         .map(|p| sanitize(p))
         .collect::<Vec<_>>()
         .join("-");
-    let suffix = &suffix[..12];
-    let head_len = limit.saturating_sub(prefix.len() + suffix.len() + 2);
+    let suffix = &suffix[..NAME_SUFFIX_LEN];
+    let head_len = limit.saturating_sub(prefix.len() + suffix.len() + NAME_SEPARATOR_LEN);
     let mut head = readable.chars().take(head_len).collect::<String>();
     while head.ends_with('-') {
         head.pop();
