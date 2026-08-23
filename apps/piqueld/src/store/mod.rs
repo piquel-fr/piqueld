@@ -472,10 +472,9 @@ impl SqliteStore {
     /// # Errors
     /// Returns a sanitized storage or schema compatibility error.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let path = path.as_ref();
-        prepare_database_path(path)?;
+        let path = prepare_database_path(path.as_ref())?;
         let options = SqliteConnectOptions::new()
-            .filename(path)
+            .filename(&path)
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
@@ -675,69 +674,87 @@ impl SqliteStore {
     }
 }
 
-/// Prepares only missing database parents and rejects symlinked path components.
-/// Existing directories are never chmodded or otherwise modified. The final
-/// database path is checked as well so a replaced symlink cannot be followed by
-/// the `SQLite` driver during normal startup.
-fn prepare_database_path(path: &Path) -> Result<(), StoreError> {
-    let parent = path.parent().ok_or_else(|| {
+/// Prepares missing database parents and resolves the database path.
+///
+/// Existing directories are never chmodded or otherwise modified. Ancestor
+/// symlinks are accepted and resolved through the kernel first so legitimate
+/// layouts (for example macOS `/var`) keep working, and every directory below
+/// the deepest existing ancestor is created fresh and verified to be a real
+/// directory. The final database path is checked as well so a replaced symlink
+/// cannot be followed by the `SQLite` driver during normal startup.
+fn prepare_database_path(path: &Path) -> Result<PathBuf, StoreError> {
+    let name = path.file_name().ok_or_else(|| {
         StoreError::path(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "database path has no parent",
+            "database path has no file name",
         ))
     })?;
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(StoreError::path(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "database path contains a parent component",
+        )));
+    }
 
-    let mut current = PathBuf::new();
-    for component in parent.components() {
-        match component {
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-            Component::RootDir => current.push(Path::new("/")),
-            Component::CurDir => continue,
-            Component::ParentDir => {
-                return Err(StoreError::path(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "database path contains a parent component",
-                )));
-            }
-            Component::Normal(name) => current.push(name),
-        }
+    let mut probe = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
 
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            }
-            Ok(_) => {
-                return Err(StoreError::path(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "database parent is not a real directory",
-                )));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match fs::create_dir(&current) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                    Err(error) => return Err(StoreError::path(error)),
-                }
-                let metadata = fs::symlink_metadata(&current).map_err(StoreError::path)?;
-                if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-                    return Err(StoreError::path(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "database parent was replaced by a non-directory",
-                    )));
-                }
-            }
+    // Resolve the deepest existing ancestor so ancestor symlinks are accepted
+    // and everything created below starts from a fully resolved base.
+    let mut missing = Vec::new();
+    let mut base = loop {
+        match fs::canonicalize(&probe) {
+            Ok(resolved) => break resolved,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(StoreError::path(error)),
+        }
+        match probe.file_name().map(ToOwned::to_owned) {
+            Some(name) => {
+                let parent = probe.parent().unwrap_or(Path::new("")).to_path_buf();
+                missing.push(name);
+                probe = parent;
+            }
+            None => {
+                break if probe.as_os_str().is_empty() {
+                    PathBuf::from(".")
+                } else {
+                    probe
+                };
+            }
+        }
+    };
+
+    for component in missing.into_iter().rev() {
+        base.push(component);
+        if let Err(error) = fs::create_dir(&base)
+            && error.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(StoreError::path(error));
+        }
+        let metadata = fs::symlink_metadata(&base).map_err(StoreError::path)?;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            return Err(StoreError::path(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "database parent was replaced by a non-directory",
+            )));
         }
     }
 
-    match fs::symlink_metadata(path) {
+    let database = base.join(name);
+    match fs::symlink_metadata(&database) {
         Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
-            Ok(())
+            Ok(database)
         }
         Ok(_) => Err(StoreError::path(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "database path is not a regular file",
         ))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(database),
         Err(error) => Err(StoreError::path(error)),
     }
 }
@@ -863,5 +880,81 @@ impl ApplicationRow {
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Returns the message of the deepest error in a `StoreError` chain.
+    fn root_message(error: &StoreError) -> String {
+        let mut current: &(dyn StdError + 'static) = error;
+        while let Some(source) = current.source() {
+            current = source;
+        }
+        current.to_string()
+    }
+
+    #[test]
+    fn missing_database_parents_are_created_under_existing_roots() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let nested = temp.path().join("data/state");
+        let database =
+            prepare_database_path(&nested.join("state.db")).expect("missing parents are created");
+
+        assert_eq!(
+            database.parent().map(Path::to_path_buf),
+            Some(fs::canonicalize(&nested).expect("created parents resolve")),
+        );
+        assert!(fs::symlink_metadata(&database).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ancestor_symlinks_are_resolved_instead_of_rejected() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        std::os::unix::fs::symlink(temp.path(), temp.path().join("link")).expect("symlink");
+
+        let database = prepare_database_path(&temp.path().join("link/data/state.db"))
+            .expect("ancestor symlinks resolve");
+
+        // The missing segment is created beneath the resolved target, never
+        // inside a literal `link` directory.
+        assert_eq!(
+            database.parent().map(Path::to_path_buf),
+            Some(fs::canonicalize(temp.path().join("data")).expect("created parents resolve"),),
+        );
+        assert!(temp.path().join("data").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_database_files_are_rejected() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        fs::write(temp.path().join("seed.db"), b"not a database").expect("seed file");
+        std::os::unix::fs::symlink("seed.db", temp.path().join("state.db")).expect("symlink");
+
+        let error = prepare_database_path(&temp.path().join("state.db"))
+            .expect_err("symlinked database files are rejected");
+        assert_eq!(root_message(&error), "database path is not a regular file");
+    }
+
+    #[test]
+    fn non_directory_components_are_rejected() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        fs::write(temp.path().join("blocker"), b"file").expect("blocker file");
+
+        let result = prepare_database_path(&temp.path().join("blocker/state.db"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parent_components_are_rejected() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+
+        let error = prepare_database_path(&temp.path().join("../state.db"))
+            .expect_err("parent components are rejected");
+        assert!(root_message(&error).contains("parent component"));
     }
 }

@@ -212,15 +212,31 @@ async fn missing_database_parent_is_created_without_rewriting_existing_parent_mo
 }
 
 #[tokio::test]
-async fn symlinked_database_parent_is_rejected() {
+async fn symlinked_database_parent_is_resolved_and_created_at_the_target() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let target = directory.path().join("target");
     std::fs::create_dir(&target).expect("target directory is created");
     let link = directory.path().join("link");
     std::os::unix::fs::symlink(&target, &link).expect("parent symlink is created");
 
-    let Err(error) = SqliteStore::open(link.join("control-plane.db")).await else {
-        panic!("symlinked database parent was accepted");
+    SqliteStore::open(link.join("control-plane.db"))
+        .await
+        .expect("symlinked database parent resolves");
+
+    // The database materializes at the resolved destination instead of a
+    // literal `link` directory.
+    assert!(target.join("control-plane.db").is_file());
+}
+
+#[tokio::test]
+async fn symlinked_database_file_is_rejected() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    std::fs::write(directory.path().join("seed.db"), b"not a database").expect("seed file");
+    std::os::unix::fs::symlink("seed.db", directory.path().join("state.db"))
+        .expect("database symlink is created");
+
+    let Err(error) = SqliteStore::open(directory.path().join("state.db")).await else {
+        panic!("symlinked database file was accepted");
     };
     assert!(matches!(error, piqueld::store::StoreError::PathSource(_)));
 }
