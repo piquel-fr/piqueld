@@ -5,7 +5,11 @@ use piqueld::docker::{BollardDocker, DockerApi, DockerError};
 use piqueld_core::manifest::HealthCheck;
 use piqueld_core::resource::{DesiredNetwork, DesiredService, DesiredVolume, ResolvedSource};
 use piqueld_core::{ApplicationId, InstanceId, ResourceKind, docker_resource_name};
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 async fn ensure_service_eventually(docker: &BollardDocker, desired: &DesiredService) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -36,11 +40,18 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
     let socket = std::env::var("PIQUELD_DOCKER_SOCKET")
         .expect("PIQUELD_DOCKER_SOCKET must point at an isolated privileged daemon");
     // Defense in depth: the default host socket is refused even when the
-    // isolation attestation variable is set.
-    assert_ne!(
-        socket, "/var/run/docker.sock",
-        "refusing to mutate the default host Docker socket"
-    );
+    // isolation attestation variable is set. Canonicalize first, because
+    // /var/run is normally a symlink to /run and the configured value may be
+    // relative.
+    let resolved = std::fs::canonicalize(&socket).unwrap_or_else(|_| PathBuf::from(&socket));
+    for forbidden in ["/var/run/docker.sock", "/run/docker.sock"] {
+        let forbidden =
+            std::fs::canonicalize(forbidden).unwrap_or_else(|_| PathBuf::from(forbidden));
+        assert_ne!(
+            resolved, forbidden,
+            "refusing to mutate the default host Docker socket"
+        );
+    }
     let docker = BollardDocker::connect(Path::new(&socket)).unwrap();
     docker.ensure_swarm(true).await.unwrap();
     let suffix = uuid::Uuid::now_v7().simple().to_string();
