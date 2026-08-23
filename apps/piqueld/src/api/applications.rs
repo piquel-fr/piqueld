@@ -147,10 +147,7 @@ pub(super) async fn create(
     let app = validated.normalize(id.clone());
     let key_hash = idempotency_key_hash(key);
     let request_hash = app.spec_hash();
-    // There is exactly one active daemon in the prototype. Serializing create
-    // preparation prevents concurrent retries from duplicating image-resolution
-    // work before the durable binding can be committed.
-    let _mutation_guard = state.mutation_guard().await;
+    // Fast replay path without serializing behind other mutations.
     if let Some(mutation) = state
         .store
         .create_idempotency(&id, &key_hash, &request_hash)
@@ -163,6 +160,9 @@ pub(super) async fn create(
         }));
     }
     reject_name_collision(&state, &app, None).await?;
+    // Input resolution can take minutes on slow registries and must not stall
+    // unrelated mutations, so it runs outside the mutation lock. The keyed
+    // commit below re-checks the binding under the lock.
     let prepared = state.runtime.prepare(&app).await?;
     let plan = Plan::from_request(
         &PlanRequest::Reconcile {
@@ -183,6 +183,18 @@ pub(super) async fn create(
         .iter()
         .map(PlanAction::operation_step)
         .collect::<Vec<_>>();
+    let _mutation_guard = state.mutation_guard().await;
+    if let Some(mutation) = state
+        .store
+        .create_idempotency(&id, &key_hash, &request_hash)
+        .await?
+    {
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
     let mutation = state
         .store
         .create_idempotent(&app, &prepared.resolved, &steps, &key_hash, &request_hash)
@@ -243,9 +255,7 @@ pub(super) async fn replace(
             mutation_request_hash("replace", &id, expected, Some(&spec_hash)),
         )
     });
-    // Serialize the idempotency lookup through the binding commit so a
-    // concurrent retry cannot duplicate the keyed replacement.
-    let _mutation_guard = state.mutation_guard().await;
+    // Fast replay path without serializing behind other mutations.
     if let Some((key_hash, request_hash)) = &key_binding
         && let Some(mutation) = state
             .store
@@ -261,6 +271,7 @@ pub(super) async fn replace(
     let current = state.store.get(&id).await?;
     generation(expected, current.generation)?;
     reject_name_collision(&state, &app, Some(&id)).await?;
+    // Input resolution runs outside the mutation lock; see the create handler.
     let prepared = state.runtime.prepare(&app).await?;
     let plan = Plan::from_request(
         &PlanRequest::Reconcile {
@@ -273,15 +284,28 @@ pub(super) async fn replace(
             StatusCode::CONFLICT,
             "plan_blocked",
             "runtime plan contains blocking conflicts",
-        ));
+        )
+        .details(json!({"diagnostics": plan.diagnostics})));
     }
     let steps = plan
         .actions
         .iter()
         .map(PlanAction::operation_step)
         .collect::<Vec<_>>();
-    let mutation = if let Some((key_hash, request_hash)) = &key_binding {
-        state
+    let _mutation_guard = state.mutation_guard().await;
+    if let Some((key_hash, request_hash)) = &key_binding {
+        if let Some(mutation) = state
+            .store
+            .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Replace)
+            .await?
+        {
+            return Ok(accepted(AcceptedOperation {
+                operation_id: mutation.operation_id,
+                application_id: id.to_string(),
+                generation: mutation.generation,
+            }));
+        }
+        let mutation = state
             .store
             .replace_idempotent(
                 &app,
@@ -291,13 +315,18 @@ pub(super) async fn replace(
                 key_hash,
                 request_hash,
             )
-            .await?
-    } else {
-        state
-            .store
-            .replace(&app, &prepared.resolved, expected, &steps)
-            .await?
-    };
+            .await?;
+        state.runtime.trigger_reconciliation();
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
+    let mutation = state
+        .store
+        .replace(&app, &prepared.resolved, expected, &steps)
+        .await?;
     state.runtime.trigger_reconciliation();
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
@@ -441,6 +470,8 @@ pub(super) async fn plan_create(
     let body = request_body(body)?;
     let validated = parse_manifest(&headers, &body, RequestShape::PlanCreate)?;
     let hash = Sha256::digest(validated.name().as_bytes());
+    // The preview identifier intentionally aliases on name-hash collisions;
+    // previews are stateless and never persisted.
     let id = ApplicationId::parse(format!("preview-{}", hex(&hash[..8])))
         .map_err(StoreError::corrupt)?;
     let app = validated.normalize(id.clone());
@@ -496,9 +527,16 @@ pub(super) async fn plan_replace(
     let app = validated.normalize(id.clone());
     reject_name_collision(&state, &app, Some(&id)).await?;
     let plan = preview_plan(&state, &app, Some(&current)).await?;
+    let proposed_generation = expected.checked_add(1).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "expected_generation_invalid",
+            "expected generation is too large",
+        )
+    })?;
     Ok(ok(PlanView {
         application_id: id.to_string(),
-        proposed_generation: expected + 1,
+        proposed_generation,
         plan,
     }))
 }

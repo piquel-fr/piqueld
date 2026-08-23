@@ -5,7 +5,7 @@ use axum::{
     Extension, Router,
     body::Body,
     extract::Request,
-    http::{HeaderMap, Method, StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
@@ -113,6 +113,7 @@ struct ApiError {
     code: &'static str,
     message: &'static str,
     details: Value,
+    allow: Option<String>,
 }
 
 impl ApiError {
@@ -122,6 +123,7 @@ impl ApiError {
             code,
             message,
             details: Value::Null,
+            allow: None,
         }
     }
     fn details(mut self, details: Value) -> Self {
@@ -255,12 +257,18 @@ impl IntoResponse for ApiError {
             details: self.details,
             request_id: uuid::Uuid::now_v7().simple().to_string(),
         };
-        (
+        let mut response = (
             self.status,
             [(header::CONTENT_TYPE, JSON)],
             axum::Json(body),
         )
-            .into_response()
+            .into_response();
+        if let Some(allow) = self.allow
+            && let Ok(value) = header::HeaderValue::from_str(&allow)
+        {
+            response.headers_mut().insert(header::ALLOW, value);
+        }
+        response
     }
 }
 
@@ -269,14 +277,63 @@ pub fn router(state: ApiState) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     let (router, openapi) = documented_router().split_for_parts();
     router
-        .method_not_allowed_fallback(method_not_allowed)
+        .method_not_allowed_fallback(|| async { method_not_allowed().await })
         .fallback(fallback)
         .with_state(state)
         .layer(Extension(Arc::new(openapi)))
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
         .layer(middleware::from_fn(bind_error_request_id))
+        .layer(middleware::from_fn(host_allowlist))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request| {
+                    tracing::info_span!(
+                        "http_request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                    )
+                })
+                .on_response(|response: &Response, latency: std::time::Duration, _: &tracing::Span| {
+                    tracing::info!(status = %response.status(), latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX), "request completed");
+                }),
+        )
+}
+
+/// The unauthenticated control plane only accepts loopback-style authorities.
+/// Browsers reaching any other Host would indicate DNS rebinding.
+async fn host_allowlist(request: Request, next: Next) -> Response {
+    let allowed = request
+        .headers()
+        .get(header::HOST)
+        .is_none_or(|value| value.to_str().is_ok_and(allowed_host));
+    if allowed {
+        next.run(request).await
+    } else {
+        ApiError::new(
+            StatusCode::FORBIDDEN,
+            "host_not_allowed",
+            "request host is not permitted",
+        )
+        .into_response()
+    }
+}
+
+fn allowed_host(raw: &str) -> bool {
+    let authority = match raw.rsplit_once(':') {
+        Some((head, tail))
+            if !tail.is_empty() && tail.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            head
+        }
+        _ => raw,
+    };
+    let lowered = authority.to_ascii_lowercase();
+    let unbracketed = lowered
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(&lowered);
+    matches!(unbracketed, "localhost" | "127.0.0.1" | "::1")
 }
 
 // Public endpoints must be registered through `routes!` here so Axum and the
@@ -333,20 +390,22 @@ async fn bind_error_request_id(request: Request, next: Next) -> Response {
     Response::from_parts(parts, Body::from(bytes))
 }
 
-async fn fallback(method: Method) -> ApiError {
-    let _ = method;
+async fn fallback() -> ApiError {
     ApiError::new(
         StatusCode::NOT_FOUND,
         "endpoint_not_found",
         "API endpoint was not found",
     )
 }
+#[allow(clippy::unused_async)]
 async fn method_not_allowed() -> ApiError {
-    ApiError::new(
+    let mut error = ApiError::new(
         StatusCode::METHOD_NOT_ALLOWED,
         "method_not_allowed",
         "HTTP method is not allowed",
-    )
+    );
+    error.allow = Some("GET, POST, PATCH, DELETE".into());
+    error
 }
 
 fn ok<T: Serialize>(data: T) -> impl IntoResponse {
@@ -381,19 +440,25 @@ fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 fn optional_idempotency_key(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
-    let Some(value) = headers.get("idempotency-key") else {
+    let mut values = headers.get_all("idempotency-key").iter();
+    let Some(value) = values.next() else {
         return Ok(None);
     };
-    let invalid = ApiError::new(
-        StatusCode::BAD_REQUEST,
-        "idempotency_key_invalid",
-        "Idempotency-Key is invalid",
-    );
+    let invalid = || {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "idempotency_key_invalid",
+            "Idempotency-Key is invalid",
+        )
+    };
+    if values.next().is_some() {
+        return Err(invalid());
+    }
     let Ok(key) = value.to_str() else {
-        return Err(invalid);
+        return Err(invalid());
     };
     if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
-        return Err(invalid);
+        return Err(invalid());
     }
     Ok(Some(key))
 }
@@ -425,13 +490,27 @@ fn content_type(headers: &HeaderMap) -> Option<&str> {
     header_text(headers, "content-type").map(|v| v.split(';').next().unwrap_or(v).trim())
 }
 fn decode_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, ApiError> {
-    serde_json::from_slice(body).map_err(|_| {
+    let malformed = || {
         ApiError::new(
             StatusCode::BAD_REQUEST,
             "json_malformed",
             "request JSON is malformed or contains unknown fields",
         )
-    })
+    };
+    let mut deserializer = serde_json::Deserializer::from_slice(body);
+    let value = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+        tracing::debug!(path = %error.path(), "request JSON was rejected");
+        malformed()
+    })?;
+    deserializer.end().map_err(|_| malformed())?;
+    Ok(value)
+}
+
+fn parse_expected_generation(raw: &str) -> Result<u64, ()> {
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(());
+    }
+    raw.parse().map_err(|_| ())
 }
 
 #[derive(Clone, Copy)]
@@ -510,14 +589,15 @@ fn parse_update(
                         "expected_generation_required",
                         "X-Expected-Generation is required for TOML replacement",
                     )
-                })?
-                .parse()
-                .map_err(|_| {
-                    ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        "expected_generation_invalid",
-                        "expected generation is invalid",
-                    )
+                })
+                .and_then(|raw| {
+                    parse_expected_generation(raw).map_err(|()| {
+                        ApiError::new(
+                            StatusCode::BAD_REQUEST,
+                            "expected_generation_invalid",
+                            "expected generation is invalid",
+                        )
+                    })
                 })?;
             valid_expected_generation(expected)?;
             let text = std::str::from_utf8(body).map_err(|_| {
