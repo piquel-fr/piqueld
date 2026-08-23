@@ -872,9 +872,9 @@ fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<Strin
     if !unordered_eq(&found.mounts, &desired.mounts) {
         fields.push("mounts".into());
     }
-    if found.networks.iter().collect::<BTreeSet<_>>()
-        != desired.networks.iter().collect::<BTreeSet<_>>()
-    {
+    // Multiplicity is significant, matching `ObservedService::matches`, so a
+    // duplicated attachment registers as network drift.
+    if !unordered_eq(&found.networks, &desired.networks) {
         fields.push("networks".into());
     }
     if found.healthcheck != desired.healthcheck {
