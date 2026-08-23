@@ -98,8 +98,12 @@ fn image_resolution_is_the_only_pending_compilation_input() {
 #[test]
 fn docker_registry_aliases_are_canonicalized() {
     assert_eq!(
-        image_repository("index.docker.io/library/alpine:3"),
-        image_repository("docker.io/library/alpine:3")
+        image_repository("index.docker.io/library/alpine:3").as_deref(),
+        Some("docker.io/library/alpine")
+    );
+    assert_eq!(
+        image_repository("docker.io/library/alpine:3").as_deref(),
+        Some("docker.io/library/alpine")
     );
 }
 

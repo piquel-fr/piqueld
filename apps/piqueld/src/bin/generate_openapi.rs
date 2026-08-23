@@ -7,7 +7,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut document = serde_json::to_string_pretty(&openapi_document())?;
     document.push('\n');
     if std::env::args().any(|argument| argument == "--check") {
-        let existing = std::fs::read_to_string(&path)?;
+        let existing = std::fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
         if existing != document {
             return Err(format!("{} is out of date", path.display()).into());
         }
