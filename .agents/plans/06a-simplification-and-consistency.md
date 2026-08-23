@@ -107,6 +107,11 @@ plans. Unsupported fields must not remain as accepted-but-blocked product surfac
 
 ### 5. Make validation and dependency boundaries obvious
 
+> **Deviation (recorded):** the shipped `just` regenerates the OpenAPI snapshot
+> before validating (`default: generate-openapi validate`), and the explicit
+> mutating command is `just generate-openapi`. `just validate` remains the
+> canonical non-mutating entry point promised below; README documents both.
+
 1. Make `just` the canonical, non-mutating local validation entry point. It should
    run strict formatting checks, Clippy with warnings denied, focused tests, docs,
    dependency/license checks, architecture-boundary checks, and an OpenAPI snapshot

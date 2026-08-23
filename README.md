@@ -11,9 +11,10 @@ and durable operations in SQLite. It exposes a versioned HTTP API over a
 loopback TCP listener and a Unix socket. Clients poll application and operation
 resources; there is no event-stream endpoint.
 
-The configured database path is the only state location. On a clean install the
-daemon creates missing parent directories without changing existing directory
-permissions, and refuses symlinked database path components.
+A single configured `data_dir` is the only state location and holds the Unix
+API socket (`piqueld.sock`) and the embedded database (`piqueld.db`). On a clean
+install the daemon creates it with mode `0700`, never modifies an existing
+directory, and refuses symlinked path components anywhere in the path.
 
 The supported manifest and runtime model are documented in:
 

@@ -378,7 +378,6 @@
         "type": "object"
       },
       "ApplicationSpec": {
-        "additionalProperties": false,
         "description": "Canonical resource specification.",
         "properties": {
           "services": {
@@ -1128,8 +1127,7 @@
         },
         "required": [
           "code",
-          "message",
-          "request_id"
+          "message"
         ],
         "type": "object"
       },
@@ -1311,7 +1309,6 @@
         ]
       },
       "Metadata": {
-        "additionalProperties": false,
         "description": "Canonical application metadata.",
         "properties": {
           "name": {
@@ -1339,7 +1336,6 @@
         "type": "object"
       },
       "Mount": {
-        "additionalProperties": false,
         "description": "Canonical persistent volume mount.",
         "properties": {
           "read_only": {
@@ -1386,7 +1382,6 @@
         "type": "object"
       },
       "NormalizedApplication": {
-        "additionalProperties": false,
         "description": "Canonical desired application plus persistence-assigned identity.",
         "properties": {
           "api_version": {
@@ -1592,7 +1587,6 @@
         "type": "object"
       },
       "PlanAction": {
-        "additionalProperties": false,
         "description": "One ordered action in a runtime plan.",
         "properties": {
           "destructive": {
@@ -1823,7 +1817,6 @@
         ]
       },
       "ResourceLimits": {
-        "additionalProperties": false,
         "description": "Canonical CPU and memory limits.",
         "properties": {
           "cpu_millis": {
@@ -1875,7 +1868,6 @@
         "type": "object"
       },
       "Service": {
-        "additionalProperties": false,
         "description": "Canonical service definition.",
         "properties": {
           "arguments": {
@@ -2114,7 +2106,6 @@
         "type": "object"
       },
       "Volume": {
-        "additionalProperties": false,
         "description": "Canonical named volume.",
         "properties": {
           "name": {
@@ -3256,26 +3247,6 @@
               }
             },
             "description": "Success"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
           }
         },
         "summary": "Get daemon status"

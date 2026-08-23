@@ -23,14 +23,18 @@ under Cargo's build output directory, applies every migration, and directs the S
 macros to that database. Builds therefore validate the current migrations directly
 and never connect to an operator database or rely on checked-in query metadata.
 
-SQLite does not expose PRAGMA assignment through bind parameters, so each supported
-schema-version assignment is an explicit SQLx macro invocation selected from the
-fixed, embedded migration index. Every production query is compile-time checked.
+SQLite does not expose PRAGMA assignment through bind parameters, so each migration
+transaction stamps the applied version with one dynamically assembled statement,
+`format!("PRAGMA user_version = {version}")`, executed through `sqlx::query`; the
+version integer comes from the fixed, embedded migration index. That pragma stamp
+is the store's only dynamically assembled statement. Every other production query
+is compile-time checked.
 
 ## Consequences
 
 - There is one SQLite driver, pool, migration owner, and transaction authority.
-- Production and checked queries are the same Rust macro invocations.
+- Production repository statements and their checked counterparts are the same
+  Rust macro invocations.
 - `BEGIN IMMEDIATE` preserves the existing write-serialization and compare-and-swap
   behavior.
 - Building the daemon provisions a disposable migrated SQLite database before its

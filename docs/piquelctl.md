@@ -19,12 +19,13 @@ piquelctl operation <operation-id>
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit loopback
 HTTP origin such as `http://127.0.0.1:8080/`; the two transport options are
 mutually exclusive. The default socket is
-`/run/piqueld/piqueld.sock`.
+`/var/lib/piqueld/piqueld.sock`.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
-is interpreted as seconds. The timeout bounds each client request and the
-complete command.
+is interpreted as seconds. The timeout bounds the complete command; interactive
+confirmation prompts do not consume it, and each transport attempt receives
+half the budget so one safe retry of an idempotent mutation always fits.
 Manifest files must be regular UTF-8 files no larger than 4 MiB.
 
 Use `--json` for machine-readable output. JSON is made only from public API
