@@ -11,7 +11,10 @@ use super::{
 /// update settings, the restart condition and delay, mounts, environment,
 /// network targets, health checks, and resource limits. Fields the builder
 /// never sets are ignored entirely, so engine-defaulted echo-back (which can
-/// vary between daemon versions) no longer registers as drift.
+/// vary between daemon versions) no longer registers as drift. Security
+/// relevant settings piqueld cannot express (privileged execution, Linux
+/// capabilities, sysctls, users, runtimes, log drivers) are explicitly denied:
+/// their presence means out-of-band modification.
 pub(super) struct ServiceRuntimePolicy;
 
 impl ServiceRuntimePolicy {
@@ -30,6 +33,24 @@ impl ServiceRuntimePolicy {
             && Self::networks(task)
             && Self::health(container)
             && Self::resource_limits(task)
+            && Self::no_security_settings(task, container)
+    }
+
+    /// Rejects security-sensitive settings piqueld never authors; an observed
+    /// service carrying them was modified out of band and must be reconciled
+    /// back to the authored specification.
+    fn no_security_settings(task: &TaskSpec, container: &TaskSpecContainerSpec) -> bool {
+        task.runtime.is_none()
+            && task.log_driver.is_none()
+            && container.user.is_none()
+            && container.groups.as_ref().is_none_or(Vec::is_empty)
+            && container.privileges.is_none()
+            && container
+                .sysctls
+                .as_ref()
+                .is_none_or(std::collections::HashMap::is_empty)
+            && container.capability_add.as_ref().is_none_or(Vec::is_empty)
+            && container.capability_drop.as_ref().is_none_or(Vec::is_empty)
     }
 
     fn restart_policy(task: &TaskSpec) -> bool {
@@ -233,10 +254,32 @@ mod tests {
         assert!(ServiceRuntimePolicy::matches(&echoed));
 
         // Drift in a field piqueld authors is still rejected.
-        let mut drifted = authored;
+        let mut drifted = authored.clone();
         if let Some(update) = drifted.update_config.as_mut() {
             update.parallelism = Some(4);
         }
         assert!(!ServiceRuntimePolicy::matches(&drifted));
+
+        // Out-of-band security settings are rejected even though piqueld
+        // cannot author them.
+        let mut injected_capability = authored.clone();
+        if let Some(container) = injected_capability
+            .task_template
+            .as_mut()
+            .and_then(|task| task.container_spec.as_mut())
+        {
+            container.capability_add = Some(vec!["NET_ADMIN".into()]);
+        }
+        assert!(!ServiceRuntimePolicy::matches(&injected_capability));
+
+        let mut injected_user = authored;
+        if let Some(container) = injected_user
+            .task_template
+            .as_mut()
+            .and_then(|task| task.container_spec.as_mut())
+        {
+            container.user = Some("0".into());
+        }
+        assert!(!ServiceRuntimePolicy::matches(&injected_user));
     }
 }
