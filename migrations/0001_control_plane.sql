@@ -23,7 +23,7 @@ CREATE TABLE applications (
     generation INTEGER NOT NULL CHECK (generation > 0),
     desired_json TEXT NOT NULL CHECK (json_valid(desired_json)),
     resolved_json TEXT NOT NULL CHECK (json_valid(resolved_json)),
-    spec_hash TEXT NOT NULL CHECK (length(spec_hash) = 71 AND spec_hash LIKE 'sha256:%'),
+    spec_hash TEXT NOT NULL CHECK (length(spec_hash) = 71 AND spec_hash GLOB 'sha256:*'),
     delete_intent INTEGER NOT NULL DEFAULT 0 CHECK (delete_intent IN (0, 1)),
     deleted_at_ms INTEGER CHECK (deleted_at_ms IS NULL OR deleted_at_ms >= created_at_ms),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms > 0),
@@ -85,8 +85,8 @@ CREATE TABLE operation_steps (
 );
 
 CREATE TABLE mutation_idempotency (
-    key_hash TEXT PRIMARY KEY CHECK (length(key_hash) = 71 AND key_hash LIKE 'sha256:%'),
-    request_hash TEXT NOT NULL CHECK (length(request_hash) = 71 AND request_hash LIKE 'sha256:%'),
+    key_hash TEXT PRIMARY KEY CHECK (length(key_hash) = 71 AND key_hash GLOB 'sha256:*'),
+    request_hash TEXT NOT NULL CHECK (length(request_hash) = 71 AND request_hash GLOB 'sha256:*'),
     application_id TEXT NOT NULL REFERENCES applications(id),
     operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
     generation INTEGER NOT NULL CHECK (generation > 0),
@@ -94,7 +94,6 @@ CREATE TABLE mutation_idempotency (
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms > 0)
 );
 
-CREATE INDEX applications_delete_intent_idx ON applications(delete_intent, updated_at_ms);
 CREATE INDEX applications_live_idx ON applications(deleted_at_ms, name);
 CREATE INDEX operations_dispatch_idx ON operations(state, created_at_ms);
 CREATE INDEX operations_application_idx ON operations(application_id, created_at_ms DESC);
@@ -103,5 +102,3 @@ CREATE UNIQUE INDEX operations_one_running_per_app_idx ON operations(application
 CREATE INDEX operations_finished_retention_idx ON operations(finished_at_ms)
     WHERE finished_at_ms IS NOT NULL;
 CREATE INDEX operation_steps_dispatch_idx ON operation_steps(operation_id, state, position);
-CREATE INDEX mutation_idempotency_application_idx
-    ON mutation_idempotency(application_id);

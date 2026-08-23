@@ -12,54 +12,90 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-/// Prepares the Unix API socket's parent directory.
+/// Prepares the daemon's single state directory.
 ///
-/// A missing directory is created with mode `0700`. An existing directory is
-/// never modified but must be a real (non-symlink) directory that grants no
-/// access to group or other users; anyone able to write there could replace
-/// the daemon socket and intercept operator connections.
+/// The directory holds the Unix API socket, the embedded database, and future
+/// user data. Missing components are created with mode `0700`. Existing
+/// components are never modified but must be real (non-symlink) directories,
+/// and the final directory must grant no access to group or other users:
+/// anyone able to write there could replace the daemon socket and intercept
+/// operator connections.
 ///
 /// # Errors
 ///
 /// Returns an [`std::io::Error`] when the directory cannot be inspected or
 /// prepared, or when it violates the privacy requirements.
-pub async fn prepare_socket_directory(parent: &Path) -> std::io::Result<()> {
-    if parent == Path::new("/") {
+pub async fn prepare_data_dir(path: &Path) -> std::io::Result<()> {
+    if path == Path::new("/") {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "Unix API socket must be inside a private directory",
+            "the data directory must be a dedicated private directory",
         ));
     }
-    let existing = match tokio::fs::symlink_metadata(parent).await {
-        Ok(metadata) => Some(metadata),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    if let Some(metadata) = &existing {
-        if metadata.file_type().is_symlink() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "Unix socket directory {} must not be a symlink",
-                    parent.display()
-                ),
-            ));
+
+    let mut current = std::path::PathBuf::new();
+    let mut components = path.components().peekable();
+    while let Some(component) = components.next() {
+        match component {
+            std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            std::path::Component::RootDir => current.push(std::path::Path::new("/")),
+            std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the data directory cannot contain a parent component",
+                ));
+            }
+            std::path::Component::Normal(name) => current.push(name),
         }
-        let mode = metadata.permissions().mode();
-        if mode & 0o077 != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "Unix socket directory {} must be private (mode {:o} grants group or other access)",
-                    parent.display(),
-                    mode & 0o777,
-                ),
-            ));
+
+        let is_final = components.peek().is_none();
+        match tokio::fs::symlink_metadata(&current).await {
+            Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => {}
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "data directory component {} is not a real directory",
+                        current.display()
+                    ),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tokio::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&current)
+                    .await?;
+                let metadata = tokio::fs::symlink_metadata(&current).await?;
+                if !metadata.is_dir() || metadata.is_symlink() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "data directory component {} was replaced by a non-directory",
+                            current.display()
+                        ),
+                    ));
+                }
+            }
+            Err(error) => return Err(error),
         }
-    }
-    tokio::fs::create_dir_all(parent).await?;
-    if existing.is_none() {
-        tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).await?;
+
+        if is_final {
+            let mode = tokio::fs::symlink_metadata(&current)
+                .await?
+                .permissions()
+                .mode();
+            if mode & 0o077 != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "data directory {} must be private (mode {:o} grants group or other access)",
+                        current.display(),
+                        mode & 0o777
+                    ),
+                ));
+            }
+        }
     }
     Ok(())
 }

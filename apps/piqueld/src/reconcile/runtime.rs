@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use std::time::Duration;
 
-const PREPARE_TIMEOUT: Duration = Duration::from_mins(5);
 const DOCKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runtime boundary backed by Docker.
@@ -15,16 +14,23 @@ pub struct DockerRuntime<D> {
     docker: Arc<D>,
     instance_id: InstanceId,
     wake: Arc<Notify>,
+    prepare_timeout: Duration,
 }
 
 impl<D> DockerRuntime<D> {
-    /// Creates a Docker runtime adapter.
+    /// Creates a Docker runtime adapter with the supplied input-resolution budget.
     #[must_use]
-    pub fn new(docker: Arc<D>, instance_id: InstanceId, wake: Arc<Notify>) -> Self {
+    pub fn new(
+        docker: Arc<D>,
+        instance_id: InstanceId,
+        wake: Arc<Notify>,
+        prepare_timeout: Duration,
+    ) -> Self {
         Self {
             docker,
             instance_id,
             wake,
+            prepare_timeout,
         }
     }
 }
@@ -39,7 +45,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         &self,
         application: &NormalizedApplication,
     ) -> Result<PreparedApplication, BoundaryError> {
-        tokio::time::timeout(PREPARE_TIMEOUT, async {
+        tokio::time::timeout(self.prepare_timeout, async {
             let docker = Arc::clone(&self.docker);
             let jobs = application
                 .spec

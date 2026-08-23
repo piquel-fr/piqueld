@@ -12,14 +12,14 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DaemonConfig {
-    /// Local API listeners.
+    /// Local API listeners and state directory.
     pub server: ServerConfig,
-    /// Embedded database location.
-    pub database: DatabaseConfig,
     /// Docker Engine connection and bootstrap policy.
     pub docker: DockerConfig,
     /// Reconciliation scheduling limits.
     pub reconciliation: ReconciliationConfig,
+    /// Retention limits for terminal operation history.
+    pub retention: RetentionConfig,
 }
 
 impl DaemonConfig {
@@ -60,24 +60,37 @@ impl DaemonConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        absolute_file("server.unix_socket", &self.server.unix_socket)?;
-        absolute_file("database.path", &self.database.path)?;
-        absolute_file("docker.socket", &self.docker.socket)?;
-        if self.server.http_listen.port() == 0 {
+        absolute_directory("server.data_dir", &self.server.data_dir)?;
+        if self.server.data_dir.file_name().is_none() {
             return Err(ConfigError::Invalid(
-                "server.http_listen port must be greater than zero".into(),
+                "server.data_dir must name a directory".into(),
             ));
         }
-        if !self.server.http_listen.ip().is_loopback() {
-            return Err(ConfigError::Invalid(
-                "server.http_listen must bind to a loopback address".into(),
-            ));
+        absolute_file("docker.socket", &self.docker.socket)?;
+        if let Some(address) = self.server.http_listen {
+            if address.port() == 0 {
+                return Err(ConfigError::Invalid(
+                    "server.http_listen port must be greater than zero".into(),
+                ));
+            }
+            if !address.ip().is_loopback() {
+                return Err(ConfigError::Invalid(
+                    "server.http_listen must bind to a loopback address".into(),
+                ));
+            }
         }
         if self.reconciliation.scan_interval_seconds == 0
             || self.reconciliation.max_parallel_operations == 0
         {
             return Err(ConfigError::Invalid(
                 "reconciliation interval and concurrency limit must be greater than zero".into(),
+            ));
+        }
+        if self.reconciliation.prepare_timeout_seconds == 0
+            || self.reconciliation.convergence_timeout_seconds == 0
+        {
+            return Err(ConfigError::Invalid(
+                "reconciliation timeouts must be greater than zero".into(),
             ));
         }
         Ok(())
@@ -103,37 +116,42 @@ fn absolute_file(name: &str, path: &Path) -> Result<(), ConfigError> {
     }
 }
 
-/// Local API listeners.
+/// Local API listeners and the daemon state directory.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    /// Filesystem-protected Unix domain socket.
-    pub unix_socket: PathBuf,
-    /// Loopback HTTP listener.
-    pub http_listen: SocketAddr,
+    /// The single private directory holding the socket, the database, and
+    /// future user data.
+    #[serde(default = "default_data_dir")]
+    pub data_dir: PathBuf,
+    /// Optional loopback HTTP listener. Omitting it disables TCP.
+    #[serde(default)]
+    pub http_listen: Option<SocketAddr>,
+}
+
+fn default_data_dir() -> PathBuf {
+    PathBuf::from("/var/lib/piqueld")
+}
+
+impl ServerConfig {
+    /// Unix API socket path inside the data directory.
+    #[must_use]
+    pub fn socket_path(&self) -> PathBuf {
+        self.data_dir.join("piqueld.sock")
+    }
+
+    /// Embedded database path inside the data directory.
+    #[must_use]
+    pub fn database_path(&self) -> PathBuf {
+        self.data_dir.join("piqueld.db")
+    }
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            unix_socket: PathBuf::from("/run/piqueld/piqueld.sock"),
-            http_listen: "127.0.0.1:7845".parse().expect("constant socket address"),
-        }
-    }
-}
-
-/// Embedded database location.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub struct DatabaseConfig {
-    /// Absolute embedded database file path.
-    pub path: PathBuf,
-}
-
-impl Default for DatabaseConfig {
-    fn default() -> Self {
-        Self {
-            path: PathBuf::from("/var/lib/piqueld/piqueld.db"),
+            data_dir: PathBuf::from("/var/lib/piqueld"),
+            http_listen: Some("127.0.0.1:7845".parse().expect("constant socket address")),
         }
     }
 }
@@ -165,6 +183,10 @@ pub struct ReconciliationConfig {
     pub scan_interval_seconds: u64,
     /// Global cap on concurrently mutating application operations.
     pub max_parallel_operations: usize,
+    /// Outer budget for resolving one application's inputs before persistence.
+    pub prepare_timeout_seconds: u64,
+    /// Maximum time spent waiting for runtime convergence per operation.
+    pub convergence_timeout_seconds: u64,
 }
 
 impl Default for ReconciliationConfig {
@@ -172,6 +194,25 @@ impl Default for ReconciliationConfig {
         Self {
             scan_interval_seconds: 60,
             max_parallel_operations: 4,
+            prepare_timeout_seconds: 300,
+            convergence_timeout_seconds: 120,
+        }
+    }
+}
+
+/// Retention limits for terminal operation history.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RetentionConfig {
+    /// Days a finished operation is retained before pruning.
+    /// `0` disables pruning.
+    pub finished_operation_days: u64,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            finished_operation_days: 10,
         }
     }
 }

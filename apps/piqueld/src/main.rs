@@ -18,6 +18,7 @@ use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/piqueld/config.toml";
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -37,23 +38,22 @@ async fn main() -> Result<()> {
     let config = load_config(args.config.as_deref())?;
     piqueld::config::init_tracing().context("failed to initialize tracing")?;
 
+    piqueld::prepare_data_dir(&config.server.data_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to prepare data directory {}",
+                config.server.data_dir.display()
+            )
+        })?;
+
     let store = Arc::new(
-        SqliteStore::open(&config.database.path)
+        SqliteStore::open(config.server.database_path())
             .await
             .context("failed to open control-plane state")?,
     );
 
-    let docker = {
-        let docker = Arc::new(
-            BollardDocker::connect(&config.docker.socket)
-                .context("failed to connect to Docker Engine")?,
-        );
-        docker
-            .ensure_swarm(config.docker.auto_initialize_swarm)
-            .await
-            .context("Docker Engine is not an active single-node Swarm manager")?;
-        docker
-    };
+    let docker = connect_docker(&config.docker).await?;
 
     let instance = InstanceId::parse(store.instance_id().to_owned())
         .context("stored instance identity is invalid")?;
@@ -64,12 +64,19 @@ async fn main() -> Result<()> {
         Arc::clone(&docker),
         instance,
         Arc::clone(&wake),
+        std::time::Duration::from_secs(config.reconciliation.prepare_timeout_seconds),
     ));
 
-    let handler = Arc::new(ReconcileHandler::new(
-        Arc::clone(&docker),
-        Arc::clone(&store),
-    ));
+    let handler = Arc::new(
+        ReconcileHandler::new(Arc::clone(&docker), Arc::clone(&store)).with_retry_policy(
+            piqueld::reconcile::RetryPolicy {
+                convergence_timeout: std::time::Duration::from_secs(
+                    config.reconciliation.convergence_timeout_seconds,
+                ),
+                ..piqueld::reconcile::RetryPolicy::default()
+            },
+        ),
+    );
 
     let scheduler = Arc::new(OperationScheduler::new(
         Arc::clone(&store),
@@ -108,21 +115,25 @@ async fn main() -> Result<()> {
         result
     });
 
-    let tcp_api = spawn_tcp_api(
-        config.server.http_listen,
-        state.clone(),
-        cancellation.clone(),
-    )
-    .await?;
-    let unix_api = spawn_unix_api(config.server.unix_socket, state, cancellation.clone()).await?;
+    let tcp_api = match config.server.http_listen {
+        Some(address) => Some(
+            spawn_tcp_api(address, state.clone(), cancellation.clone())
+                .await
+                .with_context(|| format!("failed to bind HTTP API on {address}"))?,
+        ),
+        None => None,
+    };
+    let unix_api = spawn_unix_api(config.server.socket_path(), state, cancellation.clone()).await?;
 
     piqueld::run_until_cancelled(cancellation).await?;
 
     signal_task.await.context("shutdown task failed")??;
-    tcp_api
-        .await
-        .context("TCP API task failed")?
-        .context("TCP API failed")?;
+    if let Some(tcp_api) = tcp_api {
+        tcp_api
+            .await
+            .context("TCP API task failed")?
+            .context("TCP API failed")?;
+    }
     unix_api
         .await
         .context("Unix API task failed")?
@@ -132,6 +143,17 @@ async fn main() -> Result<()> {
         .context("reconciliation controller failed")?
         .context("reconciliation controller stopped unexpectedly")?;
     Ok(())
+}
+
+async fn connect_docker(config: &piqueld::config::DockerConfig) -> Result<Arc<BollardDocker>> {
+    let docker = Arc::new(
+        BollardDocker::connect(&config.socket).context("failed to connect to Docker Engine")?,
+    );
+    docker
+        .ensure_swarm(config.auto_initialize_swarm)
+        .await
+        .context("Docker Engine is not an active single-node Swarm manager")?;
+    Ok(docker)
 }
 
 fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> {
@@ -173,11 +195,22 @@ async fn spawn_tcp_api(
         .context("failed to bind HTTP API")?;
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
-        let result = axum::serve(listener, piqueld::api::router(state))
-            .with_graceful_shutdown(async move { shutdown.cancelled().await })
-            .await;
+        let served = tokio::time::timeout(SHUTDOWN_GRACE, async move {
+            axum::serve(listener, piqueld::api::router(state))
+                .with_graceful_shutdown(async move { shutdown.cancelled().await })
+                .await
+        })
+        .await;
         cancellation.cancel();
-        result
+        match served {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                tracing::warn!(
+                    "HTTP graceful shutdown grace elapsed; closing remaining connections"
+                );
+                Ok(())
+            }
+        }
     }))
 }
 
@@ -186,16 +219,6 @@ async fn spawn_unix_api(
     state: ApiState,
     cancellation: CancellationToken,
 ) -> Result<tokio::task::JoinHandle<Result<(), std::io::Error>>> {
-    if let Some(parent) = path.parent() {
-        piqueld::prepare_socket_directory(parent)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to prepare Unix socket directory {}",
-                    parent.display()
-                )
-            })?;
-    }
     match tokio::fs::symlink_metadata(&path).await {
         Ok(metadata) if metadata.file_type().is_socket() => {
             tokio::fs::remove_file(&path)
@@ -207,15 +230,26 @@ async fn spawn_unix_api(
         Err(error) => return Err(error).context("failed to inspect Unix API path"),
     }
     let listener = UnixListener::bind(&path).context("failed to bind Unix API")?;
-    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))
+    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
         .await
         .context("failed to restrict Unix API socket permissions")?;
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
-        let result = axum::serve(listener, piqueld::api::router(state))
-            .with_graceful_shutdown(async move { shutdown.cancelled().await })
-            .await;
+        let served = tokio::time::timeout(SHUTDOWN_GRACE, async move {
+            axum::serve(listener, piqueld::api::router(state))
+                .with_graceful_shutdown(async move { shutdown.cancelled().await })
+                .await
+        })
+        .await;
         cancellation.cancel();
-        result
+        match served {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                tracing::warn!(
+                    "Unix socket graceful shutdown grace elapsed; closing remaining connections"
+                );
+                Ok(())
+            }
+        }
     }))
 }

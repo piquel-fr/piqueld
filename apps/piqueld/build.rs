@@ -30,6 +30,34 @@ fn main() -> Result<(), Box<dyn Error>> {
         })
         .collect::<Result<Vec<_>, std::io::Error>>()?;
 
+    let mut expected_version = 0_u64;
+    for (path, _) in &migrations {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "migration path is not valid UTF-8: {}",
+                    path.display()
+                ))
+            })?;
+        let version = file_name
+            .split_once('_')
+            .and_then(|(prefix, _)| prefix.parse::<u64>().ok())
+            .ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "migration file name must start with a numeric version prefix: {file_name}"
+                ))
+            })?;
+        expected_version += 1;
+        if version != expected_version {
+            return Err(std::io::Error::other(format!(
+                "migration numbers must be contiguous starting at 1: expected {expected_version}, found {version} in {file_name}"
+            ))
+            .into());
+        }
+    }
+
     let out_dir = PathBuf::from(
         env::var_os("OUT_DIR")
             .ok_or("Cargo did not provide OUT_DIR to the piqueld build script")?,
