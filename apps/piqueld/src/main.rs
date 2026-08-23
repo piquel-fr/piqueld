@@ -93,6 +93,7 @@ async fn main() -> Result<()> {
     let controller_token = cancellation.child_token();
     let controller_cancellation = cancellation.clone();
     let scan_interval = std::time::Duration::from_secs(config.reconciliation.scan_interval_seconds);
+    let finished_operation_days = config.retention.finished_operation_days;
     let controller = tokio::spawn(async move {
         let result = run_coordinator(
             scheduler,
@@ -100,6 +101,7 @@ async fn main() -> Result<()> {
             Arc::clone(&docker),
             Arc::clone(&wake),
             scan_interval,
+            finished_operation_days,
             controller_token,
         )
         .await;
