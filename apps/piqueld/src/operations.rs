@@ -232,6 +232,11 @@ where
 
     /// Drains a snapshot of pending/recovery operations while respecting all limits.
     ///
+    /// Returns when the queue drains, cancellation is requested, or every task in a
+    /// snapshot exits without changing durable state; refetching after a no-progress
+    /// round would observe the same snapshot indefinitely. New operations arriving
+    /// after that observation are handled by the next call/controller tick.
+    ///
     /// # Errors
     /// Returns a sanitized repository error or an unexpected task failure.
     pub async fn run_until_idle(
@@ -264,12 +269,12 @@ where
                     };
                     let _global = tokio::select! {
                         biased;
-                        () = token.cancelled() => return Ok(()),
+                        () = token.cancelled() => return Ok(false),
                         permit = global.acquire_owned() => permit.map_err(SchedulerError::Semaphore)?,
                     };
                     let _application = tokio::select! {
                         biased;
-                        () = token.cancelled() => return Ok(()),
+                        () = token.cancelled() => return Ok(false),
                         guard = app_lock.lock() => guard,
                     };
                     match repository
@@ -282,7 +287,7 @@ where
                         .await
                     {
                         Ok(()) => {}
-                        Err(StoreError::IllegalTransition) => return Ok(()),
+                        Err(StoreError::IllegalTransition) => return Ok(false),
                         Err(error) => return Err(error.into()),
                     }
                     let result = tokio::select! {
@@ -294,18 +299,19 @@ where
                                 WorkState::Recovery,
                                 None,
                             ).await?;
-                            return Ok(());
+                            return Ok(true);
                         },
                         result = Self::execute_claimed(&repository, &handler, &operation.id, &token) => result?,
                     };
                     Self::finish_claimed(&repository, &operation, result).await?;
-                    Ok::<(), SchedulerError>(())
+                    Ok::<_, SchedulerError>(true)
                 });
             }
+            let mut progressed = false;
             let mut first_error = None;
             while let Some(result) = tasks.join_next().await {
                 match result {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(changed)) => progressed |= changed,
                     Ok(Err(error)) => {
                         if first_error.is_none() {
                             first_error = Some(error);
@@ -322,7 +328,7 @@ where
                 return Err(error);
             }
             // Every operation in the snapshot is now terminal or recovery due to cancellation.
-            if cancellation.is_cancelled() {
+            if !progressed || cancellation.is_cancelled() {
                 return Ok(());
             }
         }
