@@ -197,22 +197,29 @@ async fn spawn_tcp_api(
         .context("failed to bind HTTP API")?;
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
-        let served = tokio::time::timeout(SHUTDOWN_GRACE, async move {
+        let serve = std::future::IntoFuture::into_future(
             axum::serve(listener, piqueld::api::router(state))
-                .with_graceful_shutdown(async move { shutdown.cancelled().await })
-                .await
-        })
-        .await;
-        cancellation.cancel();
-        match served {
-            Ok(result) => result,
-            Err(_elapsed) => {
+                .with_graceful_shutdown(async move { shutdown.cancelled().await }),
+        );
+        tokio::pin!(serve);
+        // The grace period starts only once shutdown has been requested; a
+        // healthy server must never be torn down by an elapsed deadline.
+        let grace = async {
+            cancellation.cancelled().await;
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        };
+        tokio::pin!(grace);
+        let served = tokio::select! {
+            result = &mut serve => result,
+            () = &mut grace => {
                 tracing::warn!(
                     "HTTP graceful shutdown grace elapsed; closing remaining connections"
                 );
                 Ok(())
             }
-        }
+        };
+        cancellation.cancel();
+        served
     }))
 }
 
@@ -237,21 +244,27 @@ async fn spawn_unix_api(
         .context("failed to restrict Unix API socket permissions")?;
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
-        let served = tokio::time::timeout(SHUTDOWN_GRACE, async move {
+        let serve = std::future::IntoFuture::into_future(
             axum::serve(listener, piqueld::api::router(state))
-                .with_graceful_shutdown(async move { shutdown.cancelled().await })
-                .await
-        })
-        .await;
-        cancellation.cancel();
-        match served {
-            Ok(result) => result,
-            Err(_elapsed) => {
+                .with_graceful_shutdown(async move { shutdown.cancelled().await }),
+        );
+        tokio::pin!(serve);
+        // Same shutdown-only grace as the TCP API.
+        let grace = async {
+            cancellation.cancelled().await;
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        };
+        tokio::pin!(grace);
+        let served = tokio::select! {
+            result = &mut serve => result,
+            () = &mut grace => {
                 tracing::warn!(
                     "Unix socket graceful shutdown grace elapsed; closing remaining connections"
                 );
                 Ok(())
             }
-        }
+        };
+        cancellation.cancel();
+        served
     }))
 }
