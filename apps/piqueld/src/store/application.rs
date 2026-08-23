@@ -18,6 +18,20 @@ struct IdempotencyBinding<'a> {
     created_at_ms: i64,
 }
 
+struct IdempotencyReplay {
+    mutation: MutationResult,
+    operation_state: Option<String>,
+}
+
+impl IdempotencyReplay {
+    fn is_dead(&self) -> bool {
+        matches!(
+            self.operation_state.as_deref(),
+            Some("failed" | "cancelled")
+        )
+    }
+}
+
 impl SqliteStore {
     /// Creates an application, its initial status row, and a durable operation.
     ///
@@ -39,7 +53,7 @@ impl SqliteStore {
         let app_id = app.id.as_str();
         let app_name = app.metadata.name.as_str();
         let inserted = sqlx::query!(
-            "INSERT OR IGNORE INTO applications(id,name,generation,desired_json,resolved_json,spec_hash,created_at_ms,updated_at_ms) VALUES(?1,?2,1,?3,?4,?5,?6,?6)",
+            "INSERT INTO applications(id,name,generation,desired_json,resolved_json,spec_hash,created_at_ms,updated_at_ms) VALUES(?1,?2,1,?3,?4,?5,?6,?6) ON CONFLICT DO NOTHING",
             app_id,
             app_name,
             desired,
@@ -121,7 +135,7 @@ impl SqliteStore {
         let app_id = app.id.as_str();
         let app_name = app.metadata.name.as_str();
         let inserted = sqlx::query!(
-            "INSERT OR IGNORE INTO applications(id,name,generation,desired_json,resolved_json,spec_hash,created_at_ms,updated_at_ms) VALUES(?1,?2,1,?3,?4,?5,?6,?6)",
+            "INSERT INTO applications(id,name,generation,desired_json,resolved_json,spec_hash,created_at_ms,updated_at_ms) VALUES(?1,?2,1,?3,?4,?5,?6,?6) ON CONFLICT DO NOTHING",
             app_id,
             app_name,
             desired,
@@ -299,18 +313,33 @@ impl SqliteStore {
             return Err(StoreError::InvalidInput);
         }
         let mut tx = self.begin_immediate().await?;
-        if let Some((key_hash, request_hash)) = idempotency
-            && let Some(mutation) = Self::find_idempotency(
+        if let Some((key_hash, request_hash)) = idempotency {
+            let replay = Self::find_idempotency(
                 &mut tx,
                 key_hash,
                 request_hash,
                 app.id.as_str(),
                 OperationKind::Replace,
             )
-            .await?
-        {
-            tx.commit().await.map_err(StoreError::database)?;
-            return Ok(mutation);
+            .await?;
+            match replay {
+                Some(replay) if !replay.is_dead() => {
+                    tx.commit().await.map_err(StoreError::database)?;
+                    return Ok(replay.mutation);
+                }
+                // A dead binding must not pin its failed operation forever;
+                // drop it and fall through to a fresh, re-bound replacement.
+                Some(_) => {
+                    sqlx::query!(
+                        "DELETE FROM mutation_idempotency WHERE key_hash=?1",
+                        key_hash
+                    )
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(StoreError::database)?;
+                }
+                None => {}
+            }
         }
         let generation = expected_generation
             .checked_add(1)
@@ -509,14 +538,13 @@ impl SqliteStore {
         }
         let id_value = id.as_str();
         let mut tx = self.begin_immediate().await?;
+        let now = now_ms();
         if let Some(mutation) =
-            Self::find_optional_idempotency(&mut tx, idempotency, id_value, OperationKind::Delete)
-                .await?
+            Self::replay_or_resurrect_delete(&mut tx, idempotency, id, steps, now).await?
         {
             tx.commit().await.map_err(StoreError::database)?;
             return Ok(mutation);
         }
-        let now = now_ms();
         let expected_generation_i64 = generation_i64(expected_generation)?;
         let row = sqlx::query!(
             "SELECT generation AS \"generation!\",delete_intent AS \"delete_intent!\" FROM applications WHERE id=?1 AND deleted_at_ms IS NULL",
@@ -665,6 +693,13 @@ impl SqliteStore {
         .map_err(StoreError::database)?
         .rows_affected();
         if changed == 1 {
+            sqlx::query!(
+                "DELETE FROM application_status WHERE application_id=?1",
+                id_value
+            )
+            .execute(&mut **tx)
+            .await
+            .map_err(StoreError::database)?;
             Ok(())
         } else {
             Err(StoreError::IllegalTransition)
@@ -714,10 +749,14 @@ impl SqliteStore {
 
     /// Lists live applications in stable identifier order.
     ///
+    /// Undecodable rows are quarantined: each is logged with its application
+    /// id and skipped so one corrupt row cannot fail the whole page. Reads of
+    /// a single application stay fail-closed.
+    ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when pagination is invalid or rows cannot be read
-    /// and revalidated.
+    /// Returns [`StoreError`] when pagination is invalid or rows cannot be
+    /// read.
     ///
     /// # Panics
     ///
@@ -757,10 +796,18 @@ impl SqliteStore {
             .await
         }
         .map_err(StoreError::database)?;
-        let mut items = rows
-            .into_iter()
-            .map(|row| row.decode(&self.instance_id))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = row.id.clone();
+            match row.decode(&self.instance_id) {
+                Ok(stored) => items.push(stored),
+                Err(error) => tracing::error!(
+                    application_id = %id,
+                    error = %error,
+                    "quarantined undecodable application row"
+                ),
+            }
+        }
         let has_more = items.len() > limit;
         items.truncate(limit);
         let next_cursor = has_more.then(|| {
@@ -859,7 +906,7 @@ impl SqliteStore {
         let application_id = app.id.as_str();
         let expected_generation_db = generation_i64(expected_generation)?;
         let changed = sqlx::query!(
-            "UPDATE OR IGNORE applications SET name=?1,generation=?2,desired_json=?3,resolved_json=?4,spec_hash=?5,updated_at_ms=?6 WHERE id=?7 AND generation=?8 AND delete_intent=0",
+            "UPDATE applications SET name=?1,generation=?2,desired_json=?3,resolved_json=?4,spec_hash=?5,updated_at_ms=?6 WHERE id=?7 AND generation=?8 AND delete_intent=0",
             app_name,
             new_generation,
             desired,
@@ -871,7 +918,16 @@ impl SqliteStore {
         )
         .execute(&mut **tx)
         .await
-        .map_err(StoreError::database)?
+        .map_err(|error| {
+            if error.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation)
+            {
+                // A rename colliding with another live name is an existence
+                // conflict; constraint failures must not be silently ignored.
+                StoreError::AlreadyExists
+            } else {
+                StoreError::database(error)
+            }
+        })?
         .rows_affected();
         if changed == 1 {
             return Ok(());
@@ -904,9 +960,9 @@ impl SqliteStore {
         request_hash: &str,
         application_id: &str,
         kind: OperationKind,
-    ) -> Result<Option<MutationResult>, StoreError> {
+    ) -> Result<Option<IdempotencyReplay>, StoreError> {
         let row = sqlx::query!(
-            r#"SELECT request_hash AS "request_hash!",application_id AS "application_id!",operation_id AS "operation_id!",generation AS "generation!",kind AS "kind!" FROM mutation_idempotency WHERE key_hash=?1"#,
+            r#"SELECT m.request_hash AS "request_hash!",m.application_id AS "application_id!",m.operation_id AS "operation_id!",m.generation AS "generation!",m.kind AS "kind!",o.state AS "operation_state?" FROM mutation_idempotency m LEFT JOIN operations o ON o.id=m.operation_id WHERE m.key_hash=?1"#,
             key_hash
         )
         .fetch_optional(&mut **tx)
@@ -921,9 +977,12 @@ impl SqliteStore {
         {
             return Err(StoreError::IdempotencyConflict);
         }
-        Ok(Some(MutationResult {
-            generation: u64::try_from(row.generation).map_err(StoreError::corrupt)?,
-            operation_id: row.operation_id,
+        Ok(Some(IdempotencyReplay {
+            mutation: MutationResult {
+                generation: u64::try_from(row.generation).map_err(StoreError::corrupt)?,
+                operation_id: row.operation_id,
+            },
+            operation_state: row.operation_state,
         }))
     }
 
@@ -984,16 +1043,38 @@ impl SqliteStore {
         Ok(())
     }
 
-    async fn find_optional_idempotency(
+    /// Returns the verbatim replay for a live delete binding, resurrects a
+    /// dead one in place under its existing binding, or returns `None` when
+    /// the key is unbound.
+    async fn replay_or_resurrect_delete(
         tx: &mut Transaction<'_, Sqlite>,
         idempotency: Option<(&str, &str)>,
-        application_id: &str,
-        kind: OperationKind,
+        id: &ApplicationId,
+        steps: &[String],
+        now: i64,
     ) -> Result<Option<MutationResult>, StoreError> {
         let Some((key_hash, request_hash)) = idempotency else {
             return Ok(None);
         };
-        Self::find_idempotency(tx, key_hash, request_hash, application_id, kind).await
+        let replay = Self::find_idempotency(
+            tx,
+            key_hash,
+            request_hash,
+            id.as_str(),
+            OperationKind::Delete,
+        )
+        .await?;
+        match replay {
+            Some(replay) if !replay.is_dead() => Ok(Some(replay.mutation)),
+            // A dead binding must not pin its failed operation forever.
+            Some(replay) => {
+                let result =
+                    Self::reset_failed_delete(tx, id, replay.mutation.generation, steps, now)
+                        .await?;
+                Ok(Some(result))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn reset_failed_delete(
@@ -1018,6 +1099,17 @@ impl SqliteStore {
         if !matches!(operation.state.as_str(), "failed" | "cancelled") {
             return Err(StoreError::IllegalTransition);
         }
+        let stored_steps = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!: i64" FROM operation_steps WHERE operation_id=?1"#,
+            operation.id
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        let expected_steps = i64::try_from(steps.len()).map_err(StoreError::invalid_input)?;
+        if stored_steps != expected_steps {
+            return Err(StoreError::InvalidInput);
+        }
         sqlx::query!(
             "UPDATE operations SET state='pending',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE id=?2 AND state IN ('failed','cancelled')",
             now,
@@ -1026,14 +1118,16 @@ impl SqliteStore {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
+        // Preserve step history: reset the existing rows in place instead of
+        // replacing them, keeping ids, positions, attempt counts, and actions.
         sqlx::query!(
-            "DELETE FROM operation_steps WHERE operation_id=?1",
+            "UPDATE operation_steps SET state='pending',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE operation_id=?2",
+            now,
             operation.id
         )
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Self::insert_operation_steps(tx, &operation.id, steps, now).await?;
         let status_changed = sqlx::query!(
             "UPDATE application_status SET state='deleting',observed_generation=NULL,message=NULL,updated_at_ms=?1 WHERE application_id=?2",
             now,

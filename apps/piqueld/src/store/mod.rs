@@ -21,7 +21,8 @@ use sqlx::{
 use std::{
     error::Error as StdError,
     fs,
-    path::{Component, Path, PathBuf},
+    path::Path,
+    sync::atomic::{AtomicI64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
@@ -459,6 +460,15 @@ pub struct MutationResult {
     pub operation_id: String,
 }
 
+/// Rows removed by one retention pruning pass.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrunedCounts {
+    /// Terminal operations deleted.
+    pub operations: u64,
+    /// Idempotency bindings deleted alongside their pruned operations.
+    pub idempotency_keys: u64,
+}
+
 /// Integrated `SQLx` `SQLite` repository implementation.
 #[derive(Clone)]
 pub struct SqliteStore {
@@ -473,7 +483,7 @@ impl SqliteStore {
     /// Returns a sanitized storage or schema compatibility error.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let path = path.as_ref();
-        prepare_database_path(path)?;
+        ensure_database_target(path)?;
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -482,6 +492,7 @@ impl SqliteStore {
             .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
+            .acquire_timeout(Duration::from_secs(5))
             .connect_with(options)
             .await
             .map_err(StoreError::database)?;
@@ -512,6 +523,10 @@ impl SqliteStore {
         }
 
         let migration_start = usize::try_from(version).map_err(StoreError::schema_mismatch)?;
+        let now = now_ms();
+        let generated = format!("instance-{}", Uuid::now_v7().simple());
+        let schema_version = i64::try_from(SCHEMA_VERSION).map_err(StoreError::schema_mismatch)?;
+        let final_version = MIGRATIONS.len();
         for (index, migration) in MIGRATIONS.iter().enumerate().skip(migration_start) {
             let mut tx = pool
                 .begin_with("BEGIN IMMEDIATE")
@@ -522,21 +537,22 @@ impl SqliteStore {
                 .await
                 .map_err(StoreError::database)?;
             Self::set_user_version(&mut tx, index + 1).await?;
+            if index + 1 == final_version {
+                // Commit the instance metadata row atomically with the last
+                // version bump so a crash can never migrate without identity.
+                sqlx::query!(
+                    "INSERT INTO instance_metadata(singleton,instance_id,schema_version,created_at_ms) VALUES(1,?1,?2,?3) ON CONFLICT(singleton) DO UPDATE SET schema_version=excluded.schema_version",
+                    generated,
+                    schema_version,
+                    now
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
+            }
             tx.commit().await.map_err(StoreError::database)?;
         }
 
-        let now = now_ms();
-        let generated = format!("instance-{}", Uuid::now_v7().simple());
-        let schema_version = i64::try_from(SCHEMA_VERSION).map_err(StoreError::schema_mismatch)?;
-        sqlx::query!(
-            "INSERT OR IGNORE INTO instance_metadata(singleton,instance_id,schema_version,created_at_ms) VALUES(1,?1,?2,?3)",
-            generated,
-            schema_version,
-            now
-        )
-        .execute(&pool)
-        .await
-        .map_err(StoreError::database)?;
         let row = sqlx::query!(
             "SELECT instance_id,schema_version FROM instance_metadata WHERE singleton=1"
         )
@@ -675,64 +691,12 @@ impl SqliteStore {
     }
 }
 
-/// Prepares only missing database parents and rejects symlinked path components.
-/// Existing directories are never chmodded or otherwise modified. The final
-/// database path is checked as well so a replaced symlink cannot be followed by
-/// the `SQLite` driver during normal startup.
-fn prepare_database_path(path: &Path) -> Result<(), StoreError> {
-    let parent = path.parent().ok_or_else(|| {
-        StoreError::path(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "database path has no parent",
-        ))
-    })?;
-
-    let mut current = PathBuf::new();
-    for component in parent.components() {
-        match component {
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-            Component::RootDir => current.push(Path::new("/")),
-            Component::CurDir => continue,
-            Component::ParentDir => {
-                return Err(StoreError::path(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "database path contains a parent component",
-                )));
-            }
-            Component::Normal(name) => current.push(name),
-        }
-
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            }
-            Ok(_) => {
-                return Err(StoreError::path(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "database parent is not a real directory",
-                )));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match fs::create_dir(&current) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                    Err(error) => return Err(StoreError::path(error)),
-                }
-                let metadata = fs::symlink_metadata(&current).map_err(StoreError::path)?;
-                if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-                    return Err(StoreError::path(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "database parent was replaced by a non-directory",
-                    )));
-                }
-            }
-            Err(error) => return Err(StoreError::path(error)),
-        }
-    }
-
+/// Verifies the database target is a regular file or absent before `SQLite`
+/// creates it. The parent directory's privacy is enforced by the daemon's data
+/// directory preparation, not here.
+fn ensure_database_target(path: &Path) -> Result<(), StoreError> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
-            Ok(())
-        }
+        Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => Ok(()),
         Ok(_) => Err(StoreError::path(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "database path is not a regular file",
@@ -742,12 +706,24 @@ fn prepare_database_path(path: &Path) -> Result<(), StoreError> {
     }
 }
 
+static LAST_NOW_MS: AtomicI64 = AtomicI64::new(0);
+
+/// Returns the current Unix time in milliseconds, monotonic within this
+/// process so clock step-backs can never violate schema timestamp checks.
 fn now_ms() -> i64 {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    i64::try_from(millis).unwrap_or(i64::MAX)
+    let observed = i64::try_from(millis).unwrap_or(i64::MAX);
+    let mut last = LAST_NOW_MS.load(Ordering::Relaxed);
+    loop {
+        let next = last.saturating_add(1).max(observed);
+        match LAST_NOW_MS.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(current) => last = current,
+        }
+    }
 }
 
 fn generation_i64(value: u64) -> Result<i64, StoreError> {

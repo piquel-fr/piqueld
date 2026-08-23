@@ -10,7 +10,7 @@ use crate::{
     },
 };
 use piqueld_core::{
-    InstanceId, NormalizedApplication, Plan, PlanAction, PlanRequest, ResolutionSet,
+    InstanceId, NormalizedApplication, Plan, PlanAction, PlanRequest, ResolutionSet, codes,
     compile_application,
     manifest::Source,
     planner::ActionKind,
@@ -112,22 +112,26 @@ fn has_diagnostic(plan: &piqueld_core::Plan, code: &str) -> bool {
 }
 
 pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
-    if has_diagnostic(plan, "unowned_name_collision") {
+    if has_diagnostic(plan, codes::UNOWNED_NAME_COLLISION) {
         OperationError::OwnershipConflict
-    } else if has_diagnostic(plan, "immutable_configuration_drift") {
+    } else if has_diagnostic(plan, codes::IMMUTABLE_CONFIGURATION_DRIFT) {
         OperationError::DockerConfigurationConflict
+    } else if has_diagnostic(plan, codes::SERVICE_UPDATE_FAILED) {
+        OperationError::ServiceUpdateFailed
     } else {
-        OperationError::OwnershipConflict
+        OperationError::PlanBlocked("an unclassified blocking diagnostic")
     }
 }
 
 pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
-    if has_diagnostic(plan, "unowned_name_collision") {
+    if has_diagnostic(plan, codes::UNOWNED_NAME_COLLISION) {
         "runtime reconciliation is blocked by an ownership conflict"
-    } else if has_diagnostic(plan, "immutable_configuration_drift") {
+    } else if has_diagnostic(plan, codes::IMMUTABLE_CONFIGURATION_DRIFT) {
         "runtime reconciliation is blocked by immutable Docker configuration"
+    } else if has_diagnostic(plan, codes::SERVICE_UPDATE_FAILED) {
+        "runtime reconciliation is blocked by a failed service update"
     } else {
-        "runtime reconciliation is blocked by an ownership conflict"
+        "runtime reconciliation is blocked"
     }
 }
 

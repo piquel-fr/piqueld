@@ -6,6 +6,12 @@ use super::{
 use crate::store::ApplicationStatus;
 use piqueld_core::resource::ObservedApplication;
 
+/// Operations stuck in `running` longer than this lease are reclaimed back to
+/// `recovery` so one transient journal failure cannot freeze an application
+/// until restart. The lease comfortably exceeds prepare plus convergence plus
+/// retry budgets.
+const RUNNING_LEASE_MS: i64 = 30 * 60 * 1000;
+
 /// Runs startup recovery, apply/delete wakes, and periodic full scans. Multiple
 /// wakes collapse through `Notify`, keeping polling work bounded.
 ///
@@ -36,10 +42,29 @@ pub async fn run_coordinator<D: DockerApi>(
     let mut scan = tokio::time::interval(interval);
     scan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        reclaim_stale_running(&store).await;
         tokio::select! {
             () = cancellation.cancelled() => return Ok(()),
             () = wake.notified() => run_scan_until_success(&scheduler, &store, &docker, &cancellation).await?,
             _ = scan.tick() => run_scan_until_success(&scheduler, &store, &docker, &cancellation).await?,
+        }
+    }
+}
+
+/// Returns operations whose journal writes failed mid-execution to the
+/// recoverable queue. Handlers are idempotent and per-application locks
+/// serialize re-execution, so reclamation is safe.
+async fn reclaim_stale_running(store: &SqliteStore) {
+    match store.reclaim_expired_running(RUNNING_LEASE_MS).await {
+        Ok(0) => {}
+        Ok(reclaimed) => {
+            tracing::warn!(
+                reclaimed,
+                "reclaimed operations stuck in running beyond their lease"
+            );
+        }
+        Err(error) => {
+            tracing::error!(%error, "could not reclaim stale running operations");
         }
     }
 }

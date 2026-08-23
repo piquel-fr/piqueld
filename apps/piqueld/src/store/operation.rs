@@ -1,8 +1,8 @@
 //! Operation repository implementation.
 
 use super::{
-    ApplicationId, Operation, OperationError, OperationKind, OperationStep, SqliteStore, StepState,
-    StoreError, WorkState, now_ms, page_limit,
+    ApplicationId, Operation, OperationError, OperationKind, OperationStep, PrunedCounts,
+    SqliteStore, StepState, StoreError, WorkState, now_ms, page_limit,
 };
 
 #[derive(Debug)]
@@ -383,5 +383,82 @@ impl SqliteStore {
         .rows_affected();
         tx.commit().await.map_err(StoreError::database)?;
         Ok(count)
+    }
+
+    /// Deletes terminal operations that finished before the cutoff together
+    /// with their steps and idempotency bindings in one transaction.
+    ///
+    /// Non-terminal operations, their steps, and bindings of surviving
+    /// operations are never touched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the pruning transaction cannot be committed.
+    pub async fn prune_finished_operations(
+        &self,
+        cutoff_ms: i64,
+    ) -> Result<PrunedCounts, StoreError> {
+        let mut tx = self.begin_immediate().await?;
+        sqlx::query!(
+            "DELETE FROM operation_steps WHERE operation_id IN (SELECT id FROM operations WHERE state IN ('succeeded','failed','cancelled') AND finished_at_ms < ?1)",
+            cutoff_ms
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let idempotency_keys = sqlx::query!(
+            "DELETE FROM mutation_idempotency WHERE operation_id IN (SELECT id FROM operations WHERE state IN ('succeeded','failed','cancelled') AND finished_at_ms < ?1)",
+            cutoff_ms
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        // The partial index operations_finished_retention_idx serves this scan.
+        let operations = sqlx::query!(
+            "DELETE FROM operations WHERE state IN ('succeeded','failed','cancelled') AND finished_at_ms < ?1",
+            cutoff_ms
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(PrunedCounts {
+            operations,
+            idempotency_keys,
+        })
+    }
+
+    /// Returns operations stuck in `running` longer than the expiry to
+    /// `recovery`, resetting their running steps the same way, and reports how
+    /// many operations were reclaimed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the reclamation transaction cannot be
+    /// committed.
+    pub async fn reclaim_expired_running(&self, older_than_ms: i64) -> Result<u64, StoreError> {
+        let now = now_ms();
+        let cutoff = now.saturating_sub(older_than_ms);
+        let mut tx = self.begin_immediate().await?;
+        let reclaimed = sqlx::query!(
+            "UPDATE operations SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE state='running' AND updated_at_ms < ?2",
+            now,
+            cutoff
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        sqlx::query!(
+            "UPDATE operation_steps SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE state='running' AND EXISTS (SELECT 1 FROM operations WHERE operations.id=operation_steps.operation_id AND operations.state='recovery')",
+            now
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(reclaimed)
     }
 }

@@ -51,6 +51,9 @@ pub enum OperationError {
     /// A service update failed in Docker.
     #[error("service update paused after task failure; the previous healthy task is retained")]
     ServiceUpdateFailed,
+    /// The runtime plan is blocked by a diagnostic without a specific mapping.
+    #[error("runtime plan is blocked by {0}")]
+    PlanBlocked(&'static str),
     /// A service did not converge before its deadline.
     #[error("service did not converge before the deadline")]
     ConvergenceTimeout,
@@ -77,6 +80,7 @@ impl OperationError {
             Self::DockerRequestFailed(_) => "docker_request_failed",
             Self::ValidationFailed(_) => "validation_failed",
             Self::ServiceUpdateFailed => "service_update_failed",
+            Self::PlanBlocked(_) => "plan_blocked",
             Self::ConvergenceTimeout => "convergence_timeout",
             Self::DeletionNotConverged => "deletion_not_converged",
         }
