@@ -2,7 +2,7 @@
 
 use crate::{
     api::{BoundaryError, PreparedApplication, RuntimeBoundary},
-    docker::{DockerApi, DockerError},
+    docker::{DockerApi, DockerError, IMAGE_RESOLVE_TIMEOUT},
     operations::{OperationError, OperationHandler, OperationScheduler, SchedulerError},
     store::{
         ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, SqliteStore, StepState,

@@ -62,6 +62,13 @@ const IMAGE_RESOLVE_ATTEMPTS: usize = 3;
 /// Pause between resolution attempts after a suspected concurrent tag flip.
 const IMAGE_RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(100);
 
+/// Upper bound for one complete image resolution, including pulls.
+///
+/// Resolution performs up to [`IMAGE_RESOLVE_ATTEMPTS`] pulls plus digest
+/// lookups, so a cold pull of a large image must not share the single-request
+/// budget; the reconciler still bounds each prepare phase overall.
+pub(crate) const IMAGE_RESOLVE_TIMEOUT: Duration = Duration::from_mins(10);
+
 #[derive(Clone)]
 /// A shared connection to the Docker Engine.
 pub struct BollardDocker {

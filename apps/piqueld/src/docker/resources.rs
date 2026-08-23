@@ -1,11 +1,11 @@
 use super::{
     ApplicationId, BTreeMap, BollardDocker, DesiredNetwork, DesiredService, DesiredVolume,
-    DockerApi, DockerError, HashMap, InspectNetworkOptions, InspectServiceOptions, Ipam,
-    ListNetworksOptionsBuilder, ListServicesOptionsBuilder, ListTasksOptionsBuilder,
-    ListVolumesOptionsBuilder, NetworkCreateRequest, OBSERVATION_INSPECT_CONCURRENCY,
-    ObservedApplication, ObservedNetwork, ObservedVolume, SERVICE_LABEL, StreamExt,
-    SwarmInitRequest, SwarmState, VolumeCreateOptions, async_trait, bounded, resolve_image_digest,
-    stream,
+    DockerApi, DockerError, HashMap, IMAGE_RESOLVE_TIMEOUT, InspectNetworkOptions,
+    InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
+    ListTasksOptionsBuilder, ListVolumesOptionsBuilder, NetworkCreateRequest,
+    OBSERVATION_INSPECT_CONCURRENCY, ObservedApplication, ObservedNetwork, ObservedVolume,
+    SERVICE_LABEL, StreamExt, SwarmInitRequest, SwarmState, VolumeCreateOptions, async_trait,
+    bounded, resolve_image_digest, stream,
 };
 
 #[async_trait]
@@ -57,12 +57,17 @@ impl DockerApi for BollardDocker {
         // Pulling through the Engine records RepoDigests, and resolution
         // verifies the tag was not re-pointed while the pull ran. Stream
         // details are intentionally discarded because image-pull progress is
-        // not part of the durable API contract.
-        bounded(
-            "resolve image",
+        // not part of the durable API contract. A cold pull of a large image
+        // exceeds the per-request budget, so resolution carries its own.
+        match tokio::time::timeout(
+            IMAGE_RESOLVE_TIMEOUT,
             resolve_image_digest(self.docker.as_ref(), reference),
         )
         .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(DockerError::Unavailable("resolve image")),
+        }
     }
 
     // Keep the correlated resource snapshot in one boundary operation so all

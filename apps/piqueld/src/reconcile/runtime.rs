@@ -1,7 +1,7 @@
 use super::{
-    Arc, BoundaryError, DockerApi, DockerError, InstanceId, NormalizedApplication, Notify,
-    PreparedApplication, ResolutionSet, ResolvedSource, RuntimeBoundary, Source, StoredApplication,
-    compile_application,
+    Arc, BoundaryError, DockerApi, DockerError, IMAGE_RESOLVE_TIMEOUT, InstanceId,
+    NormalizedApplication, Notify, PreparedApplication, ResolutionSet, ResolvedSource,
+    RuntimeBoundary, Source, StoredApplication, compile_application,
 };
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
@@ -57,8 +57,10 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                 let docker = Arc::clone(&docker);
                 async move {
                     let Source::Image { image } = source;
+                    // Resolution includes pulls, so it uses the dedicated
+                    // image budget rather than the per-request deadline.
                     let digest_reference =
-                        tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, docker.resolve_image(&image))
+                        tokio::time::timeout(IMAGE_RESOLVE_TIMEOUT, docker.resolve_image(&image))
                             .await
                             .map_err(|_| {
                                 BoundaryError::Runtime(DockerError::Unavailable("resolve image"))
