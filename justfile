@@ -16,16 +16,16 @@ fmt-check:
     @cargo fmt --all -- --check
 
 lint:
-    @cargo clippy --workspace --all-targets --all-features -- -D warnings
+    @cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
 check:
-    @cargo check --workspace --all-targets
+    @cargo check --locked --workspace --all-targets
 
 test:
-    @cargo test --workspace
+    @cargo test --locked --workspace
 
 doc-test:
-    @cargo test --doc --workspace
+    @cargo test --locked --doc --workspace
 
 deny:
     @cargo deny check

@@ -9,7 +9,6 @@ rust-version.workspace = true
 
 [dependencies]
 piqueld-client.workspace = true
-piqueld-core.workspace = true
 
 [lints]
 workspace = true

@@ -17,22 +17,22 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "piqueld";
-            version = "0.1.0";
+            inherit version;
             src = pkgs.lib.cleanSource self;
             cargoLock.lockFile = ./Cargo.lock;
-            nativeBuildInputs = [
-              pkgs.cmake
-              pkgs.pkg-config
-              pkgs.rustPlatform.bindgenHook
-            ];
             # Compile SQLx SQLite query macros against a disposable database
             # provisioned by the daemon build script.
             DATABASE_URL = "sqlite::memory:";
             doCheck = true;
+            # The placeholder piqueld-ui binary is not part of the product.
+            postInstall = ''
+              rm -f "$out/bin/piqueld-ui"
+            '';
           };
         }
       );
@@ -65,23 +65,14 @@
               {
                 nativeBuildInputs = [
                   pkgs.cargo
-                  pkgs.jq
                 ];
                 src = pkgs.lib.cleanSource self;
               }
               ''
-                set -o pipefail
                 cp -R "$src" source
                 chmod -R u+w source
                 cd source
-                if cargo metadata --offline --no-deps --format-version 1 \
-                  | jq -e '.packages[] | select(.name == "piqueld-core")
-                    | any(.dependencies[];
-                        .name == "axum" or .name == "bollard" or .name == "leptos"
-                        or .name == "sqlx")'; then
-                  echo "piqueld-core has a forbidden dependency" >&2
-                  exit 1
-                fi
+                bash scripts/check-dependency-boundaries.sh
                 touch "$out"
               '';
         }
@@ -94,12 +85,13 @@
         in
         {
           default = pkgs.mkShell {
+            # The unpinned nixpkgs toolchain can differ from rust-toolchain.toml;
+            # rustup users get the pinned one automatically inside the repo.
             packages = with pkgs; [
               cargo
               cargo-deny
               clippy
-              cmake
-              pkg-config
+              just
               rustc
               rustfmt
             ];

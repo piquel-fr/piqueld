@@ -23,7 +23,7 @@ piqueld-core   = { version = "0.1.0", path = "crates/piqueld-core"   }
 # External
 anyhow = "1.0.98"
 async-trait = "0.1.88"
-axum = { version = "0.8.4", features = ["json", "tokio", "http1"] }
+axum = { version = "0.8.4", default-features = false, features = ["json", "query", "tokio", "http1"] }
 bytes = "1.10.1"
 bollard = "0.19.1"
 clap = { version = "4.5.40", features = ["derive"] }
@@ -40,11 +40,10 @@ sqlx = { version = "0.8.6", default-features = false, features = ["macros", "run
 tempfile = "3.20.0"
 thiserror = "2.0.12"
 tokio = { version = "1.45.1", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-util = { version = "0.7.15", features = ["rt"] }
+tokio-util = "0.7.15"
 toml = "0.8.22"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "json"] }
-tower = { version = "0.5.2", features = ["util"] }
 tower-http = { version = "0.6.6", features = ["request-id", "trace"] }
 utoipa = { version = "5.3.1", features = ["axum_extras", "uuid"] }
 utoipa-axum = "0.2.0"
@@ -52,6 +51,7 @@ url = "2.5.4"
 uuid = { version = "1.17.0", features = ["v7"] }
 
 proptest = "1.6.0"
+
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
