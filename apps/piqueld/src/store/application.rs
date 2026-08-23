@@ -797,7 +797,14 @@ impl SqliteStore {
         }
         .map_err(StoreError::database)?;
         let mut items = Vec::with_capacity(rows.len());
+        // Quarantined rows still count toward the page size: one undecodable
+        // row inside a full page must not suppress `next_cursor` and hide
+        // every later application.
+        let mut rows_fetched = 0_usize;
+        let mut last_row_id: Option<String> = None;
         for row in rows {
+            rows_fetched += 1;
+            last_row_id = Some(row.id.clone());
             let id = row.id.clone();
             match row.decode(&self.instance_id) {
                 Ok(stored) => items.push(stored),
@@ -808,17 +815,16 @@ impl SqliteStore {
                 ),
             }
         }
-        let has_more = items.len() > limit;
+        let has_more =
+            usize::try_from(fetch_limit).is_ok_and(|fetch_limit| rows_fetched == fetch_limit);
         items.truncate(limit);
         let next_cursor = has_more.then(|| {
-            format!(
-                "v1:{}",
-                items
-                    .last()
-                    .expect("a non-empty bounded page has a cursor")
-                    .application
-                    .id
-            )
+            let cursor_id = items
+                .last()
+                .map(|stored| stored.application.id.to_string())
+                .or_else(|| last_row_id.clone())
+                .expect("a bounded page carrying more rows has a cursor");
+            format!("v1:{cursor_id}")
         });
         Ok(ApplicationPage { items, next_cursor })
     }

@@ -717,4 +717,58 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     assert_eq!(page.items[0].application.id, healthy.id);
     assert_eq!(page.next_cursor, None);
     assert!(store.get(&corrupt.id).await.is_err());
+
+    // A corrupt row inside a full page must not suppress the pagination
+    // cursor: quarantined rows still consume page slots, so the surviving
+    // applications stay reachable on later pages.
+    let third = application_named("app-persist-03", "gallery");
+    store
+        .create(
+            &third,
+            &resolved(&third, store.instance_id()),
+            &["ensure_network".into()],
+        )
+        .await
+        .expect("third application is created");
+    let fourth = application_named("app-persist-04", "wiki");
+    store
+        .create(
+            &fourth,
+            &resolved(&fourth, store.instance_id()),
+            &["ensure_network".into()],
+        )
+        .await
+        .expect("fourth application is created");
+
+    // A full first page (limit + 1 fetched rows) holds the corrupt row plus
+    // two healthy ones; without cursor accounting for quarantine, the fourth
+    // application would be unreachable.
+    let first_page = store
+        .list(None, 2)
+        .await
+        .expect("first page tolerates a corrupt row");
+    assert_eq!(
+        first_page
+            .items
+            .iter()
+            .map(|application| application.application.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![healthy.id.as_str(), third.id.as_str()],
+        "the corrupt row is quarantined inside the full page"
+    );
+    let next_cursor = first_page.next_cursor.expect("full page reports a cursor");
+
+    let second_page = store
+        .list(Some(next_cursor.as_str()), 2)
+        .await
+        .expect("second page tolerates a corrupt row");
+    assert_eq!(
+        second_page
+            .items
+            .iter()
+            .map(|application| application.application.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![fourth.id.as_str()],
+        "the remaining healthy application follows the quarantined page"
+    );
 }
