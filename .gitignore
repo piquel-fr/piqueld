@@ -33,3 +33,8 @@ apps/piqueld-ui/dist/
 # Dashboard UI Artifacts
 target-ui/
 apps/piqueld-ui/generated/
+
+# Nix build artifacts
+/result
+/result-*
+.direnv/
