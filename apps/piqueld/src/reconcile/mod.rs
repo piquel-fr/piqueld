@@ -2,7 +2,7 @@
 
 use crate::{
     api::{BoundaryError, PreparedApplication, RuntimeBoundary},
-    docker::{DockerApi, DockerError},
+    docker::{DockerApi, DockerError, IMAGE_RESOLVE_TIMEOUT},
     operations::{OperationError, OperationHandler, OperationScheduler, SchedulerError},
     store::{
         ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, SqliteStore, StepState,
@@ -10,7 +10,7 @@ use crate::{
     },
 };
 use piqueld_core::{
-    InstanceId, NormalizedApplication, Plan, PlanAction, PlanRequest, ResolutionSet,
+    InstanceId, NormalizedApplication, Plan, PlanAction, PlanRequest, ResolutionSet, codes,
     compile_application,
     manifest::Source,
     planner::ActionKind,
@@ -39,25 +39,17 @@ impl<D> ReconcileHandler<D> {
     }
 
     /// Replaces the retry policy used by this handler.
+    #[must_use]
     ///
     /// # Panics
     /// Panics when the policy has no attempts or its initial delay exceeds its
     /// maximum delay.
-    #[must_use]
-    pub fn with_retry_policy(self, retry: RetryPolicy) -> Self {
-        self.try_with_retry_policy(retry)
-            .expect("retry policy should be known-valid at the call site")
-    }
-
-    /// Replaces the retry policy after validating it.
-    ///
-    /// # Errors
-    /// Returns the validation error unchanged when the policy has no attempts
-    /// or its initial delay exceeds its maximum delay.
-    pub fn try_with_retry_policy(mut self, retry: RetryPolicy) -> Result<Self, RetryPolicyError> {
-        retry.validate()?;
+    pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
+        if let Err(error) = retry.validate() {
+            panic!("invalid retry policy: {error}");
+        }
         self.retry = retry;
-        Ok(self)
+        self
     }
 }
 
@@ -119,39 +111,27 @@ fn has_diagnostic(plan: &piqueld_core::Plan, code: &str) -> bool {
         .any(|diagnostic| diagnostic.code == code)
 }
 
-#[derive(Clone, Copy)]
-enum BlockedPlanClassification {
-    OwnershipConflict,
-    ConfigurationConflict,
-}
-
-fn blocked_plan_classification(plan: &piqueld_core::Plan) -> BlockedPlanClassification {
-    if has_diagnostic(plan, "unowned_name_collision") {
-        BlockedPlanClassification::OwnershipConflict
-    } else if has_diagnostic(plan, "immutable_configuration_drift") {
-        BlockedPlanClassification::ConfigurationConflict
-    } else {
-        BlockedPlanClassification::OwnershipConflict
-    }
-}
-
 pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
-    match blocked_plan_classification(plan) {
-        BlockedPlanClassification::OwnershipConflict => OperationError::OwnershipConflict,
-        BlockedPlanClassification::ConfigurationConflict => {
-            OperationError::DockerConfigurationConflict
-        }
+    if has_diagnostic(plan, codes::UNOWNED_NAME_COLLISION) {
+        OperationError::OwnershipConflict
+    } else if has_diagnostic(plan, codes::IMMUTABLE_CONFIGURATION_DRIFT) {
+        OperationError::DockerConfigurationConflict
+    } else if has_diagnostic(plan, codes::SERVICE_UPDATE_FAILED) {
+        OperationError::ServiceUpdateFailed
+    } else {
+        OperationError::PlanBlocked("an unclassified blocking diagnostic")
     }
 }
 
 pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
-    match blocked_plan_classification(plan) {
-        BlockedPlanClassification::OwnershipConflict => {
-            "runtime reconciliation is blocked by an ownership conflict"
-        }
-        BlockedPlanClassification::ConfigurationConflict => {
-            "runtime reconciliation is blocked by immutable Docker configuration"
-        }
+    if has_diagnostic(plan, codes::UNOWNED_NAME_COLLISION) {
+        "runtime reconciliation is blocked by an ownership conflict"
+    } else if has_diagnostic(plan, codes::IMMUTABLE_CONFIGURATION_DRIFT) {
+        "runtime reconciliation is blocked by immutable Docker configuration"
+    } else if has_diagnostic(plan, codes::SERVICE_UPDATE_FAILED) {
+        "runtime reconciliation is blocked by a failed service update"
+    } else {
+        "runtime reconciliation is blocked"
     }
 }
 

@@ -1,0 +1,22 @@
+# Minimal non-root development configuration.
+# The daemon prepares one private data directory holding the Unix API socket
+# (piqueld.sock), the embedded database (piqueld.db), and future user data. The
+# directory is created when missing with mode 0700; an existing directory must
+# already be private (no group or other access) and is never chmodded. Prefer a
+# user-owned runtime directory such as /run/user/<uid>/piqueld over /tmp.
+
+[server]
+# Replace 1000 with your account's UID (`id -u`); the runtime directory is
+# per-user and only exists for your own UID.
+data_dir = "/run/user/1000/piqueld"
+http_listen = "127.0.0.1:7845"
+
+[docker]
+socket = "/var/run/docker.sock"
+auto_initialize_swarm = true
+
+[reconciliation]
+scan_interval_seconds = 60
+max_parallel_operations = 4
+prepare_timeout_seconds = 300
+convergence_timeout_seconds = 120
