@@ -11,6 +11,10 @@ use std::time::Duration;
 
 use crate::{ClientError, Envelope, ErrorBody};
 
+/// Transport detail reported when a request exceeds its deadline.
+#[cfg(not(target_arch = "wasm32"))]
+const TIMEOUT_MESSAGE: &str = "request timed out";
+
 #[cfg(not(target_arch = "wasm32"))]
 mod loopback {
     //! Native transport: HTTP/1.1 over loopback TCP and Unix-domain sockets.
@@ -26,7 +30,7 @@ mod loopback {
     use tokio::net::{TcpStream, UnixStream};
     use url::{Host, Url};
 
-    use super::{ClientError, transport};
+    use super::{ClientError, TIMEOUT_MESSAGE, transport};
 
     #[derive(Clone, Debug)]
     pub(super) enum Endpoint {
@@ -74,6 +78,9 @@ mod loopback {
     }
 
     /// Sends one request and returns the status plus the collected body.
+    ///
+    /// The deadline governs dispatch and body collection alike, so a stalled
+    /// response cannot outlive [`Client::with_timeout`].
     pub(super) async fn exchange(
         endpoint: &Endpoint,
         timeout: Duration,
@@ -82,20 +89,17 @@ mod loopback {
         payload: Vec<u8>,
         headers: &[(&str, &str)],
     ) -> Result<(StatusCode, Vec<u8>), ClientError> {
-        let response = tokio::time::timeout(
-            timeout,
-            send_request(endpoint, method, path, payload, headers),
-        )
+        let (status, body) = tokio::time::timeout(timeout, async {
+            let response = send_request(endpoint, method, path, payload, headers).await?;
+            let status = response.status();
+            let collected = response.into_body().collect().await.map_err(transport)?;
+            Ok((status, collected.to_bytes().to_vec()))
+        })
         .await
-        .map_err(|_| transport("request timed out"))??;
-        let status = response.status();
-        let body = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(transport)?
-            .to_bytes();
-        Ok((status, body.to_vec()))
+        .map_err(|_| ClientError::Transport {
+            message: TIMEOUT_MESSAGE.to_owned(),
+        })??;
+        Ok((status, body))
     }
 
     async fn send_request(
@@ -163,10 +167,6 @@ mod web {
         payload: Vec<u8>,
         headers: &[(&str, &str)],
     ) -> Result<(StatusCode, Vec<u8>), ClientError> {
-        // Browser fetches are cancelled by navigation and report network
-        // failures promptly. Polling adds its own bounded cadence, so the
-        // native per-request timer has no role here.
-        let _ = timeout;
         let mut request = match method {
             Method::GET => Request::get(path),
             Method::POST => Request::post(path),
@@ -181,6 +181,12 @@ mod web {
         for (name, value) in headers {
             request = request.header(name, value);
         }
+        // The browser enforces the deadline through the abort signal, which
+        // rejects the fetch and any pending body read once it fires. This
+        // keeps the native per-request timer semantics on every target.
+        let request = request.abort_signal(Some(&web_sys::AbortSignal::timeout_with_u32(
+            timeout.as_millis() as u32,
+        )));
         let response = if payload.is_empty() {
             request.send().await
         } else {
