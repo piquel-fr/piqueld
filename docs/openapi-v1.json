@@ -1080,6 +1080,10 @@
                 "description": "Version of the exposed API.",
                 "type": "string"
               },
+              "daemon_version": {
+                "description": "Version of the running daemon binary.",
+                "type": "string"
+              },
               "instance_id": {
                 "description": "Control-plane instance identifier.",
                 "type": "string"
@@ -1092,6 +1096,7 @@
             "required": [
               "status",
               "api_version",
+              "daemon_version",
               "instance_id"
             ],
             "type": "object"
@@ -1123,8 +1128,7 @@
         },
         "required": [
           "code",
-          "message",
-          "request_id"
+          "message"
         ],
         "type": "object"
       },
@@ -2087,6 +2091,10 @@
             "description": "Version of the exposed API.",
             "type": "string"
           },
+          "daemon_version": {
+            "description": "Version of the running daemon binary.",
+            "type": "string"
+          },
           "instance_id": {
             "description": "Control-plane instance identifier.",
             "type": "string"
@@ -2099,6 +2107,7 @@
         "required": [
           "status",
           "api_version",
+          "daemon_version",
           "instance_id"
         ],
         "type": "object"
