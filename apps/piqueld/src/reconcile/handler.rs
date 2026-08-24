@@ -97,8 +97,9 @@ impl<D: DockerApi> ReconcileHandler<D> {
         match self.store.get(&operation.application_id).await {
             Ok(application) => Ok(Some(application)),
             Err(crate::store::StoreError::NotFound) if operation.kind == OperationKind::Delete => {
-                // Finalization tombstones the application before the scheduler marks the
-                // operation successful. A crash in that tiny window resumes here safely.
+                // Delete finalization commits the operation success and the
+                // tombstone atomically, so a missing application means the
+                // deletion already completed durably.
                 Ok(None)
             }
             Err(error) => {
@@ -318,15 +319,24 @@ impl<D: DockerApi> ReconcileHandler<D> {
         if operation.kind == OperationKind::Delete {
             return Ok(());
         }
-        match self
+        let status = self
             .store
-            .mark_ready_if_current(&operation.application_id, operation.generation)
+            .status(&operation.application_id)
             .await
-        {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(OperationError::Superseded),
-            Err(error) => Err(journal_error(error)),
+            .map_err(journal_error)?;
+        if status.state != ApplicationState::Ready {
+            self.store
+                .set_status(
+                    &operation.application_id,
+                    status.state,
+                    ApplicationState::Ready,
+                    Some(operation.generation),
+                    Some("runtime converged"),
+                )
+                .await
+                .map_err(journal_error)?;
         }
+        Ok(())
     }
 
     async fn finish_delete(

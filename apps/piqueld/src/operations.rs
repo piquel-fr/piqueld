@@ -51,6 +51,9 @@ pub enum OperationError {
     /// A service update failed in Docker.
     #[error("service update paused after task failure; the previous healthy task is retained")]
     ServiceUpdateFailed,
+    /// The runtime plan is blocked by a diagnostic without a specific mapping.
+    #[error("runtime plan is blocked by {0}")]
+    PlanBlocked(&'static str),
     /// A service did not converge before its deadline.
     #[error("service did not converge before the deadline")]
     ConvergenceTimeout,
@@ -77,6 +80,7 @@ impl OperationError {
             Self::DockerRequestFailed(_) => "docker_request_failed",
             Self::ValidationFailed(_) => "validation_failed",
             Self::ServiceUpdateFailed => "service_update_failed",
+            Self::PlanBlocked(_) => "plan_blocked",
             Self::ConvergenceTimeout => "convergence_timeout",
             Self::DeletionNotConverged => "deletion_not_converged",
         }
@@ -232,11 +236,6 @@ where
 
     /// Drains a snapshot of pending/recovery operations while respecting all limits.
     ///
-    /// Returns when the queue drains, cancellation is requested, or every task in a
-    /// snapshot exits without changing durable state; refetching after a no-progress
-    /// round would observe the same snapshot indefinitely. New operations arriving
-    /// after that observation are handled by the next call/controller tick.
-    ///
     /// # Errors
     /// Returns a sanitized repository error or an unexpected task failure.
     pub async fn run_until_idle(
@@ -269,12 +268,12 @@ where
                     };
                     let _global = tokio::select! {
                         biased;
-                        () = token.cancelled() => return Ok(false),
+                        () = token.cancelled() => return Ok(()),
                         permit = global.acquire_owned() => permit.map_err(SchedulerError::Semaphore)?,
                     };
                     let _application = tokio::select! {
                         biased;
-                        () = token.cancelled() => return Ok(false),
+                        () = token.cancelled() => return Ok(()),
                         guard = app_lock.lock() => guard,
                     };
                     match repository
@@ -287,7 +286,7 @@ where
                         .await
                     {
                         Ok(()) => {}
-                        Err(StoreError::IllegalTransition) => return Ok(false),
+                        Err(StoreError::IllegalTransition) => return Ok(()),
                         Err(error) => return Err(error.into()),
                     }
                     let result = tokio::select! {
@@ -299,19 +298,18 @@ where
                                 WorkState::Recovery,
                                 None,
                             ).await?;
-                            return Ok(true);
+                            return Ok(());
                         },
                         result = Self::execute_claimed(&repository, &handler, &operation.id, &token) => result?,
                     };
                     Self::finish_claimed(&repository, &operation, result).await?;
-                    Ok::<_, SchedulerError>(true)
+                    Ok::<(), SchedulerError>(())
                 });
             }
-            let mut progressed = false;
             let mut first_error = None;
             while let Some(result) = tasks.join_next().await {
                 match result {
-                    Ok(Ok(changed)) => progressed |= changed,
+                    Ok(Ok(())) => {}
                     Ok(Err(error)) => {
                         if first_error.is_none() {
                             first_error = Some(error);
@@ -328,7 +326,7 @@ where
                 return Err(error);
             }
             // Every operation in the snapshot is now terminal or recovery due to cancellation.
-            if !progressed || cancellation.is_cancelled() {
+            if cancellation.is_cancelled() {
                 return Ok(());
             }
         }

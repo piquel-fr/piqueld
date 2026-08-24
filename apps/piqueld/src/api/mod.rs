@@ -4,10 +4,11 @@ use async_trait::async_trait;
 use axum::{
     Extension, Router,
     body::Body,
-    extract::Request,
-    http::{HeaderMap, Method, StatusCode, header},
+    extract::{DefaultBodyLimit, Request},
+    http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
+    routing::get,
 };
 use piqueld_client::{
     AcceptedOperation, CreateApplicationRequest, Envelope, ErrorBody, PlanApplicationRequest,
@@ -36,11 +37,18 @@ mod applications;
 mod openapi;
 mod operations;
 mod system;
+mod ui;
 
 pub use openapi::openapi_document;
+pub use ui::{EmbeddedBundle, UiAssets};
 
 const JSON: &str = "application/json";
 const TOML: &str = "application/toml";
+
+/// Upper bound for one API request body. The CLI's manifest preflight limit
+/// (`piquelctl::support::MAX_MANIFEST_BYTES`) must not exceed this value, or a
+/// locally accepted manifest would fail server-side with 413.
+const REQUEST_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 /// Resolved desired state paired with the initial runtime observation.
@@ -85,7 +93,7 @@ pub struct ApiState {
     store: Arc<SqliteStore>,
     runtime: Arc<dyn RuntimeBoundary>,
     instance_id: String,
-    create_lock: Arc<tokio::sync::Mutex<()>>,
+    mutation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ApiState {
@@ -96,8 +104,14 @@ impl ApiState {
             instance_id: store.instance_id().to_owned(),
             store,
             runtime,
-            create_lock: Arc::new(tokio::sync::Mutex::new(())),
+            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// Serializes mutation preparation so the idempotency lookup-through-commit
+    /// window cannot race with a concurrent retry of the same key.
+    pub(super) async fn mutation_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.mutation_lock.lock().await
     }
 }
 
@@ -107,6 +121,7 @@ struct ApiError {
     code: &'static str,
     message: &'static str,
     details: Value,
+    allow: Option<String>,
 }
 
 impl ApiError {
@@ -116,6 +131,7 @@ impl ApiError {
             code,
             message,
             details: Value::Null,
+            allow: None,
         }
     }
     fn details(mut self, details: Value) -> Self {
@@ -249,28 +265,133 @@ impl IntoResponse for ApiError {
             details: self.details,
             request_id: uuid::Uuid::now_v7().simple().to_string(),
         };
-        (
+        let mut response = (
             self.status,
             [(header::CONTENT_TYPE, JSON)],
             axum::Json(body),
         )
-            .into_response()
+            .into_response();
+        if let Some(allow) = self.allow
+            && let Ok(value) = header::HeaderValue::from_str(&allow)
+        {
+            response.headers_mut().insert(header::ALLOW, value);
+        }
+        response
     }
 }
 
-/// Builds the Plan 06A HTTP router.
+/// Builds the TCP router, registering the dashboard when the binary embeds it.
 pub fn router(state: ApiState) -> Router {
-    let request_id = header::HeaderName::from_static("x-request-id");
+    web_router(state, UiAssets::resolve())
+}
+
+/// Builds the API-only router used by the Unix-socket client transport.
+pub fn api_router(state: ApiState) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
+    finish_router(router.fallback(api_fallback), state, openapi)
+}
+
+/// Builds the TCP router from the API, liveness, and optional UI boundaries.
+pub fn web_router(state: ApiState, ui_assets: UiAssets) -> Router {
+    let (router, openapi) = documented_router().split_for_parts();
+    let router = router.merge(health_router());
+    let router = match ui_assets {
+        UiAssets::Disabled => router.fallback(api_fallback),
+        UiAssets::Embedded(bundle) => router
+            .route("/", get(ui::redirect))
+            .route("/dashboard", get(ui::redirect))
+            .fallback(move |request: Request| ui_fallback(bundle, request)),
+    };
+    finish_router(router, state, openapi)
+}
+
+/// Builds the liveness-only route set. It is intentionally not part of Utoipa.
+pub fn health_router() -> Router<ApiState> {
+    Router::<ApiState>::new().route("/health", get(system::health))
+}
+
+fn finish_router(
+    router: Router<ApiState>,
+    state: ApiState,
+    openapi: utoipa::openapi::OpenApi,
+) -> Router {
+    let request_id = header::HeaderName::from_static("x-request-id");
+    // 405 responses must advertise exactly the methods each matched endpoint
+    // registers, so the values are derived from the OpenAPI document itself.
+    let allow_routes = AllowRoutes::build(&openapi);
+    let router = router.method_not_allowed_fallback(move |request: Request| {
+        let allow_routes = Arc::clone(&allow_routes);
+        async move { method_not_allowed(&allow_routes, request.uri().path()) }
+    });
     router
-        .method_not_allowed_fallback(method_not_allowed)
-        .fallback(fallback)
         .with_state(state)
         .layer(Extension(Arc::new(openapi)))
+        .layer(middleware::from_fn(host_allowlist))
+        // Both layers below wrap the allowlist: the propagator stamps even
+        // short-circuited host rejections with their request ID, and the
+        // binder echoes that same identifier in every structured error body.
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
         .layer(middleware::from_fn(bind_error_request_id))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
-        .layer(TraceLayer::new_for_http())
+        .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT_BYTES))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request| {
+                    tracing::info_span!(
+                        "http_request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                    )
+                })
+                .on_response(|response: &Response, latency: std::time::Duration, _: &tracing::Span| {
+                    tracing::info!(status = %response.status(), latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX), "request completed");
+                }),
+        )
+}
+
+/// The unauthenticated control plane only accepts loopback-style authorities.
+/// Browsers reaching any other Host would indicate DNS rebinding.
+async fn host_allowlist(request: Request, next: Next) -> Response {
+    let allowed = request
+        .headers()
+        .get(header::HOST)
+        .is_none_or(|value| value.to_str().is_ok_and(allowed_host));
+    if allowed {
+        next.run(request).await
+    } else {
+        ApiError::new(
+            StatusCode::FORBIDDEN,
+            "host_not_allowed",
+            "request host is not permitted",
+        )
+        .into_response()
+    }
+}
+
+fn allowed_host(raw: &str) -> bool {
+    let lowered = raw.to_ascii_lowercase();
+    // Bracketed IPv6 literals carry the port outside the brackets.
+    let authority = if let Some(rest) = lowered.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((head, _)) => head,
+            None => rest,
+        }
+    } else {
+        match lowered.rsplit_once(':') {
+            // A digits-only suffix is a port unless the head itself contains
+            // colons, which means this is an unbracketed IPv6 literal such as
+            // `::1`.
+            Some((head, tail))
+                if !tail.is_empty()
+                    && tail.bytes().all(|byte| byte.is_ascii_digit())
+                    && !head.contains(':') =>
+            {
+                head
+            }
+            _ => lowered.as_str(),
+        }
+    };
+    matches!(authority, "localhost" | "127.0.0.1" | "::1")
 }
 
 // Public endpoints must be registered through `routes!` here so Axum and the
@@ -286,6 +407,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
             applications::replace,
             applications::delete
         ))
+        .routes(routes!(applications::detail))
         .routes(routes!(applications::plan_replace))
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::status))
@@ -327,20 +449,102 @@ async fn bind_error_request_id(request: Request, next: Next) -> Response {
     Response::from_parts(parts, Body::from(bytes))
 }
 
-async fn fallback(method: Method) -> ApiError {
-    let _ = method;
-    ApiError::new(
-        StatusCode::NOT_FOUND,
-        "endpoint_not_found",
-        "API endpoint was not found",
-    )
+async fn ui_fallback(bundle: &'static EmbeddedBundle, request: Request) -> Response {
+    if ui::is_api_path(request.uri().path()) {
+        return api_fallback(request).await;
+    }
+    if request.uri().path().starts_with("/dashboard/") {
+        return ui::serve(bundle, &request);
+    }
+    ui::not_found()
 }
-async fn method_not_allowed() -> ApiError {
-    ApiError::new(
+
+async fn api_fallback(request: Request) -> Response {
+    if ui::is_api_path(request.uri().path()) {
+        return ApiError::new(
+            StatusCode::NOT_FOUND,
+            "endpoint_not_found",
+            "API endpoint was not found",
+        )
+        .into_response();
+    }
+    ui::not_found()
+}
+fn method_not_allowed(allow_routes: &AllowRoutes, path: &str) -> ApiError {
+    let mut error = ApiError::new(
         StatusCode::METHOD_NOT_ALLOWED,
         "method_not_allowed",
         "HTTP method is not allowed",
-    )
+    );
+    // The header advertises only methods registered for the matched route;
+    // when no documented route matches, the header is omitted.
+    error.allow = allow_routes.allow_for(path);
+    error
+}
+
+/// Per-route `Allow` values derived from the `OpenAPI` document.
+#[derive(Clone)]
+struct AllowRoutes(Arc<[(Vec<String>, String)]>);
+
+impl AllowRoutes {
+    fn build(document: &utoipa::openapi::OpenApi) -> Arc<Self> {
+        let mut routes = Vec::new();
+        for (path, item) in &document.paths.paths {
+            let methods = Self::path_methods(item);
+            if !methods.is_empty() {
+                routes.push((
+                    path.split('/')
+                        .filter(|segment| !segment.is_empty())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>(),
+                    methods.join(", "),
+                ));
+            }
+        }
+        Arc::new(Self(routes.into()))
+    }
+
+    fn path_methods(item: &utoipa::openapi::path::PathItem) -> Vec<&'static str> {
+        let mut methods = Vec::new();
+        if item.get.is_some() {
+            methods.push("GET");
+        }
+        if item.post.is_some() {
+            methods.push("POST");
+        }
+        if item.put.is_some() {
+            methods.push("PUT");
+        }
+        if item.patch.is_some() {
+            methods.push("PATCH");
+        }
+        if item.delete.is_some() {
+            methods.push("DELETE");
+        }
+        if item.head.is_some() {
+            methods.push("HEAD");
+        }
+        methods
+    }
+
+    /// Returns the comma-separated methods for the first route template that
+    /// matches the concrete request path, or `None` when none does.
+    fn allow_for(&self, request_path: &str) -> Option<String> {
+        let segments: Vec<&str> = request_path
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect();
+        self.0
+            .iter()
+            .find(|(template, _)| {
+                template.len() == segments.len()
+                    && template
+                        .iter()
+                        .zip(&segments)
+                        .all(|(expected, actual)| expected.starts_with('{') || expected == actual)
+            })
+            .map(|(_, allow)| allow.clone())
+    }
 }
 
 fn ok<T: Serialize>(data: T) -> impl IntoResponse {
@@ -373,6 +577,44 @@ fn valid_expected_generation(expected: u64) -> Result<(), ApiError> {
 fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok()
 }
+
+fn optional_idempotency_key(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
+    let mut values = headers.get_all("idempotency-key").iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    let invalid = || {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "idempotency_key_invalid",
+            "Idempotency-Key is invalid",
+        )
+    };
+    if values.next().is_some() {
+        return Err(invalid());
+    }
+    let Ok(key) = value.to_str() else {
+        return Err(invalid());
+    };
+    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+        return Err(invalid());
+    }
+    Ok(Some(key))
+}
+
+fn mutation_request_hash(
+    kind: &str,
+    application_id: &ApplicationId,
+    expected_generation: u64,
+    spec_hash: Option<&str>,
+) -> String {
+    let request = format!(
+        "piqueld-mutation/v1\0{kind}\0{application_id}\0{expected_generation}\0{}",
+        spec_hash.unwrap_or_default()
+    );
+    format!("sha256:{}", hex(&Sha256::digest(request.as_bytes())))
+}
+
 fn require_json(headers: &HeaderMap) -> Result<(), ApiError> {
     match content_type(headers) {
         Some(value) if value.eq_ignore_ascii_case(JSON) => Ok(()),
@@ -387,13 +629,27 @@ fn content_type(headers: &HeaderMap) -> Option<&str> {
     header_text(headers, "content-type").map(|v| v.split(';').next().unwrap_or(v).trim())
 }
 fn decode_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, ApiError> {
-    serde_json::from_slice(body).map_err(|_| {
+    let malformed = || {
         ApiError::new(
             StatusCode::BAD_REQUEST,
             "json_malformed",
             "request JSON is malformed or contains unknown fields",
         )
-    })
+    };
+    let mut deserializer = serde_json::Deserializer::from_slice(body);
+    let value = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+        tracing::debug!(path = %error.path(), "request JSON was rejected");
+        malformed()
+    })?;
+    deserializer.end().map_err(|_| malformed())?;
+    Ok(value)
+}
+
+fn parse_expected_generation(raw: &str) -> Result<u64, ()> {
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(());
+    }
+    raw.parse().map_err(|_| ())
 }
 
 #[derive(Clone, Copy)]
@@ -472,14 +728,15 @@ fn parse_update(
                         "expected_generation_required",
                         "X-Expected-Generation is required for TOML replacement",
                     )
-                })?
-                .parse()
-                .map_err(|_| {
-                    ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        "expected_generation_invalid",
-                        "expected generation is invalid",
-                    )
+                })
+                .and_then(|raw| {
+                    parse_expected_generation(raw).map_err(|()| {
+                        ApiError::new(
+                            StatusCode::BAD_REQUEST,
+                            "expected_generation_invalid",
+                            "expected generation is invalid",
+                        )
+                    })
                 })?;
             valid_expected_generation(expected)?;
             let text = std::str::from_utf8(body).map_err(|_| {

@@ -19,8 +19,12 @@ user-facing name does not rename Docker resources.
 
 The planner compares only fields that this product owns. Reconcile actions are
 ordered as network and volume ensures, service ensures, convergence waits, and
-cleanup of obsolete services and networks. Same-name foreign resources are
-blocking conflicts and are never mutated.
+cleanup of obsolete services and networks. Drift reasons name the differing
+fields individually (for example `command`, `arguments`, `environment`). Same-name
+foreign resources are blocking conflicts and are never mutated; obsolete owned
+resources are only removed once the wanted infrastructure and services have
+converged, and plans report `cleanup_deferred` diagnostics while removal is
+pending.
 
 Deletion removes owned services, waits for their absence, removes the private
 network, and emits informational `retain_volume` actions for named volumes.

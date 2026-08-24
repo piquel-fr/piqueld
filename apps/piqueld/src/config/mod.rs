@@ -6,23 +6,36 @@ use std::{
     path::{Path, PathBuf},
 };
 use thiserror::Error;
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Complete host-specific daemon bootstrap configuration.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DaemonConfig {
-    /// Local API listeners.
+    /// Local API listeners and state directory.
     pub server: ServerConfig,
-    /// Embedded database location.
-    pub database: DatabaseConfig,
     /// Docker Engine connection and bootstrap policy.
     pub docker: DockerConfig,
     /// Reconciliation scheduling limits.
     pub reconciliation: ReconciliationConfig,
+    /// Retention limits for terminal operation history.
+    pub retention: RetentionConfig,
 }
 
 impl DaemonConfig {
+    /// Returns the built-in configuration after applying the same validation
+    /// used for file-backed configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Invalid`] if a built-in default violates a
+    /// configuration invariant.
+    pub fn validated_default() -> Result<Self, ConfigError> {
+        let config = Self::default();
+        config.validate()?;
+        Ok(config)
+    }
+
     /// Reads, parses, and validates configuration without modifying its source.
     ///
     /// # Errors
@@ -41,30 +54,43 @@ impl DaemonConfig {
     /// Returns [`ConfigError`] when the document is malformed or violates a
     /// host configuration invariant.
     pub fn from_toml(source: &str) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(source).map_err(|_| ConfigError::Parse)?;
+        let config: Self = toml::from_str(source).map_err(ConfigError::Parse)?;
         config.validate()?;
         Ok(config)
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        absolute_file("server.unix_socket", &self.server.unix_socket)?;
-        absolute_file("database.path", &self.database.path)?;
-        absolute_file("docker.socket", &self.docker.socket)?;
-        if self.server.http_listen.port() == 0 {
+        absolute_directory("server.data_dir", &self.server.data_dir)?;
+        if self.server.data_dir.file_name().is_none() {
             return Err(ConfigError::Invalid(
-                "server.http_listen port must be greater than zero".into(),
+                "server.data_dir must name a directory".into(),
             ));
         }
-        if !self.server.http_listen.ip().is_loopback() {
-            return Err(ConfigError::Invalid(
-                "server.http_listen must bind to a loopback address".into(),
-            ));
+        absolute_file("docker.socket", &self.docker.socket)?;
+        if let Some(address) = self.server.http_listen {
+            if address.port() == 0 {
+                return Err(ConfigError::Invalid(
+                    "server.http_listen port must be greater than zero".into(),
+                ));
+            }
+            if !address.ip().is_loopback() {
+                return Err(ConfigError::Invalid(
+                    "server.http_listen must bind to a loopback address".into(),
+                ));
+            }
         }
         if self.reconciliation.scan_interval_seconds == 0
             || self.reconciliation.max_parallel_operations == 0
         {
             return Err(ConfigError::Invalid(
                 "reconciliation interval and concurrency limit must be greater than zero".into(),
+            ));
+        }
+        if self.reconciliation.prepare_timeout_seconds == 0
+            || self.reconciliation.convergence_timeout_seconds == 0
+        {
+            return Err(ConfigError::Invalid(
+                "reconciliation timeouts must be greater than zero".into(),
             ));
         }
         Ok(())
@@ -90,37 +116,42 @@ fn absolute_file(name: &str, path: &Path) -> Result<(), ConfigError> {
     }
 }
 
-/// Local API listeners.
+/// Local API listeners and the daemon state directory.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    /// Filesystem-protected Unix domain socket.
-    pub unix_socket: PathBuf,
-    /// Loopback HTTP listener.
-    pub http_listen: SocketAddr,
+    /// The single private directory holding the socket, the database, and
+    /// future user data.
+    #[serde(default = "default_data_dir")]
+    pub data_dir: PathBuf,
+    /// Optional loopback HTTP listener. Omitting it disables TCP.
+    #[serde(default)]
+    pub http_listen: Option<SocketAddr>,
+}
+
+fn default_data_dir() -> PathBuf {
+    PathBuf::from("/var/lib/piqueld")
+}
+
+impl ServerConfig {
+    /// Unix API socket path inside the data directory.
+    #[must_use]
+    pub fn socket_path(&self) -> PathBuf {
+        self.data_dir.join("piqueld.sock")
+    }
+
+    /// Embedded database path inside the data directory.
+    #[must_use]
+    pub fn database_path(&self) -> PathBuf {
+        self.data_dir.join("piqueld.db")
+    }
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            unix_socket: PathBuf::from("/run/piqueld/piqueld.sock"),
-            http_listen: "127.0.0.1:7845".parse().expect("constant socket address"),
-        }
-    }
-}
-
-/// Embedded database location.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub struct DatabaseConfig {
-    /// Absolute embedded database file path.
-    pub path: PathBuf,
-}
-
-impl Default for DatabaseConfig {
-    fn default() -> Self {
-        Self {
-            path: PathBuf::from("/var/lib/piqueld/piqueld.db"),
+            data_dir: PathBuf::from("/var/lib/piqueld"),
+            http_listen: Some("127.0.0.1:7845".parse().expect("constant socket address")),
         }
     }
 }
@@ -152,6 +183,10 @@ pub struct ReconciliationConfig {
     pub scan_interval_seconds: u64,
     /// Global cap on concurrently mutating application operations.
     pub max_parallel_operations: usize,
+    /// Outer budget for resolving one application's inputs before persistence.
+    pub prepare_timeout_seconds: u64,
+    /// Maximum time spent waiting for runtime convergence per operation.
+    pub convergence_timeout_seconds: u64,
 }
 
 impl Default for ReconciliationConfig {
@@ -159,6 +194,25 @@ impl Default for ReconciliationConfig {
         Self {
             scan_interval_seconds: 60,
             max_parallel_operations: 4,
+            prepare_timeout_seconds: 300,
+            convergence_timeout_seconds: 120,
+        }
+    }
+}
+
+/// Retention limits for terminal operation history.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RetentionConfig {
+    /// Days a finished operation is retained before pruning.
+    /// `0` disables pruning.
+    pub finished_operation_days: u64,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            finished_operation_days: 10,
         }
     }
 }
@@ -169,15 +223,20 @@ pub enum ConfigError {
     /// Reading the source file failed.
     #[error("could not read configuration")]
     Read(#[source] std::io::Error),
-    /// TOML syntax or shape was invalid.
+    /// The TOML document was syntactically malformed, had the wrong shape, or
+    /// contained unknown keys.
     #[error("configuration is not valid TOML")]
-    Parse,
+    Parse(#[source] toml::de::Error),
     /// A parsed setting violated a semantic invariant.
     #[error("configuration is invalid: {0}")]
     Invalid(String),
 }
 
-/// Installs structured JSON tracing, filtered by `RUST_LOG` when present.
+/// Installs tracing filtered by `RUST_LOG` when present.
+///
+/// Interactive terminals receive plain-text events for readability; piped or
+/// supervised runs (systemd, containers, log collectors) receive structured
+/// JSON.
 ///
 /// # Errors
 ///
@@ -185,9 +244,15 @@ pub enum ConfigError {
 /// returned error is only from subscriber initialization, such as when another
 /// global subscriber is already installed.
 pub fn init_tracing() -> Result<(), tracing_subscriber::util::TryInitError> {
+    use std::io::IsTerminal as _;
+    let layer = if std::io::stdout().is_terminal() {
+        tracing_subscriber::fmt::layer().compact().boxed()
+    } else {
+        tracing_subscriber::fmt::layer().json().boxed()
+    };
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(tracing_subscriber::fmt::layer().json())
+        .with(layer)
         .try_init()
 }
 

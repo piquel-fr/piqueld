@@ -1,13 +1,22 @@
 use super::policy::ServiceRuntimePolicy;
 use super::{
     BTreeMap, BollardDocker, Convergence, DesiredMount, DockerError, HealthCheck, HealthConfig,
-    MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND, ObservedService, ObservedTask,
-    ResourceLimits, ServiceSpec, TaskDiagnostic, TaskSpecContainerSpec, TaskState,
+    InspectContainerOptionsBuilder, MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND,
+    ObservedService, ObservedTask, ResourceLimits, ServiceSpec, TaskDiagnostic,
+    TaskSpecContainerSpec, TaskState,
 };
+use bollard::models::HealthStatusEnum;
 
 impl BollardDocker {
     /// Converts one Docker task into the backend-neutral observation contract.
-    pub(super) fn observe_task(task: &bollard::models::Task) -> ObservedTask {
+    ///
+    /// `healthy` carries the container healthcheck verdict for running tasks;
+    /// it is `None` when the task has no healthcheck, has not converged to a
+    /// verdict yet, or its container could not be inspected.
+    pub(super) fn observe_task(
+        task: &bollard::models::Task,
+        healthy: Option<bool>,
+    ) -> ObservedTask {
         let state = Self::task_state(task);
         let diagnostic = match state {
             TaskState::Failed => Some(TaskDiagnostic::Failed {
@@ -22,9 +31,47 @@ impl BollardDocker {
         };
         ObservedTask {
             state,
-            healthy: None,
+            healthy,
             desired_running: task.desired_state == Some(bollard::models::TaskState::RUNNING),
             diagnostic,
+        }
+    }
+
+    /// Reads the live healthcheck verdict of one container.
+    ///
+    /// A vanished container reports no verdict instead of failing the whole
+    /// observation; tasks are transient and disappear while services update.
+    pub(super) async fn container_health(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<bool>, DockerError> {
+        match self
+            .docker
+            .inspect_container(
+                container_id,
+                Some(InspectContainerOptionsBuilder::default().build()),
+            )
+            .await
+        {
+            Ok(inspection) => Ok(Self::health_verdict(
+                inspection.state.and_then(|state| state.health),
+            )),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
+            Err(error) => Err(DockerError::request("inspect container health", error)),
+        }
+    }
+
+    /// Converts Docker's reported healthcheck result into the neutral verdict.
+    fn health_verdict(health: Option<bollard::models::Health>) -> Option<bool> {
+        match health.and_then(|health| health.status) {
+            Some(HealthStatusEnum::HEALTHY) => Some(true),
+            Some(HealthStatusEnum::UNHEALTHY) => Some(false),
+            // "none" (no healthcheck), "starting", and absent states carry no
+            // verdict yet and must not fail an otherwise running task.
+            Some(HealthStatusEnum::NONE | HealthStatusEnum::STARTING | HealthStatusEnum::EMPTY)
+            | None => None,
         }
     }
 
