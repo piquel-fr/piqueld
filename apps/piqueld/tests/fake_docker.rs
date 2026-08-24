@@ -1,15 +1,17 @@
 //! Reconciliation coverage using the real Docker seam and an in-memory backend.
 
 use async_trait::async_trait;
-use piqueld::docker::{DockerApi, DockerError, SwarmState};
+use piqueld::docker::{DockerApi, DockerError, ImageSource, SwarmState, resolve_image_digest};
 use piqueld::operations::OperationScheduler;
 use piqueld::reconcile::ReconcileHandler;
 use piqueld::store::SqliteStore;
+use piqueld_core::Sha256Digest;
 use piqueld_core::planner::PlanRequest;
 use piqueld_core::resource::{
-    Convergence, DesiredService, ObservedApplication, ObservedNetwork, ObservedService,
-    ObservedTask, ObservedVolume, ResolutionSet, ResolvedApplication, ResolvedSource, TaskState,
-    compile_application,
+    APPLICATION_LABEL, Convergence, DesiredService, INSTANCE_LABEL, MANAGED_LABEL,
+    ObservedApplication, ObservedNetwork, ObservedService, ObservedTask, ObservedVolume,
+    ResolutionSet, ResolvedApplication, ResolvedSource, SERVICE_LABEL, SPEC_HASH_LABEL, TaskState,
+    compile_application, image_repository,
 };
 use piqueld_core::{ApplicationId, InstanceId, Plan, PlanAction, parse_toml};
 use sqlx::{Connection, SqliteConnection};
@@ -20,13 +22,64 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Default)]
 struct FakeDocker {
     observed: Arc<Mutex<ObservedApplication>>,
+    registry: Arc<Mutex<RegistryState>>,
+}
+
+/// Programmatic hook: the tag is re-pointed after this many remaining pulls.
+#[derive(Default)]
+struct RegistryState {
+    pulls: BTreeMap<String, u64>,
+    digests: BTreeMap<String, String>,
+    flips_remaining: usize,
+}
+
+impl RegistryState {
+    fn base_digest() -> String {
+        "a".repeat(64)
+    }
+
+    fn flipped_digest() -> String {
+        "b".repeat(64)
+    }
+
+    fn digest(&self, reference: &str) -> String {
+        self.digests
+            .get(reference)
+            .cloned()
+            .unwrap_or_else(Self::base_digest)
+    }
+
+    fn pull(&mut self, reference: &str) {
+        *self.pulls.entry(reference.to_owned()).or_insert(0) += 1;
+        if self.flips_remaining > 0 {
+            self.flips_remaining -= 1;
+            let flipped = if self.digest(reference) == Self::base_digest() {
+                Self::flipped_digest()
+            } else {
+                Self::base_digest()
+            };
+            self.digests.insert(reference.to_owned(), flipped);
+        }
+    }
+}
+
+/// An [`ImageSource`] view over the fake registry, mirroring the real
+/// engine's canonical repo digest shape.
+struct RegistryView {
+    registry: Arc<Mutex<RegistryState>>,
 }
 
 impl FakeDocker {
     fn with_observed(observed: ObservedApplication) -> Self {
         Self {
             observed: Arc::new(Mutex::new(observed)),
+            registry: Arc::new(Mutex::new(RegistryState::default())),
         }
+    }
+
+    /// Arms the registry to re-point the tag after each remaining pull.
+    async fn arm_tag_flips(&self, flips: usize) {
+        self.registry.lock().await.flips_remaining = flips;
     }
 
     fn ownership_matches(
@@ -34,19 +87,36 @@ impl FakeDocker {
         expected: &BTreeMap<String, String>,
     ) -> bool {
         let labels_match = [
-            "io.piqueld.managed",
-            "io.piqueld.instance",
-            "io.piqueld.application",
-            "io.piqueld.service",
+            MANAGED_LABEL,
+            INSTANCE_LABEL,
+            APPLICATION_LABEL,
+            SERVICE_LABEL,
         ]
         .iter()
         .filter_map(|key| expected.get(*key).map(|value| (*key, value)))
         .all(|(key, value)| observed.get(key) == Some(value));
-        let spec_hash_valid = !expected.contains_key("io.piqueld.application")
+        let spec_hash_valid = !expected.contains_key(APPLICATION_LABEL)
             || observed
-                .get("io.piqueld.spec-hash")
-                .is_some_and(|value| value.starts_with("sha256:"));
+                .get(SPEC_HASH_LABEL)
+                .is_some_and(|value| Sha256Digest::parse(value.clone()).is_ok());
         labels_match && spec_hash_valid
+    }
+}
+
+#[async_trait]
+impl ImageSource for RegistryView {
+    async fn repo_digests(&self, reference: &str) -> Result<Option<Vec<String>>, DockerError> {
+        let state = self.registry.lock().await;
+        let repository = image_repository(reference).expect("test references are valid");
+        Ok(Some(vec![format!(
+            "{repository}@sha256:{}",
+            state.digest(reference)
+        )]))
+    }
+
+    async fn pull(&self, reference: &str) -> Result<(), DockerError> {
+        self.registry.lock().await.pull(reference);
+        Ok(())
     }
 }
 
@@ -81,7 +151,13 @@ impl DockerApi for FakeDocker {
     }
 
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
-        Ok(format!("{reference}@sha256:{}", "a".repeat(64)))
+        resolve_image_digest(
+            &RegistryView {
+                registry: Arc::clone(&self.registry),
+            },
+            reference,
+        )
+        .await
     }
 
     async fn observe(
@@ -96,17 +172,26 @@ impl DockerApi for FakeDocker {
         desired: &piqueld_core::resource::DesiredNetwork,
     ) -> Result<(), DockerError> {
         let mut observed = self.observed.lock().await;
-        if !observed
+        if let Some(existing) = observed
             .networks
             .iter()
-            .any(|network| network.name == desired.name)
+            .find(|network| network.name == desired.name)
         {
-            observed.networks.push(ObservedNetwork {
-                name: desired.name.clone(),
-                runtime_configuration_matches: true,
-                labels: desired.labels.clone(),
-            });
+            if !Self::ownership_matches(&existing.labels, &desired.labels)
+                || existing.labels.contains_key(SERVICE_LABEL)
+            {
+                return Err(DockerError::OwnershipConflict);
+            }
+            if !existing.runtime_configuration_matches {
+                return Err(DockerError::ConfigurationConflict);
+            }
+            return Ok(());
         }
+        observed.networks.push(ObservedNetwork {
+            name: desired.name.clone(),
+            runtime_configuration_matches: true,
+            labels: desired.labels.clone(),
+        });
         Ok(())
     }
 
@@ -115,17 +200,26 @@ impl DockerApi for FakeDocker {
         desired: &piqueld_core::resource::DesiredVolume,
     ) -> Result<(), DockerError> {
         let mut observed = self.observed.lock().await;
-        if !observed
+        if let Some(existing) = observed
             .volumes
             .iter()
-            .any(|volume| volume.name == desired.name)
+            .find(|volume| volume.name == desired.name)
         {
-            observed.volumes.push(ObservedVolume {
-                name: desired.name.clone(),
-                runtime_configuration_matches: true,
-                labels: desired.labels.clone(),
-            });
+            if !Self::ownership_matches(&existing.labels, &desired.labels)
+                || existing.labels.contains_key(SERVICE_LABEL)
+            {
+                return Err(DockerError::OwnershipConflict);
+            }
+            if !existing.runtime_configuration_matches {
+                return Err(DockerError::ConfigurationConflict);
+            }
+            return Ok(());
         }
+        observed.volumes.push(ObservedVolume {
+            name: desired.name.clone(),
+            runtime_configuration_matches: true,
+            labels: desired.labels.clone(),
+        });
         Ok(())
     }
 
@@ -192,6 +286,48 @@ fn application() -> piqueld_core::NormalizedApplication {
     ))
     .expect("fixture is valid")
     .normalize(ApplicationId::parse("app-fake-docker-01").expect("valid application ID"))
+}
+
+async fn fixture_store(
+    directory: &tempfile::TempDir,
+) -> (
+    Arc<SqliteStore>,
+    piqueld_core::NormalizedApplication,
+    ResolvedApplication,
+) {
+    let store = Arc::new(
+        SqliteStore::open(directory.path().join("control-plane.db"))
+            .await
+            .expect("fresh database opens"),
+    );
+    let application = application();
+    let resolutions = ResolutionSet {
+        sources: [(
+            "web".into(),
+            ResolvedSource::Image {
+                requested: "ghcr.io/example/notes:1.4.0".into(),
+                digest_reference: format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+    let resolved = compile_application(
+        &application,
+        InstanceId::parse(store.instance_id()).expect("store instance ID is valid"),
+        &resolutions,
+    )
+    .expect("fixture resolves");
+    (store, application, resolved)
+}
+
+fn foreign_labels(application_id: &ApplicationId) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (MANAGED_LABEL.into(), "true".into()),
+        (INSTANCE_LABEL.into(), "other-instance".into()),
+        (APPLICATION_LABEL.into(), application_id.to_string()),
+        (SPEC_HASH_LABEL.into(), format!("sha256:{}", "b".repeat(64))),
+    ])
 }
 
 struct SchedulerHarness {
@@ -478,40 +614,11 @@ async fn scheduler_converges_a_prebuilt_application_through_the_docker_seam() {
 #[tokio::test]
 async fn scheduler_refuses_a_foreign_same_name_service() {
     let directory = tempfile::tempdir().expect("temporary directory");
-    let store = Arc::new(
-        SqliteStore::open(directory.path().join("control-plane.db"))
-            .await
-            .expect("fresh database opens"),
-    );
-    let application = application();
-    let resolutions = ResolutionSet {
-        sources: [(
-            "web".into(),
-            ResolvedSource::Image {
-                requested: "ghcr.io/example/notes:1.4.0".into(),
-                digest_reference: format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
-            },
-        )]
-        .into_iter()
-        .collect(),
-    };
-    let resolved = compile_application(
-        &application,
-        InstanceId::parse(store.instance_id()).expect("store instance ID is valid"),
-        &resolutions,
-    )
-    .expect("fixture resolves");
+    let (store, application, resolved) = fixture_store(&directory).await;
+    let mut foreign_service_labels = foreign_labels(&application.id);
+    foreign_service_labels.insert(SERVICE_LABEL.into(), "web".into());
     let foreign = ObservedService {
-        labels: BTreeMap::from([
-            ("io.piqueld.managed".into(), "true".into()),
-            ("io.piqueld.instance".into(), "other-instance".into()),
-            ("io.piqueld.application".into(), application.id.to_string()),
-            ("io.piqueld.service".into(), "web".into()),
-            (
-                "io.piqueld.spec-hash".into(),
-                format!("sha256:{}", "b".repeat(64)),
-            ),
-        ]),
+        labels: foreign_service_labels,
         ..observed_service(&resolved.services[0])
     };
     let initial_plan = Plan::from_request(
@@ -567,4 +674,145 @@ async fn scheduler_refuses_a_foreign_same_name_service() {
             .len(),
         1
     );
+}
+
+/// Runs one reconciliation against a pre-seeded foreign fixture and asserts the
+/// conflict is journaled as a degraded, failed operation.
+async fn assert_foreign_fixture_refuses_reconciliation(
+    docker: &Arc<FakeDocker>,
+    store: &Arc<SqliteStore>,
+    application: &piqueld_core::NormalizedApplication,
+    resolved: &ResolvedApplication,
+) -> piqueld::store::MutationResult {
+    let initial_plan = Plan::from_request(
+        &PlanRequest::Reconcile {
+            desired: resolved.clone(),
+        },
+        &ObservedApplication::default(),
+    );
+    let created = store
+        .create(
+            application,
+            resolved,
+            &initial_plan
+                .actions
+                .iter()
+                .map(PlanAction::operation_step)
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .expect("application is created");
+    let handler = Arc::new(ReconcileHandler::new(Arc::clone(docker), Arc::clone(store)));
+    let scheduler = OperationScheduler::new(Arc::clone(store), handler, 1);
+    scheduler
+        .recover_and_run(CancellationToken::new())
+        .await
+        .expect("ownership conflict is journaled");
+    let status = store
+        .status(&application.id)
+        .await
+        .expect("status is readable");
+    assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
+    let (operation, steps) = store
+        .operation_with_steps(&created.operation_id)
+        .await
+        .expect("failed operation is readable");
+    assert_eq!(operation.state, piqueld::store::WorkState::Failed);
+    assert!(steps.iter().any(|step| {
+        step.state == piqueld::store::StepState::Cancelled && step.error_code.is_none()
+    }));
+    created
+}
+
+#[tokio::test]
+async fn scheduler_refuses_a_foreign_same_name_network() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let (store, application, resolved) = fixture_store(&directory).await;
+    let foreign = ObservedNetwork {
+        name: resolved.networks[0].name.clone(),
+        runtime_configuration_matches: true,
+        labels: foreign_labels(&application.id),
+    };
+    let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
+        networks: vec![foreign],
+        ..ObservedApplication::default()
+    }));
+    let created =
+        assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved)
+            .await;
+    assert_eq!(created.generation, 1);
+    // The foreign network must survive untouched.
+    let observed = docker.observe(&application.id).await.unwrap();
+    assert_eq!(observed.networks.len(), 1);
+    assert_eq!(
+        observed.networks[0].labels.get(INSTANCE_LABEL),
+        Some(&"other-instance".to_string())
+    );
+}
+
+#[tokio::test]
+async fn scheduler_refuses_a_foreign_same_name_volume() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let (store, application, resolved) = fixture_store(&directory).await;
+    let foreign = ObservedVolume {
+        name: resolved.volumes[0].name.clone(),
+        runtime_configuration_matches: true,
+        labels: foreign_labels(&application.id),
+    };
+    let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
+        volumes: vec![foreign],
+        ..ObservedApplication::default()
+    }));
+    let created =
+        assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved)
+            .await;
+    assert_eq!(created.generation, 1);
+    // The foreign volume must survive untouched.
+    let observed = docker.observe(&application.id).await.unwrap();
+    assert_eq!(observed.volumes.len(), 1);
+    assert_eq!(
+        observed.volumes[0].labels.get(INSTANCE_LABEL),
+        Some(&"other-instance".to_string())
+    );
+}
+
+#[tokio::test]
+async fn image_resolution_repairs_a_single_tag_flip_through_a_retry() {
+    let docker = FakeDocker::default();
+    docker.arm_tag_flips(1).await;
+
+    let resolved = docker
+        .resolve_image("ghcr.io/example/notes:1.4.0")
+        .await
+        .expect("a single tag flip converges through the bounded retry");
+
+    assert_eq!(
+        resolved,
+        format!(
+            "ghcr.io/example/notes@sha256:{}",
+            RegistryState::flipped_digest()
+        )
+    );
+    let registry = docker.registry.lock().await;
+    assert_eq!(
+        registry.pulls.get("ghcr.io/example/notes:1.4.0"),
+        Some(&2),
+        "the flipped resolution must retry the whole pull exactly once"
+    );
+}
+
+#[tokio::test]
+async fn image_resolution_fails_sanitized_when_the_tag_never_settles() {
+    let docker = FakeDocker::default();
+    docker.arm_tag_flips(usize::MAX).await;
+
+    let error = docker
+        .resolve_image("ghcr.io/example/notes:1.4.0")
+        .await
+        .expect_err("an always-flipping tag never converges");
+
+    assert!(matches!(
+        error,
+        DockerError::ImageResolution("confirm stable image digest")
+    ));
 }

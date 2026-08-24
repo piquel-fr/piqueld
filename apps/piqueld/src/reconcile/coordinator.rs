@@ -6,6 +6,16 @@ use super::{
 use crate::store::ApplicationStatus;
 use piqueld_core::resource::ObservedApplication;
 
+/// Operations stuck in `running` longer than this lease are reclaimed back to
+/// `recovery` so one transient journal failure cannot freeze an application
+/// until restart. The lease comfortably exceeds prepare plus convergence plus
+/// retry budgets.
+const RUNNING_LEASE_MS: i64 = 30 * 60 * 1000;
+
+/// Milliseconds in one day; converts the configured finished-operation
+/// retention into a pruning cutoff.
+const MILLISECONDS_PER_DAY: i64 = 24 * 60 * 60 * 1000;
+
 /// Runs startup recovery, apply/delete wakes, and periodic full scans. Multiple
 /// wakes collapse through `Notify`, keeping polling work bounded.
 ///
@@ -18,6 +28,7 @@ pub async fn run_coordinator<D: DockerApi>(
     docker: Arc<D>,
     wake: Arc<Notify>,
     interval: Duration,
+    finished_operation_days: u64,
     cancellation: CancellationToken,
 ) -> Result<(), SchedulerError> {
     loop {
@@ -36,10 +47,64 @@ pub async fn run_coordinator<D: DockerApi>(
     let mut scan = tokio::time::interval(interval);
     scan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        reclaim_stale_running(&store).await;
+        prune_finished_operations(&store, finished_operation_days).await;
         tokio::select! {
             () = cancellation.cancelled() => return Ok(()),
             () = wake.notified() => run_scan_until_success(&scheduler, &store, &docker, &cancellation).await?,
             _ = scan.tick() => run_scan_until_success(&scheduler, &store, &docker, &cancellation).await?,
+        }
+    }
+}
+
+/// Deletes terminal operations beyond the configured retention. A retention of
+/// zero disables pruning entirely.
+async fn prune_finished_operations(store: &SqliteStore, finished_operation_days: u64) {
+    if finished_operation_days == 0 {
+        return;
+    }
+    let cutoff_ms = now_minus_days(finished_operation_days);
+    match store.prune_finished_operations(cutoff_ms).await {
+        Ok(counts) if counts.operations + counts.idempotency_keys > 0 => {
+            tracing::debug!(
+                operations = counts.operations,
+                idempotency_keys = counts.idempotency_keys,
+                "pruned finished operations beyond their retention"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::error!(%error, "could not prune finished operations");
+        }
+    }
+}
+
+fn now_minus_days(days: u64) -> i64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis())
+        .unwrap_or_default();
+    let cutoff = now.saturating_sub(
+        u128::from(days)
+            * u128::try_from(MILLISECONDS_PER_DAY).expect("milliseconds per day fits in u128"),
+    );
+    i64::try_from(cutoff).unwrap_or(i64::MAX)
+}
+
+/// Returns operations whose journal writes failed mid-execution to the
+/// recoverable queue. Handlers are idempotent and per-application locks
+/// serialize re-execution, so reclamation is safe.
+async fn reclaim_stale_running(store: &SqliteStore) {
+    match store.reclaim_expired_running(RUNNING_LEASE_MS).await {
+        Ok(0) => {}
+        Ok(reclaimed) => {
+            tracing::warn!(
+                reclaimed,
+                "reclaimed operations stuck in running beyond their lease"
+            );
+        }
+        Err(error) => {
+            tracing::error!(%error, "could not reclaim stale running operations");
         }
     }
 }
@@ -87,13 +152,7 @@ async fn scan_and_run<D: DockerApi>(
             if cancellation.is_cancelled() {
                 return Ok(());
             }
-            if let Err(error) = scan_application(store, docker, &application).await {
-                tracing::warn!(
-                    application_id = %application.application.id,
-                    error = ?error,
-                    "application scan failed; continuing with remaining applications"
-                );
-            }
+            scan_application(store, docker, &application).await?;
         }
         let Some(next_cursor) = page.next_cursor else {
             break;

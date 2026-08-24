@@ -5,7 +5,11 @@ use piqueld::docker::{BollardDocker, DockerApi, DockerError};
 use piqueld_core::manifest::HealthCheck;
 use piqueld_core::resource::{DesiredNetwork, DesiredService, DesiredVolume, ResolvedSource};
 use piqueld_core::{ApplicationId, InstanceId, ResourceKind, docker_resource_name};
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 async fn ensure_service_eventually(docker: &BollardDocker, desired: &DesiredService) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -35,6 +39,19 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
     );
     let socket = std::env::var("PIQUELD_DOCKER_SOCKET")
         .expect("PIQUELD_DOCKER_SOCKET must point at an isolated privileged daemon");
+    // Defense in depth: the default host socket is refused even when the
+    // isolation attestation variable is set. Canonicalize first, because
+    // /var/run is normally a symlink to /run and the configured value may be
+    // relative.
+    let resolved = std::fs::canonicalize(&socket).unwrap_or_else(|_| PathBuf::from(&socket));
+    for forbidden in ["/var/run/docker.sock", "/run/docker.sock"] {
+        let forbidden =
+            std::fs::canonicalize(forbidden).unwrap_or_else(|_| PathBuf::from(forbidden));
+        assert_ne!(
+            resolved, forbidden,
+            "refusing to mutate the default host Docker socket"
+        );
+    }
     let docker = BollardDocker::connect(Path::new(&socket)).unwrap();
     docker.ensure_swarm(true).await.unwrap();
     let suffix = uuid::Uuid::now_v7().simple().to_string();
@@ -123,6 +140,27 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
         http_service.healthcheck.as_ref(),
         "HTTP health check survives complete service inspection"
     );
+
+    // Tasks of health-checked services must surface the live container
+    // healthcheck verdict once the probe has run at least once.
+    let health_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let observed = docker.observe(&app).await.unwrap();
+        let healthy = observed
+            .services
+            .iter()
+            .find(|candidate| candidate.name == service.name)
+            .and_then(|candidate| candidate.tasks.iter().find(|task| task.desired_running))
+            .map(|task| task.healthy);
+        if healthy == Some(Some(true)) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < health_deadline,
+            "the command health check never reported a healthy task: {healthy:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 
     service.replicas = 2;
     ensure_service_eventually(&docker, &service).await;
