@@ -1,31 +1,23 @@
-use http::Method;
-use http_body_util::BodyExt;
+//! Generated OpenAPI document retrieval.
 
-use crate::{Client, ClientError, decode_api_error};
+use http::Method;
+use serde_json::Value;
+
+use crate::client::api_error;
+use crate::{Client, ClientError};
 
 impl Client {
     /// Fetches the generated `OpenAPI` document.
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn openapi(&self) -> Result<serde_json::Value, ClientError> {
-        self.with_request_timeout(async {
-            let response = self
-                .raw_request::<()>(Method::GET, "/api/v1/openapi.json", None, &[])
-                .await?;
-            if !response.status().is_success() {
-                return Err(decode_api_error(response).await);
-            }
-            serde_json::from_slice(
-                &response
-                    .into_body()
-                    .collect()
-                    .await
-                    .map_err(|_| ClientError::Transport)?
-                    .to_bytes(),
-            )
-            .map_err(|_| ClientError::Decode)
-        })
-        .await
+    pub async fn openapi(&self) -> Result<Value, ClientError> {
+        let (status, payload) = self
+            .exchange(Method::GET, "/api/v1/openapi.json", Vec::new(), &[])
+            .await?;
+        if !status.is_success() {
+            return Err(api_error(status, &payload));
+        }
+        serde_json::from_slice(&payload).map_err(|_| ClientError::Decode)
     }
 }

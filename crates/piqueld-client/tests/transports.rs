@@ -11,6 +11,7 @@ async fn status() -> Json<Envelope<SystemStatus>> {
         data: SystemStatus {
             status: "running".into(),
             api_version: "v1".into(),
+            daemon_version: "0.1.0".into(),
             instance_id: "instance-test".into(),
         },
     })
@@ -54,6 +55,15 @@ async fn request_timeout_is_reported_by_the_client() {
         .with_timeout(Duration::from_millis(1));
     assert!(matches!(
         client.system_status().await,
-        Err(ClientError::Transport)
+        Err(ClientError::Transport { .. })
     ));
+}
+
+#[test]
+fn tcp_transport_rejects_non_loopback_endpoints() {
+    assert!(matches!(
+        Client::tcp("http://example.com:8080/"),
+        Err(ClientError::Endpoint)
+    ));
+    assert!(Client::tcp("http://localhost:8080/").is_ok());
 }

@@ -2,7 +2,7 @@ use http::Method;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{Client, ClientError, path_segment};
+use crate::{Client, ClientError, client::path_segment};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// One step in an asynchronous operation.
@@ -63,7 +63,7 @@ impl Client {
     pub async fn operation(&self, id: &str) -> Result<OperationView, ClientError> {
         self.send::<_, ()>(
             Method::GET,
-            &format!("/api/v1/operations/{}", path_segment(id)),
+            &format!("{}/operations/{}", crate::API_PREFIX, path_segment(id)),
             None,
             &[],
         )
