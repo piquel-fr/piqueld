@@ -50,6 +50,12 @@ utoipa-axum = "0.2.0"
 url = "2.5.4"
 uuid = { version = "1.17.0", features = ["v7"] }
 
+# Same-origin browser transport for the typed client. The dependency is
+# target-gated inside the client crate, so native daemon and CLI builds do
+# not link browser code.
+gloo-net = { version = "0.6.0", default-features = false }
+web-sys = "=0.3.103"
+
 proptest = "1.6.0"
 
 [workspace.lints.rust]

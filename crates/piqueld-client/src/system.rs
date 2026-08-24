@@ -11,6 +11,8 @@ pub struct SystemStatus {
     pub status: String,
     /// Version of the exposed API.
     pub api_version: String,
+    /// Version of the running daemon binary.
+    pub daemon_version: String,
     /// Control-plane instance identifier.
     pub instance_id: String,
 }
