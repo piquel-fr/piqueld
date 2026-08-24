@@ -4,6 +4,7 @@ use axum::{Json, Router, routing::get};
 use piqueld_client::{Client, ClientError, Envelope, SystemStatus};
 use std::{path::PathBuf, time::Duration};
 use tempfile::TempDir;
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, UnixListener};
 
 async fn status() -> Json<Envelope<SystemStatus>> {
@@ -53,10 +54,36 @@ async fn request_timeout_is_reported_by_the_client() {
     let client = Client::tcp(&format!("http://{address}/"))
         .unwrap()
         .with_timeout(Duration::from_millis(1));
+    let result = client.system_status().await;
     assert!(matches!(
-        client.system_status().await,
-        Err(ClientError::Transport { .. })
+        result,
+        Err(ClientError::Transport { message }) if message == "request timed out"
     ));
+}
+
+#[tokio::test]
+async fn incomplete_response_bodies_time_out() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let (_, mut writer) = tokio::io::split(socket);
+        writer
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 64\r\n\r\nshort")
+            .await
+            .unwrap();
+        std::future::pending::<()>().await;
+    });
+    let result = Client::tcp(&format!("http://{address}/"))
+        .unwrap()
+        .with_timeout(Duration::from_millis(50))
+        .system_status()
+        .await;
+    assert!(matches!(
+        result,
+        Err(ClientError::Transport { message }) if message == "request timed out"
+    ));
+    server.abort();
 }
 
 #[test]
