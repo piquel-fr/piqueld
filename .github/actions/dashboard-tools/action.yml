@@ -7,6 +7,9 @@ inputs:
   tailwindcss-version:
     description: Tailwind CSS standalone CLI release version to download.
     required: true
+  binaryen-version:
+    description: Binaryen release version providing wasm-opt. Ubuntu's package is too old for the flags Trunk passes.
+    required: true
 runs:
   using: composite
   steps:
@@ -51,8 +54,22 @@ runs:
         chmod +x "$bindir/tailwindcss" "$bindir/trunk" "$bindir/wasm-bindgen"
         echo "$bindir" >> "$GITHUB_PATH"
       shell: bash
-    - name: Install binaryen
+    - name: Install wasm-opt
       run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends binaryen
+        set -euo pipefail
+        temp="${RUNNER_TEMP:?}"
+        bindir="$temp/bin"
+        version="${{ inputs.binaryen-version }}"
+        fetch() {
+          curl --fail --location --silent --show-error -o "$2" "$1"
+        }
+        fetch "https://github.com/WebAssembly/binaryen/releases/download/version_${version}/binaryen-version_${version}-x86_64-linux.tar.gz" \
+          "$temp/binaryen.tar.gz"
+        fetch "https://github.com/WebAssembly/binaryen/releases/download/version_${version}/binaryen-version_${version}-x86_64-linux.tar.gz.sha256" \
+          "$temp/binaryen.tar.gz.sha256"
+        awk '{print $1 "  binaryen.tar.gz"}' "$temp/binaryen.tar.gz.sha256" \
+          | (cd "$temp" && sha256sum --check --strict -)
+        tar -xzf "$temp/binaryen.tar.gz" -C "$temp" \
+          "binaryen-version_${version}/bin/wasm-opt"
+        mv "$temp/binaryen-version_${version}/bin/wasm-opt" "$bindir/"
       shell: bash
