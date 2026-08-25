@@ -371,17 +371,17 @@ impl Client {
         caller_headers: &[(&str, &str)],
     ) -> Result<T, ClientError> {
         let mut headers = Vec::with_capacity(caller_headers.len() + 1);
-        let payload = match body {
-            Some(body) => {
-                // Declared ahead of caller headers so a stray duplicate can
-                // never take precedence on the wire.
-                headers.push(("content-type", "application/json"));
-                headers.extend(caller_headers.iter().copied());
-                serde_json::to_vec(body).map_err(|error| {
-                    invalid_request(format!("request serialization failed: {error}"))
-                })?
-            }
-            None => Vec::new(),
+        let payload = if let Some(body) = body {
+            // Declared ahead of caller headers so a stray duplicate can
+            // never take precedence on the wire.
+            headers.push(("content-type", "application/json"));
+            headers.extend(caller_headers.iter().copied());
+            serde_json::to_vec(body).map_err(|error| {
+                invalid_request(format!("request serialization failed: {error}"))
+            })?
+        } else {
+            headers.extend(caller_headers.iter().copied());
+            Vec::new()
         };
         let (status, payload) = self.exchange(method, path, payload, &headers).await?;
         decode_envelope(status, &payload)
@@ -466,7 +466,14 @@ pub(crate) fn path_segment(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::path_segment;
+    use super::{Client, path_segment};
+    use crate::SystemStatus;
+    use http::Method;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::mpsc,
+    };
 
     #[test]
     fn path_segment_preserves_unreserved_characters() {
@@ -481,5 +488,45 @@ mod tests {
         assert_eq!(path_segment("é"), "%C3%A9");
         assert_eq!(path_segment("\r\n"), "%0D%0A");
         assert_eq!(path_segment(" "), "%20");
+    }
+
+    #[tokio::test]
+    async fn bodyless_sends_forward_caller_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (wire_tx, mut wire_rx) = mpsc::channel(1);
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0u8; 4096];
+            let read = socket.read(&mut buffer).await.unwrap();
+            wire_tx
+                .send(String::from_utf8_lossy(&buffer[..read]).into_owned())
+                .await
+                .unwrap();
+            let body = r#"{"data":{"status":"running","api_version":"v1","daemon_version":"0.1.0","instance_id":"i"}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        });
+        let client = Client::tcp(&format!("http://{address}/")).unwrap();
+        let status: SystemStatus = client
+            .send::<_, ()>(
+                Method::DELETE,
+                "/api/v1/applications/app-1",
+                None,
+                &[("x-trace-id", "trace-42"), ("if-match", "\"7\"")],
+            )
+            .await
+            .unwrap();
+        server.await.unwrap();
+        let wire = wire_rx.recv().await.unwrap();
+        assert!(wire.starts_with("DELETE /api/v1/applications/app-1 HTTP/1.1\r\n"));
+        let wire = wire.to_ascii_lowercase();
+        assert!(wire.contains("\r\nx-trace-id: trace-42\r\n"));
+        assert!(wire.contains("\r\nif-match: \"7\"\r\n"));
+        assert!(!wire.contains("content-type"));
+        assert_eq!(status.status, "running");
     }
 }
