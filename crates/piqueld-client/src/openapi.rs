@@ -13,7 +13,12 @@ impl Client {
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn openapi(&self) -> Result<Value, ClientError> {
         let (status, payload) = self
-            .exchange(Method::GET, "/api/v1/openapi.json", Vec::new(), &[])
+            .exchange(
+                Method::GET,
+                &format!("{}/openapi.json", crate::API_PREFIX),
+                Vec::new(),
+                &[],
+            )
             .await?;
         if !status.is_success() {
             return Err(api_error(status, &payload));

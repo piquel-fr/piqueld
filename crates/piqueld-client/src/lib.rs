@@ -85,8 +85,11 @@ pub struct ErrorBody {
 /// Errors produced while making an API request.
 pub enum ClientError {
     /// The endpoint URL or request could not be constructed.
-    #[error("invalid API endpoint")]
-    Endpoint,
+    #[error("invalid request: {message}")]
+    Endpoint {
+        /// Detail describing which part of the construction was rejected.
+        message: String,
+    },
     /// The connection, protocol, or request timeout failed.
     #[error("API transport failed: {message}")]
     Transport {
@@ -94,7 +97,7 @@ pub enum ClientError {
         message: String,
     },
     /// The server returned a non-success response.
-    #[error("API returned {status}: {}", error.code)]
+    #[error("API returned {status}: {} ({})", error.code, error.message)]
     Api {
         /// HTTP response status.
         status: StatusCode,
