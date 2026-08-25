@@ -69,9 +69,16 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
+      # --all-features compiles the embedded dashboard, which needs the same
+      # tooling as a release build.
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          cache-directories: target-ui
+      - uses: ./.github/actions/dashboard-tools
+        with:
+          trunk-version: "0.21.14"
+          tailwindcss-version: "4.3.3"
       - run: just lint
 
   test:
@@ -165,59 +172,19 @@ jobs:
     name: embedded-release
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      TRUNK_VERSION: 0.21.14
-      TAILWINDCSS_VERSION: 4.3.3
     steps:
       - uses: actions/checkout@v7
       - uses: taiki-e/install-action@v2
         with:
           tool: just
-      - run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Install dashboard tooling
-        run: |
-          set -euo pipefail
-          temp="${RUNNER_TEMP:?}"
-          bindir="$temp/bin"
-          mkdir -p "$bindir"
-
-          # Must match the wasm-bindgen crate compiled into the UI exactly;
-          # derive it from the lockfile so the pin cannot drift.
-          wasm_bindgen_version="$(cargo metadata --locked --format-version 1 \
-            | jq -r '[.packages[] | select(.name == "wasm-bindgen") | .version] | unique | last')"
-          echo "wasm-bindgen-cli $wasm_bindgen_version"
-
-          fetch() {
-            curl --fail --location --silent --show-error -o "$2" "$1"
-          }
-          fetch "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
-            "$temp/trunk.tar.gz"
-          fetch "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz.sha256" \
-            "$temp/trunk.tar.gz.sha256"
-          fetch "https://github.com/rustwasm/wasm-bindgen/releases/download/${wasm_bindgen_version}/wasm-bindgen-${wasm_bindgen_version}-x86_64-unknown-linux-musl.tar.gz" \
-            "$temp/wasm-bindgen.tar.gz"
-          fetch "https://github.com/rustwasm/wasm-bindgen/releases/download/${wasm_bindgen_version}/wasm-bindgen-${wasm_bindgen_version}-x86_64-unknown-linux-musl.tar.gz.sha256sum" \
-            "$temp/wasm-bindgen.tar.gz.sha256sum"
-          fetch "https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWINDCSS_VERSION}/tailwindcss-linux-x64" \
-            "$bindir/tailwindcss"
-
-          awk '{print $1 "  trunk.tar.gz"}' "$temp/trunk.tar.gz.sha256" \
-            | (cd "$temp" && sha256sum --check --strict -)
-          awk '{print $1 "  wasm-bindgen.tar.gz"}' "$temp/wasm-bindgen.tar.gz.sha256sum" \
-            | (cd "$temp" && sha256sum --check --strict -)
-
-          tar -xzf "$temp/trunk.tar.gz" -C "$bindir" trunk
-          tar -xzf "$temp/wasm-bindgen.tar.gz" -C "$temp"
-          mv "$temp"/wasm-bindgen-*/wasm-bindgen "$bindir/"
-          chmod +x "$bindir/tailwindcss" "$bindir/trunk" "$bindir/wasm-bindgen"
-          echo "$bindir" >> "$GITHUB_PATH"
-      - name: Install binaryen
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends binaryen
+          cache-directories: target-ui
+      - uses: ./.github/actions/dashboard-tools
+        with:
+          trunk-version: "0.21.14"
+          tailwindcss-version: "4.3.3"
       - run: just build-embedded
       - name: Upload release binaries
         uses: actions/upload-artifact@v7
