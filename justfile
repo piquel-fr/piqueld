@@ -1,7 +1,7 @@
 # The default command regenerates checked-in output and then validates it.
 default: generate-openapi validate
 
-validate: fmt-check lint check test doc-test deny openapi-check boundary
+validate: fmt-check lint check test doc-test deny openapi-check boundary check-wasm
 
 build:
     @cargo build --workspace --locked
@@ -20,6 +20,11 @@ lint:
 
 check:
     @cargo check --workspace --all-targets
+
+# Compiles the browser transport, which no host-target recipe reaches.
+check-wasm:
+    @rustup target add wasm32-unknown-unknown
+    @cargo check --package piqueld-client --target wasm32-unknown-unknown
 
 test:
     @cargo test --workspace
