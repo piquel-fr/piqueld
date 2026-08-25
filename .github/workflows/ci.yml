@@ -79,6 +79,7 @@ jobs:
         with:
           trunk-version: "0.21.14"
           tailwindcss-version: "4.3.3"
+          binaryen-version: "132"
       - run: just lint
 
   test:
@@ -185,6 +186,7 @@ jobs:
         with:
           trunk-version: "0.21.14"
           tailwindcss-version: "4.3.3"
+          binaryen-version: "132"
       - run: just build-embedded
       - name: Upload release binaries
         uses: actions/upload-artifact@v7
