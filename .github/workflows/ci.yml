@@ -211,7 +211,7 @@ jobs:
 
           tar -xzf "$temp/trunk.tar.gz" -C "$bindir" trunk
           tar -xzf "$temp/wasm-bindgen.tar.gz" -C "$temp"
-          mv "$temp/wasm-bindgen-${wasm_bindgen_version}/wasm-bindgen" "$bindir/"
+          mv "$temp"/wasm-bindgen-*/wasm-bindgen "$bindir/"
           chmod +x "$bindir/tailwindcss" "$bindir/trunk" "$bindir/wasm-bindgen"
           echo "$bindir" >> "$GITHUB_PATH"
       - name: Install binaryen
