@@ -3,7 +3,9 @@
 //! Endpoint methods, envelope decoding, and query building are shared. The
 //! platform differences are confined to two small modules: [`loopback`]
 //! speaks HTTP/1.1 over loopback TCP and Unix-domain sockets natively, and
-//! [`web`] performs same-origin fetches in the browser.
+//! [`web`] performs same-origin fetches in the browser. Both transports send
+//! origin-form requests with an explicit `Host` header, enforce one total
+//! deadline per exchange, and reject response bodies beyond a fixed size.
 
 use http::{Method, StatusCode};
 use serde::{Serialize, de::DeserializeOwned};
@@ -12,8 +14,21 @@ use std::time::Duration;
 use crate::{ClientError, Envelope, ErrorBody};
 
 /// Transport detail reported when a request exceeds its deadline.
-#[cfg(not(target_arch = "wasm32"))]
 const TIMEOUT_MESSAGE: &str = "request timed out";
+
+/// Builds the timeout [`ClientError`] shared by both transports.
+fn timed_out() -> ClientError {
+    ClientError::Transport {
+        message: TIMEOUT_MESSAGE.to_owned(),
+    }
+}
+
+/// Builds [`ClientError::Endpoint`] with the reason construction failed.
+fn invalid_request(message: impl std::fmt::Display) -> ClientError {
+    ClientError::Endpoint {
+        message: message.to_string(),
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 mod loopback {
@@ -30,7 +45,10 @@ mod loopback {
     use tokio::net::{TcpStream, UnixStream};
     use url::{Host, Url};
 
-    use super::{ClientError, TIMEOUT_MESSAGE, transport};
+    use super::{ClientError, invalid_request, timed_out, transport};
+
+    /// Upper bound on buffered response bodies for every native exchange.
+    const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
 
     #[derive(Clone, Debug)]
     pub(super) enum Endpoint {
@@ -44,27 +62,56 @@ mod loopback {
 
     /// Parses a loopback HTTP origin into a connectable endpoint.
     ///
+    /// Only plain HTTP origins are accepted: the host must be `localhost`,
+    /// an IPv4 loopback address, or IPv6 `::1`. The client is meant for
+    /// daemons on the operator's own machine; remote management is out of
+    /// scope by design.
+    ///
     /// # Errors
     /// Returns [`ClientError::Endpoint`] when `base_url` is not a loopback
     /// HTTP origin.
     pub(super) fn tcp_endpoint(base_url: &str) -> Result<Endpoint, ClientError> {
-        let url = Url::parse(base_url).map_err(|_| ClientError::Endpoint)?;
+        let url =
+            Url::parse(base_url).map_err(|_| invalid_request("base URL is not a valid URL"))?;
+        // Trailing-dot hosts ("localhost.") are rejected on purpose: the
+        // resolver may answer differently than for the bare name.
+        //
+        // Userinfo is rejected wholesale via '@': the parser collapses
+        // spellings like ":@" into invisible empty credentials, and with
+        // path, query, and fragment already excluded, an '@' can only ever
+        // belong to userinfo.
         if url.scheme() != "http"
-            || !matches!(url.path(), "" | "/")
+            || url.path() != "/"
             || url.query().is_some()
             || url.fragment().is_some()
-            || !url.username().is_empty()
-            || url.password().is_some_and(|password| !password.is_empty())
+            || base_url.contains('@')
         {
-            return Err(ClientError::Endpoint);
+            return Err(invalid_request(
+                "base URL must be a plain loopback HTTP origin",
+            ));
         }
-        let host = match url.host().ok_or(ClientError::Endpoint)? {
-            Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => host.to_owned(),
+        let host = match url
+            .host()
+            .ok_or_else(|| invalid_request("base URL has no host"))?
+        {
+            // WHATWG parsing canonicalizes numeric spellings such as "127.1"
+            // before this match runs, so acceptance always implies a genuine
+            // loopback connect target.
+            Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => {
+                host.to_ascii_lowercase()
+            }
             Host::Ipv4(host) if host.is_loopback() => host.to_string(),
             Host::Ipv6(host) if host.is_loopback() => host.to_string(),
-            _ => return Err(ClientError::Endpoint),
+            _ => {
+                return Err(invalid_request(
+                    "base URL host must be localhost or a loopback IP",
+                ));
+            }
         };
-        let port = url.port_or_known_default().ok_or(ClientError::Endpoint)?;
+        // http URLs always carry the implicit default port.
+        let port = url
+            .port_or_known_default()
+            .expect("http URLs have a default port");
         let authority = if host.contains(':') {
             format!("[{host}]:{port}")
         } else {
@@ -80,7 +127,8 @@ mod loopback {
     /// Sends one request and returns the status plus the collected body.
     ///
     /// The deadline governs dispatch and body collection alike, so a stalled
-    /// response cannot outlive [`Client::with_timeout`].
+    /// response cannot outlive [`Client::with_timeout`]. Bodies larger than
+    /// [`MAX_RESPONSE_BODY_BYTES`] are rejected instead of buffered.
     pub(super) async fn exchange(
         endpoint: &Endpoint,
         timeout: Duration,
@@ -92,14 +140,31 @@ mod loopback {
         let (status, body) = tokio::time::timeout(timeout, async {
             let response = send_request(endpoint, method, path, payload, headers).await?;
             let status = response.status();
-            let collected = response.into_body().collect().await.map_err(transport)?;
-            Ok((status, collected.to_bytes().to_vec()))
+            let body = collect_bounded(response.into_body()).await?;
+            Ok((status, body))
         })
         .await
-        .map_err(|_| ClientError::Transport {
-            message: TIMEOUT_MESSAGE.to_owned(),
-        })??;
+        .map_err(|_| timed_out())??;
         Ok((status, body))
+    }
+
+    /// Collects the body while enforcing [`MAX_RESPONSE_BODY_BYTES`].
+    async fn collect_bounded(mut body: Incoming) -> Result<Vec<u8>, ClientError> {
+        let mut buffer = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(transport)?;
+            if let Some(data) = frame.data_ref() {
+                if buffer.len() + data.len() > MAX_RESPONSE_BODY_BYTES {
+                    return Err(ClientError::Transport {
+                        message: format!(
+                            "response body exceeded the {MAX_RESPONSE_BODY_BYTES}-byte limit"
+                        ),
+                    });
+                }
+                buffer.extend_from_slice(data);
+            }
+        }
+        Ok(buffer)
     }
 
     async fn send_request(
@@ -113,16 +178,22 @@ mod loopback {
             Endpoint::Tcp { authority, .. } => authority.as_str(),
             Endpoint::Unix(_) => "localhost",
         };
+        if !path.starts_with('/') {
+            return Err(invalid_request("request path must start with '/'"));
+        }
+        // Origin-form target plus an explicit Host header: the raw hyper
+        // connection API never fills either in, and RFC 9112 requires both.
         let mut builder = Request::builder()
             .method(method)
-            .uri(format!("http://{authority}{path}"))
+            .uri(path)
+            .header(header::HOST, authority)
             .header(header::ACCEPT, "application/json");
         for (name, value) in headers {
             builder = builder.header(*name, *value);
         }
         let request = builder
             .body(Full::new(Bytes::from(payload)))
-            .map_err(|_| ClientError::Endpoint)?;
+            .map_err(|error| invalid_request(format!("malformed request head: {error}")))?;
         match endpoint {
             Endpoint::Tcp { host, port, .. } => {
                 speak(TcpStream::connect((host.as_str(), *port)).await, request).await
@@ -141,8 +212,13 @@ mod loopback {
         let (mut sender, connection) = http1::handshake(TokioIo::new(io.map_err(transport)?))
             .await
             .map_err(transport)?;
+        // Drive the connection to completion in the background. Dropping the
+        // request or response handles makes hyper close the socket, so this
+        // task never outlives the exchange by more than a graceful shutdown.
         tokio::spawn(async move {
-            let _ = connection.await;
+            if let Err(error) = connection.await {
+                tracing::debug!(%error, "piqueld-client connection closed");
+            }
         });
         sender.send_request(request).await.map_err(transport)
     }
@@ -155,9 +231,9 @@ mod web {
     use gloo_net::http::{Request, RequestBuilder};
     use http::{Method, StatusCode};
     use std::time::Duration;
-    use web_sys::{RequestCache, RequestCredentials, RequestMode};
+    use web_sys::{RequestCache, RequestCredentials, RequestMode, RequestRedirect};
 
-    use super::{ClientError, transport};
+    use super::{ClientError, invalid_request, timed_out, transport};
 
     /// Sends one same-origin request and returns the status plus body bytes.
     pub(super) async fn exchange(
@@ -167,6 +243,8 @@ mod web {
         payload: Vec<u8>,
         headers: &[(&str, &str)],
     ) -> Result<(StatusCode, Vec<u8>), ClientError> {
+        let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        let signal = web_sys::AbortSignal::timeout_with_u32(millis);
         let mut request = match method {
             Method::GET => Request::get(path),
             Method::POST => Request::post(path),
@@ -177,28 +255,54 @@ mod web {
         .header("accept", "application/json")
         .cache(RequestCache::NoStore)
         .credentials(RequestCredentials::Omit)
-        .mode(RequestMode::SameOrigin);
+        .mode(RequestMode::SameOrigin)
+        // Match the native transport, which never follows redirects.
+        .redirect(RequestRedirect::Error);
         for (name, value) in headers {
             request = request.header(name, value);
         }
         // The browser enforces the deadline through the abort signal, which
         // rejects the fetch and any pending body read once it fires. This
         // keeps the native per-request timer semantics on every target.
-        let request = request.abort_signal(Some(&web_sys::AbortSignal::timeout_with_u32(
-            timeout.as_millis() as u32,
-        )));
-        let response = if payload.is_empty() {
+        let request = request.abort_signal(Some(&signal));
+        let sent = if payload.is_empty() {
             request.send().await
         } else {
             // JSON and TOML payloads are always UTF-8.
-            let body = String::from_utf8(payload).map_err(|_| ClientError::Decode)?;
+            let body = String::from_utf8(payload)
+                .map_err(|_| invalid_request("request payload is not valid UTF-8"))?;
             request.body(body).map_err(transport)?.send().await
-        }
-        .map_err(transport)?;
-        let status =
-            StatusCode::from_u16(response.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let body = response.text().await.map_err(transport)?.into_bytes();
-        Ok((status, body))
+        };
+        let response = match sent {
+            Ok(response) => response,
+            Err(error) => {
+                return Err(if signal.aborted() {
+                    timed_out()
+                } else {
+                    transport(error)
+                });
+            }
+        };
+        let status = StatusCode::from_u16(response.status()).map_err(|_| {
+            transport(format!(
+                "server returned invalid status {}",
+                response.status()
+            ))
+        })?;
+        // Unlike the native transport, the browser body read is not
+        // byte-capped. Same-origin responses come from the operator's own
+        // daemon, and capping would require manual ReadableStream draining.
+        let text = match response.text().await {
+            Ok(text) => text,
+            Err(error) => {
+                return Err(if signal.aborted() {
+                    timed_out()
+                } else {
+                    transport(error)
+                });
+            }
+        };
+        Ok((status, text.into_bytes()))
     }
 }
 
@@ -213,6 +317,10 @@ pub struct Client {
 impl Client {
     /// Creates a client for an HTTP endpoint.
     ///
+    /// Only loopback origins are supported: `localhost`, IPv4 addresses in
+    /// `127.0.0.0/8`, and `[::1]`. piqueld daemons listen on the operator's
+    /// own machine; remote management is out of scope by design.
+    ///
     /// # Errors
     /// Returns [`ClientError::Endpoint`] when `base_url` is not a loopback HTTP origin.
     #[cfg(not(target_arch = "wasm32"))]
@@ -224,6 +332,12 @@ impl Client {
     }
 
     /// Creates a client for a Unix-domain socket.
+    ///
+    /// # Trust model
+    /// Any process able to reach `path` can drive the daemon, and this client
+    /// speaks plain HTTP to whatever socket it is given — including sockets
+    /// owned by other subsystems such as the Docker socket. Only pass paths
+    /// provisioned by the piqueld daemon itself.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn unix(path: impl AsRef<std::path::Path>) -> Self {
@@ -254,13 +368,18 @@ impl Client {
         method: Method,
         path: &str,
         body: Option<&B>,
-        headers: &[(&str, &str)],
+        caller_headers: &[(&str, &str)],
     ) -> Result<T, ClientError> {
-        let mut headers = headers.to_vec();
+        let mut headers = Vec::with_capacity(caller_headers.len() + 1);
         let payload = match body {
             Some(body) => {
+                // Declared ahead of caller headers so a stray duplicate can
+                // never take precedence on the wire.
                 headers.push(("content-type", "application/json"));
-                serde_json::to_vec(body).map_err(|_| ClientError::Decode)?
+                headers.extend(caller_headers.iter().copied());
+                serde_json::to_vec(body).map_err(|error| {
+                    invalid_request(format!("request serialization failed: {error}"))
+                })?
             }
             None => Vec::new(),
         };
@@ -343,4 +462,24 @@ pub(crate) fn path_segment(value: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_segment;
+
+    #[test]
+    fn path_segment_preserves_unreserved_characters() {
+        assert_eq!(path_segment("app-1_2.x~y"), "app-1_2.x~y");
+        assert_eq!(path_segment(""), "");
+    }
+
+    #[test]
+    fn path_segment_encodes_reserved_and_non_ascii_bytes() {
+        assert_eq!(path_segment("a/b"), "a%2Fb");
+        assert_eq!(path_segment("?#&="), "%3F%23%26%3D");
+        assert_eq!(path_segment("é"), "%C3%A9");
+        assert_eq!(path_segment("\r\n"), "%0D%0A");
+        assert_eq!(path_segment(" "), "%20");
+    }
 }
