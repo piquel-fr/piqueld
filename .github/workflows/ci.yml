@@ -1,0 +1,242 @@
+# Continuous integration for piqueld.
+#
+# Every `just` validation recipe runs as its own parallel job so the wall
+# clock tracks the slowest check instead of their sum:
+#
+#   fmt-check         -> fmt
+#   lint              -> clippy
+#   test / doc-test   -> test
+#   deny              -> deny
+#   openapi-check     -> openapi
+#   boundary          -> boundary
+#   ui-check          -> wasm-ui
+#   docker-test       -> docker-integration
+#   build-embedded    -> embedded-release
+#   nix-check         -> nix
+#
+# `check` is deliberately not a separate job: `clippy --all-targets
+# --all-features` compiles everything it would and adds lints on top.
+#
+# Nix package builds are deliberately not run: they duplicate what the Cargo
+# jobs already prove and take far longer without a shared binary cache. The
+# Nix job instead proves full flake evaluation plus the two cheap sandboxed
+# flake checks.
+#
+# Speed comes from Swatinem/rust-cache in every compiling job (keyed per job
+# against Cargo.lock), prebuilt tool downloads instead of `cargo install`,
+# and incremental compilation disabled to keep caches small.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts only bloat CI caches; restored dependency builds
+  # make up for the lost reuse.
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: short
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just fmt-check
+
+  clippy:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: just lint
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: just test
+      - run: just doc-test
+
+  deny:
+    name: deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  openapi:
+    name: openapi
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: just openapi-check
+
+  boundary:
+    name: boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: just boundary
+
+  wasm-ui:
+    name: wasm-ui
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: just ui-check
+
+  docker-integration:
+    name: docker-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # The wrapper bounds cargo invocation inside the script; compilation is
+      # already warm through the prebuild below.
+      PIQUELD_DOCKER_TEST_TIMEOUT: 30m
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      # Compile before the isolated Docker-in-Docker daemon starts so the
+      # inner cargo invocation is instant.
+      - run: cargo test --locked -p piqueld --test docker_integration --no-run
+      - run: just docker-test
+
+  embedded-release:
+    name: embedded-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TRUNK_VERSION: 0.21.14
+      TAILWINDCSS_VERSION: 4.3.3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Install dashboard tooling
+        run: |
+          set -euo pipefail
+          temp="${RUNNER_TEMP:?}"
+          bindir="$temp/bin"
+          mkdir -p "$bindir"
+
+          # Must match the wasm-bindgen crate compiled into the UI exactly;
+          # derive it from the lockfile so the pin cannot drift.
+          wasm_bindgen_version="$(cargo metadata --locked --format-version 1 \
+            | jq -r '[.packages[] | select(.name == "wasm-bindgen") | .version] | unique | last')"
+          echo "wasm-bindgen-cli $wasm_bindgen_version"
+
+          fetch() {
+            curl --fail --location --silent --show-error -o "$2" "$1"
+          }
+          fetch "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+            "$temp/trunk.tar.gz"
+          fetch "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz.sha256" \
+            "$temp/trunk.tar.gz.sha256"
+          fetch "https://github.com/rustwasm/wasm-bindgen/releases/download/${wasm_bindgen_version}/wasm-bindgen-${wasm_bindgen_version}-x86_64-unknown-linux-musl.tar.gz" \
+            "$temp/wasm-bindgen.tar.gz"
+          fetch "https://github.com/rustwasm/wasm-bindgen/releases/download/${wasm_bindgen_version}/wasm-bindgen-${wasm_bindgen_version}-x86_64-unknown-linux-musl.tar.gz.sha256sum" \
+            "$temp/wasm-bindgen.tar.gz.sha256sum"
+          fetch "https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWINDCSS_VERSION}/tailwindcss-linux-x64" \
+            "$bindir/tailwindcss"
+
+          awk '{print $1 "  trunk.tar.gz"}' "$temp/trunk.tar.gz.sha256" \
+            | (cd "$temp" && sha256sum --check --strict -)
+          awk '{print $1 "  wasm-bindgen.tar.gz"}' "$temp/wasm-bindgen.tar.gz.sha256sum" \
+            | (cd "$temp" && sha256sum --check --strict -)
+
+          tar -xzf "$temp/trunk.tar.gz" -C "$bindir" trunk
+          tar -xzf "$temp/wasm-bindgen.tar.gz" -C "$temp"
+          mv "$temp/wasm-bindgen-${wasm_bindgen_version}/wasm-bindgen" "$bindir/"
+          chmod +x "$bindir/tailwindcss" "$bindir/trunk" "$bindir/wasm-bindgen"
+          echo "$bindir" >> "$GITHUB_PATH"
+      - name: Install binaryen
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends binaryen
+      - run: just build-embedded
+      - name: Upload release binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: piqueld-binaries
+          if-no-files-found: error
+          path: |
+            target/release/piqueld
+            target/release/piquelctl
+            config/piqueld.example.toml
+
+  nix:
+    name: nix
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: Evaluate every flake output
+        run: nix flake show --all-systems
+      - name: Build the sandboxed flake checks
+        run: nix build -L ".#checks.x86_64-linux.formatting" ".#checks.x86_64-linux.dependency-boundary"
