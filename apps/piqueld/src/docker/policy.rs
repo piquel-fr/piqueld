@@ -40,7 +40,11 @@ impl ServiceRuntimePolicy {
     /// service carrying them was modified out of band and must be reconciled
     /// back to the authored specification.
     fn no_security_settings(task: &TaskSpec, container: &TaskSpecContainerSpec) -> bool {
-        task.runtime.is_none()
+        // Docker echoes the default container runtime name back even though
+        // the builder never authors it; only a non-default runtime is drift.
+        task.runtime
+            .as_deref()
+            .is_none_or(|value| value == "container")
             && task.log_driver.is_none()
             && container.user.is_none()
             && container.groups.as_ref().is_none_or(Vec::is_empty)
@@ -176,6 +180,44 @@ mod tests {
     use piqueld_core::manifest::ResourceLimits;
     use piqueld_core::resource::{DesiredService, ResolvedSource};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn default_runtime_echo_back_is_not_drift() {
+        let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
+        let desired = DesiredService {
+            logical_name: "web".into(),
+            name: "app-policy-web".into(),
+            source: ResolvedSource::Image {
+                requested: "ghcr.io/example/notes:1.4.0".into(),
+                digest_reference: image.clone(),
+            },
+            image,
+            replicas: 1,
+            environment: BTreeMap::new(),
+            command: Vec::new(),
+            arguments: Vec::new(),
+            mounts: Vec::new(),
+            healthcheck: None,
+            resources: None,
+            networks: Vec::new(),
+            labels: BTreeMap::new(),
+        };
+        let mut authored = BollardDocker::service_spec(&desired).expect("authored specification");
+        assert!(ServiceRuntimePolicy::matches(&authored));
+
+        // The engine echoes the default container runtime back on every
+        // inspection even though the builder never authors it.
+        if let Some(task) = authored.task_template.as_mut() {
+            task.runtime = Some("container".into());
+        }
+        assert!(ServiceRuntimePolicy::matches(&authored));
+
+        // A non-default runtime is out-of-band modification.
+        if let Some(task) = authored.task_template.as_mut() {
+            task.runtime = Some("custom-runtime".into());
+        }
+        assert!(!ServiceRuntimePolicy::matches(&authored));
+    }
 
     #[test]
     fn generated_http_health_check_round_trips_through_observation() {

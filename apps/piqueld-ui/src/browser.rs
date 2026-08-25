@@ -722,7 +722,9 @@ fn load_failure(error: &ClientError) -> LoadFailure {
 
 fn client_error_message(error: &ClientError) -> String {
     match error {
-        ClientError::Endpoint => "The dashboard endpoint is invalid.".into(),
+        ClientError::Endpoint { message } => {
+            format!("The dashboard endpoint is invalid: {message}")
+        }
         ClientError::Transport { message } => format!("Could not reach piqueld: {message}"),
         ClientError::Api { error, .. } => error.message.clone(),
         ClientError::Decode => "The daemon returned an invalid public API response.".into(),
