@@ -729,6 +729,10 @@ fn operation_polls_by_default_and_no_wait_fetches_once() {
     let _ = server.finish();
 }
 
+// One request per attempt: a retry must never find the listener closed,
+// which would turn the next connect into a transport error.
+const INTERRUPT_ATTEMPTS: usize = 5;
+
 #[test]
 fn timeout_and_ctrl_c_end_only_the_local_wait() {
     let timeout_server = start_server(false, 1, move |request| {
@@ -741,12 +745,13 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("timed out"));
     let _ = timeout_server.finish();
 
-    let interrupt_server = start_server(false, 1, move |request| {
+    let interrupt_server = start_server(false, INTERRUPT_ATTEMPTS, move |request| {
         assert_eq!(request.path, "/api/v1/operations/operation-01");
         Reply::json(operation("pending"))
     });
-    let mut output = None;
-    for _ in 0..3 {
+    let mut interrupted = None;
+    let mut observed_codes = Vec::new();
+    for _ in 0..INTERRUPT_ATTEMPTS {
         // Rebuild the command each attempt; `Command::args` accumulates, so
         // reusing one command would append duplicate arguments.
         let mut command = Command::new(env!("CARGO_BIN_EXE_piquelctl"));
@@ -768,15 +773,21 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
             .status()
             .expect("send SIGINT");
         let attempt = child.wait_with_output().expect("interrupted child");
-        // A signal death before the handler was installed is a startup race;
-        // retry instead of failing the test.
-        if attempt.status.code().is_some() {
-            output = Some(attempt);
-            break;
+        match attempt.status.code() {
+            // A signal death means SIGINT arrived before the handler was
+            // installed; another code can mean it hit the window between
+            // reading the response and arming Ctrl-C handling. Both are
+            // startup races, so retry while attempts remain.
+            Some(130) => {
+                interrupted = Some(attempt);
+                break;
+            }
+            code => observed_codes.push(code),
         }
     }
-    let output = output.expect("interrupted run reported an exit code");
-    assert_eq!(output.status.code(), Some(130));
+    let output = interrupted.unwrap_or_else(|| {
+        panic!("interrupted runs never reported exit code 130; observed {observed_codes:?}")
+    });
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("was not cancelled"));
     let _ = interrupt_server.finish();

@@ -70,10 +70,9 @@ impl std::error::Error for CliError {}
 impl From<ClientError> for CliError {
     fn from(error: ClientError) -> Self {
         match error {
-            ClientError::Endpoint => Self::new(
-                ErrorKind::Input,
-                "HTTP endpoint must be a loopback http:// origin without credentials, path, query, or fragment",
-            ),
+            ClientError::Endpoint { message } => {
+                Self::new(ErrorKind::Input, format!("invalid request: {message}"))
+            }
             ClientError::Transport { message } => Self::new(
                 ErrorKind::Unavailable,
                 format!("could not connect to the piqueld API: {message}"),

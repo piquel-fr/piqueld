@@ -140,21 +140,29 @@
                 cargo fmt --check
                 touch "$out"
               '';
+          # cargo tree must resolve the crates.io dependency graph, so the
+          # check vendors all sources up front and stays sandbox-safe.
           dependency-boundary =
-            pkgs.runCommand "piqueld-dependency-boundary"
-              {
-                nativeBuildInputs = [
-                  pkgs.cargo
-                ];
+            pkgs.stdenv.mkDerivation {
+              name = "piqueld-dependency-boundary";
+              src = pkgs.lib.cleanSource self;
+              nativeBuildInputs = [
+                pkgs.cargo
+                pkgs.rustPlatform.cargoSetupHook
+              ];
+              cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+                name = "piqueld-dependency-boundary-deps";
                 src = pkgs.lib.cleanSource self;
-              }
-              ''
-                cp -R "$src" source
-                chmod -R u+w source
-                cd source
+                hash = "sha256-aOmkUY6BttNADz/A4ZQX3esfZAnUesxQaG1WqPTLxzg=";
+              };
+              dontConfigure = true;
+              buildPhase = ''
                 bash scripts/check-dependency-boundaries.sh
+              '';
+              installPhase = ''
                 touch "$out"
               '';
+            };
         }
       );
 

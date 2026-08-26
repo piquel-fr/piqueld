@@ -1,0 +1,211 @@
+# Continuous integration for piqueld.
+#
+# Every `just` validation recipe runs as its own parallel job so the wall
+# clock tracks the slowest check instead of their sum:
+#
+#   fmt-check         -> fmt
+#   lint              -> clippy
+#   test / doc-test   -> test
+#   deny              -> deny
+#   openapi-check     -> openapi
+#   boundary          -> boundary
+#   ui-check          -> wasm-ui
+#   docker-test       -> docker-integration
+#   build-embedded    -> embedded-release
+#   nix-check         -> nix
+#
+# `check` is deliberately not a separate job: `clippy --all-targets
+# --all-features` compiles everything it would and adds lints on top.
+#
+# Nix package builds are deliberately not run: they duplicate what the Cargo
+# jobs already prove and take far longer without a shared binary cache. The
+# Nix job instead proves full flake evaluation plus the two cheap sandboxed
+# flake checks.
+#
+# Speed comes from Swatinem/rust-cache in every compiling job (keyed per job
+# against Cargo.lock), prebuilt tool downloads instead of `cargo install`,
+# and incremental compilation disabled to keep caches small.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts only bloat CI caches; restored dependency builds
+  # make up for the lost reuse.
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: short
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just fmt-check
+
+  clippy:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      # --all-features compiles the embedded dashboard, which needs the same
+      # tooling as a release build.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-directories: target-ui
+      - uses: ./.github/actions/dashboard-tools
+        with:
+          trunk-version: "0.21.14"
+          tailwindcss-version: "4.3.3"
+          binaryen-version: "132"
+      - run: just lint
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: just test
+      - run: just doc-test
+
+  deny:
+    name: deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  openapi:
+    name: openapi
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: just openapi-check
+
+  boundary:
+    name: boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: just boundary
+
+  wasm-ui:
+    name: wasm-ui
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: just ui-check
+
+  docker-integration:
+    name: docker-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # The wrapper bounds cargo invocation inside the script; compilation is
+      # already warm through the prebuild below.
+      PIQUELD_DOCKER_TEST_TIMEOUT: 30m
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      # Compile before the isolated Docker-in-Docker daemon starts so the
+      # inner cargo invocation is instant.
+      - run: cargo test --locked -p piqueld --test docker_integration --no-run
+      - run: just docker-test
+
+  embedded-release:
+    name: embedded-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-directories: target-ui
+      - uses: ./.github/actions/dashboard-tools
+        with:
+          trunk-version: "0.21.14"
+          tailwindcss-version: "4.3.3"
+          binaryen-version: "132"
+      - run: just build-embedded
+      - name: Upload release binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: piqueld-binaries
+          if-no-files-found: error
+          path: |
+            target/release/piqueld
+            target/release/piquelctl
+            config/piqueld.example.toml
+
+  nix:
+    name: nix
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: Evaluate every flake output
+        run: nix flake show --all-systems
+      - name: Build the sandboxed flake checks
+        run: nix build -L ".#checks.x86_64-linux.formatting" ".#checks.x86_64-linux.dependency-boundary"
