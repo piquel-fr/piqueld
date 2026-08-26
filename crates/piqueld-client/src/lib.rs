@@ -6,6 +6,9 @@
 //! confined inside `client`: loopback TCP and Unix-domain sockets natively,
 //! and same-origin browser fetch under WASM.
 
+#[cfg(target_os = "windows")]
+compile_error!("Windows is not supported by piqueld-client");
+
 /// Application CRUD, planning, and observation contracts.
 pub mod applications;
 /// Generated OpenAPI document retrieval.
@@ -25,9 +28,12 @@ pub use applications::{
 };
 pub use client::Client;
 pub use operations::{OperationStepView, OperationView};
-pub use piqueld_core::manifest::Source;
+pub use piqueld_core::manifest::{
+    ApplicationManifest, ApplicationSpecInput, HealthCheckInput, MetadataInput, MountInput,
+    ResourceLimitsInput, ServiceInput, Source, SourceInput, VolumeInput,
+};
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
-pub use piqueld_core::{ApplicationId, ValidatedApplication, ValidationErrors};
+pub use piqueld_core::{ApplicationId, ValidatedApplication, ValidationError, ValidationErrors};
 pub use system::SystemStatus;
 
 use http::StatusCode;
@@ -78,6 +84,7 @@ pub struct ErrorBody {
     pub details: serde_json::Value,
     /// Server-generated request identifier.
     #[serde(default)]
+    #[schema(required = true)]
     pub request_id: String,
 }
 
@@ -105,8 +112,12 @@ pub enum ClientError {
         error: ErrorBody,
     },
     /// The server response could not be decoded.
-    #[error("API returned an invalid response")]
-    Decode,
+    #[error("API returned an invalid response: {source}")]
+    Decode {
+        /// Decoder failure with line and column context.
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 /// Returns the client crate version embedded at build time.

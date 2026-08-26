@@ -24,7 +24,13 @@ check:
 # Compiles the browser transport, which no host-target recipe reaches.
 check-wasm:
     @rustup target add wasm32-unknown-unknown
-    @cargo check --package piqueld-client --target wasm32-unknown-unknown
+    @cargo check --locked --package piqueld-client --all-targets --target wasm32-unknown-unknown
+
+# Runs focused transport tests in a headless browser. The development shell
+# must provide wasm-bindgen-test-runner and a supported WebDriver.
+test-wasm:
+    @rustup target add wasm32-unknown-unknown
+    @WASM_BINDGEN_TEST_ONLY_WEB=1 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --locked --package piqueld-client --lib --target wasm32-unknown-unknown
 
 test:
     @cargo test --workspace

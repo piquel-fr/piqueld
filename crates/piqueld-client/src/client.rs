@@ -3,11 +3,11 @@
 //! Endpoint methods, envelope decoding, and query building are shared. The
 //! platform differences are confined to two small modules: [`loopback`]
 //! speaks HTTP/1.1 over loopback TCP and Unix-domain sockets natively, and
-//! [`web`] performs same-origin fetches in the browser. Both transports send
-//! origin-form requests with an explicit `Host` header, enforce one total
-//! deadline per exchange, and reject response bodies beyond a fixed size.
+//! [`web`] performs same-origin fetches in the browser. Both transports enforce
+//! one total deadline per exchange and reject response bodies beyond a fixed
+//! size; the native transport also constructs an explicit origin-form request.
 
-use http::{Method, StatusCode};
+use http::{HeaderName, HeaderValue, Method, StatusCode};
 use serde::{Serialize, de::DeserializeOwned};
 use std::time::Duration;
 
@@ -15,6 +15,9 @@ use crate::{ClientError, Envelope, ErrorBody};
 
 /// Transport detail reported when a request exceeds its deadline.
 const TIMEOUT_MESSAGE: &str = "request timed out";
+
+/// Upper bound on buffered response bodies for every exchange.
+const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// Builds the timeout [`ClientError`] shared by both transports.
 fn timed_out() -> ClientError {
@@ -30,6 +33,27 @@ fn invalid_request(message: impl std::fmt::Display) -> ClientError {
     }
 }
 
+/// Validates shared request headers before either transport sees them.
+fn validate_headers(headers: &[(&str, &str)]) -> Result<(), ClientError> {
+    for (name, value) in headers {
+        HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| invalid_request("request header name is invalid"))?;
+        if !value.is_ascii() {
+            return Err(invalid_request("request header value must be ASCII"));
+        }
+        HeaderValue::from_str(value)
+            .map_err(|_| invalid_request("request header value is invalid"))?;
+    }
+    Ok(())
+}
+
+/// Builds the bounded-response error shared by both transports.
+fn response_too_large(limit: usize) -> ClientError {
+    ClientError::Transport {
+        message: format!("response body exceeded the {limit}-byte limit"),
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod loopback {
     //! Native transport: HTTP/1.1 over loopback TCP and Unix-domain sockets.
@@ -41,22 +65,29 @@ mod loopback {
     use hyper::body::Incoming;
     use hyper::client::conn::http1;
     use hyper_util::rt::TokioIo;
-    use std::{path::PathBuf, time::Duration};
-    use tokio::net::{TcpStream, UnixStream};
+    #[cfg(unix)]
+    use std::path::PathBuf;
+    use std::{
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+        time::Duration,
+    };
+    use tokio::net::TcpStream;
+    #[cfg(unix)]
+    use tokio::net::UnixStream;
     use url::{Host, Url};
 
-    use super::{ClientError, invalid_request, timed_out, transport};
-
-    /// Upper bound on buffered response bodies for every native exchange.
-    const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
+    use super::{
+        ClientError, MAX_RESPONSE_BODY_BYTES, invalid_request, response_too_large, timed_out,
+        transport,
+    };
 
     #[derive(Clone, Debug)]
     pub(super) enum Endpoint {
         Tcp {
             authority: String,
-            host: String,
-            port: u16,
+            addresses: Vec<SocketAddr>,
         },
+        #[cfg(unix)]
         Unix(PathBuf),
     }
 
@@ -90,18 +121,22 @@ mod loopback {
                 "base URL must be a plain loopback HTTP origin",
             ));
         }
-        let host = match url
+        let (host, addresses) = match url
             .host()
             .ok_or_else(|| invalid_request("base URL has no host"))?
         {
             // WHATWG parsing canonicalizes numeric spellings such as "127.1"
             // before this match runs, so acceptance always implies a genuine
             // loopback connect target.
-            Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => {
-                host.to_ascii_lowercase()
-            }
-            Host::Ipv4(host) if host.is_loopback() => host.to_string(),
-            Host::Ipv6(host) if host.is_loopback() => host.to_string(),
+            Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => (
+                host.to_ascii_lowercase(),
+                vec![
+                    IpAddr::V6(Ipv6Addr::LOCALHOST),
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                ],
+            ),
+            Host::Ipv4(host) if host.is_loopback() => (host.to_string(), vec![IpAddr::V4(host)]),
+            Host::Ipv6(host) if host.is_loopback() => (host.to_string(), vec![IpAddr::V6(host)]),
             _ => {
                 return Err(invalid_request(
                     "base URL host must be localhost or a loopback IP",
@@ -117,10 +152,13 @@ mod loopback {
         } else {
             format!("{host}:{port}")
         };
+        let addresses = addresses
+            .into_iter()
+            .map(|address| SocketAddr::new(address, port))
+            .collect();
         Ok(Endpoint::Tcp {
             authority,
-            host,
-            port,
+            addresses,
         })
     }
 
@@ -154,12 +192,8 @@ mod loopback {
         while let Some(frame) = body.frame().await {
             let frame = frame.map_err(transport)?;
             if let Some(data) = frame.data_ref() {
-                if buffer.len() + data.len() > MAX_RESPONSE_BODY_BYTES {
-                    return Err(ClientError::Transport {
-                        message: format!(
-                            "response body exceeded the {MAX_RESPONSE_BODY_BYTES}-byte limit"
-                        ),
-                    });
+                if buffer.len().saturating_add(data.len()) > MAX_RESPONSE_BODY_BYTES {
+                    return Err(response_too_large(MAX_RESPONSE_BODY_BYTES));
                 }
                 buffer.extend_from_slice(data);
             }
@@ -176,6 +210,7 @@ mod loopback {
     ) -> Result<Response<Incoming>, ClientError> {
         let authority = match endpoint {
             Endpoint::Tcp { authority, .. } => authority.as_str(),
+            #[cfg(unix)]
             Endpoint::Unix(_) => "localhost",
         };
         if !path.starts_with('/') {
@@ -195,9 +230,10 @@ mod loopback {
             .body(Full::new(Bytes::from(payload)))
             .map_err(|error| invalid_request(format!("malformed request head: {error}")))?;
         match endpoint {
-            Endpoint::Tcp { host, port, .. } => {
-                speak(TcpStream::connect((host.as_str(), *port)).await, request).await
+            Endpoint::Tcp { addresses, .. } => {
+                speak(TcpStream::connect(addresses.as_slice()).await, request).await
             }
+            #[cfg(unix)]
             Endpoint::Unix(path) => speak(UnixStream::connect(path).await, request).await,
         }
     }
@@ -228,12 +264,20 @@ mod loopback {
 mod web {
     //! Browser transport: same-origin fetches via `gloo-net`.
 
-    use gloo_net::http::{Request, RequestBuilder};
+    use gloo_net::http::{Request, RequestBuilder, Response};
     use http::{Method, StatusCode};
+    use js_sys::{Reflect, Uint8Array};
     use std::time::Duration;
-    use web_sys::{RequestCache, RequestCredentials, RequestMode, RequestRedirect};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{
+        ReadableStreamDefaultReader, RequestCache, RequestCredentials, RequestMode, RequestRedirect,
+    };
 
-    use super::{ClientError, invalid_request, timed_out, transport};
+    use super::{
+        ClientError, MAX_RESPONSE_BODY_BYTES, invalid_request, response_too_large, timed_out,
+        transport,
+    };
 
     /// Sends one same-origin request and returns the status plus body bytes.
     pub(super) async fn exchange(
@@ -289,20 +333,95 @@ mod web {
                 response.status()
             ))
         })?;
-        // Unlike the native transport, the browser body read is not
-        // byte-capped. Same-origin responses come from the operator's own
-        // daemon, and capping would require manual ReadableStream draining.
-        let text = match response.text().await {
-            Ok(text) => text,
+        let body = match collect_bounded(&response, MAX_RESPONSE_BODY_BYTES).await {
+            Ok(body) => body,
             Err(error) => {
-                return Err(if signal.aborted() {
-                    timed_out()
-                } else {
-                    transport(error)
-                });
+                return Err(if signal.aborted() { timed_out() } else { error });
             }
         };
-        Ok((status, text.into_bytes()))
+        Ok((status, body))
+    }
+
+    /// Drains a fetch body as exact bytes without allowing unbounded buffering.
+    async fn collect_bounded(response: &Response, limit: usize) -> Result<Vec<u8>, ClientError> {
+        let Some(stream) = response.body() else {
+            return Ok(Vec::new());
+        };
+        let reader: ReadableStreamDefaultReader = stream.get_reader().unchecked_into();
+        let mut buffer = Vec::new();
+        loop {
+            let result = JsFuture::from(reader.read()).await.map_err(js_transport)?;
+            let done = Reflect::get(&result, &JsValue::from_str("done"))
+                .map_err(js_transport)?
+                .as_bool()
+                .unwrap_or(false);
+            if done {
+                reader.release_lock();
+                return Ok(buffer);
+            }
+            let value = Reflect::get(&result, &JsValue::from_str("value")).map_err(js_transport)?;
+            let chunk = Uint8Array::new(&value);
+            let chunk_len = usize::try_from(chunk.length())
+                .map_err(|_| transport("response chunk length exceeds this platform"))?;
+            if buffer.len().saturating_add(chunk_len) > limit {
+                let _ = reader.cancel();
+                reader.release_lock();
+                return Err(response_too_large(limit));
+            }
+            let start = buffer.len();
+            buffer.resize(start + chunk_len, 0);
+            chunk.copy_to(&mut buffer[start..]);
+        }
+    }
+
+    fn js_transport(error: JsValue) -> ClientError {
+        transport(format!("{error:?}"))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{MAX_RESPONSE_BODY_BYTES, collect_bounded};
+        use crate::{Client, ClientError};
+        use http::Method;
+        use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+        wasm_bindgen_test_configure!(run_in_browser);
+
+        fn response(bytes: &mut [u8]) -> gloo_net::http::Response {
+            web_sys::Response::new_with_opt_u8_array(Some(bytes))
+                .expect("test response is valid")
+                .into()
+        }
+
+        #[wasm_bindgen_test]
+        async fn response_collection_preserves_exact_bytes() {
+            let mut bytes = [b'{', b'"', 0xff, b'"', b'}'];
+            let response = response(&mut bytes);
+            assert_eq!(
+                collect_bounded(&response, MAX_RESPONSE_BODY_BYTES)
+                    .await
+                    .expect("small response is collected"),
+                bytes
+            );
+        }
+
+        #[wasm_bindgen_test]
+        async fn response_collection_rejects_the_first_oversized_chunk() {
+            let mut bytes = [1, 2, 3, 4, 5];
+            let response = response(&mut bytes);
+            assert!(matches!(
+                collect_bounded(&response, 4).await,
+                Err(ClientError::Transport { message }) if message.contains("4-byte limit")
+            ));
+        }
+
+        #[wasm_bindgen_test]
+        async fn invalid_headers_return_an_error_before_fetch() {
+            let result = Client::browser()
+                .exchange(Method::GET, "/", Vec::new(), &[("x-test", "bad\nvalue")])
+                .await;
+            assert!(matches!(result, Err(ClientError::Endpoint { .. })));
+        }
     }
 }
 
@@ -338,7 +457,7 @@ impl Client {
     /// speaks plain HTTP to whatever socket it is given — including sockets
     /// owned by other subsystems such as the Docker socket. Only pass paths
     /// provisioned by the piqueld daemon itself.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), unix))]
     #[must_use]
     pub fn unix(path: impl AsRef<std::path::Path>) -> Self {
         Self {
@@ -372,9 +491,12 @@ impl Client {
     ) -> Result<T, ClientError> {
         let mut headers = Vec::with_capacity(caller_headers.len() + 1);
         let payload = if let Some(body) = body {
-            // Declared ahead of caller headers so a stray duplicate can
-            // never take precedence on the wire.
-            headers.push(("content-type", "application/json"));
+            if !caller_headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            {
+                headers.push(("content-type", "application/json"));
+            }
             headers.extend(caller_headers.iter().copied());
             serde_json::to_vec(body).map_err(|error| {
                 invalid_request(format!("request serialization failed: {error}"))
@@ -407,6 +529,7 @@ impl Client {
         payload: Vec<u8>,
         headers: &[(&str, &str)],
     ) -> Result<(StatusCode, Vec<u8>), ClientError> {
+        validate_headers(headers)?;
         #[cfg(not(target_arch = "wasm32"))]
         return loopback::exchange(&self.endpoint, self.timeout, method, path, payload, headers)
             .await;
@@ -425,7 +548,7 @@ fn decode_envelope<T: DeserializeOwned>(
     }
     serde_json::from_slice::<Envelope<T>>(payload)
         .map(|value| value.data)
-        .map_err(|_| ClientError::Decode)
+        .map_err(|source| ClientError::Decode { source })
 }
 
 pub(crate) fn api_error(status: StatusCode, payload: &[u8]) -> ClientError {
@@ -464,10 +587,10 @@ pub(crate) fn path_segment(value: &str) -> String {
     encoded
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::{Client, path_segment};
-    use crate::SystemStatus;
+    use super::{Client, loopback, path_segment, validate_headers};
+    use crate::{ClientError, SystemStatus};
     use http::Method;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -488,6 +611,32 @@ mod tests {
         assert_eq!(path_segment("é"), "%C3%A9");
         assert_eq!(path_segment("\r\n"), "%0D%0A");
         assert_eq!(path_segment(" "), "%20");
+    }
+
+    #[test]
+    fn localhost_is_pinned_to_literal_loopback_addresses() {
+        let loopback::Endpoint::Tcp {
+            authority,
+            addresses,
+        } = loopback::tcp_endpoint("http://localhost:4321/").unwrap()
+        else {
+            panic!("localhost must produce a TCP endpoint");
+        };
+        assert_eq!(authority, "localhost:4321");
+        assert_eq!(
+            addresses,
+            [
+                "[::1]:4321".parse().unwrap(),
+                "127.0.0.1:4321".parse().unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_header_values_are_rejected_without_echoing_them() {
+        let error = validate_headers(&[("x-test", "secret\nvalue")]).unwrap_err();
+        assert!(matches!(error, ClientError::Endpoint { .. }));
+        assert!(!error.to_string().contains("secret"));
     }
 
     #[tokio::test]

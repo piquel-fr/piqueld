@@ -1,5 +1,7 @@
 //! Transport integration tests for the typed client.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use axum::{
     Json, Router,
     extract::Path,
@@ -153,7 +155,12 @@ async fn requests_use_origin_form_with_an_explicit_host_header() {
     server.await.unwrap();
     let wire = wire_rx.recv().await.unwrap();
     assert!(wire.starts_with("GET /api/v1/system/status HTTP/1.1\r\n"));
-    assert!(wire.to_ascii_lowercase().contains("\r\nhost:"));
+    let host = wire
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find_map(|(name, value)| name.eq_ignore_ascii_case("host").then(|| value.trim()));
+    let expected_host = address.to_string();
+    assert_eq!(host, Some(expected_host.as_str()));
     assert!(!wire.contains("http://"), "absolute-form leaked: {wire}");
     assert_eq!(response.daemon_version, "0.1.0");
 }
@@ -166,10 +173,10 @@ async fn request_timeout_is_reported_by_the_client() {
         .unwrap()
         .with_timeout(Duration::from_millis(1));
     let result = client.system_status().await;
-    assert!(
-        matches!(result, Err(ClientError::Transport { .. })),
-        "any transport failure satisfies this deadline race"
-    );
+    assert!(matches!(
+        result,
+        Err(ClientError::Transport { message }) if message == "request timed out"
+    ));
 }
 
 #[tokio::test]
@@ -276,7 +283,11 @@ async fn malformed_success_envelopes_decode_as_errors() {
         .system_status()
         .await;
     server.await.unwrap();
-    assert!(matches!(result, Err(ClientError::Decode)));
+    let Err(ClientError::Decode { source }) = result else {
+        panic!("malformed success envelope must preserve its decoder error");
+    };
+    assert!(source.line() > 0);
+    assert!(source.column() > 0);
 }
 
 #[tokio::test]
