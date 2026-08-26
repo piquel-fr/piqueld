@@ -8,22 +8,31 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-bytes.workspace = true
 http.workspace = true
-http-body-util.workspace = true
-hyper.workspace = true
-hyper-util.workspace = true
 piqueld-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
 utoipa.workspace = true
 url.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bytes.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = { workspace = true, default-features = false, features = ["http"] }
+web-sys = { workspace = true, features = ["AbortSignal", "RequestCache", "RequestCredentials", "RequestMode", "RequestRedirect"] }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+http.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
