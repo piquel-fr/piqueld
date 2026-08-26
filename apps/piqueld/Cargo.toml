@@ -7,11 +7,18 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+# Builds with this feature embed the Trunk dashboard bundle at compile time.
+# The build script invokes tailwindcss and trunk, so these tools plus the
+# wasm32-unknown-unknown target must be available when it is enabled.
+[features]
+embedded-ui = []
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 bollard.workspace = true
+clap.workspace = true
 futures-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
@@ -19,8 +26,10 @@ http.workspace = true
 http-body-util.workspace = true
 piqueld-client.workspace = true
 piqueld-core.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 sqlx.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
@@ -36,6 +45,10 @@ utoipa-axum.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]

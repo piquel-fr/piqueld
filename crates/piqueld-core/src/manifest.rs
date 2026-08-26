@@ -1,6 +1,8 @@
 //! Public application manifests and their validated, canonical domain model.
 
 use crate::ApplicationId;
+use crate::codes;
+use crate::resource::valid_logical_name;
 use serde::{Deserialize, Serialize};
 use serde_path_to_error::Path;
 use sha2::{Digest, Sha256};
@@ -14,6 +16,22 @@ use utoipa::ToSchema;
 pub const APPLICATION_API_VERSION: &str = "piqueld.dev/v1alpha1";
 /// The only resource kind supported by the Plan 06A product.
 pub const APPLICATION_KIND: &str = "Application";
+/// Envelope version for the specification hash. Version 2 hashes only the
+/// canonical spec, so cosmetic metadata changes no longer redeploy services.
+pub const SPEC_HASH_VERSION: &str = "piqueld-spec-hash/v2";
+
+const MAX_SERVICES: usize = 64;
+const MAX_VOLUMES: usize = 64;
+const MAX_ENVIRONMENT_ENTRIES: usize = 256;
+/// Environment keys share the common 255-byte identifier bound so one entry
+/// cannot dominate a manifest or a container environment list.
+const MAX_ENVIRONMENT_KEY_BYTES: usize = 255;
+const MAX_ENVIRONMENT_VALUE_BYTES: usize = 65_536;
+const MAX_PROCESS_ELEMENTS: usize = 128;
+const MAX_PROCESS_ELEMENT_BYTES: usize = 4_096;
+const MAX_MOUNTS_PER_SERVICE: usize = 32;
+const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
+const MAX_CPU_MILLIS: u32 = 1_048_576;
 
 /// Strict public application manifest request and export shape.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
@@ -168,7 +186,6 @@ pub struct ResourceLimitsInput {
 
 /// A field-level, safe validation error.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct ValidationError {
     /// Stable machine-readable validation code.
     pub code: String,
@@ -189,7 +206,15 @@ impl fmt::Display for ValidationErrors {
             formatter,
             "application manifest has {} error(s)",
             self.0.len()
-        )
+        )?;
+        for error in &self.0 {
+            write!(
+                formatter,
+                "; {} at {}: {}",
+                error.code, error.path, error.message
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -204,7 +229,6 @@ pub struct ValidatedApplication {
 
 /// Canonical desired application plus persistence-assigned identity.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct NormalizedApplication {
     /// Stable application identity.
     pub id: ApplicationId,
@@ -220,7 +244,6 @@ pub struct NormalizedApplication {
 
 /// Canonical application metadata.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct Metadata {
     /// User-facing application name.
     pub name: String,
@@ -228,7 +251,6 @@ pub struct Metadata {
 
 /// Canonical resource specification.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct ApplicationSpec {
     /// Canonical services.
     pub services: Vec<Service>,
@@ -238,7 +260,6 @@ pub struct ApplicationSpec {
 
 /// Canonical service definition.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct Service {
     /// Logical service name.
     pub name: String,
@@ -262,7 +283,7 @@ pub struct Service {
 
 /// Canonical prebuilt image source.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum Source {
     /// An image reference resolved by the Docker adapter before persistence.
     Image {
@@ -273,7 +294,6 @@ pub enum Source {
 
 /// Canonical named volume.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct Volume {
     /// Logical volume name.
     pub name: String,
@@ -281,7 +301,6 @@ pub struct Volume {
 
 /// Canonical persistent volume mount.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct Mount {
     /// Referenced logical volume name.
     pub volume: String,
@@ -293,7 +312,7 @@ pub struct Mount {
 
 /// Canonical service health check.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum HealthCheck {
     /// HTTP health endpoint check.
     Http {
@@ -319,11 +338,11 @@ pub enum HealthCheck {
 
 /// Canonical CPU and memory limits.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
 pub struct ResourceLimits {
     /// CPU limit in millicores.
     pub cpu_millis: Option<u32>,
     /// Memory limit in bytes.
+    // Keep in sync with the identical schema attribute on ResourceLimitsInput.
     #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_u64)]
     pub memory_bytes: Option<u64>,
 }
@@ -348,7 +367,7 @@ pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors>
         .map_err(|error| decode_error(error.path()))?;
     deserializer.end().map_err(|_| {
         ValidationErrors(vec![ValidationError {
-            code: "manifest_decode_failed".into(),
+            code: codes::MANIFEST_DECODE_FAILED.into(),
             path: "$".into(),
             message: "manifest contains trailing JSON data".into(),
         }])
@@ -358,7 +377,7 @@ pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors>
 
 fn decode_error(path: &Path) -> ValidationErrors {
     ValidationErrors(vec![ValidationError {
-        code: "manifest_decode_failed".into(),
+        code: codes::MANIFEST_DECODE_FAILED.into(),
         path: safe_decode_path(&path.to_string()),
         message: "manifest does not match the strict piqueld.dev/v1alpha1 Application schema"
             .into(),
@@ -433,19 +452,19 @@ fn valid_path_indices(mut value: &str) -> bool {
 fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, ValidationErrors> {
     let mut errors = Vec::new();
     validate_header(&input, &mut errors);
-    let service_names = unique_names(
+    validate_budgets(&input, &mut errors);
+    unique_names(
         input.spec.services.iter().map(|service| &service.name),
         "spec.services",
-        "service_name_duplicate",
+        codes::SERVICE_NAME_DUPLICATE,
         &mut errors,
     );
     let volume_names = unique_names(
         input.spec.volumes.iter().map(|volume| &volume.name),
         "spec.volumes",
-        "volume_name_duplicate",
+        codes::VOLUME_NAME_DUPLICATE,
         &mut errors,
     );
-    let _ = service_names;
     validate_services(&input.spec.services, &volume_names, &mut errors);
     validate_volumes(&input.spec.volumes, &mut errors);
     errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
@@ -462,7 +481,7 @@ fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError
     if input.api_version != APPLICATION_API_VERSION {
         error(
             errors,
-            "api_version_unsupported",
+            codes::API_VERSION_UNSUPPORTED,
             "api_version",
             "unsupported application API version",
         );
@@ -470,7 +489,7 @@ fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError
     if input.kind != APPLICATION_KIND {
         error(
             errors,
-            "kind_unsupported",
+            codes::KIND_UNSUPPORTED,
             "kind",
             "resource kind must be Application",
         );
@@ -479,9 +498,28 @@ fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError
     if input.spec.services.is_empty() {
         error(
             errors,
-            "service_required",
+            codes::SERVICE_REQUIRED,
             "spec.services",
             "application must declare at least one service",
+        );
+    }
+}
+
+fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) {
+    if input.spec.services.len() > MAX_SERVICES {
+        error(
+            errors,
+            codes::SERVICE_COUNT_EXCESSIVE,
+            "spec.services",
+            &format!("an application must declare at most {MAX_SERVICES} services"),
+        );
+    }
+    if input.spec.volumes.len() > MAX_VOLUMES {
+        error(
+            errors,
+            codes::VOLUME_COUNT_EXCESSIVE,
+            "spec.volumes",
+            &format!("an application must declare at most {MAX_VOLUMES} volumes"),
         );
     }
 }
@@ -497,7 +535,7 @@ fn validate_services(
         if !(1..=100).contains(&service.replicas) {
             error(
                 errors,
-                "replicas_out_of_range",
+                codes::REPLICAS_OUT_OF_RANGE,
                 &format!("{base}.replicas"),
                 "replicas must be between 1 and 100",
             );
@@ -507,15 +545,25 @@ fn validate_services(
         {
             error(
                 errors,
-                "image_invalid",
+                codes::IMAGE_INVALID,
                 &format!("{base}.source.image"),
-                "image must be a valid registry reference without credentials or a URL scheme",
+                "image must be a valid registry reference with a lowercase hostname, without credentials or a URL scheme",
             );
         }
         validate_environment(&service.environment, &base, errors);
         validate_mounts(&service.mounts, &base, volume_names, errors);
-        validate_process_arguments(&service.command, &format!("{base}.command"), errors);
-        validate_process_arguments(&service.arguments, &format!("{base}.arguments"), errors);
+        validate_process_arguments(
+            &service.command,
+            &format!("{base}.command"),
+            codes::PROCESS_COMMAND_EXCESSIVE,
+            errors,
+        );
+        validate_process_arguments(
+            &service.arguments,
+            &format!("{base}.arguments"),
+            codes::PROCESS_ARGUMENTS_EXCESSIVE,
+            errors,
+        );
         if service
             .command
             .first()
@@ -540,24 +588,62 @@ fn validate_environment(
     base: &str,
     errors: &mut Vec<ValidationError>,
 ) {
-    for (index, (key, value)) in environment.iter().enumerate() {
-        if !valid_env_name(key) {
+    if environment.len() > MAX_ENVIRONMENT_ENTRIES {
+        error(
+            errors,
+            codes::ENVIRONMENT_COUNT_EXCESSIVE,
+            &format!("{base}.environment"),
+            &format!(
+                "a service must declare at most {MAX_ENVIRONMENT_ENTRIES} environment entries"
+            ),
+        );
+    }
+    for (key, value) in environment {
+        let key_echo = safe_key_echo(key);
+        if !valid_env_name(key) || key.len() > MAX_ENVIRONMENT_KEY_BYTES {
             error(
                 errors,
-                "environment_name_invalid",
-                &format!("{base}.environment[{index}].name"),
-                "environment names must use letters, digits, and underscores and cannot start with a digit",
+                codes::ENVIRONMENT_NAME_INVALID,
+                &format!("{base}.environment.name"),
+                &format!(
+                    "environment key {key_echo} is invalid: names must use letters, digits, and underscores, cannot start with a digit, and must be at most {MAX_ENVIRONMENT_KEY_BYTES} bytes"
+                ),
             );
         }
         if value.contains('\0') {
             error(
                 errors,
-                "environment_value_invalid",
-                &format!("{base}.environment[{index}].value"),
-                "environment values cannot contain NUL",
+                codes::ENVIRONMENT_VALUE_INVALID,
+                &format!("{base}.environment.value"),
+                &format!("environment value for key {key_echo} cannot contain NUL"),
+            );
+        }
+        if value.len() > MAX_ENVIRONMENT_VALUE_BYTES {
+            error(
+                errors,
+                codes::ENVIRONMENT_VALUE_EXCESSIVE,
+                &format!("{base}.environment.value"),
+                &format!(
+                    "environment value for key {key_echo} must be at most {MAX_ENVIRONMENT_VALUE_BYTES} bytes"
+                ),
             );
         }
     }
+}
+
+fn safe_key_echo(key: &str) -> String {
+    let truncated: String = key.chars().take(64).collect();
+    let sanitized = truncated
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    format!("'{sanitized}'")
 }
 
 fn validate_mounts(
@@ -567,12 +653,20 @@ fn validate_mounts(
     errors: &mut Vec<ValidationError>,
 ) {
     let mut targets = BTreeSet::new();
+    if mounts.len() > MAX_MOUNTS_PER_SERVICE {
+        error(
+            errors,
+            codes::MOUNT_COUNT_EXCESSIVE,
+            &format!("{base}.mounts"),
+            &format!("a service must declare at most {MAX_MOUNTS_PER_SERVICE} mounts"),
+        );
+    }
     for (index, mount) in mounts.iter().enumerate() {
         let path = format!("{base}.mounts[{index}]");
         if !volume_names.contains(&mount.volume) {
             error(
                 errors,
-                "mount_volume_missing",
+                codes::MOUNT_VOLUME_MISSING,
                 &format!("{path}.volume"),
                 "mount references an undeclared volume",
             );
@@ -581,7 +675,7 @@ fn validate_mounts(
         if !targets.insert(mount.target.clone()) {
             error(
                 errors,
-                "mount_target_duplicate",
+                codes::MOUNT_TARGET_DUPLICATE,
                 &format!("{path}.target"),
                 "mount target is duplicated in this service",
             );
@@ -598,7 +692,7 @@ fn validate_resources(
     if resources.cpu_millis.is_none() && resources.memory_bytes.is_none() {
         error(
             errors,
-            "resource_limits_empty",
+            codes::RESOURCE_LIMITS_EMPTY,
             &format!("{base}.resources"),
             "resource limits must configure CPU, memory, or both",
         );
@@ -606,9 +700,20 @@ fn validate_resources(
     if resources.cpu_millis == Some(0) {
         error(
             errors,
-            "cpu_limit_invalid",
+            codes::CPU_LIMIT_INVALID,
             &format!("{base}.resources.cpu_millis"),
             "CPU limit must be greater than zero",
+        );
+    }
+    if resources
+        .cpu_millis
+        .is_some_and(|value| value > MAX_CPU_MILLIS)
+    {
+        error(
+            errors,
+            codes::CPU_LIMIT_EXCESSIVE,
+            &format!("{base}.resources.cpu_millis"),
+            &format!("CPU limit must be at most {MAX_CPU_MILLIS} millicores"),
         );
     }
     if resources.memory_bytes == Some(0)
@@ -618,7 +723,7 @@ fn validate_resources(
     {
         error(
             errors,
-            "memory_limit_invalid",
+            codes::MEMORY_LIMIT_INVALID,
             &format!("{base}.resources.memory_bytes"),
             "memory limit must be greater than zero and fit the runtime value",
         );
@@ -642,7 +747,7 @@ fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<Valida
             if *port == 0 {
                 error(
                     errors,
-                    "port_invalid",
+                    codes::PORT_INVALID,
                     &format!("{path}.port"),
                     "health-check port must be between 1 and 65535",
                 );
@@ -663,7 +768,7 @@ fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<Valida
             {
                 error(
                     errors,
-                    "healthcheck_path_invalid",
+                    codes::HEALTHCHECK_PATH_INVALID,
                     &format!("{path}.path"),
                     "HTTP health-check path must start with / and contain no whitespace",
                 );
@@ -680,26 +785,42 @@ fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<Valida
             {
                 error(
                     errors,
-                    "healthcheck_command_invalid",
+                    codes::HEALTHCHECK_COMMAND_INVALID,
                     &format!("{path}.command"),
                     "health-check command must contain at least one NUL-free argument",
                 );
             }
+            validate_process_arguments(
+                command,
+                &format!("{path}.command"),
+                codes::PROCESS_COMMAND_EXCESSIVE,
+                errors,
+            );
             (*interval_seconds, *timeout_seconds)
         }
     };
     if interval == 0 {
         error(
             errors,
-            "healthcheck_interval_invalid",
+            codes::HEALTHCHECK_INTERVAL_INVALID,
             &format!("{path}.interval_seconds"),
             "health-check interval must be greater than zero",
         );
     }
-    if timeout == 0 || timeout > interval {
+    if interval > MAX_HEALTHCHECK_INTERVAL_SECONDS {
         error(
             errors,
-            "healthcheck_timeout_invalid",
+            codes::HEALTHCHECK_INTERVAL_EXCESSIVE,
+            &format!("{path}.interval_seconds"),
+            &format!(
+                "health-check interval must be at most {MAX_HEALTHCHECK_INTERVAL_SECONDS} seconds"
+            ),
+        );
+    }
+    if interval > 0 && (timeout == 0 || timeout > interval) {
+        error(
+            errors,
+            codes::HEALTHCHECK_TIMEOUT_INVALID,
             &format!("{path}.timeout_seconds"),
             "health-check timeout must be greater than zero and no longer than its interval",
         );
@@ -734,7 +855,9 @@ fn convert_spec(input: ApplicationSpecInput) -> ApplicationSpec {
             .map(|service| Service {
                 name: service.name,
                 source: match service.source {
-                    SourceInput::Image { image } => Source::Image { image },
+                    SourceInput::Image { image } => Source::Image {
+                        image: canonicalize_image_reference(&image),
+                    },
                 },
                 replicas: service.replicas,
                 environment: service.environment,
@@ -831,6 +954,9 @@ impl NormalizedApplication {
     }
 
     /// Versioned SHA-256 over canonical JSON after defaults and normalization.
+    ///
+    /// The envelope covers only the canonical spec, so cosmetic metadata edits
+    /// do not change the hash or redeploy services.
     #[must_use]
     ///
     /// # Panics
@@ -841,13 +967,11 @@ impl NormalizedApplication {
         #[derive(Serialize)]
         struct HashEnvelope<'a> {
             hash_version: &'static str,
-            metadata: &'a Metadata,
             spec: &'a ApplicationSpec,
         }
         let normalized = self.clone().normalize();
         let bytes = serde_json::to_vec(&HashEnvelope {
-            hash_version: "piqueld-spec-hash/v1",
-            metadata: &normalized.metadata,
+            hash_version: SPEC_HASH_VERSION,
             spec: &normalized.spec,
         })
         .expect("domain serialization is infallible");
@@ -950,20 +1074,10 @@ impl NormalizedApplication {
 }
 
 fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
-    if value.is_empty()
-        || value.len() > 63
-        || !value
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase())
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        || value.ends_with('-')
-    {
+    if !valid_logical_name(value) {
         error(
             errors,
-            "name_invalid",
+            codes::NAME_INVALID,
             path,
             "names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
         );
@@ -1037,9 +1151,10 @@ fn valid_registry_authority(value: &str) -> bool {
     if port.is_some_and(|port| port.parse::<u16>().map_or(true, |port| port == 0)) {
         return false;
     }
-    host == "localhost"
-        || (!host.is_empty()
-            && host.split('.').all(|label| {
+    let lowered = host.to_ascii_lowercase();
+    lowered == "localhost"
+        || (!lowered.is_empty()
+            && lowered.split('.').all(|label| {
                 !label.is_empty()
                     && !label.starts_with('-')
                     && !label.ends_with('-')
@@ -1047,6 +1162,34 @@ fn valid_registry_authority(value: &str) -> bool {
                         byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
                     })
             }))
+}
+
+fn first_registry_component(name: &str) -> Option<&str> {
+    let components = name.split('/').collect::<Vec<_>>();
+    let first_is_registry = components.len() > 1
+        && (components[0].contains(['.', ':']) || components[0] == "localhost");
+    first_is_registry.then(|| components[0])
+}
+
+fn canonicalize_image_reference(value: &str) -> String {
+    if !valid_image_reference(value) {
+        return value.to_owned();
+    }
+    let (name, digest) = value
+        .split_once('@')
+        .map_or((value, None), |(name, digest)| (name, Some(digest)));
+    let Some(registry) = first_registry_component(name) else {
+        return value.to_owned();
+    };
+    let lowered = registry.to_ascii_lowercase();
+    if lowered == registry {
+        return value.to_owned();
+    }
+    let normalized_name = format!("{lowered}{}", &name[registry.len()..]);
+    match digest {
+        Some(digest) => format!("{normalized_name}@{digest}"),
+        None => normalized_name,
+    }
 }
 
 fn valid_repository_component(value: &str) -> bool {
@@ -1134,14 +1277,35 @@ fn valid_env_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
-fn validate_process_arguments(values: &[String], path: &str, errors: &mut Vec<ValidationError>) {
+fn validate_process_arguments(
+    values: &[String],
+    path: &str,
+    excessive_code: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    if values.len() > MAX_PROCESS_ELEMENTS {
+        error(
+            errors,
+            excessive_code,
+            path,
+            &format!("the list must contain at most {MAX_PROCESS_ELEMENTS} elements"),
+        );
+    }
     for (index, value) in values.iter().enumerate() {
         if value.contains('\0') {
             error(
                 errors,
-                "process_argument_invalid",
+                codes::PROCESS_ARGUMENT_INVALID,
                 &format!("{path}[{index}]"),
                 "container process arguments cannot contain NUL",
+            );
+        }
+        if value.len() > MAX_PROCESS_ELEMENT_BYTES {
+            error(
+                errors,
+                excessive_code,
+                &format!("{path}[{index}]"),
+                &format!("each element must be at most {MAX_PROCESS_ELEMENT_BYTES} bytes"),
             );
         }
     }

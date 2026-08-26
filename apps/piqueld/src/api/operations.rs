@@ -1,4 +1,5 @@
 use super::{ApiError, ApiState, ok, openapi::ApiErrorResponse};
+use crate::store::{Operation, OperationStep};
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -23,7 +24,11 @@ pub(super) async fn get(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let (operation, steps) = state.store.operation_with_steps(&id).await?;
-    Ok(ok(OperationView {
+    Ok(ok(view(operation, steps)))
+}
+
+pub(super) fn view(operation: Operation, steps: Vec<OperationStep>) -> OperationView {
+    OperationView {
         id: operation.id,
         application_id: operation.application_id.to_string(),
         generation: operation.generation,
@@ -48,5 +53,5 @@ pub(super) async fn get(
                 updated_at_ms: step.updated_at_ms,
             })
             .collect(),
-    }))
+    }
 }
