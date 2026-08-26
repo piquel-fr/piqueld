@@ -23,6 +23,6 @@ impl Client {
         if !status.is_success() {
             return Err(api_error(status, &payload));
         }
-        serde_json::from_slice(&payload).map_err(|_| ClientError::Decode)
+        serde_json::from_slice(&payload).map_err(|source| ClientError::Decode { source })
     }
 }

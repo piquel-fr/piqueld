@@ -1128,7 +1128,8 @@
         },
         "required": [
           "code",
-          "message"
+          "message",
+          "request_id"
         ],
         "type": "object"
       },
