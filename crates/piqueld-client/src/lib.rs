@@ -1,7 +1,7 @@
 //! Typed asynchronous client and transport contracts for the versioned piqueld API.
 //!
 //! Each contract module holds its request and response types next to the
-//! [`client::Client`] endpoint methods that serve them. The client runs one
+//! [`Client`] endpoint methods that serve them. The client runs one
 //! shared request pipeline on every target, with platform differences
 //! confined inside `client`: loopback TCP and Unix-domain sockets natively,
 //! and same-origin browser fetch under WASM.
