@@ -126,10 +126,18 @@ async fn requests_use_origin_form_with_an_explicit_host_header() {
     let (wire_tx, mut wire_rx) = mpsc::channel(1);
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
-        let mut buffer = vec![0u8; 4096];
-        let read = socket.read(&mut buffer).await.unwrap();
+        let mut buffer = Vec::new();
+        loop {
+            let mut chunk = [0u8; 1024];
+            let read = socket.read(&mut chunk).await.unwrap();
+            assert_ne!(read, 0, "client closed before sending request headers");
+            buffer.extend_from_slice(&chunk[..read]);
+            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
         wire_tx
-            .send(String::from_utf8_lossy(&buffer[..read]).into_owned())
+            .send(String::from_utf8_lossy(&buffer).into_owned())
             .await
             .unwrap();
         let body = r#"{"data":{"status":"running","api_version":"v1","daemon_version":"0.1.0","instance_id":"i"}}"#;
@@ -386,9 +394,17 @@ async fn application_queries_are_percent_encoded() {
     let (target_tx, mut target_rx) = mpsc::channel(1);
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
-        let mut buffer = vec![0u8; 4096];
-        let read = socket.read(&mut buffer).await.unwrap();
-        let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+        let mut buffer = Vec::new();
+        loop {
+            let mut chunk = [0u8; 1024];
+            let read = socket.read(&mut chunk).await.unwrap();
+            assert_ne!(read, 0, "client closed before sending request headers");
+            buffer.extend_from_slice(&chunk[..read]);
+            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&buffer).into_owned();
         let target = request
             .lines()
             .next()
