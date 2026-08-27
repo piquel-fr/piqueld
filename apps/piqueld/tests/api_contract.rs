@@ -188,8 +188,8 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
         created.application_id.parse().unwrap()
     );
     assert_eq!(detail.application.application.spec.services.len(), 1);
-    assert_eq!(detail.observed.services[0].convergence, "failed");
-    assert!(!detail.diagnostics.is_empty());
+    assert_eq!(detail.observed.services[0].convergence, "pending");
+    assert!(detail.diagnostics.is_empty());
     assert_eq!(
         client.operation(&created.operation_id).await.unwrap().kind,
         "create"
