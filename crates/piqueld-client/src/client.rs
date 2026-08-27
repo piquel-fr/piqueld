@@ -416,6 +416,17 @@ mod web {
         }
 
         #[wasm_bindgen_test]
+        async fn exchange_fetches_from_the_current_origin() {
+            let (status, payload) = Client::browser()
+                .exchange(Method::GET, "/", Vec::new(), &[])
+                .await
+                .expect("same-origin fetch succeeds");
+
+            assert!(status.is_success());
+            assert!(!payload.is_empty());
+        }
+
+        #[wasm_bindgen_test]
         async fn invalid_headers_return_an_error_before_fetch() {
             let result = Client::browser()
                 .exchange(Method::GET, "/", Vec::new(), &[("x-test", "bad\nvalue")])
