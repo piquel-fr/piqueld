@@ -2,7 +2,8 @@
 
 use super::{
     ApplicationId, Operation, OperationError, OperationKind, OperationStep, PrunedCounts,
-    SqliteStore, StepState, StoreError, WorkState, now_ms, page_limit,
+    SqliteStore, StepState, StoreError, WorkState, new_id, now_ms, page_limit,
+    validate_operation_steps,
 };
 
 #[derive(Debug)]
@@ -224,17 +225,34 @@ impl SqliteStore {
         &self,
         application_id: &ApplicationId,
     ) -> Result<Option<(Operation, Vec<OperationStep>)>, StoreError> {
-        let operation_id = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM operations WHERE application_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1",
+        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let application_id = application_id.as_str();
+        let operation = sqlx::query_as!(
+            OperationRow,
+            r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE application_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1"#,
+            application_id
         )
-        .bind(application_id.as_str())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        let Some(operation_id) = operation_id else {
+        let Some(operation) = operation else {
+            tx.commit().await.map_err(StoreError::database)?;
             return Ok(None);
         };
-        self.operation_with_steps(&operation_id).await.map(Some)
+        let operation = Operation::parse_row(operation)?;
+        let steps = sqlx::query_as!(
+            OperationStepRow,
+            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",action AS "action!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
+            operation.id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .map(OperationStep::parse_step_row)
+        .collect::<Result<Vec<_>, _>>()?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(Some((operation, steps)))
     }
 }
 
@@ -264,6 +282,66 @@ impl SqliteStore {
         .fetch_all(&self.pool)
         .await
         .map_err(StoreError::database)?;
+        rows.into_iter()
+            .map(OperationStep::parse_step_row)
+            .collect()
+    }
+
+    /// Appends actions introduced by a fresh runtime plan to the durable journal.
+    pub(crate) async fn append_operation_steps(
+        &self,
+        operation_id: &str,
+        actions: &[String],
+    ) -> Result<Vec<OperationStep>, StoreError> {
+        validate_operation_steps(actions)?;
+        if actions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut tx = self.begin_immediate().await?;
+        let running = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!: i64" FROM operations WHERE id=?1 AND state='running'"#,
+            operation_id
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        if running != 1 {
+            return Err(StoreError::IllegalTransition);
+        }
+        let start = sqlx::query_scalar!(
+            r#"SELECT COALESCE(MAX(position),-1)+1 AS "position!: i64" FROM operation_steps WHERE operation_id=?1"#,
+            operation_id
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let now = now_ms();
+        for (offset, action) in actions.iter().enumerate() {
+            let offset = i64::try_from(offset).map_err(StoreError::invalid_input)?;
+            let position = start.checked_add(offset).ok_or(StoreError::InvalidInput)?;
+            let step_id = new_id("step");
+            sqlx::query!(
+                "INSERT INTO operation_steps(id,operation_id,position,action,state,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,'pending',?5,?5)",
+                step_id,
+                operation_id,
+                position,
+                action,
+                now
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        }
+        let rows = sqlx::query_as!(
+            OperationStepRow,
+            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",action AS "action!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 AND position>=?2 ORDER BY position"#,
+            operation_id,
+            start
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)?;
         rows.into_iter()
             .map(OperationStep::parse_step_row)
             .collect()

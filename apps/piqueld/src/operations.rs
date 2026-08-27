@@ -2,7 +2,10 @@
 
 use crate::store::{MAX_PAGE_SIZE, Operation, OperationKind, SqliteStore, StoreError, WorkState};
 use async_trait::async_trait;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Weak},
+};
 use tokio::{
     sync::{Mutex, Semaphore},
     task::JoinSet,
@@ -146,7 +149,7 @@ pub struct OperationScheduler<H> {
     repository: Arc<SqliteStore>,
     handler: Arc<H>,
     global: Arc<Semaphore>,
-    applications: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    applications: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
 }
 
 impl<H> OperationScheduler<H>
@@ -260,11 +263,15 @@ where
                 tasks.spawn(async move {
                     let app_lock = {
                         let mut locks = applications.lock().await;
-                        Arc::clone(
-                            locks
-                                .entry(operation.application_id.to_string())
-                                .or_insert_with(|| Arc::new(Mutex::new(()))),
-                        )
+                        locks.retain(|_, lock| lock.strong_count() > 0);
+                        let key = operation.application_id.to_string();
+                        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+                            lock
+                        } else {
+                            let lock = Arc::new(Mutex::new(()));
+                            locks.insert(key, Arc::downgrade(&lock));
+                            lock
+                        }
                     };
                     let _global = tokio::select! {
                         biased;

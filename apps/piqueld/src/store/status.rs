@@ -85,4 +85,26 @@ impl SqliteStore {
             Err(Self::transition_miss(&mut connection, "application_status", id_value).await?)
         }
     }
+
+    /// Marks a generation ready only while it is still the application's owner.
+    pub(crate) async fn mark_ready_if_current(
+        &self,
+        id: &ApplicationId,
+        generation: u64,
+    ) -> Result<bool, StoreError> {
+        let generation = generation_i64(generation)?;
+        let now = now_ms();
+        let id = id.as_str();
+        let changed = sqlx::query!(
+            "UPDATE application_status SET state='ready',observed_generation=?1,message='runtime converged',updated_at_ms=?2 WHERE application_id=?3 AND state IN ('deploying','degraded','failed','ready') AND EXISTS (SELECT 1 FROM applications WHERE id=?3 AND generation=?1 AND delete_intent=0 AND deleted_at_ms IS NULL)",
+            generation,
+            now,
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        Ok(changed == 1)
+    }
 }

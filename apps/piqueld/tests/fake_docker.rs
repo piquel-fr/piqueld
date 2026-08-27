@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use piqueld::docker::{DockerApi, DockerError, ImageSource, SwarmState, resolve_image_digest};
 use piqueld::operations::OperationScheduler;
 use piqueld::reconcile::ReconcileHandler;
-use piqueld::store::SqliteStore;
+use piqueld::store::{SqliteStore, WorkState};
 use piqueld_core::Sha256Digest;
 use piqueld_core::planner::PlanRequest;
 use piqueld_core::resource::{
@@ -609,6 +609,113 @@ async fn scheduler_converges_a_prebuilt_application_through_the_docker_seam() {
         .await
         .expect("delete converges");
     harness.assert_deleted().await;
+}
+
+#[tokio::test]
+async fn scheduler_journals_and_executes_actions_introduced_by_fresh_planning() {
+    let harness = SchedulerHarness::new().await;
+    harness
+        .docker
+        .ensure_network(&harness.resolved.networks[0])
+        .await
+        .expect("network is seeded");
+    harness
+        .docker
+        .ensure_volume(&harness.resolved.volumes[0])
+        .await
+        .expect("volume is seeded");
+    harness
+        .docker
+        .ensure_service(&harness.resolved.services[0])
+        .await
+        .expect("service is seeded");
+    let observed = harness
+        .docker
+        .observe(&harness.application.id)
+        .await
+        .expect("matching observation");
+    let plan = SchedulerHarness::reconcile_plan(harness.resolved.clone(), &observed);
+    assert!(plan.actions.is_empty());
+    let created = harness
+        .store
+        .create(&harness.application, &harness.resolved, &[])
+        .await
+        .expect("matching application is journaled");
+
+    harness.docker.observed.lock().await.networks.clear();
+    harness
+        .scheduler
+        .recover_and_run(CancellationToken::new())
+        .await
+        .expect("fresh action converges");
+
+    let status = harness.store.status(&harness.application.id).await.unwrap();
+    assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
+    let (_, steps) = harness
+        .store
+        .operation_with_steps(&created.operation_id)
+        .await
+        .expect("fresh steps are journaled");
+    assert!(
+        steps
+            .iter()
+            .any(|step| step.action.starts_with("ENSURE NETWORK "))
+    );
+    assert_eq!(harness.docker.observed.lock().await.networks.len(), 1);
+}
+
+#[tokio::test]
+async fn superseded_operations_do_not_plan_stale_runtime_state() {
+    let harness = SchedulerHarness::new().await;
+    harness
+        .docker
+        .ensure_network(&harness.resolved.networks[0])
+        .await
+        .expect("network is seeded");
+    harness
+        .docker
+        .ensure_volume(&harness.resolved.volumes[0])
+        .await
+        .expect("volume is seeded");
+    harness
+        .docker
+        .ensure_service(&harness.resolved.services[0])
+        .await
+        .expect("service is seeded");
+    let observed = harness
+        .docker
+        .observe(&harness.application.id)
+        .await
+        .expect("matching observation");
+    let plan = SchedulerHarness::reconcile_plan(harness.resolved.clone(), &observed);
+    assert!(plan.actions.is_empty());
+    let stale = harness
+        .store
+        .create(&harness.application, &harness.resolved, &[])
+        .await
+        .expect("matching application is journaled");
+
+    harness.docker.observed.lock().await.networks.clear();
+    let (replacement, _) = harness.replace().await;
+    harness
+        .scheduler
+        .recover_and_run(CancellationToken::new())
+        .await
+        .expect("the current generation converges");
+
+    let (stale_operation, stale_steps) = harness
+        .store
+        .operation_with_steps(&stale.operation_id)
+        .await
+        .expect("superseded operation is readable");
+    assert_eq!(stale_operation.state, WorkState::Cancelled);
+    assert!(stale_steps.is_empty());
+    let (replacement_operation, _) = harness
+        .store
+        .operation_with_steps(&replacement.operation_id)
+        .await
+        .expect("replacement operation is readable");
+    assert_eq!(replacement_operation.state, WorkState::Succeeded);
 }
 
 #[tokio::test]

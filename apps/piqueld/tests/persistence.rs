@@ -294,11 +294,6 @@ async fn delete_requests_reuse_active_operations_and_reset_terminal_operations()
         assert_eq!(retry, first);
     }
 
-    let (_, original_steps) = store
-        .operation_with_steps(&first.operation_id)
-        .await
-        .expect("delete steps are readable");
-
     for state in ["failed", "cancelled"] {
         let mut connection =
             SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))
@@ -331,11 +326,10 @@ async fn delete_requests_reuse_active_operations_and_reset_terminal_operations()
             .await
             .expect("reset delete is readable");
         assert_eq!(operation.state, WorkState::Pending);
-        assert_eq!(steps.len(), original_steps.len());
-        assert_eq!(steps[0].id, original_steps[0].id);
-        assert_eq!(steps[0].position, original_steps[0].position);
-        assert_eq!(steps[0].action, original_steps[0].action);
-        assert_eq!(steps[0].attempt, 2);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].position, 0);
+        assert_eq!(steps[0].action, "remove_network");
+        assert_eq!(steps[0].attempt, 0);
         assert_eq!(steps[0].state, StepState::Pending);
         assert_eq!(steps[0].error_code, None);
         assert_eq!(steps[0].error_message, None);
@@ -415,7 +409,7 @@ async fn keyed_delete_replay_resurrects_cancelled_operations() {
 }
 
 #[tokio::test]
-async fn keyed_replace_replay_after_failure_starts_a_fresh_operation() {
+async fn keyed_replace_replay_after_failure_resets_the_failed_operation() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("control-plane.db");
     let store = SqliteStore::open(&database)
@@ -464,9 +458,9 @@ async fn keyed_replace_replay_after_failure_starts_a_fresh_operation() {
             &request_hash,
         )
         .await
-        .expect("dead replace binding starts a fresh replacement");
-    assert_eq!(retried.generation, 3);
-    assert_ne!(retried.operation_id, replaced.operation_id);
+        .expect("dead replace binding is resurrected");
+    assert_eq!(retried.generation, 2);
+    assert_eq!(retried.operation_id, replaced.operation_id);
     let replay = store
         .replace_idempotent(
             &application,
@@ -477,7 +471,7 @@ async fn keyed_replace_replay_after_failure_starts_a_fresh_operation() {
             &request_hash,
         )
         .await
-        .expect("fresh binding replays");
+        .expect("resurrected binding replays");
     assert_eq!(replay, retried);
 }
 
