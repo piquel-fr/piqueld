@@ -79,18 +79,18 @@ impl DaemonConfig {
                 ));
             }
         }
-        if self.reconciliation.scan_interval_seconds == 0
-            || self.reconciliation.max_parallel_operations == 0
+        if !(1..=86_400).contains(&self.reconciliation.scan_interval_seconds)
+            || !(1..=1_024).contains(&self.reconciliation.max_parallel_operations)
         {
             return Err(ConfigError::Invalid(
-                "reconciliation interval and concurrency limit must be greater than zero".into(),
+                "reconciliation interval must be 1..=86400 seconds and concurrency must be 1..=1024".into(),
             ));
         }
-        if self.reconciliation.prepare_timeout_seconds == 0
-            || self.reconciliation.convergence_timeout_seconds == 0
+        if !(1..=86_400).contains(&self.reconciliation.prepare_timeout_seconds)
+            || !(1..=86_400).contains(&self.reconciliation.convergence_timeout_seconds)
         {
             return Err(ConfigError::Invalid(
-                "reconciliation timeouts must be greater than zero".into(),
+                "reconciliation timeouts must be 1..=86400 seconds".into(),
             ));
         }
         Ok(())

@@ -9,7 +9,10 @@ pub mod store;
 
 mod ui_bundle;
 
-use std::{os::unix::fs::PermissionsExt, path::Path};
+use std::{
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::Path,
+};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -37,6 +40,7 @@ pub async fn prepare_data_dir(path: &Path) -> std::io::Result<()> {
 
     let mut current = std::path::PathBuf::new();
     let mut components = path.components().peekable();
+    let expected_uid = rustix::process::geteuid().as_raw();
     while let Some(component) = components.next() {
         match component {
             std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
@@ -82,11 +86,9 @@ pub async fn prepare_data_dir(path: &Path) -> std::io::Result<()> {
             Err(error) => return Err(error),
         }
 
+        let metadata = tokio::fs::symlink_metadata(&current).await?;
         if is_final {
-            let mode = tokio::fs::symlink_metadata(&current)
-                .await?
-                .permissions()
-                .mode();
+            let mode = metadata.permissions().mode();
             if mode & 0o077 != 0 {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -94,6 +96,29 @@ pub async fn prepare_data_dir(path: &Path) -> std::io::Result<()> {
                         "data directory {} must be private (mode {:o} grants group or other access)",
                         current.display(),
                         mode & 0o777
+                    ),
+                ));
+            }
+            if metadata.uid() != expected_uid {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "data directory {} must be owned by uid {expected_uid}",
+                        current.display()
+                    ),
+                ));
+            }
+        } else {
+            let mode = metadata.permissions().mode();
+            let sticky = mode & 0o1000 != 0;
+            if !sticky
+                && (mode & 0o022 != 0 || (metadata.uid() != 0 && metadata.uid() != expected_uid))
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "data directory ancestor {} is not protected from replacement by other users",
+                        current.display()
                     ),
                 ));
             }

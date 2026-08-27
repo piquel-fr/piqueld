@@ -18,9 +18,9 @@ keeps its state under a user-owned runtime directory such as
 The daemon keeps all state in one private data directory: the Unix API socket
 (`piqueld.sock`), the embedded database (`piqueld.db`), and future user data.
 Missing data-directory components are created with mode `0700`; existing
-components are never chmodded, symlinked components anywhere in the path are
-refused, and the final directory must grant no access to group or other users,
-so only the owning user can reach the socket and the database. The production
+components are never chmodded, symlinked components and unsafe writable
+ancestors are refused, and the final directory must be owned by the daemon user
+without access for group or other users. The production
 defaults are:
 
 | Setting | Default |
@@ -36,6 +36,9 @@ defaults are:
 | `reconciliation.prepare_timeout_seconds` | `300` |
 | `reconciliation.convergence_timeout_seconds` | `120` |
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
+
+Reconciliation intervals and timeouts are bounded to `1..=86400` seconds, and
+`max_parallel_operations` is bounded to `1..=1024`.
 
 The data directory is the only persistent daemon state.
 
