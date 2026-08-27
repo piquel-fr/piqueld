@@ -152,7 +152,13 @@ async fn scan_and_run<D: DockerApi>(
             if cancellation.is_cancelled() {
                 return Ok(());
             }
-            scan_application(store, docker, &application).await?;
+            if let Err(error) = scan_application(store, docker, &application).await {
+                tracing::warn!(
+                    application_id = %application.application.id,
+                    %error,
+                    "application scan failed; continuing with the remaining applications"
+                );
+            }
         }
         let Some(next_cursor) = page.next_cursor else {
             break;

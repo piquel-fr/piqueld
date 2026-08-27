@@ -23,7 +23,7 @@ piqueld-core   = { version = "0.1.0", path = "crates/piqueld-core"   }
 # External
 anyhow = "1.0.98"
 async-trait = "0.1.88"
-axum = { version = "0.8.4", default-features = false, features = ["json", "query", "tokio", "http1"] }
+axum = { version = "0.8.4", default-features = false, features = ["json", "query", "tokio", "http1", "tracing"] }
 bytes = "1.10.1"
 bollard = "0.19.1"
 clap = { version = "4.5.40", features = ["derive"] }

@@ -140,9 +140,11 @@ pub(super) async fn detail(
 ) -> Result<impl IntoResponse, ApiError> {
     let id = ApplicationId::parse(&id)?;
     let stored = state.store.get(&id).await?;
-    let status = status_view(state.store.status(&id).await?);
+    let status = state.store.status(&id).await?;
+    let observed_generation = status.observed_generation;
     let observed = state.runtime.observe(&stored).await?;
-    let observed_view = observed_view(&stored, &observed);
+    let observed_view = observed_view(&stored, &observed, observed_generation);
+    let status = status_view(status);
     let latest_operation = state
         .store
         .latest_operation_for_application(&id)
@@ -806,7 +808,9 @@ const MAX_SERVICE_DIAGNOSTICS: usize = 8;
 fn observed_view(
     stored: &StoredApplication,
     observed: &ObservedApplication,
+    observed_generation: Option<u64>,
 ) -> ObservedApplicationView {
+    let reconciled = observed_generation.is_some_and(|generation| generation >= stored.generation);
     let services = stored
         .resolved
         .services
@@ -819,17 +823,22 @@ fn observed_view(
             let (image, observed_replicas, healthy_replicas, convergence, diagnostics) = runtime
                 .map_or_else(
                     || {
-                        (
-                            None,
-                            0,
-                            0,
-                            "failed".into(),
+                        let diagnostics = if reconciled {
                             vec![DiagnosticView {
                                 code: "service_missing".into(),
                                 message:
                                     "the desired service was not found in the runtime observation"
                                         .into(),
-                            }],
+                            }]
+                        } else {
+                            Vec::new()
+                        };
+                        (
+                            None,
+                            0,
+                            0,
+                            if reconciled { "failed" } else { "pending" }.into(),
+                            diagnostics,
                         )
                     },
                     |service| {
@@ -890,37 +899,39 @@ fn convergence_name(convergence: &Convergence) -> &'static str {
 }
 
 fn service_diagnostics(service: &ObservedService) -> Vec<DiagnosticView> {
-    let mut diagnostics = service
-        .tasks
-        .iter()
-        .filter_map(|task| task.diagnostic.as_ref())
-        .map(|diagnostic| match diagnostic {
-            TaskDiagnostic::Failed { exit_code } => DiagnosticView {
-                code: "task_failed".into(),
-                message: exit_code.map_or_else(
-                    || "a desired task exited unsuccessfully".into(),
-                    |code| format!("a desired task exited with status code {code}"),
-                ),
-            },
-            TaskDiagnostic::Rejected => DiagnosticView {
-                code: "task_rejected".into(),
-                message: "the runtime rejected a desired task before it started".into(),
-            },
-        })
-        .collect::<Vec<_>>();
+    let mut diagnostics = Vec::new();
     if matches!(
         service.convergence,
         Convergence::Degraded | Convergence::Failed
     ) {
+        let healthy_replicas = healthy_replicas(service);
         diagnostics.push(DiagnosticView {
             code: "service_not_converged".into(),
             message: format!(
                 "{} of {} desired replicas are healthy",
-                healthy_replicas(service),
-                service.replicas
+                healthy_replicas, service.replicas
             ),
         });
     }
+    diagnostics.extend(
+        service
+            .tasks
+            .iter()
+            .filter_map(|task| task.diagnostic.as_ref())
+            .map(|diagnostic| match diagnostic {
+                TaskDiagnostic::Failed { exit_code } => DiagnosticView {
+                    code: "task_failed".into(),
+                    message: exit_code.map_or_else(
+                        || "a desired task exited unsuccessfully".into(),
+                        |code| format!("a desired task exited with status code {code}"),
+                    ),
+                },
+                TaskDiagnostic::Rejected => DiagnosticView {
+                    code: "task_rejected".into(),
+                    message: "the runtime rejected a desired task before it started".into(),
+                },
+            }),
+    );
     diagnostics.truncate(MAX_SERVICE_DIAGNOSTICS);
     diagnostics
 }
@@ -937,12 +948,6 @@ fn detail_diagnostics(
             message: message.clone(),
         });
     }
-    diagnostics.extend(
-        observed
-            .services
-            .iter()
-            .flat_map(|service| service.diagnostics.iter().cloned()),
-    );
     if let Some(operation) = operation {
         if let (Some(code), Some(message)) = (&operation.error_code, &operation.error_message) {
             diagnostics.push(DiagnosticView {
@@ -961,6 +966,12 @@ fn detail_diagnostics(
             })
         }));
     }
+    diagnostics.extend(
+        observed
+            .services
+            .iter()
+            .flat_map(|service| service.diagnostics.iter().cloned()),
+    );
     diagnostics.truncate(MAX_DETAIL_DIAGNOSTICS);
     diagnostics
 }
