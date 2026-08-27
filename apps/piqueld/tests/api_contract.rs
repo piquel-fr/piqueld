@@ -7,7 +7,7 @@ use piqueld::api::{
     ApiState, BoundaryError, EmbeddedBundle, PreparedApplication, RuntimeBoundary, UiAssets,
     api_router, router, web_router,
 };
-use piqueld::store::{SqliteStore, StoredApplication};
+use piqueld::store::{SqliteStore, StoredApplication, WorkState};
 use piqueld_client::{
     AcceptedOperation, Client, CreateApplicationRequest, DeleteApplicationRequest,
     PlanApplicationRequest, ReplaceApplicationRequest,
@@ -18,6 +18,7 @@ use piqueld_core::{
     planner::ActionKind,
     resource::ResolvedSource,
 };
+use sqlx::{Connection, SqliteConnection};
 use std::{collections::BTreeMap, future::IntoFuture, sync::Arc};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -421,6 +422,43 @@ async fn dashboard_responses_carry_security_headers() {
             .and_then(|value| value.to_str().ok()),
         Some("no-referrer")
     );
+
+    let head = application
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::HEAD)
+                .uri("/dashboard/")
+                .body(Body::empty())
+                .expect("HEAD request is valid"),
+        )
+        .await
+        .expect("dashboard HEAD succeeds");
+    assert_eq!(head.status(), StatusCode::OK);
+    assert!(
+        head.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .is_empty()
+    );
+
+    let method_not_allowed = application
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/dashboard/")
+                .body(Body::empty())
+                .expect("POST request is valid"),
+        )
+        .await
+        .expect("dashboard POST completes");
+    assert_eq!(method_not_allowed.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        method_not_allowed.headers().get(http::header::ALLOW),
+        Some(&HeaderValue::from_static("GET, HEAD"))
+    );
 }
 
 #[tokio::test]
@@ -784,7 +822,7 @@ async fn method_not_allowed_advertises_only_the_matched_route_methods() {
     let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
 
     // The Allow header advertises only the methods registered for the matched
-    // route; /api/v1/applications supports GET (list) and POST (create).
+    // route; Axum serves HEAD automatically for every GET route.
     let collection = send_raw(
         Target::Tcp(address),
         Method::PUT,
@@ -795,7 +833,7 @@ async fn method_not_allowed_advertises_only_the_matched_route_methods() {
     .await;
     assert_eq!(
         collection.headers.get(http::header::ALLOW),
-        Some(&HeaderValue::from_static("GET, POST"))
+        Some(&HeaderValue::from_static("GET, HEAD, POST"))
     );
 
     let by_id = send_raw(
@@ -809,7 +847,21 @@ async fn method_not_allowed_advertises_only_the_matched_route_methods() {
     assert_eq!(by_id.status, StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(
         by_id.headers.get(http::header::ALLOW),
-        Some(&HeaderValue::from_static("GET, PUT, DELETE"))
+        Some(&HeaderValue::from_static("GET, HEAD, PUT, DELETE"))
+    );
+
+    let health = send_raw(
+        Target::Tcp(address),
+        Method::POST,
+        "/health",
+        &[],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(health.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        health.headers.get(http::header::ALLOW),
+        Some(&HeaderValue::from_static("GET, HEAD"))
     );
 
     server.abort();
@@ -1019,6 +1071,118 @@ async fn create_replay_returns_the_original_result_after_a_later_replacement() {
     server.abort();
 }
 
+async fn mark_operation_failed(connection: &mut SqliteConnection, operation_id: &str) {
+    sqlx::query("UPDATE operations SET state='failed',error_code='step_failed',error_message='step failed',finished_at_ms=updated_at_ms WHERE id=?1")
+        .bind(operation_id)
+        .execute(connection)
+        .await
+        .expect("operation can be marked failed");
+}
+
+async fn assert_operation_pending(store: &SqliteStore, operation_id: &str) {
+    assert_eq!(
+        store
+            .operation_with_steps(operation_id)
+            .await
+            .expect("operation is readable")
+            .0
+            .state,
+        WorkState::Pending
+    );
+}
+
+#[tokio::test]
+async fn failed_keyed_replace_and_delete_are_resurrected_through_http() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("state.db");
+    let store = Arc::new(
+        SqliteStore::open(&database)
+            .await
+            .expect("fresh database opens"),
+    );
+    let instance = InstanceId::parse(store.instance_id().to_owned()).expect("valid instance ID");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(
+        serve(
+            listener,
+            router(ApiState::new(
+                Arc::clone(&store),
+                Arc::new(FakeRuntime { instance }),
+            )),
+        )
+        .into_future(),
+    );
+    let client = Client::tcp(&format!("http://{address}/")).expect("valid endpoint");
+    let manifest = manifest();
+    let created = client
+        .create_application(
+            &CreateApplicationRequest {
+                manifest: manifest.clone(),
+            },
+            "failed-replay-create",
+        )
+        .await
+        .expect("create succeeds");
+    let replacement_request = ReplaceApplicationRequest {
+        expected_generation: 1,
+        manifest,
+    };
+    let replaced = client
+        .replace_application_with_key(
+            &created.application_id,
+            &replacement_request,
+            Some("failed-replace"),
+        )
+        .await
+        .expect("replace succeeds");
+
+    let mut connection =
+        SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))
+            .await
+            .expect("database can be inspected");
+    mark_operation_failed(&mut connection, &replaced.operation_id).await;
+
+    let retried = client
+        .replace_application_with_key(
+            &created.application_id,
+            &replacement_request,
+            Some("failed-replace"),
+        )
+        .await
+        .expect("failed replacement is resurrected");
+    assert_eq!(retried.operation_id, replaced.operation_id);
+    assert_eq!(retried.generation, replaced.generation);
+    assert_operation_pending(&store, &replaced.operation_id).await;
+
+    let delete_request = DeleteApplicationRequest {
+        expected_generation: 2,
+    };
+    let deleted = client
+        .delete_application_with_key(
+            &created.application_id,
+            &delete_request,
+            Some("failed-delete"),
+        )
+        .await
+        .expect("delete succeeds");
+    mark_operation_failed(&mut connection, &deleted.operation_id).await;
+
+    let retried = client
+        .delete_application_with_key(
+            &created.application_id,
+            &delete_request,
+            Some("failed-delete"),
+        )
+        .await
+        .expect("failed deletion is resurrected");
+    assert_eq!(retried.operation_id, deleted.operation_id);
+    assert_eq!(retried.generation, deleted.generation);
+    assert_operation_pending(&store, &deleted.operation_id).await;
+
+    server.abort();
+}
+
 #[tokio::test]
 async fn active_reconcile_dedupe_does_not_repeat_runtime_io() {
     let temp = tempfile::tempdir().expect("temporary directory");
@@ -1142,6 +1306,16 @@ async fn host_allowlist_blocks_foreign_authorities() {
     .await;
     assert_eq!(loopback.status, StatusCode::OK);
 
+    let loopback_alias = send_raw(
+        Target::Tcp(address),
+        Method::GET,
+        "/api/v1/system/status",
+        &[("host", "127.0.0.2:7845")],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(loopback_alias.status, StatusCode::OK);
+
     let ipv6 = send_raw(
         Target::Tcp(address),
         Method::GET,
@@ -1151,6 +1325,16 @@ async fn host_allowlist_blocks_foreign_authorities() {
     )
     .await;
     assert_eq!(ipv6.status, StatusCode::OK);
+
+    let malformed_ipv6 = send_raw(
+        Target::Tcp(address),
+        Method::GET,
+        "/api/v1/system/status",
+        &[("host", "[::1]attacker.example")],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(malformed_ipv6.status, StatusCode::FORBIDDEN);
 
     // A bare unbracketed IPv6 literal has no port to split off; its colons
     // must not be mistaken for a host:port separator.

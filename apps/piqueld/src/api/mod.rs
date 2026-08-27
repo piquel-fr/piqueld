@@ -372,10 +372,17 @@ fn allowed_host(raw: &str) -> bool {
     let lowered = raw.to_ascii_lowercase();
     // Bracketed IPv6 literals carry the port outside the brackets.
     let authority = if let Some(rest) = lowered.strip_prefix('[') {
-        match rest.split_once(']') {
-            Some((head, _)) => head,
-            None => rest,
+        let Some((head, suffix)) = rest.split_once(']') else {
+            return false;
+        };
+        if !suffix.is_empty()
+            && !suffix.strip_prefix(':').is_some_and(|port| {
+                !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        {
+            return false;
         }
+        head
     } else {
         match lowered.rsplit_once(':') {
             // A digits-only suffix is a port unless the head itself contains
@@ -391,7 +398,10 @@ fn allowed_host(raw: &str) -> bool {
             _ => lowered.as_str(),
         }
     };
-    matches!(authority, "localhost" | "127.0.0.1" | "::1")
+    authority == "localhost"
+        || authority
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 // Public endpoints must be registered through `routes!` here so Axum and the
@@ -478,7 +488,11 @@ fn method_not_allowed(allow_routes: &AllowRoutes, path: &str) -> ApiError {
     );
     // The header advertises only methods registered for the matched route;
     // when no documented route matches, the header is omitted.
-    error.allow = allow_routes.allow_for(path);
+    error.allow = if path == "/health" {
+        Some("GET, HEAD".into())
+    } else {
+        allow_routes.allow_for(path)
+    };
     error
 }
 
@@ -508,6 +522,7 @@ impl AllowRoutes {
         let mut methods = Vec::new();
         if item.get.is_some() {
             methods.push("GET");
+            methods.push("HEAD");
         }
         if item.post.is_some() {
             methods.push("POST");
@@ -638,7 +653,8 @@ fn decode_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, ApiError>
     };
     let mut deserializer = serde_json::Deserializer::from_slice(body);
     let value = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
-        tracing::debug!(path = %error.path(), "request JSON was rejected");
+        let path = piqueld_core::manifest::safe_decode_path(&error.path().to_string());
+        tracing::debug!(%path, "request JSON was rejected");
         malformed()
     })?;
     deserializer.end().map_err(|_| malformed())?;
