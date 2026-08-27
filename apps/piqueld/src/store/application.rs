@@ -219,7 +219,7 @@ impl SqliteStore {
         }))
     }
 
-    /// Looks up an idempotency binding for any application mutation.
+    /// Looks up a replayable idempotency binding for any application mutation.
     ///
     /// # Errors
     /// Returns [`StoreError`] when hashes or the requested operation kind are
@@ -235,26 +235,13 @@ impl SqliteStore {
         if !valid_sha256(key_hash) || !valid_sha256(request_hash) {
             return Err(StoreError::InvalidInput);
         }
-        let row = sqlx::query!(
-            r#"SELECT request_hash AS "request_hash!",application_id AS "application_id!",operation_id AS "operation_id!",generation AS "generation!",kind AS "kind!" FROM mutation_idempotency WHERE key_hash=?1"#,
-            key_hash
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(StoreError::database)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        if row.request_hash != request_hash
-            || row.application_id != app_id.as_str()
-            || row.kind != kind.as_str()
-        {
-            return Err(StoreError::IdempotencyConflict);
-        }
-        Ok(Some(MutationResult {
-            generation: u64::try_from(row.generation).map_err(StoreError::corrupt)?,
-            operation_id: row.operation_id,
-        }))
+        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let replay =
+            Self::find_idempotency(&mut tx, key_hash, request_hash, app_id.as_str(), kind).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(replay
+            .filter(|replay| !replay.is_dead())
+            .map(|replay| replay.mutation))
     }
 
     /// Replaces an application generation and records the replacement operation.

@@ -13,7 +13,8 @@ use piqueld_client::{
     PlanApplicationRequest, ReplaceApplicationRequest,
 };
 use piqueld_core::{
-    InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
+    ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet,
+    compile_application,
     manifest::{ApplicationManifest, Source},
     planner::ActionKind,
     resource::ResolvedSource,
@@ -1079,6 +1080,14 @@ async fn mark_operation_failed(connection: &mut SqliteConnection, operation_id: 
         .expect("operation can be marked failed");
 }
 
+async fn mark_operation_succeeded(connection: &mut SqliteConnection, operation_id: &str) {
+    sqlx::query("UPDATE operations SET state='succeeded',finished_at_ms=updated_at_ms WHERE id=?1")
+        .bind(operation_id)
+        .execute(connection)
+        .await
+        .expect("operation can be marked succeeded");
+}
+
 async fn assert_operation_pending(store: &SqliteStore, operation_id: &str) {
     assert_eq!(
         store
@@ -1179,6 +1188,75 @@ async fn failed_keyed_replace_and_delete_are_resurrected_through_http() {
     assert_eq!(retried.operation_id, deleted.operation_id);
     assert_eq!(retried.generation, deleted.generation);
     assert_operation_pending(&store, &deleted.operation_id).await;
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn successful_keyed_delete_replays_after_tombstone() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("state.db");
+    let store = Arc::new(
+        SqliteStore::open(&database)
+            .await
+            .expect("fresh database opens"),
+    );
+    let instance = InstanceId::parse(store.instance_id().to_owned()).expect("valid instance ID");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(
+        serve(
+            listener,
+            router(ApiState::new(
+                Arc::clone(&store),
+                Arc::new(FakeRuntime { instance }),
+            )),
+        )
+        .into_future(),
+    );
+    let client = Client::tcp(&format!("http://{address}/")).expect("valid client endpoint");
+    let created = client
+        .create_application(
+            &CreateApplicationRequest {
+                manifest: manifest(),
+            },
+            "successful-delete-create",
+        )
+        .await
+        .expect("create succeeds");
+    let delete_request = DeleteApplicationRequest {
+        expected_generation: 1,
+    };
+    let deleted = client
+        .delete_application_with_key(
+            &created.application_id,
+            &delete_request,
+            Some("successful-delete"),
+        )
+        .await
+        .expect("delete succeeds");
+
+    let mut connection =
+        SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))
+            .await
+            .expect("database can be inspected");
+    mark_operation_succeeded(&mut connection, &deleted.operation_id).await;
+    let id = ApplicationId::parse(&created.application_id).expect("application ID is valid");
+    store
+        .finalize_delete(&id, deleted.generation)
+        .await
+        .expect("successful deletion is tombstoned");
+
+    let replay = client
+        .delete_application_with_key(
+            &created.application_id,
+            &delete_request,
+            Some("successful-delete"),
+        )
+        .await
+        .expect("tombstoned deletion replays");
+    assert_eq!(replay.operation_id, deleted.operation_id);
+    assert_eq!(replay.generation, deleted.generation);
 
     server.abort();
 }
