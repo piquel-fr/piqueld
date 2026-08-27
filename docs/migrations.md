@@ -23,11 +23,12 @@ final migration transaction also writes the instance metadata row, so a crash ca
 never commit a schema version without instance identity. Retention pruning can
 delete terminal operations older than a configured cutoff together with their
 steps and idempotency bindings in one transaction; the partial index
-`operations_finished_retention_idx` serves that cutoff scan. The daemon does not
-yet schedule the pass itself.
+`operations_finished_retention_idx` serves that cutoff scan. The coordinator
+runs the pass during each reconciliation cycle.
 Before opening SQLite the daemon prepares its single private `server.data_dir`
 (creating missing components with mode 0700, refusing symlinks anywhere in the
-path, and rejecting non-private final directories); the store itself only
+path, rejecting unsafe writable ancestors, and requiring a private final
+directory owned by the daemon user); the store itself only
 verifies that the database target inside it is absent or a regular file.
 The database file `<data_dir>/piqueld.db` is the sole authoritative state location.
 The build script provisions a disposable migrated SQLite database before SQLx

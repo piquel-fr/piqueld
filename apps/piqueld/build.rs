@@ -183,20 +183,18 @@ fn embed_dashboard(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
 
 /// Runs Tailwind and Trunk to produce the release dashboard bundle.
 fn build_bundle(ui_dir: &Path, out_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    generate_stylesheet(ui_dir)?;
+    let trunk_input = prepare_trunk_input(ui_dir, out_dir)?;
     let dist = out_dir.join("dashboard-dist");
-    run_trunk(ui_dir, out_dir, &dist)?;
+    run_trunk(ui_dir, out_dir, &trunk_input, &dist)?;
     Ok(dist)
 }
 
 /// Regenerates the Tailwind stylesheet consumed by the dashboard shell.
 ///
-/// The output lives in the gitignored `generated/` directory of the UI crate.
-/// Rewriting is skipped when the bytes are unchanged so that watchers and
-/// Cargo fingerprints never observe this script's own output as an input
-/// change.
-fn generate_stylesheet(ui_dir: &Path) -> Result<(), Box<dyn Error>> {
-    let generated = ui_dir.join("generated");
+/// The generated stylesheet and staged Trunk shell live entirely in `OUT_DIR`,
+/// allowing release builds from read-only source trees.
+fn prepare_trunk_input(ui_dir: &Path, out_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let generated = out_dir.join("generated");
     fs::create_dir_all(&generated)?;
     let stylesheet = generated.join("style.css");
     let child = Command::new("tailwindcss")
@@ -210,11 +208,42 @@ fn generate_stylesheet(ui_dir: &Path) -> Result<(), Box<dyn Error>> {
         .map_err(|error| missing_tool("tailwindcss", &error))?;
     let output = child.wait_with_output()?;
     ensure_success("tailwindcss", output.status)?;
-    if stylesheet.exists() && fs::read(&stylesheet)? == output.stdout {
-        return Ok(());
-    }
     fs::write(&stylesheet, output.stdout)?;
-    Ok(())
+    let manifest = ui_dir.join("Cargo.toml").canonicalize()?;
+    let manifest = relative_path(out_dir, &manifest)?;
+    let shell = fs::read_to_string(ui_dir.join("index.html"))?;
+    let shell = shell.replace(
+        "<link data-trunk rel=\"rust\"",
+        &format!(
+            "<link data-trunk rel=\"rust\" href=\"{}\"",
+            manifest.display()
+        ),
+    );
+    let input = out_dir.join("dashboard-index.html");
+    fs::write(&input, shell)?;
+    Ok(input)
+}
+
+fn relative_path(from: &Path, to: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let from = from.canonicalize()?;
+    let from = from.components().collect::<Vec<_>>();
+    let to = to.components().collect::<Vec<_>>();
+    let common = from
+        .iter()
+        .zip(&to)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = PathBuf::new();
+    for _ in common..from.len() {
+        relative.push("..");
+    }
+    for component in &to[common..] {
+        relative.push(component.as_os_str());
+    }
+    if relative.as_os_str().is_empty() {
+        return Err(io::Error::other("dashboard manifest cannot equal OUT_DIR").into());
+    }
+    Ok(relative)
 }
 
 /// Runs Trunk inside the UI crate directory.
@@ -225,7 +254,12 @@ fn generate_stylesheet(ui_dir: &Path) -> Result<(), Box<dyn Error>> {
 /// deadlock. The nested invocation therefore compiles into a sibling
 /// directory, and Cargo's jobserver and flag plumbing are stripped because
 /// they describe the host build rather than the wasm build.
-fn run_trunk(ui_dir: &Path, out_dir: &Path, dist: &Path) -> Result<(), Box<dyn Error>> {
+fn run_trunk(
+    ui_dir: &Path,
+    out_dir: &Path,
+    input: &Path,
+    dist: &Path,
+) -> Result<(), Box<dyn Error>> {
     let cargo_target_dir = isolated_ui_target(out_dir)?;
     println!(
         "cargo:warning=building embedded dashboard bundle (Trunk target dir: {})",
@@ -234,7 +268,8 @@ fn run_trunk(ui_dir: &Path, out_dir: &Path, dist: &Path) -> Result<(), Box<dyn E
 
     let output = Command::new("trunk")
         .current_dir(ui_dir)
-        .args(["build", "index.html"])
+        .arg("build")
+        .arg(input)
         .arg("--release")
         .arg("--locked")
         .arg("--public-url")

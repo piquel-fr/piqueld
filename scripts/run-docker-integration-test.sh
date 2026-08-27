@@ -37,7 +37,7 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-dind_image="${PIQUELD_DIND_IMAGE:-docker:29.6.2-dind}"
+dind_image="${PIQUELD_DIND_IMAGE:-docker:29.6.2-dind@sha256:bfec1f5159c63a81ca6fdedbd81404d2c0e16378ed0feec3bb3fbf3998847659}"
 runtime_dir="$(mktemp -d -t piqueld-dind.XXXXXXXX)"
 socket_path="$runtime_dir/docker.sock"
 container_id=""

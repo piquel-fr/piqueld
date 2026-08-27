@@ -85,6 +85,24 @@ async fn permissive_data_dir_is_rejected_without_chmodding_it() {
 }
 
 #[tokio::test]
+async fn unsafe_writable_ancestor_is_rejected() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let shared = directory.path().join("shared");
+    let data_dir = shared.join("piqueld");
+    std::fs::create_dir_all(&data_dir).expect("data directory tree is created");
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777))
+        .expect("ancestor permissions are set");
+    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("data directory permissions are set");
+
+    let error = piqueld::prepare_data_dir(&data_dir)
+        .await
+        .expect_err("unsafe writable ancestor is rejected");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(error.to_string().contains("ancestor"));
+}
+
+#[tokio::test]
 async fn symlinked_data_dir_is_rejected() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let target = directory.path().join("target");
