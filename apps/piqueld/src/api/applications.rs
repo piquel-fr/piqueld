@@ -32,7 +32,7 @@ use super::{
     openapi::ApiErrorResponse, optional_idempotency_key, parse_manifest, parse_update,
     require_json, valid_expected_generation,
 };
-use crate::store::{ApplicationStatus, StoreError, StoredApplication};
+use crate::store::{ApplicationStatus, OperationKind, StoreError, StoredApplication};
 
 // A manifest can approach the 2 MiB request limit and JSON escaping can
 // approximately double textual fields. Three entries stay below the clients'
@@ -309,6 +309,18 @@ pub(super) async fn replace(
             mutation_request_hash("replace", &id, expected, Some(&spec_hash)),
         )
     });
+    if let Some((key_hash, request_hash)) = &key_binding
+        && let Some(mutation) = state
+            .store
+            .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Replace)
+            .await?
+    {
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
     let current = state.store.get(&id).await?;
     if key_binding.is_none() {
         generation(expected, current.generation)?;
@@ -407,6 +419,18 @@ pub(super) async fn delete(
             mutation_request_hash("delete", &id, request.expected_generation, None),
         )
     });
+    if let Some((key_hash, request_hash)) = &key_binding
+        && let Some(mutation) = state
+            .store
+            .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Delete)
+            .await?
+    {
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
     let current = state.store.get(&id).await?;
     if key_binding.is_none() {
         generation(request.expected_generation, current.generation)?;
