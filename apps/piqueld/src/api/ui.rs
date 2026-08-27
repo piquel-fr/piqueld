@@ -17,21 +17,22 @@ pub type EmbeddedBundle = [EmbeddedFile];
 
 /// Headers applied to every dashboard response, including redirects.
 ///
-/// The Content-Security-Policy is written for Trunk's release bundle: its
-/// generated shell carries one inline module loader (`'unsafe-inline'`) and
-/// instantiates WebAssembly (`'wasm-unsafe-eval'`); everything else stays
-/// same-origin.
+/// The Content-Security-Policy is generated from the final Trunk shell so its
+/// exact inline module loader is authorized by a hash; WebAssembly still uses
+/// `'wasm-unsafe-eval'`, and everything else stays same-origin.
+#[cfg(feature = "embedded-ui")]
+const DASHBOARD_CONTENT_SECURITY_POLICY: &str = crate::ui_bundle::DASHBOARD_CONTENT_SECURITY_POLICY;
+
+#[cfg(not(feature = "embedded-ui"))]
+const DASHBOARD_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
+     style-src 'self'; img-src 'self' data:; font-src 'self'; \
+     connect-src 'self'; object-src 'none'; base-uri 'none'; \
+     form-action 'none'; frame-ancestors 'none'";
+
 const SECURITY_HEADERS: [(&str, &str); 3] = [
     ("x-content-type-options", "nosniff"),
     ("referrer-policy", "no-referrer"),
-    (
-        "content-security-policy",
-        "default-src 'self'; \
-         script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
-         style-src 'self'; img-src 'self' data:; font-src 'self'; \
-         connect-src 'self'; object-src 'none'; base-uri 'none'; \
-         form-action 'none'; frame-ancestors 'none'",
-    ),
+    ("content-security-policy", DASHBOARD_CONTENT_SECURITY_POLICY),
 ];
 
 /// Inserts the shared security headers without clobbering existing values.
