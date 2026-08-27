@@ -78,7 +78,7 @@ impl DockerApi for BollardDocker {
         application: &ApplicationId,
     ) -> Result<ObservedApplication, DockerError> {
         bounded("observe application", async {
-            let raw_networks = Self::map_request(
+            let mut raw_networks = Self::map_request(
                 "list networks",
                 self.docker
                     .list_networks(Some(
@@ -88,6 +88,23 @@ impl DockerApi for BollardDocker {
                     ))
                     .await,
             )?;
+            let named_networks = Self::map_request(
+                "list networks by name",
+                self.docker
+                    .list_networks(Some(
+                        ListNetworksOptionsBuilder::default()
+                            .filters(&Self::application_name_filter(application))
+                            .build(),
+                    ))
+                    .await,
+            )?;
+            let mut seen_networks = raw_networks
+                .iter()
+                .map(|network| (network.id.clone(), network.name.clone()))
+                .collect::<BTreeSet<_>>();
+            raw_networks.extend(named_networks.into_iter().filter(|network| {
+                seen_networks.insert((network.id.clone(), network.name.clone()))
+            }));
             let network_names = raw_networks
                 .iter()
                 .filter_map(|network| Some((network.id.clone()?, network.name.clone()?)))
@@ -106,7 +123,7 @@ impl DockerApi for BollardDocker {
                 })
                 .filter(|r| Self::relevant(&r.name, &r.labels, application))
                 .collect();
-            let volumes = Self::map_request(
+            let mut raw_volumes = Self::map_request(
                 "list volumes",
                 self.docker
                     .list_volumes(Some(
@@ -117,19 +134,41 @@ impl DockerApi for BollardDocker {
                     .await,
             )?
             .volumes
-            .unwrap_or_default()
-            .into_iter()
-            .map(|volume| {
-                let runtime_configuration_matches = Self::volume_configuration_matches(&volume);
-                ObservedVolume {
-                    name: volume.name,
-                    runtime_configuration_matches,
-                    labels: volume.labels.into_iter().collect(),
-                }
-            })
-            .filter(|r| Self::relevant(&r.name, &r.labels, application))
-            .collect();
-            let listed_services = Self::map_request(
+            .unwrap_or_default();
+            let named_volumes = Self::map_request(
+                "list volumes by name",
+                self.docker
+                    .list_volumes(Some(
+                        ListVolumesOptionsBuilder::default()
+                            .filters(&Self::application_name_filter(application))
+                            .build(),
+                    ))
+                    .await,
+            )?
+            .volumes
+            .unwrap_or_default();
+            let mut seen_volumes = raw_volumes
+                .iter()
+                .map(|volume| volume.name.clone())
+                .collect::<BTreeSet<_>>();
+            raw_volumes.extend(
+                named_volumes
+                    .into_iter()
+                    .filter(|volume| seen_volumes.insert(volume.name.clone())),
+            );
+            let volumes = raw_volumes
+                .into_iter()
+                .map(|volume| {
+                    let runtime_configuration_matches = Self::volume_configuration_matches(&volume);
+                    ObservedVolume {
+                        name: volume.name,
+                        runtime_configuration_matches,
+                        labels: volume.labels.into_iter().collect(),
+                    }
+                })
+                .filter(|r| Self::relevant(&r.name, &r.labels, application))
+                .collect();
+            let mut listed_services = Self::map_request(
                 "list services",
                 self.docker
                     .list_services(Some(
@@ -140,6 +179,26 @@ impl DockerApi for BollardDocker {
                     ))
                     .await,
             )?;
+            let named_services = Self::map_request(
+                "list services by name",
+                self.docker
+                    .list_services(Some(
+                        ListServicesOptionsBuilder::default()
+                            .filters(&Self::application_name_filter(application))
+                            .status(true)
+                            .build(),
+                    ))
+                    .await,
+            )?;
+            let mut seen_services = listed_services
+                .iter()
+                .map(|service| service.id.clone())
+                .collect::<BTreeSet<_>>();
+            listed_services.extend(
+                named_services
+                    .into_iter()
+                    .filter(|service| seen_services.insert(service.id.clone())),
+            );
             let service_names = listed_services
                 .iter()
                 .filter_map(|service| service.spec.as_ref()?.name.clone())

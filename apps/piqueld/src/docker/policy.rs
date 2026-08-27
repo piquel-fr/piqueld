@@ -10,11 +10,12 @@ use super::{
 /// This policy verifies exactly the fields piqueld authors — replication,
 /// update settings, the restart condition and delay, mounts, environment,
 /// network targets, health checks, and resource limits. Fields the builder
-/// never sets are ignored entirely, so engine-defaulted echo-back (which can
-/// vary between daemon versions) no longer registers as drift. Security
-/// relevant settings piqueld cannot express (privileged execution, Linux
-/// capabilities, sysctls, users, runtimes, log drivers) are explicitly denied:
-/// their presence means out-of-band modification.
+/// never sets are accepted only at known Engine defaults, so ordinary
+/// engine-defaulted echo-back does not register as drift while unsupported
+/// non-default values do. Security relevant settings piqueld cannot express
+/// (privileged execution, Linux capabilities, sysctls, users, runtimes, log
+/// drivers) are explicitly denied: their presence means out-of-band
+/// modification.
 pub(super) struct ServiceRuntimePolicy;
 
 impl ServiceRuntimePolicy {
@@ -33,6 +34,7 @@ impl ServiceRuntimePolicy {
             && Self::networks(task)
             && Self::health(container)
             && Self::resource_limits(task)
+            && Self::no_unsupported_service_settings(spec)
             && Self::no_security_settings(task, container)
     }
 
@@ -40,23 +42,89 @@ impl ServiceRuntimePolicy {
     /// service carrying them was modified out of band and must be reconciled
     /// back to the authored specification.
     fn no_security_settings(task: &TaskSpec, container: &TaskSpecContainerSpec) -> bool {
-        task.runtime.is_none()
+        task.runtime
+            .as_deref()
+            .is_none_or(|runtime| runtime.is_empty() || runtime == "container")
             && task.log_driver.is_none()
+            && task.plugin_spec.is_none()
+            && task.network_attachment_spec.is_none()
+            && task.placement.as_ref().is_none_or(|placement| {
+                placement.constraints.as_ref().is_none_or(Vec::is_empty)
+                    && placement.preferences.as_ref().is_none_or(Vec::is_empty)
+                    && placement.max_replicas.is_none_or(|value| value == 0)
+                    && placement.platforms.as_ref().is_none_or(Vec::is_empty)
+            })
+            && task.force_update.is_none_or(|value| value == 0)
             && container.user.is_none()
             && container.groups.as_ref().is_none_or(Vec::is_empty)
             && container.privileges.is_none()
+            && container
+                .labels
+                .as_ref()
+                .is_none_or(std::collections::HashMap::is_empty)
+            && container.hostname.as_deref().is_none_or(str::is_empty)
+            && container.dir.as_deref().is_none_or(str::is_empty)
+            && !container.tty.unwrap_or(false)
+            && !container.open_stdin.unwrap_or(false)
+            && !container.read_only.unwrap_or(false)
+            && container.stop_signal.as_deref().is_none_or(str::is_empty)
+            && container
+                .stop_grace_period
+                .is_none_or(|value| value == 10_000_000_000)
+            && container.hosts.as_ref().is_none_or(Vec::is_empty)
+            && container.dns_config.as_ref().is_none_or(|dns| {
+                dns.nameservers.as_ref().is_none_or(Vec::is_empty)
+                    && dns.search.as_ref().is_none_or(Vec::is_empty)
+                    && dns.options.as_ref().is_none_or(Vec::is_empty)
+            })
+            && container.secrets.as_ref().is_none_or(Vec::is_empty)
+            && container.configs.as_ref().is_none_or(Vec::is_empty)
+            && container.oom_score_adj.is_none_or(|value| value == 0)
+            && container.isolation.is_none_or(|value| {
+                matches!(
+                    value,
+                    bollard::models::TaskSpecContainerSpecIsolationEnum::EMPTY
+                        | bollard::models::TaskSpecContainerSpecIsolationEnum::DEFAULT
+                )
+            })
+            && !container.init.unwrap_or(false)
             && container
                 .sysctls
                 .as_ref()
                 .is_none_or(std::collections::HashMap::is_empty)
             && container.capability_add.as_ref().is_none_or(Vec::is_empty)
             && container.capability_drop.as_ref().is_none_or(Vec::is_empty)
+            && container.ulimits.as_ref().is_none_or(Vec::is_empty)
+    }
+
+    fn no_unsupported_service_settings(spec: &ServiceSpec) -> bool {
+        spec.rollback_config.as_ref().is_none_or(|rollback| {
+            rollback.parallelism == Some(1)
+                && rollback.delay.is_none_or(|value| value == 0)
+                && rollback.failure_action
+                    == Some(bollard::models::ServiceSpecRollbackConfigFailureActionEnum::PAUSE)
+                && rollback.monitor == Some(5 * super::NANOSECONDS_PER_SECOND)
+                && rollback.max_failure_ratio == Some(0.0)
+                && rollback.order
+                    == Some(bollard::models::ServiceSpecRollbackConfigOrderEnum::STOP_FIRST)
+        }) && spec.networks.as_ref().is_none_or(Vec::is_empty)
+            && spec.endpoint_spec.as_ref().is_none_or(|endpoint| {
+                endpoint.mode.is_none_or(|mode| {
+                    matches!(
+                        mode,
+                        bollard::models::EndpointSpecModeEnum::EMPTY
+                            | bollard::models::EndpointSpecModeEnum::VIP
+                    )
+                }) && endpoint.ports.as_ref().is_none_or(Vec::is_empty)
+            })
     }
 
     fn restart_policy(task: &TaskSpec) -> bool {
         task.restart_policy.as_ref().is_some_and(|restart| {
             restart.condition == Some(TaskSpecRestartPolicyConditionEnum::ANY)
                 && restart.delay == Some(RESTART_DELAY)
+                && restart.max_attempts.is_none_or(|value| value == 0)
+                && restart.window.is_none_or(|value| value == 0)
         })
     }
 
@@ -72,9 +140,12 @@ impl ServiceRuntimePolicy {
     }
 
     fn replicated_mode(spec: &ServiceSpec) -> bool {
-        spec.mode
-            .as_ref()
-            .is_some_and(|mode| mode.replicated.is_some())
+        spec.mode.as_ref().is_some_and(|mode| {
+            mode.replicated.is_some()
+                && mode.global.is_none()
+                && mode.replicated_job.is_none()
+                && mode.global_job.is_none()
+        })
     }
 
     fn mounts(container: &TaskSpecContainerSpec) -> bool {
@@ -83,6 +154,11 @@ impl ServiceRuntimePolicy {
                 mount.typ == Some(MountTypeEnum::VOLUME)
                     && mount.source.as_ref().is_some_and(|value| !value.is_empty())
                     && mount.target.as_ref().is_some_and(|value| !value.is_empty())
+                    && mount.consistency.as_deref().is_none_or(str::is_empty)
+                    && mount.bind_options.is_none()
+                    && mount.volume_options.is_none()
+                    && mount.image_options.is_none()
+                    && mount.tmpfs_options.is_none()
             })
         })
     }
@@ -106,6 +182,11 @@ impl ServiceRuntimePolicy {
                     .target
                     .as_ref()
                     .is_some_and(|value| !value.is_empty() && targets.insert(value.as_str()))
+                    && network.aliases.as_ref().is_none_or(Vec::is_empty)
+                    && network
+                        .driver_opts
+                        .as_ref()
+                        .is_none_or(std::collections::HashMap::is_empty)
             })
         })
     }
@@ -126,13 +207,31 @@ impl ServiceRuntimePolicy {
                     .nano_cpus
                     .is_none_or(|value| value >= 0 && value % NANO_CPUS_PER_MILLICORE == 0)
                     && limits.memory_bytes.is_none_or(|value| value >= 0)
+                    && limits.pids.is_none_or(|value| value == 0)
             })
+            && task.resources.as_ref().is_none_or(|resources| {
+                resources
+                    .reservations
+                    .as_ref()
+                    .is_none_or(Self::default_reservations)
+            })
+    }
+
+    fn default_reservations(reservations: &bollard::models::ResourceObject) -> bool {
+        reservations.nano_cpus.is_none_or(|value| value == 0)
+            && reservations.memory_bytes.is_none_or(|value| value == 0)
+            && reservations
+                .generic_resources
+                .as_ref()
+                .is_none_or(Vec::is_empty)
     }
 
     fn supported_health_config(health: &HealthConfig) -> bool {
         if health.retries != Some(HEALTH_RETRIES)
             || health.interval.is_none_or(|value| value <= 0)
             || health.timeout.is_none_or(|value| value <= 0)
+            || health.start_period.is_some_and(|value| value != 0)
+            || health.start_interval.is_some_and(|value| value != 0)
         {
             return false;
         }
@@ -240,8 +339,29 @@ mod tests {
         let authored = BollardDocker::service_spec(&desired).expect("authored specification");
         assert!(ServiceRuntimePolicy::matches(&authored));
 
-        // Engine-defaulted fields piqueld never authors are ignored entirely.
+        // Known Engine defaults are accepted, while unsupported non-default
+        // behavior remains visible as drift.
         let mut echoed = authored.clone();
+        let task = echoed.task_template.as_mut().expect("task");
+        task.resources.as_mut().expect("resources").reservations = Some(Default::default());
+        task.runtime = Some("container".into());
+        task.force_update = Some(0);
+        task.placement = Some(bollard::models::TaskSpecPlacement::default());
+        task.restart_policy.as_mut().expect("restart").max_attempts = Some(0);
+        task.container_spec.as_mut().expect("container").dns_config =
+            Some(bollard::models::TaskSpecContainerSpecDnsConfig::default());
+        echoed.rollback_config = Some(ServiceSpecRollbackConfig {
+            parallelism: Some(1),
+            failure_action: Some(
+                bollard::models::ServiceSpecRollbackConfigFailureActionEnum::PAUSE,
+            ),
+            monitor: Some(5 * super::super::NANOSECONDS_PER_SECOND),
+            max_failure_ratio: Some(0.0),
+            order: Some(bollard::models::ServiceSpecRollbackConfigOrderEnum::STOP_FIRST),
+            ..Default::default()
+        });
+        assert!(ServiceRuntimePolicy::matches(&echoed));
+
         echoed.rollback_config = Some(ServiceSpecRollbackConfig::default());
         if let Some(container) = echoed
             .task_template
@@ -251,7 +371,7 @@ mod tests {
             container.stop_grace_period = Some(12_345);
             container.hostname = Some("echoed".into());
         }
-        assert!(ServiceRuntimePolicy::matches(&echoed));
+        assert!(!ServiceRuntimePolicy::matches(&echoed));
 
         // Drift in a field piqueld authors is still rejected.
         let mut drifted = authored.clone();

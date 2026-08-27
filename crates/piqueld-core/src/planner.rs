@@ -724,7 +724,7 @@ impl Plan {
                             name: service.name.clone(),
                         },
                         ActionReason::Obsolete,
-                        ActionRisk::Availability,
+                        ActionRisk::Destructive,
                         true,
                     ));
                     waits.push(PlanAction::wait_for_service_removal(&service.name));
@@ -762,7 +762,7 @@ impl Plan {
                             name: network.name.clone(),
                         },
                         ActionReason::Obsolete,
-                        ActionRisk::Availability,
+                        ActionRisk::Destructive,
                         true,
                     ));
                 } else {
@@ -781,6 +781,7 @@ impl Plan {
     ) -> Self {
         let mut plan = Self::default();
         let mut waits = Vec::new();
+        let mut collisions = BTreeSet::new();
         for service in sorted_by_name(&observed.services, |service| &service.name) {
             if service.is_owned_by(instance_id, application_id) {
                 plan.actions.push(PlanAction::new(
@@ -788,12 +789,12 @@ impl Plan {
                         name: service.name.clone(),
                     },
                     ActionReason::ApplicationDeletion,
-                    ActionRisk::Availability,
+                    ActionRisk::Destructive,
                     true,
                 ));
                 waits.push(PlanAction::wait_for_service_removal(&service.name));
             } else {
-                plan.ignored(&service.name);
+                plan.collision(&service.name, &mut collisions);
             }
         }
         plan.actions.append(&mut waits);
@@ -806,11 +807,11 @@ impl Plan {
                         name: network.name.clone(),
                     },
                     ActionReason::ApplicationDeletion,
-                    ActionRisk::Availability,
+                    ActionRisk::Destructive,
                     true,
                 ));
             } else {
-                plan.ignored(&network.name);
+                plan.collision(&network.name, &mut collisions);
             }
         }
         for volume in sorted_by_name(&observed.volumes, |volume| &volume.name) {
@@ -826,7 +827,7 @@ impl Plan {
                     false,
                 ));
             } else {
-                plan.ignored(&volume.name);
+                plan.collision(&volume.name, &mut collisions);
             }
         }
         plan

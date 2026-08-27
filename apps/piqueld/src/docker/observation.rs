@@ -121,7 +121,9 @@ impl BollardDocker {
             .into_iter()
             .collect();
         let runtime_configuration_matches = ServiceRuntimePolicy::matches(spec);
-        let convergence = BollardDocker::convergence(&tasks, replicas, update);
+        let healthcheck_configured = container.health_check.is_some();
+        let convergence =
+            BollardDocker::convergence(&tasks, replicas, update, healthcheck_configured);
         Ok(ObservedService {
             name,
             image: container.image.clone().unwrap_or_default(),
@@ -214,6 +216,7 @@ impl BollardDocker {
         tasks: &[ObservedTask],
         replicas: u16,
         update: Option<bollard::models::ServiceUpdateStatusStateEnum>,
+        healthcheck_configured: bool,
     ) -> Convergence {
         if matches!(
             update,
@@ -238,7 +241,11 @@ impl BollardDocker {
             .filter(|task| {
                 task.desired_running
                     && task.state == TaskState::Running
-                    && task.healthy != Some(false)
+                    && if healthcheck_configured {
+                        task.healthy == Some(true)
+                    } else {
+                        task.healthy != Some(false)
+                    }
             })
             .count();
         let failed = tasks
@@ -331,5 +338,35 @@ impl BollardDocker {
             interval_seconds,
             timeout_seconds,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn running(healthy: Option<bool>) -> ObservedTask {
+        ObservedTask {
+            state: TaskState::Running,
+            healthy,
+            desired_running: true,
+            diagnostic: None,
+        }
+    }
+
+    #[test]
+    fn pending_healthcheck_does_not_count_as_converged() {
+        assert_eq!(
+            BollardDocker::convergence(&[running(None)], 1, None, true),
+            Convergence::Updating
+        );
+        assert_eq!(
+            BollardDocker::convergence(&[running(Some(true))], 1, None, true),
+            Convergence::Converged
+        );
+        assert_eq!(
+            BollardDocker::convergence(&[running(None)], 1, None, false),
+            Convergence::Converged
+        );
     }
 }
