@@ -343,7 +343,8 @@ mod tests {
         // behavior remains visible as drift.
         let mut echoed = authored.clone();
         let task = echoed.task_template.as_mut().expect("task");
-        task.resources.as_mut().expect("resources").reservations = Some(Default::default());
+        task.resources.as_mut().expect("resources").reservations =
+            Some(bollard::models::ResourceObject::default());
         task.runtime = Some("container".into());
         task.force_update = Some(0);
         task.placement = Some(bollard::models::TaskSpecPlacement::default());
