@@ -16,6 +16,17 @@ impl BollardDocker {
         )])
     }
 
+    /// Builds the complementary name filter used to detect canonical resources
+    /// whose ownership labels are missing or belong to another application.
+    pub(super) fn application_name_filter(
+        application: &ApplicationId,
+    ) -> HashMap<String, Vec<String>> {
+        HashMap::from([(
+            "name".to_owned(),
+            vec![docker_resource_readable_prefix(application)],
+        )])
+    }
+
     /// Returns whether a Docker resource can belong to this application.
     ///
     /// Resource names are truncated for Docker, so ownership labels remain the

@@ -5,7 +5,9 @@ use hyper_util::rt::TokioIo;
 use std::time::Duration;
 use tokio::net::UnixStream;
 
-const MAX_SERVICE_RESPONSE_BYTES: usize = 1024 * 1024;
+// A valid API request may be 2 MiB; Docker adds service metadata around that
+// specification when it is inspected.
+const MAX_SERVICE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Bollard's per-request timeout, in seconds. Bollard only bounds a request up
@@ -19,11 +21,28 @@ enum ServiceWireError {
     Response { status: StatusCode, body: Vec<u8> },
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Docker returned HTTP {status}: {message}")]
+struct ServiceResponseDiagnostic {
+    status: StatusCode,
+    message: String,
+}
+
 impl ServiceWireError {
     fn sanitized(self, operation: &'static str) -> DockerError {
         match self {
             Self::Public(error) => error,
-            Self::Response { .. } => DockerError::Request(operation),
+            Self::Response { status, body } => {
+                let message = String::from_utf8_lossy(&body)
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .take(2_048)
+                    .collect();
+                DockerError::RequestDiagnostic {
+                    operation,
+                    source: Box::new(ServiceResponseDiagnostic { status, message }),
+                }
+            }
         }
     }
 

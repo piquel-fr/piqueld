@@ -157,6 +157,10 @@ fn converged_services_need_no_work_and_delete_retains_volumes() {
             .iter()
             .any(|action| matches!(action.kind, ActionKind::RetainVolume { .. }))
     );
+    assert!(deletion.actions.iter().any(|action| {
+        matches!(action.kind, ActionKind::RemoveService { .. }) && action.destructive
+    }));
+    assert!(deletion.summary.destructive_count > 0);
 
     let mut drifted = observed.clone();
     drifted.services[0].runtime_configuration_matches = false;
@@ -190,6 +194,10 @@ fn converged_services_need_no_work_and_delete_retains_volumes() {
             .iter()
             .any(|action| { matches!(action.kind, ActionKind::RemoveService { .. }) })
     );
+    assert!(foreign_deletion.is_blocked());
+    assert!(foreign_deletion.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == piqueld_core::codes::UNOWNED_NAME_COLLISION && diagnostic.blocking
+    }));
 }
 
 // ---------------------------------------------------------------------------

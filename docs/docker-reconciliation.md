@@ -12,8 +12,8 @@ start-first, one-at-a-time rolling settings and pause on failure. The runtime
 policy verifies exactly the fields piqueld authors — replication, update
 settings, the restart condition and delay, mounts, environment, network targets,
 health checks, and resource limits. Fields the specification builder never sets
-are ignored, so engine-defaulted echo-back (which varies between daemon
-versions) no longer factors into drift.
+are accepted only at known Engine defaults; unsupported non-default values are
+treated as drift.
 
 Every Docker interaction is bounded by a request-timeout deadline at the adapter
 boundary; Bollard only bounds a request up to the response headers, so the
