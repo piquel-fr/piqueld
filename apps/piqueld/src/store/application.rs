@@ -329,10 +329,12 @@ impl SqliteStore {
                         tx.commit().await.map_err(StoreError::database)?;
                         return Ok(replay.mutation);
                     }
-                    let result = Self::reset_failed_replace(
+                    let result = Self::reset_failed_operation(
                         &mut tx,
                         &app.id,
                         replay.mutation.generation,
+                        OperationKind::Replace,
+                        "pending",
                         steps,
                         now_ms(),
                     )
@@ -547,7 +549,6 @@ impl SqliteStore {
             tx.commit().await.map_err(StoreError::database)?;
             return Ok(mutation);
         }
-        let expected_generation_i64 = generation_i64(expected_generation)?;
         let row = sqlx::query!(
             "SELECT generation AS \"generation!\",delete_intent AS \"delete_intent!\" FROM applications WHERE id=?1 AND deleted_at_ms IS NULL",
             id_value
@@ -564,32 +565,12 @@ impl SqliteStore {
             });
         }
         if row.delete_intent == 1 {
-            let operation = sqlx::query!(
-                r#"SELECT id AS "id!",state AS "state!" FROM operations WHERE application_id=?1 AND generation=?2 AND kind='delete' ORDER BY created_at_ms DESC,id DESC LIMIT 1"#,
-                id_value,
-                expected_generation_i64
-            )
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(StoreError::database)?
-            .ok_or(StoreError::Corrupt)?;
-            let result = match operation.state.as_str() {
-                "pending" | "running" | "recovery" => MutationResult {
-                    generation: expected_generation,
-                    operation_id: operation.id,
-                },
-                "failed" | "cancelled" => {
-                    Self::reset_failed_delete(&mut tx, id, expected_generation, steps, now).await?
-                }
-                _ => return Err(StoreError::IllegalTransition),
-            };
-            Self::bind_optional_idempotency(
+            let result = Self::resume_existing_delete(
                 &mut tx,
+                id,
+                expected_generation,
+                steps,
                 idempotency,
-                id_value,
-                &result,
-                expected_generation_i64,
-                OperationKind::Delete,
                 now,
             )
             .await?;
@@ -627,6 +608,57 @@ impl SqliteStore {
         )
         .await?;
         tx.commit().await.map_err(StoreError::database)?;
+        Ok(result)
+    }
+
+    async fn resume_existing_delete(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &ApplicationId,
+        expected_generation: u64,
+        steps: &[String],
+        idempotency: Option<(&str, &str)>,
+        now: i64,
+    ) -> Result<MutationResult, StoreError> {
+        let id_value = id.as_str();
+        let expected_generation_i64 = generation_i64(expected_generation)?;
+        let operation = sqlx::query!(
+            r#"SELECT id AS "id!",state AS "state!" FROM operations WHERE application_id=?1 AND generation=?2 AND kind='delete' ORDER BY created_at_ms DESC,id DESC LIMIT 1"#,
+            id_value,
+            expected_generation_i64
+        )
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+        .ok_or(StoreError::Corrupt)?;
+        let result = match operation.state.as_str() {
+            "pending" | "running" | "recovery" => MutationResult {
+                generation: expected_generation,
+                operation_id: operation.id,
+            },
+            "failed" | "cancelled" => {
+                Self::reset_failed_operation(
+                    tx,
+                    id,
+                    expected_generation,
+                    OperationKind::Delete,
+                    "deleting",
+                    steps,
+                    now,
+                )
+                .await?
+            }
+            _ => return Err(StoreError::IllegalTransition),
+        };
+        Self::bind_optional_idempotency(
+            tx,
+            idempotency,
+            id_value,
+            &result,
+            expected_generation_i64,
+            OperationKind::Delete,
+            now,
+        )
+        .await?;
         Ok(result)
     }
 
@@ -1076,29 +1108,40 @@ impl SqliteStore {
             Some(replay) if !replay.is_dead() => Ok(Some(replay.mutation)),
             // A dead binding must not pin its failed operation forever.
             Some(replay) => {
-                let result =
-                    Self::reset_failed_delete(tx, id, replay.mutation.generation, steps, now)
-                        .await?;
+                let result = Self::reset_failed_operation(
+                    tx,
+                    id,
+                    replay.mutation.generation,
+                    OperationKind::Delete,
+                    "deleting",
+                    steps,
+                    now,
+                )
+                .await?;
                 Ok(Some(result))
             }
             None => Ok(None),
         }
     }
 
-    async fn reset_failed_delete(
+    async fn reset_failed_operation(
         tx: &mut Transaction<'_, Sqlite>,
         id: &ApplicationId,
         generation: u64,
+        kind: OperationKind,
+        status: &str,
         steps: &[String],
         now: i64,
     ) -> Result<MutationResult, StoreError> {
         validate_operation_steps(steps)?;
         let generation = generation_i64(generation)?;
         let id_value = id.as_str();
+        let kind = kind.as_str();
         let operation = sqlx::query!(
-            r#"SELECT id AS "id!",state AS "state!" FROM operations WHERE application_id=?1 AND generation=?2 AND kind='delete' ORDER BY created_at_ms DESC,id DESC LIMIT 1"#,
+            r#"SELECT id AS "id!",state AS "state!" FROM operations WHERE application_id=?1 AND generation=?2 AND kind=?3 ORDER BY created_at_ms DESC,id DESC LIMIT 1"#,
             id_value,
-            generation
+            generation,
+            kind
         )
         .fetch_optional(&mut **tx)
         .await
@@ -1123,65 +1166,9 @@ impl SqliteStore {
         .await
         .map_err(StoreError::database)?;
         Self::insert_operation_steps(tx, &operation.id, steps, now).await?;
-        let status_changed = sqlx::query!(
-            "UPDATE application_status SET state='deleting',observed_generation=NULL,message=NULL,updated_at_ms=?1 WHERE application_id=?2",
-            now,
-            id_value
-        )
-        .execute(&mut **tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if status_changed != 1 {
-            return Err(StoreError::Corrupt);
-        }
+        Self::set_application_status(tx, id_value, status, now).await?;
         Ok(MutationResult {
             generation: u64::try_from(generation).map_err(StoreError::corrupt)?,
-            operation_id: operation.id,
-        })
-    }
-
-    async fn reset_failed_replace(
-        tx: &mut Transaction<'_, Sqlite>,
-        id: &ApplicationId,
-        generation: u64,
-        steps: &[String],
-        now: i64,
-    ) -> Result<MutationResult, StoreError> {
-        validate_operation_steps(steps)?;
-        let generation_i64 = generation_i64(generation)?;
-        let id_value = id.as_str();
-        let operation = sqlx::query!(
-            r#"SELECT id AS "id!",state AS "state!" FROM operations WHERE application_id=?1 AND generation=?2 AND kind='replace' ORDER BY created_at_ms DESC,id DESC LIMIT 1"#,
-            id_value,
-            generation_i64
-        )
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(StoreError::database)?
-        .ok_or(StoreError::Corrupt)?;
-        if !matches!(operation.state.as_str(), "failed" | "cancelled") {
-            return Err(StoreError::IllegalTransition);
-        }
-        sqlx::query!(
-            "UPDATE operations SET state='pending',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE id=?2 AND state IN ('failed','cancelled')",
-            now,
-            operation.id
-        )
-        .execute(&mut **tx)
-        .await
-        .map_err(StoreError::database)?;
-        sqlx::query!(
-            "DELETE FROM operation_steps WHERE operation_id=?1",
-            operation.id
-        )
-        .execute(&mut **tx)
-        .await
-        .map_err(StoreError::database)?;
-        Self::insert_operation_steps(tx, &operation.id, steps, now).await?;
-        Self::set_application_status(tx, id_value, "pending", now).await?;
-        Ok(MutationResult {
-            generation,
             operation_id: operation.id,
         })
     }
