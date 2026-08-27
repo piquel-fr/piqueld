@@ -384,7 +384,9 @@ fn decode_error(path: &Path) -> ValidationErrors {
     }])
 }
 
-fn safe_decode_path(path: &str) -> String {
+/// Redacts map keys and unknown components from a serde decode path.
+#[must_use]
+pub fn safe_decode_path(path: &str) -> String {
     const FIELDS: &[&str] = &[
         "api_version",
         "kind",

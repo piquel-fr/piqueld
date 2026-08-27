@@ -97,8 +97,13 @@ pub(super) async fn redirect() -> impl IntoResponse {
 /// Every lookup is an exact match against the compile-time bundle, so request
 /// paths can never traverse anywhere outside it.
 pub(super) fn serve(bundle: &'static EmbeddedBundle, request: &Request) -> Response {
-    let response = if !matches!(*request.method(), Method::GET | Method::HEAD) {
-        StatusCode::METHOD_NOT_ALLOWED.into_response()
+    let head = *request.method() == Method::HEAD;
+    let mut response = if !matches!(*request.method(), Method::GET | Method::HEAD) {
+        let mut response = StatusCode::METHOD_NOT_ALLOWED.into_response();
+        response
+            .headers_mut()
+            .insert(header::ALLOW, header::HeaderValue::from_static("GET, HEAD"));
+        response
     } else if let Some(relative) = request.uri().path().strip_prefix("/dashboard/") {
         match lookup(bundle, relative) {
             Some((name, body)) => asset_response(name, body),
@@ -108,6 +113,9 @@ pub(super) fn serve(bundle: &'static EmbeddedBundle, request: &Request) -> Respo
     } else {
         return not_found();
     };
+    if head {
+        *response.body_mut() = Body::empty();
+    }
     harden(response)
 }
 

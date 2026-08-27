@@ -32,15 +32,18 @@ use super::{
     openapi::ApiErrorResponse, optional_idempotency_key, parse_manifest, parse_update,
     require_json, valid_expected_generation,
 };
-use crate::store::{
-    ApplicationStatus, DEFAULT_PAGE_SIZE, OperationKind, StoreError, StoredApplication,
-};
+use crate::store::{ApplicationStatus, StoreError, StoredApplication};
+
+// A manifest can approach the 2 MiB request limit and JSON escaping can
+// approximately double textual fields. Three entries stay below the clients'
+// 16 MiB response budget with envelope overhead.
+const APPLICATION_PAGE_SIZE: usize = 3;
 
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(super) struct ListQuery {
     cursor: Option<String>,
-    #[param(minimum = 1, maximum = 100, default = 50)]
+    #[param(minimum = 1, maximum = 3, default = 3)]
     limit: Option<usize>,
 }
 
@@ -68,7 +71,14 @@ pub(super) async fn list(
             "pagination parameters are invalid",
         )
     })?;
-    let limit = query.limit.unwrap_or(DEFAULT_PAGE_SIZE);
+    let limit = query.limit.unwrap_or(APPLICATION_PAGE_SIZE);
+    if !(1..=APPLICATION_PAGE_SIZE).contains(&limit) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "pagination_invalid",
+            "pagination parameters are invalid",
+        ));
+    }
     let page = state
         .store
         .list(query.cursor.as_deref(), limit)
@@ -299,21 +309,10 @@ pub(super) async fn replace(
             mutation_request_hash("replace", &id, expected, Some(&spec_hash)),
         )
     });
-    // Fast replay path without serializing behind other mutations.
-    if let Some((key_hash, request_hash)) = &key_binding
-        && let Some(mutation) = state
-            .store
-            .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Replace)
-            .await?
-    {
-        return Ok(accepted(AcceptedOperation {
-            operation_id: mutation.operation_id,
-            application_id: id.to_string(),
-            generation: mutation.generation,
-        }));
-    }
     let current = state.store.get(&id).await?;
-    generation(expected, current.generation)?;
+    if key_binding.is_none() {
+        generation(expected, current.generation)?;
+    }
     reject_name_collision(&state, &app, Some(&id)).await?;
     // Input resolution runs outside the mutation lock; see the create handler.
     let prepared = state.runtime.prepare(&app).await?;
@@ -338,17 +337,6 @@ pub(super) async fn replace(
         .collect::<Vec<_>>();
     let _mutation_guard = state.mutation_guard().await;
     if let Some((key_hash, request_hash)) = &key_binding {
-        if let Some(mutation) = state
-            .store
-            .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Replace)
-            .await?
-        {
-            return Ok(accepted(AcceptedOperation {
-                operation_id: mutation.operation_id,
-                application_id: id.to_string(),
-                generation: mutation.generation,
-            }));
-        }
         let mutation = state
             .store
             .replace_idempotent(
@@ -419,23 +407,10 @@ pub(super) async fn delete(
             mutation_request_hash("delete", &id, request.expected_generation, None),
         )
     });
-    // Serialize the idempotency lookup through the binding commit so a
-    // concurrent retry cannot duplicate the keyed deletion.
-    let _mutation_guard = state.mutation_guard().await;
-    if let Some((key_hash, request_hash)) = &key_binding
-        && let Some(mutation) = state
-            .store
-            .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Delete)
-            .await?
-    {
-        return Ok(accepted(AcceptedOperation {
-            operation_id: mutation.operation_id,
-            application_id: id.to_string(),
-            generation: mutation.generation,
-        }));
-    }
     let current = state.store.get(&id).await?;
-    generation(request.expected_generation, current.generation)?;
+    if key_binding.is_none() {
+        generation(request.expected_generation, current.generation)?;
+    }
     let observed = state.runtime.observe(&current).await?;
     let instance = InstanceId::parse(&state.instance_id).map_err(StoreError::corrupt)?;
     let plan = Plan::from_request(
@@ -458,6 +433,9 @@ pub(super) async fn delete(
         .iter()
         .map(PlanAction::operation_step)
         .collect::<Vec<_>>();
+    // Keep Docker I/O outside the short mutation critical section. The store
+    // transaction revalidates generation and idempotency before committing.
+    let _mutation_guard = state.mutation_guard().await;
     let mutation = if let Some((key_hash, request_hash)) = &key_binding {
         state
             .store
@@ -859,6 +837,7 @@ fn observed_view(
 }
 
 fn healthy_replicas(service: &ObservedService) -> u16 {
+    let healthcheck_configured = service.healthcheck.is_some();
     u16::try_from(
         service
             .tasks
@@ -866,7 +845,11 @@ fn healthy_replicas(service: &ObservedService) -> u16 {
             .filter(|task| {
                 task.desired_running
                     && task.state == TaskState::Running
-                    && task.healthy != Some(false)
+                    && if healthcheck_configured {
+                        task.healthy == Some(true)
+                    } else {
+                        task.healthy != Some(false)
+                    }
             })
             .count(),
     )

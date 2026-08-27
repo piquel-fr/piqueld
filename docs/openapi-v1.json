@@ -2358,8 +2358,8 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 50,
-              "maximum": 100,
+              "default": 3,
+              "maximum": 3,
               "minimum": 1,
               "type": "integer"
             }
