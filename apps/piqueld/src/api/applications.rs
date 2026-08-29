@@ -908,7 +908,7 @@ fn service_diagnostics(service: &ObservedService) -> Vec<DiagnosticView> {
         diagnostics.push(DiagnosticView {
             code: "service_not_converged".into(),
             message: format!(
-                "{} of {} desired replicas are healthy",
+                "{} of {} observed replicas are healthy",
                 healthy_replicas, service.replicas
             ),
         });
