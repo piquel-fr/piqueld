@@ -454,7 +454,10 @@ fn valid_path_indices(mut value: &str) -> bool {
 fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, ValidationErrors> {
     let mut errors = Vec::new();
     validate_header(&input, &mut errors);
-    validate_budgets(&input, &mut errors);
+    if !validate_budgets(&input, &mut errors) {
+        errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
+        return Err(ValidationErrors(errors));
+    }
     unique_names(
         input.spec.services.iter().map(|service| &service.name),
         "spec.services",
@@ -507,7 +510,8 @@ fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError
     }
 }
 
-fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) {
+fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) -> bool {
+    let mut within_budget = true;
     if input.spec.services.len() > MAX_SERVICES {
         error(
             errors,
@@ -515,6 +519,7 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
             "spec.services",
             &format!("an application must declare at most {MAX_SERVICES} services"),
         );
+        within_budget = false;
     }
     if input.spec.volumes.len() > MAX_VOLUMES {
         error(
@@ -523,7 +528,9 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
             "spec.volumes",
             &format!("an application must declare at most {MAX_VOLUMES} volumes"),
         );
+        within_budget = false;
     }
+    within_budget
 }
 
 fn validate_services(
@@ -549,7 +556,7 @@ fn validate_services(
                 errors,
                 codes::IMAGE_INVALID,
                 &format!("{base}.source.image"),
-                "image must be a valid registry reference with a lowercase hostname, without credentials or a URL scheme",
+                "image must be a valid registry reference without credentials or a URL scheme",
             );
         }
         validate_environment(&service.environment, &base, errors);
