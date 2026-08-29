@@ -107,6 +107,14 @@ fn docker_registry_aliases_are_canonicalized() {
         image_repository("LOCALHOST/notes:1"),
         Some("localhost/notes".into())
     );
+    assert_eq!(
+        image_repository("DoCkEr.Io/alpine:3"),
+        Some("docker.io/library/alpine".into())
+    );
+    assert_eq!(
+        image_repository("INDEX.DOCKER.IO/alpine:3"),
+        Some("docker.io/library/alpine".into())
+    );
 }
 
 #[test]

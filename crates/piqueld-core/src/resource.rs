@@ -631,16 +631,17 @@ pub fn image_repository(reference: &str) -> Option<String> {
     if repository.is_empty() {
         return None;
     }
-    let repository = repository
-        .strip_prefix("index.docker.io/")
-        .unwrap_or(repository);
     let mut components = repository.split('/');
     let first = components.next()?;
     let explicit_registry = repository.contains('/')
         && (first.contains(['.', ':']) || first.eq_ignore_ascii_case("localhost"));
-    if let Some(path) = repository.strip_prefix("docker.io/") {
+    if repository.contains('/')
+        && (first.eq_ignore_ascii_case("docker.io")
+            || first.eq_ignore_ascii_case("index.docker.io"))
+    {
+        let path = &repository[first.len() + 1..];
         Some(if path.contains('/') {
-            repository.to_owned()
+            format!("docker.io/{path}")
         } else {
             format!("docker.io/library/{path}")
         })
