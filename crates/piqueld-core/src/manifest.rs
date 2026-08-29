@@ -1139,7 +1139,7 @@ pub(crate) fn valid_image_reference(value: &str) -> bool {
         return false;
     }
     let first_is_registry = components.len() > 1
-        && (components[0].contains(['.', ':']) || components[0] == "localhost");
+        && (components[0].contains(['.', ':']) || components[0].eq_ignore_ascii_case("localhost"));
     let repository_components = if first_is_registry {
         if !valid_registry_authority(components[0]) {
             return false;
@@ -1176,7 +1176,7 @@ fn valid_registry_authority(value: &str) -> bool {
 fn first_registry_component(name: &str) -> Option<&str> {
     let components = name.split('/').collect::<Vec<_>>();
     let first_is_registry = components.len() > 1
-        && (components[0].contains(['.', ':']) || components[0] == "localhost");
+        && (components[0].contains(['.', ':']) || components[0].eq_ignore_ascii_case("localhost"));
     first_is_registry.then(|| components[0])
 }
 

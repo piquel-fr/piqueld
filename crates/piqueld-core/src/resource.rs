@@ -636,8 +636,8 @@ pub fn image_repository(reference: &str) -> Option<String> {
         .unwrap_or(repository);
     let mut components = repository.split('/');
     let first = components.next()?;
-    let explicit_registry =
-        repository.contains('/') && (first.contains(['.', ':']) || first == "localhost");
+    let explicit_registry = repository.contains('/')
+        && (first.contains(['.', ':']) || first.eq_ignore_ascii_case("localhost"));
     if let Some(path) = repository.strip_prefix("docker.io/") {
         Some(if path.contains('/') {
             repository.to_owned()
@@ -645,7 +645,11 @@ pub fn image_repository(reference: &str) -> Option<String> {
             format!("docker.io/library/{path}")
         })
     } else if explicit_registry {
-        Some(repository.to_owned())
+        Some(format!(
+            "{}{}",
+            first.to_ascii_lowercase(),
+            &repository[first.len()..]
+        ))
     } else if repository.contains('/') {
         Some(format!("docker.io/{repository}"))
     } else {
