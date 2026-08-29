@@ -917,6 +917,7 @@ fn service_diagnostics(service: &ObservedService) -> Vec<DiagnosticView> {
         service
             .tasks
             .iter()
+            .filter(|task| task.desired_running)
             .filter_map(|task| task.diagnostic.as_ref())
             .map(|diagnostic| match diagnostic {
                 TaskDiagnostic::Failed { exit_code } => DiagnosticView {
@@ -974,4 +975,51 @@ fn detail_diagnostics(
     );
     diagnostics.truncate(MAX_DETAIL_DIAGNOSTICS);
     diagnostics
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use piqueld_core::resource::{ObservedTask, TaskDiagnostic};
+
+    use super::*;
+
+    #[test]
+    fn service_diagnostics_ignore_historical_tasks() {
+        let service = ObservedService {
+            name: "web".into(),
+            image: "example/web@sha256:digest".into(),
+            replicas: 1,
+            environment: BTreeMap::new(),
+            command: Vec::new(),
+            arguments: Vec::new(),
+            mounts: Vec::new(),
+            healthcheck: None,
+            resources: None,
+            networks: Vec::new(),
+            labels: BTreeMap::new(),
+            runtime_configuration_matches: true,
+            tasks: vec![
+                ObservedTask {
+                    state: TaskState::Failed,
+                    healthy: None,
+                    desired_running: false,
+                    diagnostic: Some(TaskDiagnostic::Failed { exit_code: Some(1) }),
+                },
+                ObservedTask {
+                    state: TaskState::Rejected,
+                    healthy: None,
+                    desired_running: true,
+                    diagnostic: Some(TaskDiagnostic::Rejected),
+                },
+            ],
+            convergence: Convergence::Converged,
+        };
+
+        let diagnostics = service_diagnostics(&service);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "task_rejected");
+    }
 }
