@@ -10,7 +10,7 @@ request bodies additionally log the safe field path that was rejected.
 The daemon serves the API over loopback TCP and a Unix-domain socket. The
 read-only browser dashboard is served only by the loopback TCP listener; the
 Unix socket remains API-only. The typed client supports both native transports
-and a same-origin browser transport. The API is intentionally polling based:
+and a same-origin browser transport. The API is intentionally polling-based:
 clients fetch application status and operation state instead of opening event
 streams.
 
