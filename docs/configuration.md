@@ -43,4 +43,6 @@ Reconciliation intervals and timeouts are bounded to `1..=86400` seconds, and
 The data directory is the only persistent daemon state.
 
 The dashboard is not configurable at runtime: it is embedded when the daemon
-is built with the `embedded-ui` cargo feature and absent otherwise.
+is built with the `embedded-ui` cargo feature and absent otherwise. It is
+served on the TCP listener only, so `server.http_listen` must be set to reach
+it; the Unix API socket serves the API alone.
