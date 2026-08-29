@@ -233,16 +233,21 @@ fn validation_display_lists_every_error() {
 
 #[test]
 fn registry_host_case_is_canonicalized_and_ipv6_is_rejected() {
-    let uppercased = valid_manifest("notes").replace(
-        "image = \"ghcr.io/example/notes:1\"",
-        "image = \"GHCR.IO/example/notes:1\"",
-    );
-    let app = parse_toml(&uppercased)
-        .expect("uppercase registry hosts are accepted")
-        .normalize(ApplicationId::parse("app-notes-01").unwrap());
-    match &app.spec.services[0].source {
-        piqueld_core::manifest::Source::Image { image } => {
-            assert_eq!(image, "ghcr.io/example/notes:1");
+    for (reference, canonical) in [
+        ("GHCR.IO/example/notes:1", "ghcr.io/example/notes:1"),
+        ("LOCALHOST/notes:1", "localhost/notes:1"),
+    ] {
+        let uppercased = valid_manifest("notes").replace(
+            "image = \"ghcr.io/example/notes:1\"",
+            &format!("image = \"{reference}\""),
+        );
+        let app = parse_toml(&uppercased)
+            .expect("uppercase registry hosts are accepted")
+            .normalize(ApplicationId::parse("app-notes-01").unwrap());
+        match &app.spec.services[0].source {
+            piqueld_core::manifest::Source::Image { image } => {
+                assert_eq!(image, canonical);
+            }
         }
     }
 
