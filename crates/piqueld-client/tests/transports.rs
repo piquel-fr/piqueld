@@ -448,6 +448,24 @@ async fn application_queries_are_percent_encoded() {
     assert!(page.next_cursor.is_none());
 }
 
+#[tokio::test]
+async fn application_limits_outside_server_range_are_rejected_before_transport() {
+    let client = Client::tcp("http://127.0.0.1:1/").unwrap();
+    for limit in [0, 4, u16::MAX] {
+        let error = client
+            .applications_with(&ListApplicationsOptions {
+                cursor: None,
+                limit: Some(limit),
+            })
+            .await
+            .expect_err("invalid application limit should fail locally");
+        assert!(
+            matches!(&error, ClientError::Endpoint { message } if message == "application list limit must be between 1 and 3"),
+            "unexpected error for limit {limit}: {error}"
+        );
+    }
+}
+
 #[test]
 fn tcp_transport_rejects_non_loopback_endpoints() {
     for rejected in [
