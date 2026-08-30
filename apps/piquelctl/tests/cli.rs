@@ -432,8 +432,8 @@ fn list_paginates_and_includes_reconciliation_status() {
     for unix in [false, true] {
         let mut page_number = 0;
         let server = start_server(unix, 4, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=100"
-            | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=100" => {
+            "/api/v1/applications?limit=3"
+            | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=3" => {
                 page_number += 1;
                 if page_number == 1 {
                     Reply::json(page(
@@ -464,11 +464,11 @@ fn list_paginates_and_includes_reconciliation_status() {
 #[test]
 fn show_resolves_name_across_pages_and_id_directly() {
     let first_server = start_server(false, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(
+        "/api/v1/applications?limit=3" => Reply::json(page(
             vec![app_view("app-first-01", "first", 1)],
             Some("v1:app-first-01"),
         )),
-        "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=100" => {
+        "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=3" => {
             Reply::json(page(vec![app_view("app-notes-01", "notes", 1)], None))
         }
         "/api/v1/applications/app-notes-01/status" => {
@@ -502,7 +502,7 @@ fn replacement_plan_uses_the_current_generation() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => {
+        "/api/v1/applications?limit=3" => {
             Reply::json(page(vec![app_view("app-notes-01", "notes", 3)], None))
         }
         "/api/v1/applications/app-notes-01/plan" => {
@@ -531,7 +531,7 @@ fn plan_before_apply_confirmation_and_retry_key_are_exercised() {
         let manifest = write_manifest(&directory);
         let mut mutation_requests = Vec::new();
         let server = start_server(unix, 4, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+            "/api/v1/applications?limit=3" => Reply::json(page(Vec::new(), None)),
             "/api/v1/applications/plan" => Reply::json(plan("preview-00000001", 1)),
             "/api/v1/applications" => {
                 mutation_requests.push(request.clone());
@@ -581,7 +581,7 @@ fn noninteractive_apply_stops_after_displaying_the_plan() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+        "/api/v1/applications?limit=3" => Reply::json(page(Vec::new(), None)),
         "/api/v1/applications/plan" => Reply::json(plan("preview-00000001", 1)),
         path => panic!("mutation must not be sent; got {path}"),
     });
@@ -600,7 +600,7 @@ fn conflict_details_are_reported_without_polluting_json_stdout() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => {
+        "/api/v1/applications?limit=3" => {
             Reply::json(page(vec![app_view("app-notes-01", "notes", 2)], None))
         }
         "/api/v1/applications/app-notes-01/plan" => Reply::error(
@@ -634,7 +634,7 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 4, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+        "/api/v1/applications?limit=3" => Reply::json(page(Vec::new(), None)),
         "/api/v1/applications/plan" => Reply::json(plan("preview-00000001", 1)),
         "/api/v1/applications" => Reply::accepted(accepted("app-notes-01", 1)),
         "/api/v1/operations/operation-01" => Reply::json(operation("failed")),
@@ -687,7 +687,7 @@ fn manifest_input_is_missing_or_oversized_before_network_use() {
 fn delete_reports_named_volume_retention_and_operation_completion() {
     for unix in [false, true] {
         let server = start_server(unix, 3, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=100" => {
+            "/api/v1/applications?limit=3" => {
                 Reply::json(page(vec![app_view("app-notes-01", "notes", 1)], None))
             }
             "/api/v1/applications/app-notes-01" => Reply::accepted(accepted("app-notes-01", 2)),
@@ -785,7 +785,7 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
 #[test]
 fn unknown_names_exit_with_input_error_and_no_mutation() {
     let server = start_server(false, 1, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+        "/api/v1/applications?limit=3" => Reply::json(page(Vec::new(), None)),
         path => panic!("unexpected path {path}"),
     });
     let output = run(&server, &["show", "missing"]);
@@ -799,7 +799,7 @@ fn unknown_names_exit_with_input_error_and_no_mutation() {
 #[test]
 fn ambiguous_names_report_the_match_count() {
     let server = start_server(false, 1, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(
+        "/api/v1/applications?limit=3" => Reply::json(page(
             vec![
                 app_view("app-notes-01", "notes", 1),
                 app_view("app-notes-02", "notes", 1),
