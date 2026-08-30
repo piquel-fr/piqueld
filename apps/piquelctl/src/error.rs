@@ -70,7 +70,7 @@ impl std::error::Error for CliError {}
 impl From<ClientError> for CliError {
     fn from(error: ClientError) -> Self {
         match error {
-            ClientError::Endpoint => Self::new(
+            ClientError::Endpoint { .. } => Self::new(
                 ErrorKind::Input,
                 "HTTP endpoint must be a loopback http:// origin without credentials, path, query, or fragment",
             ),
@@ -78,7 +78,7 @@ impl From<ClientError> for CliError {
                 ErrorKind::Unavailable,
                 format!("could not connect to the piqueld API: {message}"),
             ),
-            ClientError::Decode => Self::new(
+            ClientError::Decode { .. } => Self::new(
                 ErrorKind::General,
                 "the daemon returned an invalid public API response",
             ),

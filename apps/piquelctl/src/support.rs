@@ -19,7 +19,7 @@ pub(crate) const DEFAULT_SOCKET: &str = "/var/lib/piqueld/piqueld.sock";
 /// accepted manifest would fail server-side with 413.
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
 pub(crate) const MAX_PAGINATION_PAGES: usize = 10_000;
-pub(crate) const PAGE_SIZE: u16 = 100;
+pub(crate) const PAGE_SIZE: u16 = 3;
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 static INTERACTION_ACTIVE: AtomicBool = AtomicBool::new(false);
