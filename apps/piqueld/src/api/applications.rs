@@ -32,7 +32,9 @@ use super::{
     openapi::ApiErrorResponse, optional_idempotency_key, parse_manifest, parse_update,
     require_json, valid_expected_generation,
 };
-use crate::store::{ApplicationStatus, OperationKind, StoreError, StoredApplication};
+use crate::store::{
+    ApplicationStatus, MutationReplay, OperationKind, StoreError, StoredApplication,
+};
 
 // A manifest can approach the 2 MiB request limit and JSON escaping can
 // approximately double textual fields. Three entries stay below the clients'
@@ -139,8 +141,7 @@ pub(super) async fn detail(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let id = ApplicationId::parse(&id)?;
-    let stored = state.store.get(&id).await?;
-    let status = state.store.status(&id).await?;
+    let (stored, status) = state.store.get_with_status(&id).await?;
     let observed_generation = status.observed_generation;
     let observed = state.runtime.observe(&stored).await?;
     let observed_view = observed_view(&stored, &observed, observed_generation);
@@ -311,20 +312,27 @@ pub(super) async fn replace(
             mutation_request_hash("replace", &id, expected, Some(&spec_hash)),
         )
     });
-    if let Some((key_hash, request_hash)) = &key_binding
-        && let Some(mutation) = state
+    let retrying = if let Some((key_hash, request_hash)) = &key_binding {
+        match state
             .store
             .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Replace)
             .await?
-    {
-        return Ok(accepted(AcceptedOperation {
-            operation_id: mutation.operation_id,
-            application_id: id.to_string(),
-            generation: mutation.generation,
-        }));
-    }
+        {
+            Some(MutationReplay::Replay(mutation)) => {
+                return Ok(accepted(AcceptedOperation {
+                    operation_id: mutation.operation_id,
+                    application_id: id.to_string(),
+                    generation: mutation.generation,
+                }));
+            }
+            Some(MutationReplay::Retry) => true,
+            None => false,
+        }
+    } else {
+        false
+    };
     let current = state.store.get(&id).await?;
-    if key_binding.is_none() {
+    if !retrying {
         generation(expected, current.generation)?;
     }
     reject_name_collision(&state, &app, Some(&id)).await?;
@@ -421,20 +429,27 @@ pub(super) async fn delete(
             mutation_request_hash("delete", &id, request.expected_generation, None),
         )
     });
-    if let Some((key_hash, request_hash)) = &key_binding
-        && let Some(mutation) = state
+    let retrying = if let Some((key_hash, request_hash)) = &key_binding {
+        match state
             .store
             .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Delete)
             .await?
-    {
-        return Ok(accepted(AcceptedOperation {
-            operation_id: mutation.operation_id,
-            application_id: id.to_string(),
-            generation: mutation.generation,
-        }));
-    }
+        {
+            Some(MutationReplay::Replay(mutation)) => {
+                return Ok(accepted(AcceptedOperation {
+                    operation_id: mutation.operation_id,
+                    application_id: id.to_string(),
+                    generation: mutation.generation,
+                }));
+            }
+            Some(MutationReplay::Retry) => true,
+            None => false,
+        }
+    } else {
+        false
+    };
     let current = state.store.get(&id).await?;
-    if key_binding.is_none() {
+    if !retrying {
         generation(request.expected_generation, current.generation)?;
     }
     let observed = state.runtime.observe(&current).await?;

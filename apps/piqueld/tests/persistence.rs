@@ -90,17 +90,13 @@ async fn fresh_database_persists_resolved_state_and_retains_volumes() {
         .await
         .expect("application is created");
 
-    let stored = store
-        .get(&application.id)
+    let (stored, status) = store
+        .get_with_status(&application.id)
         .await
-        .expect("application is readable");
+        .expect("application and status are readable");
     assert_eq!(stored.resolved, resolved);
     assert_eq!(stored.generation, 1);
     assert!(!stored.delete_intent);
-    let status = store
-        .status(&application.id)
-        .await
-        .expect("status is readable");
     assert_eq!(status.state, ApplicationState::Pending);
 
     let (operation, steps) = store
