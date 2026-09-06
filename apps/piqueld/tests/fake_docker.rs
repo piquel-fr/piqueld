@@ -130,6 +130,7 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
         arguments: desired.arguments.clone(),
         mounts: desired.mounts.clone(),
         healthcheck: desired.healthcheck.clone(),
+        healthcheck_configured: desired.healthcheck.is_some(),
         resources: desired.resources.clone(),
         networks: desired.networks.clone(),
         labels: desired.labels.clone(),

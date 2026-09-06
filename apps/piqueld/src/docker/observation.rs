@@ -136,6 +136,7 @@ impl BollardDocker {
                 .health_check
                 .as_ref()
                 .and_then(BollardDocker::observed_health),
+            healthcheck_configured,
             resources: BollardDocker::observed_resources(spec),
             networks: BollardDocker::observed_networks(spec),
             labels,

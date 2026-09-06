@@ -885,7 +885,6 @@ fn observed_view(
 }
 
 fn healthy_replicas(service: &ObservedService) -> u16 {
-    let healthcheck_configured = service.healthcheck.is_some();
     u16::try_from(
         service
             .tasks
@@ -893,7 +892,7 @@ fn healthy_replicas(service: &ObservedService) -> u16 {
             .filter(|task| {
                 task.desired_running
                     && task.state == TaskState::Running
-                    && if healthcheck_configured {
+                    && if service.healthcheck_configured {
                         task.healthy == Some(true)
                     } else {
                         task.healthy != Some(false)
@@ -1011,6 +1010,7 @@ mod tests {
             arguments: Vec::new(),
             mounts: Vec::new(),
             healthcheck: None,
+            healthcheck_configured: false,
             resources: None,
             networks: Vec::new(),
             labels: BTreeMap::new(),
@@ -1036,5 +1036,36 @@ mod tests {
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code, "task_rejected");
+    }
+
+    #[test]
+    fn pending_runtime_health_is_not_reported_as_healthy() {
+        let task = ObservedTask {
+            state: TaskState::Running,
+            healthy: None,
+            desired_running: true,
+            diagnostic: None,
+        };
+        let mut service = ObservedService {
+            name: "web".into(),
+            image: "example/web@sha256:digest".into(),
+            replicas: 1,
+            environment: BTreeMap::new(),
+            command: Vec::new(),
+            arguments: Vec::new(),
+            mounts: Vec::new(),
+            healthcheck: None,
+            healthcheck_configured: true,
+            resources: None,
+            networks: Vec::new(),
+            labels: BTreeMap::new(),
+            runtime_configuration_matches: false,
+            tasks: vec![task],
+            convergence: Convergence::Updating,
+        };
+
+        assert_eq!(healthy_replicas(&service), 0);
+        service.healthcheck_configured = false;
+        assert_eq!(healthy_replicas(&service), 1);
     }
 }
