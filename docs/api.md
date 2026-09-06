@@ -57,8 +57,9 @@ Create, replace, and plan accept structured JSON or a complete TOML manifest wit
 `Content-Type: application/toml` (also `text/toml`). TOML replacement carries
 `X-Expected-Generation`. Plan endpoints perform no durable mutation and report
 image resolution requirements when the runtime cannot yet produce a concrete
-desired plan. Preview endpoints always answer 200 with a `PlanView`; callers
-inspect its blocking diagnostics before deciding whether to mutate.
+desired plan. Successful preview requests answer 200 with a `PlanView`; callers
+still handle the documented API errors and inspect blocking diagnostics before
+deciding whether to mutate.
 
 The public client contracts live in `piqueld-client`; persistence uses internal
 store rows and converts them to these DTOs at the API boundary. The detail DTO
