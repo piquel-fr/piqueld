@@ -184,6 +184,12 @@ impl<D: DockerApi> ReconcileHandler<D> {
                 .observe_with_retry(&operation.application_id, cancellation, deadline)
                 .await?;
             let current = Plan::from_request(request, &observed);
+            if operation.kind != OperationKind::Delete
+                && !self.operation_is_current(operation).await?
+            {
+                self.skip_superseded_steps(operation).await?;
+                return Err(OperationError::Superseded);
+            }
             if current.is_blocked() {
                 return Err(blocked_plan_error(&current));
             }
@@ -221,6 +227,10 @@ impl<D: DockerApi> ReconcileHandler<D> {
         let observed = self
             .observe_with_retry(&operation.application_id, cancellation, deadline)
             .await?;
+        if operation.kind != OperationKind::Delete && !self.operation_is_current(operation).await? {
+            self.skip_superseded_steps(operation).await?;
+            return Err(OperationError::Superseded);
+        }
         let current = Plan::from_request(request, &observed);
         if current.is_blocked() {
             return Err(blocked_plan_error(&current));
