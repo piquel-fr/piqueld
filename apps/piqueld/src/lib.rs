@@ -22,9 +22,10 @@ use tracing::info;
 /// The directory holds the Unix API socket, the embedded database, and future
 /// user data. Missing components are created with mode `0700`. Existing
 /// components are never modified but must be real (non-symlink) directories,
-/// and the final directory must grant no access to group or other users:
-/// anyone able to write there could replace the daemon socket and intercept
-/// operator connections.
+/// every ancestor must be protected from replacement by untrusted owners, and
+/// the final directory must grant no access to group or other users: anyone
+/// able to write there could replace the daemon socket and intercept operator
+/// connections.
 ///
 /// # Errors
 ///
@@ -110,10 +111,7 @@ pub async fn prepare_data_dir(path: &Path) -> std::io::Result<()> {
             }
         } else {
             let mode = metadata.permissions().mode();
-            let sticky = mode & 0o1000 != 0;
-            if !sticky
-                && (mode & 0o022 != 0 || (metadata.uid() != 0 && metadata.uid() != expected_uid))
-            {
+            if !protected_ancestor(mode, metadata.uid(), expected_uid) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     format!(
@@ -125,6 +123,12 @@ pub async fn prepare_data_dir(path: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn protected_ancestor(mode: u32, owner_uid: u32, daemon_uid: u32) -> bool {
+    let trusted_owner = owner_uid == 0 || owner_uid == daemon_uid;
+    let sticky = mode & 0o1000 != 0;
+    trusted_owner && (sticky || mode & 0o022 == 0)
 }
 
 /// Errors produced by the daemon's process-level runtime skeleton.
@@ -196,5 +200,16 @@ mod tests {
             .expect("runtime did not stop after cancellation")
             .expect("runtime task panicked");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn sticky_ancestors_are_safe_only_when_owned_by_a_trusted_user() {
+        let daemon_uid = 1_000;
+
+        assert!(protected_ancestor(0o41_777, 0, daemon_uid));
+        assert!(protected_ancestor(0o41_700, daemon_uid, daemon_uid));
+        assert!(!protected_ancestor(0o41_777, 2_000, daemon_uid));
+        assert!(!protected_ancestor(0o40_777, 0, daemon_uid));
+        assert!(!protected_ancestor(0o40_555, 2_000, daemon_uid));
     }
 }
