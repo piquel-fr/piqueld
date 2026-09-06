@@ -1,10 +1,10 @@
 //! Application repository implementation.
 
 use super::{
-    ApplicationId, ApplicationPage, ApplicationRow, MutationResult, NormalizedApplication,
-    OperationKind, ResolvedApplication, Sqlite, SqliteStore, StoreError, StoredApplication,
-    Transaction, canonical_resolved, generation_i64, now_ms, page_limit, valid_sha256,
-    validate_operation_steps,
+    ApplicationId, ApplicationPage, ApplicationRow, ApplicationState, ApplicationStatus,
+    MutationResult, NormalizedApplication, OperationKind, ResolvedApplication, Sqlite, SqliteStore,
+    StoreError, StoredApplication, Transaction, canonical_resolved, generation_i64, now_ms,
+    page_limit, valid_sha256, validate_operation_steps,
 };
 use uuid::Uuid;
 
@@ -231,7 +231,7 @@ impl SqliteStore {
         key_hash: &str,
         request_hash: &str,
         kind: OperationKind,
-    ) -> Result<Option<MutationResult>, StoreError> {
+    ) -> Result<Option<super::MutationReplay>, StoreError> {
         if !valid_sha256(key_hash) || !valid_sha256(request_hash) {
             return Err(StoreError::InvalidInput);
         }
@@ -239,9 +239,13 @@ impl SqliteStore {
         let replay =
             Self::find_idempotency(&mut tx, key_hash, request_hash, app_id.as_str(), kind).await?;
         tx.commit().await.map_err(StoreError::database)?;
-        Ok(replay
-            .filter(|replay| !replay.is_dead())
-            .map(|replay| replay.mutation))
+        Ok(replay.map(|replay| {
+            if replay.is_dead() {
+                super::MutationReplay::Retry
+            } else {
+                super::MutationReplay::Replay(replay.mutation)
+            }
+        }))
     }
 
     /// Replaces an application generation and records the replacement operation.
@@ -762,6 +766,54 @@ impl SqliteStore {
             return Err(StoreError::Corrupt);
         }
         Ok(stored)
+    }
+
+    /// Reads one live application and its lifecycle status from one snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotFound`] when either row is absent, or another
+    /// store error when persisted state fails validation.
+    pub async fn get_with_status(
+        &self,
+        id: &ApplicationId,
+    ) -> Result<(StoredApplication, ApplicationStatus), StoreError> {
+        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let id_value = id.as_str();
+        let application = sqlx::query_as!(
+            ApplicationRow,
+            r#"SELECT id AS "id!",name AS "name!",desired_json AS "desired_json!",resolved_json AS "resolved_json!",generation AS "generation!",spec_hash AS "spec_hash!",delete_intent AS "delete_intent!",created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!" FROM applications WHERE id=?1 AND deleted_at_ms IS NULL"#,
+            id_value
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .ok_or(StoreError::NotFound)?
+        .decode(&self.instance_id)?;
+        if application.application.id != *id {
+            return Err(StoreError::Corrupt);
+        }
+        let row = sqlx::query!(
+            r#"SELECT state AS "state!",observed_generation,message,updated_at_ms AS "updated_at_ms!" FROM application_status WHERE application_id=?1"#,
+            id_value
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .ok_or(StoreError::NotFound)?;
+        let status = ApplicationStatus {
+            application_id: id.clone(),
+            state: ApplicationState::parse(&row.state)?,
+            observed_generation: row
+                .observed_generation
+                .map(u64::try_from)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            message: row.message,
+            updated_at_ms: row.updated_at_ms,
+        };
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok((application, status))
     }
 
     /// Finds one live application by its user-facing name.

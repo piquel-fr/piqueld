@@ -9,7 +9,7 @@ use piqueld::api::{
 };
 use piqueld::store::{SqliteStore, StoredApplication, WorkState};
 use piqueld_client::{
-    AcceptedOperation, Client, CreateApplicationRequest, DeleteApplicationRequest,
+    AcceptedOperation, Client, ClientError, CreateApplicationRequest, DeleteApplicationRequest,
     PlanApplicationRequest, ReplaceApplicationRequest,
 };
 use piqueld_core::{
@@ -1308,6 +1308,66 @@ async fn active_reconcile_dedupe_does_not_repeat_runtime_io() {
         runtime.prepares.load(std::sync::atomic::Ordering::SeqCst),
         1,
         "only create resolves inputs; the deduped reconcile enqueues without runtime IO"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn stale_keyed_replace_is_rejected_before_runtime_prepare() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let store = Arc::new(
+        SqliteStore::open(temp.path().join("state.db"))
+            .await
+            .expect("fresh database opens"),
+    );
+    let instance = InstanceId::parse(store.instance_id().to_owned()).expect("instance id");
+    let runtime = Arc::new(CountingRuntime {
+        instance,
+        prepares: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(
+        serve(
+            listener,
+            router(ApiState::new(Arc::clone(&store), runtime.clone())),
+        )
+        .into_future(),
+    );
+    let client = Client::tcp(&format!("http://{address}/")).expect("valid endpoint");
+
+    let created = client
+        .create_application(
+            &CreateApplicationRequest {
+                manifest: manifest(),
+            },
+            "stale-replace-create",
+        )
+        .await
+        .expect("create succeeds");
+    let error = client
+        .replace_application_with_key(
+            &created.application_id,
+            &ReplaceApplicationRequest {
+                expected_generation: 2,
+                manifest: manifest(),
+            },
+            Some("stale-replace"),
+        )
+        .await
+        .expect_err("stale replacement is rejected");
+    assert!(matches!(
+        error,
+        ClientError::Api {
+            status: http::StatusCode::CONFLICT,
+            ..
+        }
+    ));
+    assert_eq!(
+        runtime.prepares.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "only the accepted create resolves inputs"
     );
 
     server.abort();
