@@ -28,7 +28,7 @@ async fn main() -> ExitCode {
 async fn run_with_timeout(cli: &Cli) -> Result<(), CliError> {
     let command = commands::run(cli);
     tokio::pin!(command);
-    let mut deadline = Instant::now() + cli.timeout;
+    let mut deadline = checked_deadline(Instant::now(), cli.timeout)?;
     // Set while an interactive prompt is open; think time is excluded by
     // shifting the deadline once the prompt closes again.
     let mut interaction_started: Option<Instant> = None;
@@ -36,7 +36,7 @@ async fn run_with_timeout(cli: &Cli) -> Result<(), CliError> {
         match (support::interaction_active(), interaction_started) {
             (true, None) => interaction_started = Some(Instant::now()),
             (false, Some(started)) => {
-                deadline += started.elapsed();
+                deadline = checked_deadline(deadline, started.elapsed())?;
                 interaction_started = None;
             }
             _ => {}
@@ -49,10 +49,21 @@ async fn run_with_timeout(cli: &Cli) -> Result<(), CliError> {
             () = tokio::time::sleep_until(deadline),
                 if !support::interaction_active() =>
             {
-                return Err(timeout_error(cli.timeout));
+                // The guard above is evaluated when the branch is registered.
+                // A prompt can become active afterwards, so recheck before
+                // treating the elapsed deadline as a command timeout.
+                if !support::interaction_active() {
+                    return Err(timeout_error(cli.timeout));
+                }
             }
         }
     }
+}
+
+fn checked_deadline(start: Instant, duration: Duration) -> Result<Instant, CliError> {
+    start
+        .checked_add(duration)
+        .ok_or_else(|| CliError::new(ErrorKind::Input, "timeout is too large"))
 }
 
 fn timeout_error(timeout: Duration) -> CliError {
@@ -123,5 +134,18 @@ mod tests {
         assert!(!looks_like_application_id("notes"));
         assert!(!looks_like_application_id("APP-NOTES"));
         assert!(!looks_like_application_id("--------"));
+    }
+
+    #[tokio::test]
+    async fn oversized_timeout_is_an_input_error_instead_of_a_panic() {
+        let cli =
+            Cli::try_parse_from(["piquelctl", "--timeout", "18446744073709551615s", "status"])
+                .expect("the duration parser accepts a syntactically valid value");
+
+        let error = super::run_with_timeout(&cli)
+            .await
+            .expect_err("the platform cannot represent the deadline");
+
+        assert_eq!(error.to_string(), "timeout is too large");
     }
 }

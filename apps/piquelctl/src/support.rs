@@ -6,19 +6,18 @@ use piqueld_client::{ApplicationView, ClientError, ValidationErrors};
 use serde_json::json;
 use std::{
     future::Future,
-    io::{self, IsTerminal, Write},
+    io::{self, IsTerminal, Read, Write},
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
-use tokio::{fs, sync::Notify, time};
+use tokio::{sync::Notify, time};
 use uuid::Uuid;
 
 pub(crate) const DEFAULT_SOCKET: &str = "/var/lib/piqueld/piqueld.sock";
 /// Must not exceed the daemon's `REQUEST_BODY_LIMIT_BYTES`, or a locally
 /// accepted manifest would fail server-side with 413.
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
-pub(crate) const MAX_PAGINATION_PAGES: usize = 10_000;
 pub(crate) const PAGE_SIZE: u16 = 3;
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -98,46 +97,68 @@ pub(crate) async fn confirm(yes: bool, prompt: &str) -> Result<()> {
 }
 
 pub(crate) async fn read_manifest(path: &Path) -> Result<String> {
-    let metadata = fs::metadata(path).await.map_err(|error| {
-        CliError::new(
-            ErrorKind::Input,
-            format!("could not read manifest {}: {error}", path.display()),
-        )
-    })?;
-    if !metadata.is_file() {
-        return Err(CliError::new(
-            ErrorKind::Input,
-            format!("manifest path {} is not a regular file", path.display()),
-        ));
-    }
-    if metadata.len() > MAX_MANIFEST_BYTES {
-        return Err(CliError::new(
-            ErrorKind::Input,
-            format!(
-                "manifest {} exceeds the {}-byte input limit",
-                path.display(),
-                MAX_MANIFEST_BYTES
-            ),
-        ));
-    }
-    let bytes = fs::read(path).await.map_err(|error| {
-        CliError::new(
-            ErrorKind::Input,
-            format!("could not read manifest {}: {error}", path.display()),
-        )
-    })?;
-    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
-        return Err(CliError::new(
-            ErrorKind::Input,
-            format!("manifest {} exceeds the input limit", path.display()),
-        ));
-    }
-    String::from_utf8(bytes).map_err(|_| {
-        CliError::new(
-            ErrorKind::Input,
-            format!("manifest {} is not valid UTF-8", path.display()),
-        )
+    let path = path.to_owned();
+    let display_path = path.display().to_string();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&path).map_err(|error| {
+            CliError::new(
+                ErrorKind::Input,
+                format!("could not read manifest {}: {error}", path.display()),
+            )
+        })?;
+        let metadata = file.metadata().map_err(|error| {
+            CliError::new(
+                ErrorKind::Input,
+                format!("could not inspect manifest {}: {error}", path.display()),
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                format!("manifest path {} is not a regular file", path.display()),
+            ));
+        }
+        if metadata.len() > MAX_MANIFEST_BYTES {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                format!(
+                    "manifest {} exceeds the {}-byte input limit",
+                    path.display(),
+                    MAX_MANIFEST_BYTES
+                ),
+            ));
+        }
+        // Cap the read itself so a concurrently growing file cannot force an
+        // unbounded allocation after the metadata check.
+        let mut bytes = Vec::new();
+        file.take(MAX_MANIFEST_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| {
+                CliError::new(
+                    ErrorKind::Input,
+                    format!("could not read manifest {}: {error}", path.display()),
+                )
+            })?;
+        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                format!("manifest {} exceeds the input limit", path.display()),
+            ));
+        }
+        String::from_utf8(bytes).map_err(|_| {
+            CliError::new(
+                ErrorKind::Input,
+                format!("manifest {} is not valid UTF-8", path.display()),
+            )
+        })
     })
+    .await
+    .map_err(|error| {
+        CliError::new(
+            ErrorKind::General,
+            format!("could not read manifest {display_path}: {error}"),
+        )
+    })?
 }
 
 pub(crate) fn manifest_name(manifest: &str, path: &Path) -> Result<String> {

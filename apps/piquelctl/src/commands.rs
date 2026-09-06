@@ -19,9 +19,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, fmt::Write as _, io, path::PathBuf};
 use tokio::{signal, time};
 
-use crate::support::{
-    DEFAULT_SOCKET, MAX_PAGINATION_PAGES, PAGE_SIZE, POLL_INTERVAL, transport_description,
-};
+use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
 
 pub(crate) async fn run(cli: &Cli) -> Result<()> {
     let client = build_client(cli)?;
@@ -46,7 +44,9 @@ fn build_client(cli: &Cli) -> Result<Client> {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET)),
         )
     };
-    Ok(client.with_timeout(cli.timeout))
+    // Leave room inside the complete command deadline for a second transport
+    // attempt when an idempotent mutation fails promptly.
+    Ok(client.with_timeout(cli.timeout / 2))
 }
 
 async fn status(cli: &Cli, client: &Client) -> Result<()> {
@@ -330,19 +330,31 @@ async fn prepare_plan(
 }
 
 async fn all_applications(client: &Client) -> Result<Vec<ApplicationView>> {
-    let mut applications = Vec::new();
+    fold_applications(client, Vec::new(), |applications, application| {
+        applications.push(application);
+    })
+    .await
+}
+
+async fn fold_applications<T>(
+    client: &Client,
+    mut value: T,
+    mut fold: impl FnMut(&mut T, ApplicationView),
+) -> Result<T> {
     let mut cursor = None;
     let mut seen_cursors = BTreeSet::new();
-    for _ in 0..MAX_PAGINATION_PAGES {
+    loop {
         let page: Page<ApplicationView> = client
             .applications_with(&ListApplicationsOptions {
                 cursor: cursor.clone(),
                 limit: Some(PAGE_SIZE),
             })
             .await?;
-        applications.extend(page.items);
+        for application in page.items {
+            fold(&mut value, application);
+        }
         let Some(next_cursor) = page.next_cursor else {
-            return Ok(applications);
+            return Ok(value);
         };
         if !seen_cursors.insert(next_cursor.clone()) {
             return Err(CliError::new(
@@ -352,18 +364,15 @@ async fn all_applications(client: &Client) -> Result<Vec<ApplicationView>> {
         }
         cursor = Some(next_cursor);
     }
-    Err(CliError::new(
-        ErrorKind::General,
-        "application pagination exceeded the safety bound",
-    ))
 }
 
 async fn find_by_name(client: &Client, name: &str) -> Result<Option<ApplicationView>> {
-    let matches = all_applications(client)
-        .await?
-        .into_iter()
-        .filter(|application| application.application.metadata.name == name)
-        .collect::<Vec<_>>();
+    let matches = fold_applications(client, Vec::new(), |matches, application| {
+        if application.application.metadata.name == name {
+            matches.push(application);
+        }
+    })
+    .await?;
     match matches.len() {
         0 => Ok(None),
         1 => Ok(matches.into_iter().next()),

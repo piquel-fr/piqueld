@@ -462,6 +462,33 @@ fn list_paginates_and_includes_reconciliation_status() {
 }
 
 #[test]
+fn repeated_pagination_cursor_is_rejected() {
+    let mut page_number = 0;
+    let server = start_server(false, 2, move |request| {
+        assert!(matches!(
+            request.path.as_str(),
+            "/api/v1/applications?limit=3"
+                | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=3"
+        ));
+        page_number += 1;
+        Reply::json(page(
+            if page_number == 1 {
+                vec![app_view("app-first-01", "first", 1)]
+            } else {
+                Vec::new()
+            },
+            Some("v1:app-first-01"),
+        ))
+    });
+
+    let output = run(&server, &["list"]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("repeated pagination cursor"));
+    let _ = server.finish();
+}
+
+#[test]
 fn show_resolves_name_across_pages_and_id_directly() {
     let first_server = start_server(false, 3, move |request| match request.path.as_str() {
         "/api/v1/applications?limit=3" => Reply::json(page(
