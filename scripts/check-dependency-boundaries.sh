@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-forbidden='^(axum|bollard|leptos|sqlx)( |$)'
+forbidden='^(axum|axum-core|bollard|bollard-stubs|leptos|sqlx|sqlx-core)( |$)'
 # Include normal, build, and development edges: the core boundary applies to all
 # targets, not only to production library dependencies.
 dependencies="$(cargo tree --package piqueld-core --edges all --prefix none)"

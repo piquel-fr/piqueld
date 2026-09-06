@@ -1,8 +1,9 @@
 //! Operation repository implementation.
 
 use super::{
-    ApplicationId, Operation, OperationError, OperationKind, OperationStep, SqliteStore, StepState,
-    StoreError, WorkState, now_ms, page_limit,
+    ApplicationId, Operation, OperationError, OperationKind, OperationStep, PrunedCounts,
+    SqliteStore, StepState, StoreError, WorkState, new_id, now_ms, page_limit,
+    validate_operation_steps,
 };
 
 #[derive(Debug)]
@@ -212,6 +213,47 @@ impl SqliteStore {
         tx.commit().await.map_err(StoreError::database)?;
         Ok((operation, steps))
     }
+
+    /// Reads the most recently created operation for an application.
+    ///
+    /// The dashboard uses this bounded lookup to show current command progress
+    /// without exposing a general operation-list endpoint.
+    ///
+    /// # Errors
+    /// Returns [`StoreError`] when the operation query or row decoding fails.
+    pub async fn latest_operation_for_application(
+        &self,
+        application_id: &ApplicationId,
+    ) -> Result<Option<(Operation, Vec<OperationStep>)>, StoreError> {
+        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let application_id = application_id.as_str();
+        let operation = sqlx::query_as!(
+            OperationRow,
+            r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE application_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1"#,
+            application_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let Some(operation) = operation else {
+            tx.commit().await.map_err(StoreError::database)?;
+            return Ok(None);
+        };
+        let operation = Operation::parse_row(operation)?;
+        let steps = sqlx::query_as!(
+            OperationStepRow,
+            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",action AS "action!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
+            operation.id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .map(OperationStep::parse_step_row)
+        .collect::<Result<Vec<_>, _>>()?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(Some((operation, steps)))
+    }
 }
 
 impl SqliteStore {
@@ -240,6 +282,66 @@ impl SqliteStore {
         .fetch_all(&self.pool)
         .await
         .map_err(StoreError::database)?;
+        rows.into_iter()
+            .map(OperationStep::parse_step_row)
+            .collect()
+    }
+
+    /// Appends actions introduced by a fresh runtime plan to the durable journal.
+    pub(crate) async fn append_operation_steps(
+        &self,
+        operation_id: &str,
+        actions: &[String],
+    ) -> Result<Vec<OperationStep>, StoreError> {
+        validate_operation_steps(actions)?;
+        if actions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut tx = self.begin_immediate().await?;
+        let running = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!: i64" FROM operations WHERE id=?1 AND state='running'"#,
+            operation_id
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        if running != 1 {
+            return Err(StoreError::IllegalTransition);
+        }
+        let start = sqlx::query_scalar!(
+            r#"SELECT COALESCE(MAX(position),-1)+1 AS "position!: i64" FROM operation_steps WHERE operation_id=?1"#,
+            operation_id
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let now = now_ms();
+        for (offset, action) in actions.iter().enumerate() {
+            let offset = i64::try_from(offset).map_err(StoreError::invalid_input)?;
+            let position = start.checked_add(offset).ok_or(StoreError::InvalidInput)?;
+            let step_id = new_id("step");
+            sqlx::query!(
+                "INSERT INTO operation_steps(id,operation_id,position,action,state,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,'pending',?5,?5)",
+                step_id,
+                operation_id,
+                position,
+                action,
+                now
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        }
+        let rows = sqlx::query_as!(
+            OperationStepRow,
+            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",action AS "action!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 AND position>=?2 ORDER BY position"#,
+            operation_id,
+            start
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)?;
         rows.into_iter()
             .map(OperationStep::parse_step_row)
             .collect()
@@ -383,5 +485,82 @@ impl SqliteStore {
         .rows_affected();
         tx.commit().await.map_err(StoreError::database)?;
         Ok(count)
+    }
+
+    /// Deletes terminal operations that finished before the cutoff together
+    /// with their steps and idempotency bindings in one transaction.
+    ///
+    /// Non-terminal operations, their steps, and bindings of surviving
+    /// operations are never touched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the pruning transaction cannot be committed.
+    pub async fn prune_finished_operations(
+        &self,
+        cutoff_ms: i64,
+    ) -> Result<PrunedCounts, StoreError> {
+        let mut tx = self.begin_immediate().await?;
+        sqlx::query!(
+            "DELETE FROM operation_steps WHERE operation_id IN (SELECT id FROM operations WHERE state IN ('succeeded','failed','cancelled') AND finished_at_ms < ?1)",
+            cutoff_ms
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let idempotency_keys = sqlx::query!(
+            "DELETE FROM mutation_idempotency WHERE operation_id IN (SELECT id FROM operations WHERE state IN ('succeeded','failed','cancelled') AND finished_at_ms < ?1)",
+            cutoff_ms
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        // The partial index operations_finished_retention_idx serves this scan.
+        let operations = sqlx::query!(
+            "DELETE FROM operations WHERE state IN ('succeeded','failed','cancelled') AND finished_at_ms < ?1",
+            cutoff_ms
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(PrunedCounts {
+            operations,
+            idempotency_keys,
+        })
+    }
+
+    /// Returns operations stuck in `running` longer than the expiry to
+    /// `recovery`, resetting their running steps the same way, and reports how
+    /// many operations were reclaimed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the reclamation transaction cannot be
+    /// committed.
+    pub async fn reclaim_expired_running(&self, older_than_ms: i64) -> Result<u64, StoreError> {
+        let now = now_ms();
+        let cutoff = now.saturating_sub(older_than_ms);
+        let mut tx = self.begin_immediate().await?;
+        let reclaimed = sqlx::query!(
+            "UPDATE operations SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE state='running' AND updated_at_ms < ?2",
+            now,
+            cutoff
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        sqlx::query!(
+            "UPDATE operation_steps SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE state='running' AND EXISTS (SELECT 1 FROM operations WHERE operations.id=operation_steps.operation_id AND operations.state='recovery')",
+            now
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(reclaimed)
     }
 }

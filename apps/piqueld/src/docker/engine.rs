@@ -5,8 +5,15 @@ use hyper_util::rt::TokioIo;
 use std::time::Duration;
 use tokio::net::UnixStream;
 
-const MAX_SERVICE_RESPONSE_BYTES: usize = 1024 * 1024;
+// A valid API request may be 2 MiB; Docker adds service metadata around that
+// specification when it is inspected.
+const MAX_SERVICE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Bollard's per-request timeout, in seconds. Bollard only bounds a request up
+/// to the response headers, which is why adapter calls additionally run under
+/// the module-level deadline wrapper.
+const BOLLARD_HEADER_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Debug)]
 enum ServiceWireError {
@@ -14,12 +21,39 @@ enum ServiceWireError {
     Response { status: StatusCode, body: Vec<u8> },
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Docker returned HTTP {status}: {message}")]
+struct ServiceResponseDiagnostic {
+    status: StatusCode,
+    message: String,
+}
+
 impl ServiceWireError {
     fn sanitized(self, operation: &'static str) -> DockerError {
         match self {
             Self::Public(error) => error,
-            Self::Response { .. } => DockerError::Request(operation),
+            Self::Response { status, body } => {
+                let message = String::from_utf8_lossy(&body)
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .take(2_048)
+                    .collect();
+                DockerError::RequestDiagnostic {
+                    operation,
+                    source: Box::new(ServiceResponseDiagnostic { status, message }),
+                }
+            }
         }
+    }
+
+    fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Self::Response {
+                status: StatusCode::NOT_FOUND,
+                ..
+            }
+        )
     }
 }
 
@@ -33,12 +67,16 @@ impl BollardDocker {
         let socket = socket_path
             .to_str()
             .ok_or(DockerError::Unavailable("connect to Docker Engine"))?;
-        Docker::connect_with_unix(socket, 120, bollard::API_DEFAULT_VERSION)
-            .map(|docker| Self {
-                docker: Arc::new(docker),
-                socket: Arc::from(socket_path),
-            })
-            .map_err(|error| DockerError::unavailable("connect to Docker Engine", error))
+        Docker::connect_with_unix(
+            socket,
+            BOLLARD_HEADER_TIMEOUT_SECS,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .map(|docker| Self {
+            docker: Arc::new(docker),
+            socket: Arc::from(socket_path),
+        })
+        .map_err(|error| DockerError::unavailable("connect to Docker Engine", error))
     }
 
     /// Performs one raw service request through Docker's Unix socket.
@@ -73,17 +111,25 @@ impl BollardDocker {
             .map_err(|_| {
                 ServiceWireError::Public(DockerError::Unavailable("connect to Docker Engine"))
             })?;
-        let (mut sender, connection) = tokio::time::timeout_at(
+        let (mut sender, connection) = match tokio::time::timeout_at(
             deadline,
             hyper::client::conn::http1::handshake(TokioIo::new(stream)),
         )
         .await
-        .map_err(|_| {
-            ServiceWireError::Public(DockerError::Request("open Docker service connection"))
-        })?
-        .map_err(|_| {
-            ServiceWireError::Public(DockerError::Request("open Docker service connection"))
-        })?;
+        {
+            // Elapsed deadlines are unavailability, like every other timeout.
+            Err(_) => {
+                return Err(ServiceWireError::Public(DockerError::Unavailable(
+                    "open Docker service connection",
+                )));
+            }
+            Ok(Err(_)) => {
+                return Err(ServiceWireError::Public(DockerError::Request(
+                    "open Docker service connection",
+                )));
+            }
+            Ok(Ok(parts)) => parts,
+        };
         // Hyper returns a connection driver separately from the request sender;
         // it must run concurrently for the sender to make progress. Always
         // abort and join it after the request so no driver survives a timeout.
@@ -94,6 +140,8 @@ impl BollardDocker {
             let request = Request::builder()
                 .method(method)
                 .uri(path)
+                // Docker's Unix-socket HTTP endpoint still requires a Host
+                // header; localhost is the conventional placeholder.
                 .header(header::HOST, "localhost")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::CONNECTION, "close")
@@ -137,18 +185,26 @@ impl BollardDocker {
 
     /// Inspects the complete service representation, restoring Bollard's
     /// typed health-check field after Docker's `Healthcheck` response key.
+    ///
+    /// Returns `None` when the service no longer exists.
     pub(super) async fn inspect_service_wire(
         &self,
         identifier: &str,
-    ) -> Result<bollard::models::Service, DockerError> {
-        let bytes = self
+    ) -> Result<Option<bollard::models::Service>, DockerError> {
+        let bytes = match self
             .service_request(Method::GET, &format!("/services/{identifier}"), None)
             .await
-            .map_err(|error| error.sanitized("inspect service"))?;
+        {
+            Ok(bytes) => bytes,
+            Err(error) if error.is_not_found() => return Ok(None),
+            Err(error) => return Err(error.sanitized("inspect service")),
+        };
         let mut value: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|_| DockerError::Request("decode service response"))?;
         Self::rename_swarm_healthcheck(&mut value, "Healthcheck", "HealthCheck");
-        serde_json::from_value(value).map_err(|_| DockerError::Request("decode service response"))
+        serde_json::from_value(value)
+            .map(Some)
+            .map_err(|_| DockerError::Request("decode service response"))
     }
 
     pub(super) async fn create_service_wire(&self, spec: &ServiceSpec) -> Result<(), DockerError> {
@@ -167,11 +223,14 @@ impl BollardDocker {
         mut version: u64,
         spec: &ServiceSpec,
     ) -> Result<(), DockerError> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let deadline = tokio::time::Instant::now() + SERVICE_REQUEST_TIMEOUT;
         loop {
             match self
                 .service_request(
                     Method::POST,
+                    // registryAuthFrom=spec is intentional: piqueld specs are
+                    // auth-free, so Docker must not fall back to credentials
+                    // from its own store.
                     &format!("/services/{name}/update?version={version}&registryAuthFrom=spec"),
                     Some(spec),
                 )
@@ -183,10 +242,14 @@ impl BollardDocker {
                         && tokio::time::Instant::now() < deadline =>
                 {
                     tokio::time::sleep(Duration::from_millis(250)).await;
-                    version = self
-                        .inspect_service_wire(name)
-                        .await?
-                        .version
+                    let refreshed =
+                        tokio::time::timeout_at(deadline, self.inspect_service_wire(name))
+                            .await
+                            .map_err(|_| {
+                                DockerError::Unavailable("refresh the service version")
+                            })??;
+                    version = refreshed
+                        .and_then(|service| service.version)
                         .and_then(|value| value.index)
                         .ok_or(DockerError::Request("read refreshed service version"))?;
                 }
@@ -212,8 +275,8 @@ impl BollardDocker {
 
     /// Renames the health-check key in either a service spec or a service response.
     fn rename_swarm_healthcheck(value: &mut serde_json::Value, from: &str, to: &str) {
-        let spec = if value.get("Spec").is_some() {
-            value.get_mut("Spec").expect("checked service spec")
+        let spec = if let Some(spec) = value.get_mut("Spec") {
+            spec
         } else {
             value
         };

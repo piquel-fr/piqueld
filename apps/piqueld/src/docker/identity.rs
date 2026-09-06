@@ -1,25 +1,46 @@
 use super::{
-    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, INSTANCE_LABEL, MANAGED_LABEL,
-    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name, valid_logical_name,
+    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder, Docker,
+    DockerError, HashMap, INSTANCE_LABEL, ImageSource, MANAGED_LABEL, ResourceKind, SERVICE_LABEL,
+    SPEC_HASH_LABEL, TryStreamExt, docker_resource_name, docker_resource_readable_prefix,
+    valid_logical_name,
 };
 
 impl BollardDocker {
-    /// Returns whether a Docker resource belongs to this application.
+    /// Builds the Docker label filter selecting one application's resources.
+    pub(super) fn application_label_filter(
+        application: &ApplicationId,
+    ) -> HashMap<String, Vec<String>> {
+        HashMap::from([(
+            "label".to_owned(),
+            vec![format!("{APPLICATION_LABEL}={application}")],
+        )])
+    }
+
+    /// Builds the complementary name filter used to detect canonical resources
+    /// whose ownership labels are missing or belong to another application.
+    pub(super) fn application_name_filter(
+        application: &ApplicationId,
+    ) -> HashMap<String, Vec<String>> {
+        HashMap::from([(
+            "name".to_owned(),
+            vec![docker_resource_readable_prefix(application)],
+        )])
+    }
+
+    /// Returns whether a Docker resource can belong to this application.
     ///
-    /// An existing application label is authoritative: resources labeled for
-    /// another application are never relevant, even when their names collide.
-    /// Unlabeled resources qualify only through an exact canonical name match
-    /// against this application's private network, the one resource name
-    /// derivable from the application identity alone.
+    /// Resource names are truncated for Docker, so ownership labels remain the
+    /// authoritative fallback when the readable name prefix is ambiguous.
     pub(super) fn relevant(
         name: &str,
         labels: &BTreeMap<String, String>,
         app: &ApplicationId,
     ) -> bool {
-        match labels.get(APPLICATION_LABEL) {
-            Some(owner) => owner == app.as_str(),
-            None => name == docker_resource_name(app, ResourceKind::Network, None),
-        }
+        let prefix = docker_resource_readable_prefix(app);
+        name.starts_with(&prefix)
+            || labels
+                .get(APPLICATION_LABEL)
+                .is_some_and(|value| value == app.as_str())
     }
 
     /// Checks the immutable overlay-network settings supported by piqueld.
@@ -126,5 +147,34 @@ impl BollardDocker {
                 && d.bytes()
                     .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl ImageSource for Docker {
+    async fn repo_digests(&self, reference: &str) -> Result<Option<Vec<String>>, DockerError> {
+        match self.inspect_image(reference).await {
+            Ok(image) => Ok(Some(image.repo_digests.unwrap_or_default())),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
+            Err(error) => Err(DockerError::image_resolution("inspect image", error)),
+        }
+    }
+
+    async fn pull(&self, reference: &str) -> Result<(), DockerError> {
+        self.create_image(
+            Some(
+                CreateImageOptionsBuilder::default()
+                    .from_image(reference)
+                    .build(),
+            ),
+            None,
+            None,
+        )
+        .try_collect::<Vec<_>>()
+        .await
+        .map(|_| ())
+        .map_err(|error| DockerError::image_resolution("pull image", error))
     }
 }

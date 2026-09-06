@@ -156,8 +156,23 @@ pub enum ResolvedSource {
         /// The image reference requested by the user.
         requested: String,
         /// The immutable image reference used at runtime.
+        #[serde(deserialize_with = "deserialize_digest_reference")]
         digest_reference: String,
     },
+}
+
+fn deserialize_digest_reference<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if immutable_digest_reference(&value) {
+        Ok(value)
+    } else {
+        Err(de::Error::custom(
+            "digest_reference must be an immutable repository@sha256:<64 hex> reference",
+        ))
+    }
 }
 
 impl ResolvedSource {
@@ -392,7 +407,7 @@ fn desired_application_from_labels(
         || labels.get(INSTANCE_LABEL).is_none_or(String::is_empty)
         || labels
             .get(SPEC_HASH_LABEL)
-            .is_none_or(|hash| Sha256Digest::parse(hash.clone()).is_err())
+            .is_none_or(|hash| !valid_sha256(hash))
     {
         return None;
     }
@@ -435,6 +450,11 @@ pub struct CompileError {
 /// Returns bounded compilation diagnostics when a service has no matching image
 /// resolution or its resolved image is not an immutable reference to the
 /// requested repository.
+///
+/// # Panics
+///
+/// Panics only if the domain hasher produced a malformed spec hash or a
+/// validated resolution is missing, both of which indicate internal bugs.
 pub fn compile_application(
     app: &NormalizedApplication,
     instance_id: InstanceId,
@@ -446,11 +466,13 @@ pub fn compile_application(
     }
 
     let spec_hash = app.spec_hash();
+    let digest =
+        Sha256Digest::parse(spec_hash.clone()).expect("spec_hash is produced by the domain hasher");
     let ownership = Ownership {
         instance_id: instance_id.clone(),
         application_id: app.id.clone(),
         service: None,
-        spec_hash: spec_hash.clone(),
+        spec_hash: digest.as_str().to_owned(),
     };
     let private_network = docker_resource_name(&app.id, ResourceKind::Network, None);
     Ok(DesiredApplication {
@@ -492,7 +514,7 @@ fn validate_application(
         };
         if !resolved_source_matches(&service.source, resolved) {
             errors.push(CompileError {
-                code: "source_resolution_mismatch".into(),
+                code: crate::codes::SOURCE_RESOLUTION_MISMATCH.into(),
                 resource: service.name.clone(),
                 message: "resolved source does not immutably resolve the normalized service source"
                     .into(),
@@ -510,7 +532,7 @@ fn unresolved_errors(
         .into_iter()
         .map(|requirement| match requirement {
             ResolutionRequirement::ResolveImage { service, .. } => CompileError {
-                code: "source_unresolved".into(),
+                code: crate::codes::SOURCE_UNRESOLVED.into(),
                 resource: service,
                 message: "service image has not been resolved to an immutable digest".into(),
             },
@@ -609,21 +631,26 @@ pub fn image_repository(reference: &str) -> Option<String> {
     if repository.is_empty() {
         return None;
     }
-    let repository = repository
-        .strip_prefix("index.docker.io/")
-        .unwrap_or(repository);
     let mut components = repository.split('/');
     let first = components.next()?;
-    let explicit_registry =
-        repository.contains('/') && (first.contains(['.', ':']) || first == "localhost");
-    if let Some(path) = repository.strip_prefix("docker.io/") {
+    let explicit_registry = repository.contains('/')
+        && (first.contains(['.', ':']) || first.eq_ignore_ascii_case("localhost"));
+    if repository.contains('/')
+        && (first.eq_ignore_ascii_case("docker.io")
+            || first.eq_ignore_ascii_case("index.docker.io"))
+    {
+        let path = &repository[first.len() + 1..];
         Some(if path.contains('/') {
-            repository.to_owned()
+            format!("docker.io/{path}")
         } else {
             format!("docker.io/library/{path}")
         })
     } else if explicit_registry {
-        Some(repository.to_owned())
+        Some(format!(
+            "{}{}",
+            first.to_ascii_lowercase(),
+            &repository[first.len()..]
+        ))
     } else if repository.contains('/') {
         Some(format!("docker.io/{repository}"))
     } else {
@@ -659,6 +686,7 @@ pub enum TaskState {
     Shutdown,
     /// Docker did not provide a recognized state.
     #[default]
+    #[serde(other)]
     Unknown,
 }
 
@@ -787,7 +815,7 @@ impl ObservedService {
             && unordered_eq(&self.mounts, &desired.mounts)
             && self.healthcheck == desired.healthcheck
             && self.resources == desired.resources
-            && sorted(&self.networks) == sorted(&desired.networks)
+            && unordered_eq(&self.networks, &desired.networks)
             && owned_label_subset(&self.labels, &desired.labels)
             && self.runtime_configuration_matches
     }
@@ -877,13 +905,6 @@ pub(crate) fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
     observed.sort_unstable();
     desired.sort_unstable();
     observed == desired
-}
-
-fn sorted(values: &[String]) -> Vec<&str> {
-    let mut values = values.iter().map(String::as_str).collect::<Vec<_>>();
-    values.sort_unstable();
-    values.dedup();
-    values
 }
 
 pub(crate) fn owned_label_subset(

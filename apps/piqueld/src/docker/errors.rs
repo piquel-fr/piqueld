@@ -54,6 +54,15 @@ pub enum DockerError {
         #[source]
         source: bollard::errors::Error,
     },
+    /// A raw Engine response failed, retaining bounded diagnostic context.
+    #[error("Docker request failed while {operation}")]
+    RequestDiagnostic {
+        /// The operation attempted against Docker.
+        operation: &'static str,
+        /// Bounded internal response detail.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 impl DockerError {
@@ -89,7 +98,9 @@ impl From<DockerError> for OperationError {
             | DockerError::ImageResolutionSource { operation, .. } => {
                 Self::ImageResolutionFailed(operation)
             }
-            DockerError::Request(operation) | DockerError::RequestSource { operation, .. } => {
+            DockerError::Request(operation)
+            | DockerError::RequestSource { operation, .. }
+            | DockerError::RequestDiagnostic { operation, .. } => {
                 Self::DockerRequestFailed(operation)
             }
         }

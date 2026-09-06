@@ -15,8 +15,18 @@ if [[ -n "${DOCKER_CONTEXT:-}" ]]; then
 elif [[ -n "${DOCKER_HOST:-}" ]]; then
   docker_endpoint="$DOCKER_HOST"
 else
-  docker_context="$(docker context show)"
-  docker_endpoint="$(docker context inspect "$docker_context" --format '{{.Endpoints.docker.Host}}')"
+  # An empty context name is not inspectable; fall back to the default socket.
+  # A lookup failure must abort rather than silently select the fallback,
+  # because later Docker commands would still target the CLI-resolved context.
+  if ! docker_context="$(docker context show)"; then
+    echo "docker-test could not resolve the Docker context" >&2
+    exit 1
+  fi
+  if [[ -n "$docker_context" ]]; then
+    docker_endpoint="$(docker context inspect "$docker_context" --format '{{.Endpoints.docker.Host}}')"
+  else
+    docker_endpoint="unix:///var/run/docker.sock"
+  fi
 fi
 if [[ "$docker_endpoint" != unix:///* ]]; then
   echo "docker-test requires a local Unix-socket Docker endpoint, found: $docker_endpoint" >&2
@@ -61,8 +71,17 @@ for _attempt in {1..60}; do
     >/dev/null 2>&1
   then
     docker exec "$container_id" chmod 666 /piqueld-socket/docker.sock
+    # A hung test must not hang the harness forever; --kill-after forces a
+    # SIGKILL when cargo test ignores the initial SIGTERM.
+    if command -v timeout >/dev/null 2>&1; then
+      test_wrapper=(timeout --kill-after=30s "${PIQUELD_DOCKER_TEST_TIMEOUT:-15m}")
+    else
+      echo "docker-test requires GNU timeout to bound the test run" >&2
+      exit 1
+    fi
     PIQUELD_DOCKER_ISOLATED=1 \
       PIQUELD_DOCKER_SOCKET="$socket_path" \
+      "${test_wrapper[@]}" \
       cargo test -p piqueld --test docker_integration -- --ignored
     exit 0
   fi

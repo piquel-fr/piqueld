@@ -13,10 +13,7 @@ use utoipa::{OpenApi, ToResponse};
         description = "piqueld control-plane API. Mutation responses identify durable operations; named volumes are retained on deletion.",
         license(name = "Apache-2.0", identifier = "Apache-2.0")
     ),
-    servers(
-        (url = "http://127.0.0.1:7845", description = "Default loopback TCP endpoint; clients may also use the configured Unix socket.")
-    ),
-    components(schemas(ErrorBody)),
+    components(schemas(ErrorBody))
 )]
 struct ApiDoc;
 

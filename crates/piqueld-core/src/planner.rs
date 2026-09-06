@@ -6,7 +6,7 @@ use crate::resource::{
     owned_label_subset, unordered_eq,
 };
 use crate::{ApplicationId, InstanceId};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -14,6 +14,8 @@ use std::{
     fmt::Write as _,
 };
 use utoipa::ToSchema;
+
+use crate::codes;
 
 /// Request used to generate a runtime plan.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
@@ -166,8 +168,7 @@ impl fmt::Display for ActionKind {
 }
 
 /// One ordered action in a runtime plan.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 pub struct PlanAction {
     /// Stable action sequence number.
     pub sequence: u32,
@@ -181,6 +182,47 @@ pub struct PlanAction {
     pub mutates_runtime: bool,
     /// Whether the action is destructive.
     pub destructive: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanActionWire {
+    sequence: u32,
+    kind: ActionKind,
+    reason: ActionReason,
+    risk: ActionRisk,
+    #[serde(default)]
+    mutates_runtime: bool,
+    #[serde(default)]
+    destructive: bool,
+}
+
+impl From<PlanActionWire> for PlanAction {
+    fn from(wire: PlanActionWire) -> Self {
+        Self {
+            sequence: wire.sequence,
+            kind: wire.kind,
+            reason: wire.reason,
+            risk: wire.risk,
+            mutates_runtime: wire.mutates_runtime,
+            destructive: wire.destructive,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PlanAction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = PlanActionWire::deserialize(deserializer)?;
+        if wire.destructive != (wire.risk == ActionRisk::Destructive) {
+            return Err(serde::de::Error::custom(
+                "destructive must match the action risk classification",
+            ));
+        }
+        Ok(wire.into())
+    }
 }
 
 impl PlanAction {
@@ -333,6 +375,11 @@ impl Plan {
     }
 
     /// Builds a plan for the requested desired/observed transition.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the plan exceeds `u32::MAX` actions, which the manifest
+    /// budgets make impossible.
     #[must_use]
     pub fn from_request(request: &PlanRequest, observed: &ObservedApplication) -> Self {
         let mut plan = match request {
@@ -369,7 +416,8 @@ impl Plan {
             }
         };
         for (index, action) in plan.actions.iter_mut().enumerate() {
-            action.sequence = u32::try_from(index + 1).unwrap_or(u32::MAX);
+            action.sequence = u32::try_from(index + 1)
+                .expect("plan action counts fit a u32 under the manifest budgets");
         }
         plan.diagnostics.sort_by(|left, right| {
             left.resource
@@ -383,7 +431,7 @@ impl Plan {
     fn collision(&mut self, name: &str, seen: &mut BTreeSet<String>) {
         if seen.insert(name.into()) {
             self.diagnostics.push(PlanDiagnostic {
-                code: "unowned_name_collision".into(),
+                code: codes::UNOWNED_NAME_COLLISION.into(),
                 severity: DiagnosticSeverity::Error,
                 resource: name.into(),
                 message: "a same-name resource is not owned by this piqueld application and will not be changed".into(),
@@ -394,7 +442,7 @@ impl Plan {
 
     fn immutable_drift(&mut self, name: &str, resource: &str) {
         self.diagnostics.push(PlanDiagnostic {
-            code: "immutable_configuration_drift".into(),
+            code: codes::IMMUTABLE_CONFIGURATION_DRIFT.into(),
             severity: DiagnosticSeverity::Error,
             resource: name.into(),
             message: format!(
@@ -406,10 +454,22 @@ impl Plan {
 
     fn ignored(&mut self, name: &str) {
         self.diagnostics.push(PlanDiagnostic {
-            code: "foreign_resource_ignored".into(),
+            code: codes::FOREIGN_RESOURCE_IGNORED.into(),
             severity: DiagnosticSeverity::Info,
             resource: name.into(),
             message: "foreign or unowned resource is outside this plan".into(),
+            blocking: false,
+        });
+    }
+
+    fn cleanup_deferred(&mut self, name: &str, resource: &str) {
+        self.diagnostics.push(PlanDiagnostic {
+            code: codes::CLEANUP_DEFERRED.into(),
+            severity: DiagnosticSeverity::Info,
+            resource: name.into(),
+            message: format!(
+                "the {resource} remains until earlier desired changes converge; cleanup is deferred"
+            ),
             blocking: false,
         });
     }
@@ -626,7 +686,13 @@ impl Plan {
                         }
                         Convergence::Failed => {
                             ready = false;
-                            self.diagnostics.push(PlanDiagnostic { code: "service_update_failed".into(), severity: DiagnosticSeverity::Error, resource: service.name.clone(), message: "service update failed; inspect the operation and Docker task state".into(), blocking: true });
+                            self.diagnostics.push(PlanDiagnostic {
+                                code: codes::SERVICE_UPDATE_FAILED.into(),
+                                severity: DiagnosticSeverity::Error,
+                                resource: service.name.clone(),
+                                message: "service update failed; inspect the operation and Docker task state".into(),
+                                blocking: true,
+                            });
                         }
                     }
                 }
@@ -658,10 +724,12 @@ impl Plan {
                             name: service.name.clone(),
                         },
                         ActionReason::Obsolete,
-                        ActionRisk::Availability,
+                        ActionRisk::Destructive,
                         true,
                     ));
                     waits.push(PlanAction::wait_for_service_removal(&service.name));
+                } else {
+                    self.cleanup_deferred(&service.name, "service");
                 }
             } else {
                 self.ignored(&service.name);
@@ -694,9 +762,11 @@ impl Plan {
                             name: network.name.clone(),
                         },
                         ActionReason::Obsolete,
-                        ActionRisk::Availability,
+                        ActionRisk::Destructive,
                         true,
                     ));
+                } else {
+                    self.cleanup_deferred(&network.name, "network");
                 }
             } else {
                 self.ignored(&network.name);
@@ -711,6 +781,7 @@ impl Plan {
     ) -> Self {
         let mut plan = Self::default();
         let mut waits = Vec::new();
+        let mut collisions = BTreeSet::new();
         for service in sorted_by_name(&observed.services, |service| &service.name) {
             if service.is_owned_by(instance_id, application_id) {
                 plan.actions.push(PlanAction::new(
@@ -718,12 +789,12 @@ impl Plan {
                         name: service.name.clone(),
                     },
                     ActionReason::ApplicationDeletion,
-                    ActionRisk::Availability,
+                    ActionRisk::Destructive,
                     true,
                 ));
                 waits.push(PlanAction::wait_for_service_removal(&service.name));
             } else {
-                plan.ignored(&service.name);
+                plan.collision(&service.name, &mut collisions);
             }
         }
         plan.actions.append(&mut waits);
@@ -736,11 +807,11 @@ impl Plan {
                         name: network.name.clone(),
                     },
                     ActionReason::ApplicationDeletion,
-                    ActionRisk::Availability,
+                    ActionRisk::Destructive,
                     true,
                 ));
             } else {
-                plan.ignored(&network.name);
+                plan.collision(&network.name, &mut collisions);
             }
         }
         for volume in sorted_by_name(&observed.volumes, |volume| &volume.name) {
@@ -756,7 +827,7 @@ impl Plan {
                     false,
                 ));
             } else {
-                plan.ignored(&volume.name);
+                plan.collision(&volume.name, &mut collisions);
             }
         }
         plan
@@ -793,15 +864,18 @@ fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<Strin
     if found.environment != desired.environment {
         fields.push("environment".into());
     }
-    if found.command != desired.command || found.arguments != desired.arguments {
-        fields.push("process".into());
+    if found.command != desired.command {
+        fields.push("command".into());
+    }
+    if found.arguments != desired.arguments {
+        fields.push("arguments".into());
     }
     if !unordered_eq(&found.mounts, &desired.mounts) {
         fields.push("mounts".into());
     }
-    if found.networks.iter().collect::<BTreeSet<_>>()
-        != desired.networks.iter().collect::<BTreeSet<_>>()
-    {
+    // Multiplicity is significant, matching `ObservedService::matches`, so a
+    // duplicated attachment registers as network drift.
+    if !unordered_eq(&found.networks, &desired.networks) {
         fields.push("networks".into());
     }
     if found.healthcheck != desired.healthcheck {
