@@ -24,8 +24,9 @@ mutually exclusive. The default socket is
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
 is interpreted as seconds. The timeout bounds the complete command; interactive
-confirmation prompts do not consume it, and each transport attempt receives
-half the budget so one safe retry of an idempotent mutation always fits.
+confirmation prompts do not consume it. Each transport attempt receives half
+the budget, leaving room for one retry of an idempotent mutation when the
+earlier command phases have not consumed the remaining command budget.
 Manifest files must be regular UTF-8 files no larger than 2 MiB, matching the
 daemon's API request body limit.
 
