@@ -4,6 +4,10 @@ unmaintained = "workspace"
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+skip = [
+  { crate = "thiserror@1.0.69", reason = "gloo-net 0.6 still depends on thiserror 1" },
+  { crate = "thiserror-impl@1.0.69", reason = "implementation crate paired with gloo-net's thiserror 1" },
+]
 
 [licenses]
 confidence-threshold = 0.8
