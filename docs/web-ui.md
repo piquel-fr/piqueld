@@ -4,9 +4,9 @@ piqueld ships a small client-side-rendered Leptos dashboard. It answers four
 questions: whether the daemon is reachable, which applications exist, what
 their desired and observed state is, and whether each application is converged,
 degraded, or failed. It has no mutation controls; the visible operator
-direction is to use `piquelctl` for plan, apply, reconcile, and delete.
+direction is to use `piquelctl` for plan, apply, and delete.
 
-The browser bundle uses the transport-neutral DTOs in `piqueld-client` and
+The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
 loopback TCP listener. The Unix socket is API-only, and the daemon does not add
 CORS, authentication, cookies, browser persistence, telemetry, or a public
@@ -66,9 +66,8 @@ only for extensionless dashboard paths. API, health, and unknown paths never
 receive the SPA shell. Content-hashed asset filenames are served with
 immutable caching; the shell is always revalidated.
 
-The dashboard performs one initial refresh, then bounded pagination
-(20 items per page, at most 20 pages) with bounded-concurrency application
-status reads. Background polls run every 15 seconds after success and back off
+The dashboard performs one initial refresh, then bounded pagination and
+application-status reads. Background polls run every 15 seconds after success and back off
 to at most 120 seconds after failures. Polls pause while the document is
 hidden, never overlap, and a manual refresh remains available. A failed refresh
 keeps the last successful view visible and marks it stale.

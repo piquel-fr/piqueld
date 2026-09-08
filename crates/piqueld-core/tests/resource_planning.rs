@@ -34,7 +34,7 @@ fn resolutions() -> ResolutionSet {
     }
 }
 
-fn observed(desired: &piqueld_core::resource::DesiredApplication) -> ObservedApplication {
+fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedApplication {
     ObservedApplication {
         networks: desired
             .networks
@@ -171,9 +171,9 @@ fn converged_services_need_no_work_and_delete_retains_volumes() {
             .any(|action| matches!(action.kind, ActionKind::RetainVolume { .. }))
     );
     assert!(deletion.actions.iter().any(|action| {
-        matches!(action.kind, ActionKind::RemoveService { .. }) && action.destructive
+        matches!(action.kind, ActionKind::RemoveService { .. }) && action.kind.destructive()
     }));
-    assert!(deletion.summary.destructive_count > 0);
+    assert!(deletion.summary().destructive_count > 0);
 
     let mut unexpected_healthcheck = observed.clone();
     assert!(unexpected_healthcheck.services[0].healthcheck.is_none());
@@ -228,7 +228,7 @@ fn converged_services_need_no_work_and_delete_retains_volumes() {
 // Extended planning coverage restored from the pre-06A suite.
 // ---------------------------------------------------------------------------
 
-use piqueld_core::planner::{ActionReason, ActionRisk, DiagnosticSeverity};
+use piqueld_core::planner::{ActionReason, DiagnosticSeverity};
 use piqueld_core::resource::{
     DesiredNetwork, DesiredService, DesiredVolume, OwnershipState, Sha256Digest,
 };
@@ -494,34 +494,7 @@ fn preview_plans_splice_resolution_actions_first() {
         },
         &ObservedApplication::default(),
     );
-    assert!(with_desired.summary.mutation_count > 0);
-}
-
-#[test]
-fn operation_steps_are_bounded_stable_and_deterministic() {
-    use piqueld_core::PlanAction;
-    let short = PlanAction::wait_for_service("web");
-    assert!(short.operation_step().len() <= 64);
-    assert_eq!(short.operation_step(), short.operation_step());
-
-    let long = PlanAction::new(
-        ActionKind::EnsureVolume {
-            volume: DesiredVolume {
-                logical_name: "data".repeat(40),
-                name:
-                    "very-long-volume-name-that-goes-on-and-on-and-never-seems-to-stop-being-long"
-                        .into(),
-                labels: std::collections::BTreeMap::default(),
-            },
-        },
-        ActionReason::Missing,
-        ActionRisk::DataAdjacent,
-        true,
-    );
-    let step = long.operation_step();
-    assert!(step.len() <= 64, "{step}");
-    assert!(step.contains('~'), "{step}");
-    assert_eq!(step, long.operation_step());
+    assert!(with_desired.summary().mutation_count > 0);
 }
 
 #[test]
@@ -545,27 +518,6 @@ fn wire_decoding_enforces_domain_guards() {
         "digest_reference": "docker.io/library/nginx:1",
     });
     assert!(serde_json::from_value::<ResolvedSource>(bad).is_err());
-
-    // PlanAction destructive/risk must agree.
-    let consistent = serde_json::json!({
-        "sequence": 1,
-        "kind": {"action": "retain_volume", "name": "vol"},
-        "reason": {"reason": "volume_retention_policy"},
-        "risk": "none",
-        "mutates_runtime": false,
-        "destructive": false,
-    });
-    assert!(serde_json::from_value::<piqueld_core::PlanAction>(consistent).is_ok());
-
-    let inconsistent = serde_json::json!({
-        "sequence": 1,
-        "kind": {"action": "retain_volume", "name": "vol"},
-        "reason": {"reason": "volume_retention_policy"},
-        "risk": "destructive",
-        "mutates_runtime": true,
-        "destructive": false,
-    });
-    assert!(serde_json::from_value::<piqueld_core::PlanAction>(inconsistent).is_err());
 }
 
 #[test]

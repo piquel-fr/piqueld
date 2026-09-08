@@ -1,16 +1,15 @@
-//! Operation repository implementation.
+//! Durable operation records; execution policy belongs to the controller.
 
 use super::{
-    ApplicationId, Operation, OperationError, OperationKind, OperationStep, PrunedCounts,
-    SqliteStore, StepState, StoreError, WorkState, new_id, now_ms, page_limit,
-    validate_operation_steps,
+    ApplicationId, Operation, OperationKind, OperationState, SqliteStore, StoreError, new_id,
+    now_ms,
 };
+use serde::Deserialize;
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 
-#[derive(Debug)]
 struct OperationRow {
     id: String,
     application_id: String,
-    generation: i64,
     kind: String,
     state: String,
     error_code: Option<String>,
@@ -20,547 +19,199 @@ struct OperationRow {
     started_at_ms: Option<i64>,
     finished_at_ms: Option<i64>,
 }
-
-impl SqliteStore {
-    /// Atomically completes a successful delete operation and hides its application.
-    pub(crate) async fn finish_delete_operation(
-        &self,
-        operation: &Operation,
-    ) -> Result<(), StoreError> {
-        let now = now_ms();
-        let generation = super::generation_i64(operation.generation)?;
-        let application_id = operation.application_id.as_str();
-        let mut tx = self.begin_immediate().await?;
-        let changed = sqlx::query!(
-            "UPDATE operations SET state='succeeded',error_code=NULL,error_message=NULL,updated_at_ms=?1,finished_at_ms=?1 WHERE id=?2 AND application_id=?3 AND generation=?4 AND kind='delete' AND state='running' AND NOT EXISTS (SELECT 1 FROM operation_steps WHERE operation_id=?2 AND state NOT IN ('succeeded','skipped'))",
-            now,
-            operation.id,
-            application_id,
-            generation
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if changed != 1 {
-            return Err(StoreError::IllegalTransition);
-        }
-        Self::finalize_delete_in_transaction(
-            &mut tx,
-            &operation.application_id,
-            operation.generation,
-            now,
-        )
-        .await?;
-        tx.commit().await.map_err(StoreError::database)
-    }
-
-    async fn recover_operation(&self, operation_id: &str, now: i64) -> Result<(), StoreError> {
-        let mut tx = self.begin_immediate().await?;
-        let changed = sqlx::query!(
-            "UPDATE operations SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE id=?2 AND state='running'",
-            now,
-            operation_id
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if changed != 1 {
-            return Err(Self::transition_miss(&mut tx, "operations", operation_id).await?);
-        }
-        sqlx::query!(
-            "UPDATE operation_steps SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE operation_id=?2 AND state='running'",
-            now,
-            operation_id
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        tx.commit().await.map_err(StoreError::database)
-    }
-
-    async fn finish_operation(
-        &self,
-        operation_id: &str,
-        from: WorkState,
-        to: WorkState,
-        error: Option<&OperationError>,
-        now: i64,
-    ) -> Result<(), StoreError> {
-        let to_state = to.as_str();
-        let from_state = from.as_str();
-        let error_code = error.map(OperationError::code);
-        let error_message = error.map(OperationError::message);
-        let started = (to == WorkState::Running).then_some(now);
-        let mut tx = self.begin_immediate().await?;
-        sqlx::query!(
-            "UPDATE operation_steps SET state='cancelled',error_code=NULL,error_message=NULL,updated_at_ms=?1,finished_at_ms=?1 WHERE operation_id=?2 AND state IN ('pending','running','recovery')",
-            now,
-            operation_id
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        let changed = sqlx::query!(
-            "UPDATE operations SET state=?1,error_code=?2,error_message=?3,updated_at_ms=?4,started_at_ms=COALESCE(started_at_ms,?5),finished_at_ms=?4 WHERE id=?6 AND state=?7",
-            to_state,
-            error_code,
-            error_message,
-            now,
-            started,
-            operation_id,
-            from_state
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if changed != 1 {
-            return Err(Self::transition_miss(&mut tx, "operations", operation_id).await?);
-        }
-        tx.commit().await.map_err(StoreError::database)
-    }
-}
-
-impl Operation {
-    fn parse_row(row: OperationRow) -> Result<Self, StoreError> {
-        Ok(Self {
-            id: row.id,
-            application_id: ApplicationId::parse(row.application_id)
+impl OperationRow {
+    fn decode(self) -> Result<Operation, StoreError> {
+        Ok(Operation {
+            id: self.id,
+            application_id: ApplicationId::parse(self.application_id)
                 .map_err(StoreError::corrupt)?,
-            generation: u64::try_from(row.generation).map_err(StoreError::corrupt)?,
-            kind: OperationKind::parse(&row.kind)?,
-            state: WorkState::parse(&row.state)?,
-            error_code: row.error_code,
-            error_message: row.error_message,
-            created_at_ms: row.created_at_ms,
-            updated_at_ms: row.updated_at_ms,
-            started_at_ms: row.started_at_ms,
-            finished_at_ms: row.finished_at_ms,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct OperationStepRow {
-    id: String,
-    operation_id: String,
-    position: i64,
-    action: String,
-    state: String,
-    attempt: i64,
-    error_code: Option<String>,
-    error_message: Option<String>,
-    created_at_ms: i64,
-    updated_at_ms: i64,
-    started_at_ms: Option<i64>,
-    finished_at_ms: Option<i64>,
-}
-
-impl OperationStep {
-    fn parse_step_row(row: OperationStepRow) -> Result<Self, StoreError> {
-        Ok(Self {
-            id: row.id,
-            operation_id: row.operation_id,
-            position: u32::try_from(row.position).map_err(StoreError::corrupt)?,
-            action: row.action,
-            state: StepState::parse(row.state.as_str())?,
-            attempt: u32::try_from(row.attempt).map_err(StoreError::corrupt)?,
-            error_code: row.error_code,
-            error_message: row.error_message,
-            created_at_ms: row.created_at_ms,
-            updated_at_ms: row.updated_at_ms,
-            started_at_ms: row.started_at_ms,
-            finished_at_ms: row.finished_at_ms,
+            kind: OperationKind::deserialize(serde::de::value::StrDeserializer::<
+                serde::de::value::Error,
+            >::new(&self.kind))
+            .map_err(StoreError::corrupt)?,
+            state: OperationState::deserialize(serde::de::value::StrDeserializer::<
+                serde::de::value::Error,
+            >::new(&self.state))
+            .map_err(StoreError::corrupt)?,
+            error_code: self.error_code,
+            error_message: self.error_message,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+            started_at_ms: self.started_at_ms,
+            finished_at_ms: self.finished_at_ms,
         })
     }
 }
 
 impl SqliteStore {
-    /// Reads an operation and its steps from one consistent database snapshot.
+    /// Fetches an operation, including cancelled history.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError`] when the operation is missing, malformed, or the
-    /// database transaction cannot be read.
-    pub async fn operation_with_steps(
-        &self,
-        operation_id: &str,
-    ) -> Result<(Operation, Vec<OperationStep>), StoreError> {
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
-        let operation = sqlx::query_as!(
-            OperationRow,
-            r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE id=?1"#,
-            operation_id
+    /// Returns a storage error or `NotFound`.
+    pub async fn operation(&self, id: &str) -> Result<Operation, StoreError> {
+        Self::operation_on(
+            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
+            id,
         )
-        .fetch_optional(&mut *tx)
         .await
-        .map_err(StoreError::database)?
-        .ok_or(StoreError::NotFound)
-        .and_then(Operation::parse_row)?;
-        let steps = sqlx::query_as!(
-            OperationStepRow,
-            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",action AS "action!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
-            operation_id
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .into_iter()
-        .map(OperationStep::parse_step_row)
-        .collect::<Result<Vec<_>, _>>()?;
-        tx.commit().await.map_err(StoreError::database)?;
-        Ok((operation, steps))
     }
 
-    /// Reads the most recently created operation for an application.
-    ///
-    /// The dashboard uses this bounded lookup to show current command progress
-    /// without exposing a general operation-list endpoint.
+    async fn operation_on(
+        connection: &mut SqliteConnection,
+        id: &str,
+    ) -> Result<Operation, StoreError> {
+        sqlx::query_as!(OperationRow,
+            r#"SELECT id AS "id!",application_id,kind,state,error_code,error_message,created_at_ms,updated_at_ms,started_at_ms,finished_at_ms FROM operations WHERE id=?1"#, id)
+            .fetch_optional(connection).await.map_err(StoreError::database)?
+            .ok_or(StoreError::NotFound)?.decode()
+    }
+
+    /// Fetches the newest operation for an application.
     ///
     /// # Errors
-    /// Returns [`StoreError`] when the operation query or row decoding fails.
+    /// Returns a storage or decoding error.
     pub async fn latest_operation_for_application(
         &self,
-        application_id: &ApplicationId,
-    ) -> Result<Option<(Operation, Vec<OperationStep>)>, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
-        let application_id = application_id.as_str();
-        let operation = sqlx::query_as!(
-            OperationRow,
-            r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE application_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1"#,
-            application_id
+        id: &ApplicationId,
+    ) -> Result<Option<Operation>, StoreError> {
+        let id = id.as_str();
+        sqlx::query_as!(OperationRow,
+            r#"SELECT id AS "id!",application_id,kind,state,error_code,error_message,created_at_ms,updated_at_ms,started_at_ms,finished_at_ms FROM operations WHERE application_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1"#, id)
+            .fetch_optional(&self.pool).await.map_err(StoreError::database)?
+            .map(OperationRow::decode).transpose()
+    }
+
+    /// Records a transition only if this is still the latest operation.
+    ///
+    /// # Errors
+    /// Returns a storage error or `IllegalTransition` when superseded.
+    pub async fn transition_operation(
+        &self,
+        id: &str,
+        from: OperationState,
+        to: OperationState,
+        error: Option<(&str, &str)>,
+    ) -> Result<(), StoreError> {
+        if !from.can_transition_to(to) || error.is_some() != (to == OperationState::Failed) {
+            return Err(StoreError::IllegalTransition);
+        }
+        let now = now_ms();
+        let finished = to.terminal().then_some(now);
+        let from = from.as_str();
+        let to = to.as_str();
+        let code = error.map(|e| e.0);
+        let message = error.map(|e| e.1);
+        let changed = sqlx::query!(
+            "UPDATE operations SET state=?1,error_code=?2,error_message=?3,updated_at_ms=?4,started_at_ms=CASE WHEN ?1='requested' THEN NULL WHEN ?1='running' THEN COALESCE(started_at_ms,?4) ELSE started_at_ms END,finished_at_ms=?5 WHERE id=?6 AND state=?7 AND id=(SELECT latest.id FROM operations latest WHERE latest.application_id=operations.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",
+            to,code,message,now,finished,id,from)
+            .execute(&self.pool).await.map_err(StoreError::database)?.rows_affected();
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::IllegalTransition)
+        }
+    }
+
+    /// Stores the latest error while a deletion remains running.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn record_operation_error(
+        &self,
+        operation: &Operation,
+        code: &str,
+        message: &str,
+    ) -> Result<(), StoreError> {
+        let now = now_ms();
+        let mut tx = self.begin_immediate().await?;
+        sqlx::query!("UPDATE operations SET error_code=?1,error_message=?2,updated_at_ms=?3 WHERE id=?4 AND state='running'",code,message,now,operation.id)
+            .execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("UPDATE application_status SET state='deleting',message=?1,updated_at_ms=?2 WHERE application_id=(SELECT application_id FROM operations WHERE id=?3 AND kind='delete' AND state='running')",message,now,operation.id)
+            .execute(&mut *tx).await.map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Atomically completes deletion after the controller verifies resource absence.
+    ///
+    /// # Errors
+    /// Returns a storage error or `IllegalTransition` for stale work.
+    pub async fn finish_delete_operation(&self, operation: &Operation) -> Result<(), StoreError> {
+        let mut tx = self.begin_immediate().await?;
+        let now = now_ms();
+        let changed = sqlx::query!("UPDATE operations SET state='succeeded',error_code=NULL,error_message=NULL,updated_at_ms=?1,finished_at_ms=?1 WHERE id=?2 AND kind='delete' AND state='running'",now,operation.id)
+            .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
+        if changed != 1 {
+            return Err(StoreError::IllegalTransition);
+        }
+        let app_id = operation.application_id.as_str();
+        sqlx::query!("UPDATE applications SET deleted_at_ms=?1,updated_at_ms=?1 WHERE id=?2 AND delete_intent=1",now,app_id)
+            .execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!(
+            "DELETE FROM application_status WHERE application_id=?1",
+            app_id
         )
-        .fetch_optional(&mut *tx)
+        .execute(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        let Some(operation) = operation else {
-            tx.commit().await.map_err(StoreError::database)?;
-            return Ok(None);
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Requests another attempt of the current failed or cancelled operation.
+    ///
+    /// # Errors
+    /// Returns a storage error or `IllegalTransition` if superseded.
+    pub async fn retry_operation(&self, operation: &Operation) -> Result<Operation, StoreError> {
+        let mut tx = self.begin_immediate().await?;
+        let now = now_ms();
+        let changed = sqlx::query!("UPDATE operations SET state='requested',error_code=NULL,error_message=NULL,started_at_ms=NULL,finished_at_ms=NULL,updated_at_ms=?1 WHERE id=?2 AND state IN ('failed','cancelled') AND id=(SELECT latest.id FROM operations latest WHERE latest.application_id=operations.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",now,operation.id)
+            .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
+        if changed != 1 {
+            return Err(StoreError::IllegalTransition);
+        }
+        let state = if operation.kind == OperationKind::Delete {
+            "deleting"
+        } else {
+            "pending"
         };
-        let operation = Operation::parse_row(operation)?;
-        let steps = sqlx::query_as!(
-            OperationStepRow,
-            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",action AS "action!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
-            operation.id
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .into_iter()
-        .map(OperationStep::parse_step_row)
-        .collect::<Result<Vec<_>, _>>()?;
+        let app_id = operation.application_id.as_str();
+        Self::write_status(&mut tx, app_id, state, None, now).await?;
+        let operation = Self::operation_on(&mut tx, &operation.id).await?;
         tx.commit().await.map_err(StoreError::database)?;
-        Ok(Some((operation, steps)))
-    }
-}
-
-impl SqliteStore {
-    pub(crate) async fn operation(&self, operation_id: &str) -> Result<Operation, StoreError> {
-        let row = sqlx::query_as!(
-            OperationRow,
-            r#"SELECT id AS "id!",application_id AS "application_id!",generation AS "generation!",kind AS "kind!",state AS "state!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operations WHERE id=?1"#,
-            operation_id
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(StoreError::database)?
-        .ok_or(StoreError::NotFound)?;
-        Operation::parse_row(row)
+        Ok(operation)
     }
 
-    pub(crate) async fn operation_steps(
-        &self,
-        operation_id: &str,
-    ) -> Result<Vec<OperationStep>, StoreError> {
-        let rows = sqlx::query_as!(
-            OperationStepRow,
-            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",action AS "action!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 ORDER BY position"#,
-            operation_id
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(StoreError::database)?;
-        rows.into_iter()
-            .map(OperationStep::parse_step_row)
-            .collect()
-    }
-
-    /// Appends actions introduced by a fresh runtime plan to the durable journal.
-    pub(crate) async fn append_operation_steps(
-        &self,
-        operation_id: &str,
-        actions: &[String],
-    ) -> Result<Vec<OperationStep>, StoreError> {
-        validate_operation_steps(actions)?;
-        if actions.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut tx = self.begin_immediate().await?;
-        let running = sqlx::query_scalar!(
-            r#"SELECT COUNT(*) AS "count!: i64" FROM operations WHERE id=?1 AND state='running'"#,
-            operation_id
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        if running != 1 {
-            return Err(StoreError::IllegalTransition);
-        }
-        let start = sqlx::query_scalar!(
-            r#"SELECT COALESCE(MAX(position),-1)+1 AS "position!: i64" FROM operation_steps WHERE operation_id=?1"#,
-            operation_id
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        let now = now_ms();
-        for (offset, action) in actions.iter().enumerate() {
-            let offset = i64::try_from(offset).map_err(StoreError::invalid_input)?;
-            let position = start.checked_add(offset).ok_or(StoreError::InvalidInput)?;
-            let step_id = new_id("step");
-            sqlx::query!(
-                "INSERT INTO operation_steps(id,operation_id,position,action,state,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,'pending',?5,?5)",
-                step_id,
-                operation_id,
-                position,
-                action,
-                now
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(StoreError::database)?;
-        }
-        let rows = sqlx::query_as!(
-            OperationStepRow,
-            r#"SELECT id AS "id!",operation_id AS "operation_id!",position AS "position!",action AS "action!",state AS "state!",attempt AS "attempt!",error_code,error_message,created_at_ms AS "created_at_ms!",updated_at_ms AS "updated_at_ms!",started_at_ms,finished_at_ms FROM operation_steps WHERE operation_id=?1 AND position>=?2 ORDER BY position"#,
-            operation_id,
-            start
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        tx.commit().await.map_err(StoreError::database)?;
-        rows.into_iter()
-            .map(OperationStep::parse_step_row)
-            .collect()
-    }
-
-    pub(crate) async fn pending_operations(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<Operation>, StoreError> {
-        // Only expose the oldest queued generation for each application. This
-        // makes ordering durable rather than depending on task scheduling or
-        // mutex acquisition order in one process.
-        let limit = page_limit(limit)?;
-        let rows = sqlx::query_as!(
-            OperationRow,
-            r#"SELECT o.id AS "id!",o.application_id AS "application_id!",o.generation AS "generation!",o.kind AS "kind!",o.state AS "state!",o.error_code,o.error_message,o.created_at_ms AS "created_at_ms!",o.updated_at_ms AS "updated_at_ms!",o.started_at_ms,o.finished_at_ms FROM operations o WHERE o.state IN ('pending','recovery') AND NOT EXISTS (SELECT 1 FROM operations older WHERE older.application_id=o.application_id AND older.state IN ('pending','recovery','running') AND (older.generation < o.generation OR (older.generation=o.generation AND (older.created_at_ms < o.created_at_ms OR (older.created_at_ms=o.created_at_ms AND older.id < o.id))))) ORDER BY o.created_at_ms,o.id LIMIT ?1"#,
-            limit
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(StoreError::database)?;
-        rows.into_iter().map(Operation::parse_row).collect()
-    }
-
-    pub(crate) async fn transition_operation(
-        &self,
-        operation_id: &str,
-        from: WorkState,
-        to: WorkState,
-        error: Option<crate::operations::OperationError>,
-    ) -> Result<(), StoreError> {
-        if !from.can_transition_to(to) {
-            return Err(StoreError::IllegalTransition);
-        }
-        if error.is_some() != (to == WorkState::Failed) {
-            return Err(StoreError::IllegalTransition);
-        }
-        let error_code = error.as_ref().map(OperationError::code);
-        let error_message = error.as_ref().map(OperationError::message);
-        let now = now_ms();
-        let finished = to.terminal().then_some(now);
-        let started = (to == WorkState::Running).then_some(now);
-        let to_state = to.as_str();
-        let from_state = from.as_str();
-
-        if from == WorkState::Running && to == WorkState::Recovery {
-            return self.recover_operation(operation_id, now).await;
-        }
-
-        if matches!(to, WorkState::Failed | WorkState::Cancelled) {
-            return self
-                .finish_operation(operation_id, from, to, error.as_ref(), now)
-                .await;
-        }
-
-        let mut connection = self.connection().await?;
-        let changed = sqlx::query!(
-            "UPDATE operations SET state=?1,error_code=?2,error_message=?3,updated_at_ms=?4,started_at_ms=COALESCE(started_at_ms,?5),finished_at_ms=?6 WHERE id=?7 AND state=?8 AND (?1 != 'running' OR NOT EXISTS (SELECT 1 FROM operations active WHERE active.application_id=(SELECT target.application_id FROM operations target WHERE target.id=?7) AND active.state='running' AND active.id != ?7)) AND (?1 != 'succeeded' OR NOT EXISTS (SELECT 1 FROM operation_steps WHERE operation_id=?7 AND state NOT IN ('succeeded','skipped')))",
-            to_state,
-            error_code,
-            error_message,
-            now,
-            started,
-            finished,
-            operation_id,
-            from_state
-        )
-        .execute(&mut *connection)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if changed == 1 {
-            Ok(())
-        } else {
-            Err(Self::transition_miss(&mut connection, "operations", operation_id).await?)
-        }
-    }
-    pub(crate) async fn transition_step(
-        &self,
-        step_id: &str,
-        from: StepState,
-        to: StepState,
-        error: Option<OperationError>,
-    ) -> Result<(), StoreError> {
-        if !from.can_transition_to(to) {
-            return Err(StoreError::IllegalTransition);
-        }
-        if error.is_some() != (to == StepState::Failed) {
-            return Err(StoreError::IllegalTransition);
-        }
-        let now = now_ms();
-        let error_code = error.as_ref().map(OperationError::code);
-        let error_message = error.as_ref().map(OperationError::message);
-        let finished = to.terminal().then_some(now);
-        let started = (to == StepState::Running).then_some(now);
-        let attempt = i64::from(to == StepState::Running && from != StepState::Running);
-        let to_state = to.as_str();
-        let from_state = from.as_str();
-        let mut connection = self.connection().await?;
-        let changed = sqlx::query!(
-            "UPDATE operation_steps SET state=?1,error_code=?2,error_message=?3,updated_at_ms=?4,started_at_ms=COALESCE(started_at_ms,?5),finished_at_ms=?6,attempt=attempt+?7 WHERE id=?8 AND state=?9 AND EXISTS (SELECT 1 FROM operations WHERE id=operation_steps.operation_id AND state='running') AND (?1 != 'running' OR (NOT EXISTS (SELECT 1 FROM operation_steps active WHERE active.operation_id=operation_steps.operation_id AND active.state='running' AND active.id != operation_steps.id) AND NOT EXISTS (SELECT 1 FROM operation_steps earlier WHERE earlier.operation_id=operation_steps.operation_id AND earlier.position < operation_steps.position AND earlier.state NOT IN ('succeeded','skipped'))))",
-            to_state,
-            error_code,
-            error_message,
-            now,
-            started,
-            finished,
-            attempt,
-            step_id,
-            from_state
-        )
-        .execute(&mut *connection)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if changed == 1 {
-            Ok(())
-        } else {
-            Err(Self::transition_miss(&mut connection, "operation_steps", step_id).await?)
-        }
-    }
-
-    pub(crate) async fn recover_interrupted(&self) -> Result<u64, StoreError> {
-        let mut tx = self.begin_immediate().await?;
-        let now = now_ms();
-        let mut count = sqlx::query!(
-            "UPDATE operations SET state='recovery',updated_at_ms=?1,started_at_ms=NULL WHERE state='running'",
-            now
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        count += sqlx::query!(
-            "UPDATE operation_steps SET state='recovery',updated_at_ms=?1,started_at_ms=NULL WHERE state='running'",
-            now
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        tx.commit().await.map_err(StoreError::database)?;
-        Ok(count)
-    }
-
-    /// Deletes terminal operations that finished before the cutoff together
-    /// with their steps and idempotency bindings in one transaction.
-    ///
-    /// Non-terminal operations, their steps, and bindings of surviving
-    /// operations are never touched.
+    /// Returns interrupted operations to the requested state on process startup.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError`] when the pruning transaction cannot be committed.
-    pub async fn prune_finished_operations(
-        &self,
-        cutoff_ms: i64,
-    ) -> Result<PrunedCounts, StoreError> {
-        let mut tx = self.begin_immediate().await?;
-        sqlx::query!(
-            "DELETE FROM operation_steps WHERE operation_id IN (SELECT id FROM operations WHERE state IN ('succeeded','failed','cancelled') AND finished_at_ms < ?1)",
-            cutoff_ms
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        let idempotency_keys = sqlx::query!(
-            "DELETE FROM mutation_idempotency WHERE operation_id IN (SELECT id FROM operations WHERE state IN ('succeeded','failed','cancelled') AND finished_at_ms < ?1)",
-            cutoff_ms
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        // The partial index operations_finished_retention_idx serves this scan.
-        let operations = sqlx::query!(
-            "DELETE FROM operations WHERE state IN ('succeeded','failed','cancelled') AND finished_at_ms < ?1",
-            cutoff_ms
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        tx.commit().await.map_err(StoreError::database)?;
-        Ok(PrunedCounts {
-            operations,
-            idempotency_keys,
-        })
+    /// Returns a storage error.
+    pub async fn recover_interrupted(&self) -> Result<u64, StoreError> {
+        let now = now_ms();
+        Ok(sqlx::query!("UPDATE operations SET state='requested',updated_at_ms=?1,started_at_ms=NULL,error_code=NULL,error_message=NULL WHERE state='running'",now)
+            .execute(&self.pool).await.map_err(StoreError::database)?.rows_affected())
     }
 
-    /// Returns operations stuck in `running` longer than the expiry to
-    /// `recovery`, resetting their running steps the same way, and reports how
-    /// many operations were reclaimed.
+    /// Prunes old terminal history, always retaining the latest operation per app.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError`] when the reclamation transaction cannot be
-    /// committed.
-    pub async fn reclaim_expired_running(&self, older_than_ms: i64) -> Result<u64, StoreError> {
-        let now = now_ms();
-        let cutoff = now.saturating_sub(older_than_ms);
-        let mut tx = self.begin_immediate().await?;
-        let reclaimed = sqlx::query!(
-            "UPDATE operations SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE state='running' AND updated_at_ms < ?2",
-            now,
-            cutoff
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        sqlx::query!(
-            "UPDATE operation_steps SET state='recovery',error_code=NULL,error_message=NULL,updated_at_ms=?1,started_at_ms=NULL,finished_at_ms=NULL WHERE state='running' AND EXISTS (SELECT 1 FROM operations WHERE operations.id=operation_steps.operation_id AND operations.state='recovery')",
-            now
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        tx.commit().await.map_err(StoreError::database)?;
-        Ok(reclaimed)
+    /// Returns a storage error.
+    pub async fn prune_finished_operations(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
+        Ok(sqlx::query!("DELETE FROM operations WHERE finished_at_ms < ?1 AND id != (SELECT latest.id FROM operations latest WHERE latest.application_id=operations.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",cutoff_ms)
+            .execute(&self.pool).await.map_err(StoreError::database)?.rows_affected())
+    }
+
+    pub(super) async fn insert_operation(
+        tx: &mut Transaction<'_, Sqlite>,
+        app: &ApplicationId,
+        kind: OperationKind,
+        now: i64,
+    ) -> Result<Operation, StoreError> {
+        let app_id = app.as_str();
+        sqlx::query!("UPDATE operations SET state='cancelled',error_code=NULL,error_message=NULL,finished_at_ms=?1,updated_at_ms=?1 WHERE application_id=?2 AND state IN ('requested','running')",now,app_id)
+            .execute(&mut **tx).await.map_err(StoreError::database)?;
+        let id = new_id("operation");
+        let kind = kind.as_str();
+        sqlx::query!("INSERT INTO operations(id,application_id,kind,state,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'requested',?4,?4)",id,app_id,kind,now)
+            .execute(&mut **tx).await.map_err(StoreError::database)?;
+        Self::operation_on(tx, &id).await
     }
 }

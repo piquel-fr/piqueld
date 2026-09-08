@@ -69,22 +69,6 @@ impl Reply {
         }
     }
 
-    fn error(status: &'static str, code: &'static str, details: Value) -> Self {
-        let details = serde_json::to_value(details).expect("JSON value");
-        Self {
-            status,
-            content_type: "application/json",
-            body: serde_json::to_vec(&json!({
-                "code": code,
-                "message": "the request conflicts with current state",
-                "details": details,
-                "request_id": "request-test",
-            }))
-            .expect("JSON response"),
-            drop_connection: false,
-        }
-    }
-
     fn dropped() -> Self {
         Self {
             status: "200 OK",
@@ -319,7 +303,7 @@ fn write_manifest(directory: &TempDir) -> PathBuf {
     path
 }
 
-fn app_view(id: &str, name: &str, generation: u64) -> Value {
+fn app_view(id: &str, name: &str) -> Value {
     json!({
         "application": {
             "id": id,
@@ -341,7 +325,6 @@ fn app_view(id: &str, name: &str, generation: u64) -> Value {
                 "volumes": [{"name": "data"}]
             }
         },
-        "generation": generation,
         "spec_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "delete_intent": false,
         "created_at_ms": 1,
@@ -354,39 +337,29 @@ fn page(items: Vec<Value>, next_cursor: Option<&str>) -> Value {
     json!({"items": items, "next_cursor": next_cursor})
 }
 
-fn status(id: &str, generation: u64, state: &str) -> Value {
+fn status(id: &str, state: &str) -> Value {
     json!({
         "application_id": id,
         "state": state,
-        "observed_generation": generation,
         "message": null,
         "updated_at_ms": 1
     })
 }
 
-fn plan(id: &str, generation: u64) -> Value {
+fn plan(id: &str) -> Value {
     json!({
         "application_id": id,
-        "proposed_generation": generation,
         "plan": {
             "actions": [],
-            "diagnostics": [],
-            "summary": {
-                "action_count": 0,
-                "mutation_count": 0,
-                "destructive_count": 0,
-                "blocking_conflicts": 0,
-                "by_action": {}
-            }
+            "diagnostics": []
         }
     })
 }
 
-fn accepted(id: &str, generation: u64) -> Value {
+fn accepted(id: &str) -> Value {
     json!({
         "operation_id": "operation-01",
-        "application_id": id,
-        "generation": generation
+        "application_id": id
     })
 }
 
@@ -395,16 +368,14 @@ fn operation(state: &str) -> Value {
     json!({
         "id": "operation-01",
         "application_id": "app-notes-01",
-        "generation": 1,
-        "kind": "create",
+        "kind": "apply",
         "state": state,
         "error_code": if failed { json!("runtime_failed") } else { Value::Null },
         "error_message": if failed { json!("runtime reconciliation failed") } else { Value::Null },
         "created_at_ms": 1,
         "updated_at_ms": 2,
         "started_at_ms": 1,
-        "finished_at_ms": if state == "succeeded" { json!(2) } else { Value::Null },
-        "steps": []
+        "finished_at_ms": if state == "succeeded" { json!(2) } else { Value::Null }
     })
 }
 
@@ -449,18 +420,18 @@ fn list_paginates_and_includes_reconciliation_status() {
                 page_number += 1;
                 if page_number == 1 {
                     Reply::json(page(
-                        vec![app_view("app-first-01", "first", 1)],
+                        vec![app_view("app-first-01", "first")],
                         Some("v1:app-first-01"),
                     ))
                 } else {
-                    Reply::json(page(vec![app_view("app-notes-01", "notes", 2)], None))
+                    Reply::json(page(vec![app_view("app-notes-01", "notes")], None))
                 }
             }
             "/api/v1/applications/app-first-01/status" => {
-                Reply::json(status("app-first-01", 1, "ready"))
+                Reply::json(status("app-first-01", "ready"))
             }
             "/api/v1/applications/app-notes-01/status" => {
-                Reply::json(status("app-notes-01", 2, "degraded"))
+                Reply::json(status("app-notes-01", "degraded"))
             }
             path => panic!("unexpected path {path}"),
         });
@@ -485,7 +456,7 @@ fn repeated_pagination_cursor_is_rejected() {
         page_number += 1;
         Reply::json(page(
             if page_number == 1 {
-                vec![app_view("app-first-01", "first", 1)]
+                vec![app_view("app-first-01", "first")]
             } else {
                 Vec::new()
             },
@@ -504,15 +475,13 @@ fn repeated_pagination_cursor_is_rejected() {
 fn show_resolves_name_across_pages_and_id_directly() {
     let first_server = start_server(false, 3, move |request| match request.path.as_str() {
         "/api/v1/applications?limit=3" => Reply::json(page(
-            vec![app_view("app-first-01", "first", 1)],
+            vec![app_view("app-first-01", "first")],
             Some("v1:app-first-01"),
         )),
         "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=3" => {
-            Reply::json(page(vec![app_view("app-notes-01", "notes", 1)], None))
+            Reply::json(page(vec![app_view("app-notes-01", "notes")], None))
         }
-        "/api/v1/applications/app-notes-01/status" => {
-            Reply::json(status("app-notes-01", 1, "ready"))
-        }
+        "/api/v1/applications/app-notes-01/status" => Reply::json(status("app-notes-01", "ready")),
         path => panic!("unexpected path {path}"),
     });
     let output = run(&first_server, &["show", "notes"]);
@@ -524,10 +493,8 @@ fn show_resolves_name_across_pages_and_id_directly() {
     let _ = first_server.finish();
 
     let second_server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes", 1)),
-        "/api/v1/applications/app-notes-01/status" => {
-            Reply::json(status("app-notes-01", 1, "ready"))
-        }
+        "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+        "/api/v1/applications/app-notes-01/status" => Reply::json(status("app-notes-01", "ready")),
         path => panic!("unexpected path {path}"),
     });
     let output = run(&second_server, &["show", "app-notes-01"]);
@@ -537,42 +504,14 @@ fn show_resolves_name_across_pages_and_id_directly() {
 }
 
 #[test]
-fn replacement_plan_uses_the_current_generation() {
-    let directory = tempdir().expect("manifest directory");
-    let manifest = write_manifest(&directory);
-    let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => {
-            Reply::json(page(vec![app_view("app-notes-01", "notes", 3)], None))
-        }
-        "/api/v1/applications/app-notes-01/plan" => {
-            assert_eq!(
-                request.headers.get("x-expected-generation"),
-                Some(&"3".to_owned())
-            );
-            assert_eq!(request.body, MANIFEST.as_bytes());
-            Reply::json(plan("app-notes-01", 4))
-        }
-        path => panic!("unexpected path {path}"),
-    });
-    let output = run(
-        &server,
-        &["plan", "--file", manifest.to_str().expect("manifest path")],
-    );
-    let value = assert_json_success(&output);
-    assert_eq!(value["proposed_generation"], 4);
-    let _ = server.finish();
-}
-
-#[test]
-fn plan_before_apply_confirmation_and_retry_key_are_exercised() {
+fn plan_before_apply_confirmation_and_transport_retry_are_exercised() {
     for unix in [false, true] {
         let directory = tempdir().expect("manifest directory");
         let manifest = write_manifest(&directory);
         let mut mutation_requests = Vec::new();
-        let server = start_server(unix, 4, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=3" => Reply::json(page(Vec::new(), None)),
-            "/api/v1/applications/plan" => Reply::json(plan("preview-00000001", 1)),
-            "/api/v1/applications" => {
+        let server = start_server(unix, 3, move |request| match request.path.as_str() {
+            "/api/v1/applications/plan" => Reply::json(plan("preview-00000001")),
+            "/api/v1/applications/apply" => {
                 mutation_requests.push(request.clone());
                 assert_eq!(request.body, MANIFEST.as_bytes());
                 if mutation_requests.len() == 1 {
@@ -582,8 +521,7 @@ fn plan_before_apply_confirmation_and_retry_key_are_exercised() {
                         request.headers.get("content-type"),
                         Some(&"application/toml".to_owned())
                     );
-                    assert!(!request.headers["idempotency-key"].is_empty());
-                    Reply::accepted(accepted("app-notes-01", 1))
+                    Reply::accepted(accepted("app-notes-01"))
                 }
             }
             path => panic!("unexpected path {path}"),
@@ -605,13 +543,13 @@ fn plan_before_apply_confirmation_and_retry_key_are_exercised() {
             "the plan must be displayed on stderr"
         );
         let records = server.finish();
-        let keys = records
+        let retries = records
             .iter()
-            .filter(|request| request.path == "/api/v1/applications")
-            .map(|request| request.headers["idempotency-key"].clone())
+            .filter(|request| request.path == "/api/v1/applications/apply")
+            .map(|request| request.body.clone())
             .collect::<Vec<_>>();
-        assert_eq!(keys.len(), 2);
-        assert_eq!(keys[0], keys[1]);
+        assert_eq!(retries.len(), 2);
+        assert_eq!(retries[0], retries[1]);
     }
 }
 
@@ -619,9 +557,8 @@ fn plan_before_apply_confirmation_and_retry_key_are_exercised() {
 fn noninteractive_apply_stops_after_displaying_the_plan() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
-    let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => Reply::json(page(Vec::new(), None)),
-        "/api/v1/applications/plan" => Reply::json(plan("preview-00000001", 1)),
+    let server = start_server(false, 1, move |request| match request.path.as_str() {
+        "/api/v1/applications/plan" => Reply::json(plan("preview-00000001")),
         path => panic!("mutation must not be sent; got {path}"),
     });
     let output = run(
@@ -635,47 +572,12 @@ fn noninteractive_apply_stops_after_displaying_the_plan() {
 }
 
 #[test]
-fn conflict_details_are_reported_without_polluting_json_stdout() {
-    let directory = tempdir().expect("manifest directory");
-    let manifest = write_manifest(&directory);
-    let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => {
-            Reply::json(page(vec![app_view("app-notes-01", "notes", 2)], None))
-        }
-        "/api/v1/applications/app-notes-01/plan" => Reply::error(
-            "409 Conflict",
-            "application_generation_conflict",
-            json!({"expected_generation": 1, "current_generation": 2}),
-        ),
-        path => panic!("unexpected path {path}"),
-    });
-    let output = run(
-        &server,
-        &[
-            "apply",
-            "--file",
-            manifest.to_str().expect("manifest path"),
-            "--expected-generation",
-            "1",
-            "--yes",
-        ],
-    );
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("application_generation_conflict"));
-    assert!(stderr.contains("current_generation"));
-    let _ = server.finish();
-}
-
-#[test]
 fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
-    let server = start_server(false, 4, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => Reply::json(page(Vec::new(), None)),
-        "/api/v1/applications/plan" => Reply::json(plan("preview-00000001", 1)),
-        "/api/v1/applications" => Reply::accepted(accepted("app-notes-01", 1)),
+    let server = start_server(false, 3, move |request| match request.path.as_str() {
+        "/api/v1/applications/plan" => Reply::json(plan("preview-00000001")),
+        "/api/v1/applications/apply" => Reply::accepted(accepted("app-notes-01")),
         "/api/v1/operations/operation-01" => Reply::json(operation("failed")),
         path => panic!("unexpected path {path}"),
     });
@@ -727,9 +629,9 @@ fn delete_reports_named_volume_retention_and_operation_completion() {
     for unix in [false, true] {
         let server = start_server(unix, 3, move |request| match request.path.as_str() {
             "/api/v1/applications?limit=3" => {
-                Reply::json(page(vec![app_view("app-notes-01", "notes", 1)], None))
+                Reply::json(page(vec![app_view("app-notes-01", "notes")], None))
             }
-            "/api/v1/applications/app-notes-01" => Reply::accepted(accepted("app-notes-01", 2)),
+            "/api/v1/applications/app-notes-01" => Reply::accepted(accepted("app-notes-01")),
             "/api/v1/operations/operation-01" => Reply::json(operation("succeeded")),
             path => panic!("unexpected path {path}"),
         });
@@ -748,7 +650,7 @@ fn operation_polls_by_default_and_no_wait_fetches_once() {
         assert_eq!(request.path, "/api/v1/operations/operation-01");
         calls += 1;
         Reply::json(if calls == 1 {
-            operation("pending")
+            operation("requested")
         } else {
             operation("succeeded")
         })
@@ -760,11 +662,11 @@ fn operation_polls_by_default_and_no_wait_fetches_once() {
 
     let server = start_server(false, 1, move |request| {
         assert_eq!(request.path, "/api/v1/operations/operation-01");
-        Reply::json(operation("pending"))
+        Reply::json(operation("requested"))
     });
     let output = run(&server, &["operation", "operation-01", "--no-wait"]);
     let value = assert_json_success(&output);
-    assert_eq!(value["state"], "pending");
+    assert_eq!(value["state"], "requested");
     let _ = server.finish();
 }
 
@@ -772,7 +674,7 @@ fn operation_polls_by_default_and_no_wait_fetches_once() {
 fn timeout_and_ctrl_c_end_only_the_local_wait() {
     let timeout_server = start_server(false, 1, move |request| {
         assert_eq!(request.path, "/api/v1/operations/operation-01");
-        Reply::json(operation("pending"))
+        Reply::json(operation("requested"))
     });
     let output = run_with_timeout(&timeout_server, &["operation", "operation-01"], "50ms");
     assert!(!output.status.success());
@@ -843,8 +745,8 @@ fn ambiguous_names_report_the_match_count() {
     let server = start_server(false, 1, move |request| match request.path.as_str() {
         "/api/v1/applications?limit=3" => Reply::json(page(
             vec![
-                app_view("app-notes-01", "notes", 1),
-                app_view("app-notes-02", "notes", 1),
+                app_view("app-notes-01", "notes"),
+                app_view("app-notes-02", "notes"),
             ],
             None,
         )),

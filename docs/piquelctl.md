@@ -41,11 +41,11 @@ written to stderr, so stdout remains valid JSON.
 | `show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
 | `plan` | `PlanView` |
 | `apply --no-wait` | `AcceptedOperation` |
-| `apply` | `{ "accepted": AcceptedOperation, "operation": OperationView }` |
+| `apply` | `{ "accepted": AcceptedOperation, "operation": Operation }` |
 | `delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
-| `delete` | `{ "accepted": AcceptedOperation, "operation": OperationView, "volumes_retained": true }` |
-| `operation --no-wait` | `OperationView` |
-| `operation` | `OperationView` |
+| `delete` | `{ "accepted": AcceptedOperation, "operation": Operation, "volumes_retained": true }` |
+| `operation --no-wait` | `Operation` |
+| `operation` | `Operation` |
 
 The DTO fields and error envelope are defined by the versioned API and the
 `piqueld-client` crate. CLI errors are reported on stderr and never mixed into
@@ -53,18 +53,21 @@ JSON stdout.
 
 ## Mutation safety
 
-`plan` and `apply` accept `--expected-generation N`; `delete` accepts the same
-option. A name lookup follows the paginated application list and a syntactically
-valid application ID is fetched directly. `apply` always plans first and will
-not mutate when the plan is blocked or when confirmation is declined.
+`plan` previews a manifest, and `apply` sends it to the single apply endpoint.
+The server creates or updates the application identified by its name. `apply`
+always previews first and stops when the plan is blocked or confirmation is
+declined. `show` and `delete` accept a name or ID; name lookup follows the
+paginated application list.
 
 Interactive `apply` and `delete` require a TTY confirmation unless `--yes` is
 provided. `--yes` is the explicit noninteractive confirmation for scripts.
 Deleting an application retains its named volumes; the CLI prints that notice
 and includes `volumes_retained: true` in JSON output.
 
-Each mutating invocation creates one idempotency key and reuses it for the
-single safe transport retry. The key is not regenerated during a retry.
+The server resolves images and deduplicates equivalent targets. The CLI does
+not create idempotency keys or send generation checks. It retries a transport
+failure once using the same manifest. Applying a mutable image tag again can
+produce new work if the digest changed.
 
 By default, `apply`, `delete`, and `operation` poll the accepted operation every
 250 ms until it reaches a terminal state. `--no-wait` returns immediately.
@@ -72,11 +75,9 @@ Pressing Ctrl-C ends only the local wait; it does not cancel the server-side
 operation, which can still be inspected with `piquelctl operation <id>`.
 
 The commonly useful exit codes are 0 for success, 1 for a general error, 2 for
-usage or input errors, 3 for generation conflicts, 4 for unavailable or timed
+usage or input errors, 3 for conflicts, 4 for unavailable or timed
 out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.
 
-Profiles and configuration files, authentication and tokens, secrets, builds,
-registries, routes, logs, state transfer, SSE, shell completion, editor flows,
-conflict merging, and elaborate stable exit categories remain deferred to the
-later CLI plan.
+There are no mutating browser controls. Logs, remote authentication, builds,
+registry management, and advanced interactive CLI flows remain future work.

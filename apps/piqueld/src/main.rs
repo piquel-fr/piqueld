@@ -3,10 +3,10 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use piqueld::api::{ApiState, UiAssets};
+use piqueld::application::DockerRuntime;
 use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
-use piqueld::operations::OperationScheduler;
-use piqueld::reconcile::{DockerRuntime, ReconcileHandler, run_coordinator};
+use piqueld::reconcile::Controller;
 use piqueld::store::SqliteStore;
 use piqueld_core::InstanceId;
 use std::{
@@ -72,22 +72,14 @@ async fn main() -> Result<()> {
         std::time::Duration::from_secs(config.reconciliation.prepare_timeout_seconds),
     ));
 
-    let handler = Arc::new(
-        ReconcileHandler::new(Arc::clone(&docker), Arc::clone(&store)).with_retry_policy(
-            piqueld::reconcile::RetryPolicy {
-                convergence_timeout: std::time::Duration::from_secs(
-                    config.reconciliation.convergence_timeout_seconds,
-                ),
-                ..piqueld::reconcile::RetryPolicy::default()
-            },
-        ),
+    let reconciler = Controller::new(Arc::clone(&docker), Arc::clone(&store)).with_retry_policy(
+        piqueld::reconcile::RetryPolicy {
+            convergence_timeout: std::time::Duration::from_secs(
+                config.reconciliation.convergence_timeout_seconds,
+            ),
+            ..piqueld::reconcile::RetryPolicy::default()
+        },
     );
-
-    let scheduler = Arc::new(OperationScheduler::new(
-        Arc::clone(&store),
-        handler,
-        config.reconciliation.max_parallel_operations,
-    ));
 
     let ui_assets = UiAssets::resolve();
     log_ui_status(&ui_assets);
@@ -102,16 +94,14 @@ async fn main() -> Result<()> {
     let scan_interval = std::time::Duration::from_secs(config.reconciliation.scan_interval_seconds);
     let finished_operation_days = config.retention.finished_operation_days;
     let controller = tokio::spawn(async move {
-        let result = run_coordinator(
-            scheduler,
-            Arc::clone(&store),
-            Arc::clone(&docker),
-            Arc::clone(&wake),
-            scan_interval,
-            finished_operation_days,
-            controller_token,
-        )
-        .await;
+        let result = reconciler
+            .run(
+                wake,
+                scan_interval,
+                finished_operation_days,
+                controller_token,
+            )
+            .await;
         controller_cancellation.cancel();
         result
     });

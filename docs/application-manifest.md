@@ -69,9 +69,11 @@ distroless bases) must use command health checks instead. Services, mounts,
 volumes, and environment maps are
 canonicalized before hashing. The specification hash is SHA-256 over a versioned
 canonical JSON envelope (`piqueld-spec-hash/v2`) covering only the canonical
-spec: editing `metadata` does not change the hash and therefore does not redeploy
-services.
+spec. The application name selects which application an apply targets; changing
+it targets a different application.
 
 The parser is pure. The Docker runtime resolves each image reference to an
-immutable digest before the application is committed. Resolved runtime state is
+immutable digest on every apply before comparing it with the stored target.
+Equivalent resolved targets share one operation; failed or cancelled operations
+can be requested again. Resolved runtime state is
 internal persistence data and is not mixed into the public manifest DTOs.

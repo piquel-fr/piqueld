@@ -1748,7 +1748,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -1807,7 +1806,6 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "utoipa",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

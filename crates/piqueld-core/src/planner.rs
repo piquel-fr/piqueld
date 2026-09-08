@@ -1,17 +1,15 @@
 //! Pure, deterministic desired/observed planning for the supported Swarm model.
 
 use crate::resource::{
-    Convergence, DesiredApplication, DesiredNetwork, DesiredService, DesiredVolume,
-    ObservedApplication, ObservedService, OwnershipState, ResolutionRequirement,
+    Convergence, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
+    ObservedService, OwnershipState, ResolutionRequirement, ResolvedApplication,
     owned_label_subset, unordered_eq,
 };
 use crate::{ApplicationId, InstanceId};
-use serde::{Deserialize, Deserializer, Serialize};
-use sha2::{Digest, Sha256};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    fmt::Write as _,
 };
 use utoipa::ToSchema;
 
@@ -24,7 +22,7 @@ pub enum PlanRequest {
     /// Reconcile the desired application with observed runtime state.
     Reconcile {
         /// Desired runtime resources.
-        desired: DesiredApplication,
+        desired: ResolvedApplication,
     },
     /// Remove runtime resources for an application while retaining volumes.
     Delete {
@@ -38,7 +36,7 @@ pub enum PlanRequest {
         /// Image resolutions still required before compilation.
         unresolved: Vec<ResolutionRequirement>,
         /// Compiled desired resources when all resolutions are reusable.
-        desired: Option<DesiredApplication>,
+        desired: Option<ResolvedApplication>,
     },
 }
 
@@ -133,6 +131,40 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
+    /// Classifies the effect of executing this action.
+    #[must_use]
+    pub const fn risk(&self) -> ActionRisk {
+        match self {
+            Self::EnsureVolume { .. } => ActionRisk::DataAdjacent,
+            Self::EnsureService { .. } => ActionRisk::Availability,
+            Self::RemoveService { .. } | Self::RemoveNetwork { .. } => ActionRisk::Destructive,
+            Self::ResolveImage { .. }
+            | Self::EnsureNetwork { .. }
+            | Self::WaitForService { .. }
+            | Self::WaitForServiceRemoval { .. }
+            | Self::RetainVolume { .. } => ActionRisk::None,
+        }
+    }
+
+    /// Whether this action changes Docker resources.
+    #[must_use]
+    pub const fn mutates_runtime(&self) -> bool {
+        matches!(
+            self,
+            Self::EnsureNetwork { .. }
+                | Self::EnsureVolume { .. }
+                | Self::EnsureService { .. }
+                | Self::RemoveService { .. }
+                | Self::RemoveNetwork { .. }
+        )
+    }
+
+    /// Whether this action removes Docker resources.
+    #[must_use]
+    pub const fn destructive(&self) -> bool {
+        matches!(self.risk(), ActionRisk::Destructive)
+    }
+
     /// Returns the stable machine-readable action name.
     #[must_use]
     pub fn name(&self) -> &'static str {
@@ -167,62 +199,14 @@ impl fmt::Display for ActionKind {
     }
 }
 
-/// One ordered action in a runtime plan.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
+/// One action and its explanation in a runtime plan.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PlanAction {
-    /// Stable action sequence number.
-    pub sequence: u32,
     /// Action details.
     pub kind: ActionKind,
     /// Why the action is present.
     pub reason: ActionReason,
-    /// Risk classification.
-    pub risk: ActionRisk,
-    /// Whether the action mutates runtime state.
-    pub mutates_runtime: bool,
-    /// Whether the action is destructive.
-    pub destructive: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PlanActionWire {
-    sequence: u32,
-    kind: ActionKind,
-    reason: ActionReason,
-    risk: ActionRisk,
-    #[serde(default)]
-    mutates_runtime: bool,
-    #[serde(default)]
-    destructive: bool,
-}
-
-impl From<PlanActionWire> for PlanAction {
-    fn from(wire: PlanActionWire) -> Self {
-        Self {
-            sequence: wire.sequence,
-            kind: wire.kind,
-            reason: wire.reason,
-            risk: wire.risk,
-            mutates_runtime: wire.mutates_runtime,
-            destructive: wire.destructive,
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for PlanAction {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = PlanActionWire::deserialize(deserializer)?;
-        if wire.destructive != (wire.risk == ActionRisk::Destructive) {
-            return Err(serde::de::Error::custom(
-                "destructive must match the action risk classification",
-            ));
-        }
-        Ok(wire.into())
-    }
 }
 
 impl PlanAction {
@@ -232,22 +216,10 @@ impl PlanAction {
         self.kind.to_string()
     }
 
-    /// Creates an unsequenced action with a derived destructive flag.
+    /// Creates an action with its planning reason.
     #[must_use]
-    pub fn new(
-        kind: ActionKind,
-        reason: ActionReason,
-        risk: ActionRisk,
-        mutates_runtime: bool,
-    ) -> Self {
-        Self {
-            sequence: 0,
-            destructive: risk == ActionRisk::Destructive,
-            kind,
-            reason,
-            risk,
-            mutates_runtime,
-        }
+    pub fn new(kind: ActionKind, reason: ActionReason) -> Self {
+        Self { kind, reason }
     }
 
     /// Creates a non-mutating service convergence wait.
@@ -258,8 +230,6 @@ impl PlanAction {
                 service: service.into(),
             },
             ActionReason::ConvergencePending,
-            ActionRisk::None,
-            false,
         )
     }
 
@@ -271,29 +241,7 @@ impl PlanAction {
                 service: service.into(),
             },
             ActionReason::ConvergencePending,
-            ActionRisk::None,
-            false,
         )
-    }
-
-    /// Returns a bounded operation-step identifier.
-    #[must_use]
-    pub fn operation_step(&self) -> String {
-        let value = self.to_string();
-        if value.len() <= 64 {
-            return value;
-        }
-        let digest = Sha256::digest(value.as_bytes());
-        let mut suffix = String::with_capacity(16);
-        for byte in digest.iter().take(8) {
-            write!(&mut suffix, "{byte:02x}").expect("writing to a String cannot fail");
-        }
-        let prefix_limit = 64 - suffix.len() - 1;
-        let mut prefix_end = value.len().min(prefix_limit);
-        while !value.is_char_boundary(prefix_end) {
-            prefix_end -= 1;
-        }
-        format!("{}~{suffix}", &value[..prefix_end])
     }
 }
 
@@ -355,8 +303,6 @@ pub struct Plan {
     pub actions: Vec<PlanAction>,
     /// Diagnostics discovered during planning.
     pub diagnostics: Vec<PlanDiagnostic>,
-    /// Aggregate action counts.
-    pub summary: PlanSummary,
 }
 
 impl Plan {
@@ -371,15 +317,12 @@ impl Plan {
     /// Returns whether the plan contains runtime mutations.
     #[must_use]
     pub fn has_mutations(&self) -> bool {
-        self.actions.iter().any(|action| action.mutates_runtime)
+        self.actions
+            .iter()
+            .any(|action| action.kind.mutates_runtime())
     }
 
     /// Builds a plan for the requested desired/observed transition.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the plan exceeds `u32::MAX` actions, which the manifest
-    /// budgets make impossible.
     #[must_use]
     pub fn from_request(request: &PlanRequest, observed: &ObservedApplication) -> Self {
         let mut plan = match request {
@@ -405,8 +348,6 @@ impl Plan {
                                     reference: reference.clone(),
                                 },
                                 ActionReason::ResolutionRequired,
-                                ActionRisk::None,
-                                false,
                             )
                         }
                     })
@@ -415,16 +356,11 @@ impl Plan {
                 plan
             }
         };
-        for (index, action) in plan.actions.iter_mut().enumerate() {
-            action.sequence = u32::try_from(index + 1)
-                .expect("plan action counts fit a u32 under the manifest budgets");
-        }
         plan.diagnostics.sort_by(|left, right| {
             left.resource
                 .cmp(&right.resource)
                 .then(left.code.cmp(&right.code))
         });
-        plan.summary = plan.summarize();
         plan
     }
 
@@ -474,7 +410,9 @@ impl Plan {
         });
     }
 
-    fn summarize(&self) -> PlanSummary {
+    /// Computes action counts from the current plan.
+    #[must_use]
+    pub fn summary(&self) -> PlanSummary {
         let mut by_action = BTreeMap::new();
         for action in &self.actions {
             *by_action.entry(action.kind.name().into()).or_insert(0) += 1;
@@ -484,12 +422,12 @@ impl Plan {
             mutation_count: self
                 .actions
                 .iter()
-                .filter(|action| action.mutates_runtime)
+                .filter(|action| action.kind.mutates_runtime())
                 .count(),
             destructive_count: self
                 .actions
                 .iter()
-                .filter(|action| action.destructive)
+                .filter(|action| action.kind.destructive())
                 .count(),
             blocking_conflicts: self
                 .diagnostics
@@ -500,7 +438,7 @@ impl Plan {
         }
     }
 
-    fn reconcile(desired: &DesiredApplication, observed: &ObservedApplication) -> Self {
+    fn reconcile(desired: &ResolvedApplication, observed: &ObservedApplication) -> Self {
         let mut plan = Self::default();
         let mut blocked_names = BTreeSet::new();
         let networks_ready = plan.ensure_networks(desired, observed, &mut blocked_names);
@@ -518,7 +456,7 @@ impl Plan {
 
     fn ensure_networks(
         &mut self,
-        desired: &DesiredApplication,
+        desired: &ResolvedApplication,
         observed: &ObservedApplication,
         blocked: &mut BTreeSet<String>,
     ) -> bool {
@@ -536,8 +474,6 @@ impl Plan {
                             network: network.clone(),
                         },
                         ActionReason::Missing,
-                        ActionRisk::None,
-                        true,
                     ));
                 }
                 Some(found) if !found.matches_ownership(network, desired) => {
@@ -560,7 +496,7 @@ impl Plan {
 
     fn ensure_volumes(
         &mut self,
-        desired: &DesiredApplication,
+        desired: &ResolvedApplication,
         observed: &ObservedApplication,
         blocked: &mut BTreeSet<String>,
     ) -> bool {
@@ -578,8 +514,6 @@ impl Plan {
                             volume: volume.clone(),
                         },
                         ActionReason::Missing,
-                        ActionRisk::DataAdjacent,
-                        true,
                     ));
                 }
                 Some(found)
@@ -604,7 +538,7 @@ impl Plan {
 
     fn retain_obsolete_volumes(
         &mut self,
-        desired: &DesiredApplication,
+        desired: &ResolvedApplication,
         observed: &ObservedApplication,
     ) {
         let wanted = desired
@@ -624,8 +558,6 @@ impl Plan {
                         name: volume.name.clone(),
                     },
                     ActionReason::VolumeRetentionPolicy,
-                    ActionRisk::None,
-                    false,
                 ));
             } else {
                 self.ignored(&volume.name);
@@ -635,7 +567,7 @@ impl Plan {
 
     fn ensure_services(
         &mut self,
-        desired: &DesiredApplication,
+        desired: &ResolvedApplication,
         observed: &ObservedApplication,
         blocked: &mut BTreeSet<String>,
     ) -> (bool, Vec<PlanAction>) {
@@ -654,8 +586,6 @@ impl Plan {
                             service: Box::new(service.clone()),
                         },
                         ActionReason::Missing,
-                        ActionRisk::Availability,
-                        true,
                     ));
                     waits.push(PlanAction::wait_for_service(&service.name));
                 }
@@ -672,8 +602,6 @@ impl Plan {
                         ActionReason::Drift {
                             fields: service_drift(found, service),
                         },
-                        ActionRisk::Availability,
-                        true,
                     ));
                     waits.push(PlanAction::wait_for_service(&service.name));
                 }
@@ -703,7 +631,7 @@ impl Plan {
 
     fn remove_obsolete_services(
         &mut self,
-        desired: &DesiredApplication,
+        desired: &ResolvedApplication,
         observed: &ObservedApplication,
         cleanup_ready: bool,
     ) {
@@ -724,8 +652,6 @@ impl Plan {
                             name: service.name.clone(),
                         },
                         ActionReason::Obsolete,
-                        ActionRisk::Destructive,
-                        true,
                     ));
                     waits.push(PlanAction::wait_for_service_removal(&service.name));
                 } else {
@@ -740,7 +666,7 @@ impl Plan {
 
     fn remove_obsolete_networks(
         &mut self,
-        desired: &DesiredApplication,
+        desired: &ResolvedApplication,
         observed: &ObservedApplication,
         cleanup_ready: bool,
     ) {
@@ -762,8 +688,6 @@ impl Plan {
                             name: network.name.clone(),
                         },
                         ActionReason::Obsolete,
-                        ActionRisk::Destructive,
-                        true,
                     ));
                 } else {
                     self.cleanup_deferred(&network.name, "network");
@@ -789,8 +713,6 @@ impl Plan {
                         name: service.name.clone(),
                     },
                     ActionReason::ApplicationDeletion,
-                    ActionRisk::Destructive,
-                    true,
                 ));
                 waits.push(PlanAction::wait_for_service_removal(&service.name));
             } else {
@@ -807,8 +729,6 @@ impl Plan {
                         name: network.name.clone(),
                     },
                     ActionReason::ApplicationDeletion,
-                    ActionRisk::Destructive,
-                    true,
                 ));
             } else {
                 plan.collision(&network.name, &mut collisions);
@@ -823,8 +743,6 @@ impl Plan {
                         name: volume.name.clone(),
                     },
                     ActionReason::VolumeRetentionPolicy,
-                    ActionRisk::None,
-                    false,
                 ));
             } else {
                 plan.collision(&volume.name, &mut collisions);

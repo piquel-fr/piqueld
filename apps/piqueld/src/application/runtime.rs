@@ -1,11 +1,19 @@
-use super::{
-    Arc, BoundaryError, DockerApi, DockerError, IMAGE_RESOLVE_TIMEOUT, InstanceId,
-    NormalizedApplication, Notify, PreparedApplication, ResolutionSet, ResolvedSource,
-    RuntimeBoundary, Source, StoredApplication, compile_application,
+//! Resolves manifest inputs and observes Docker before target acceptance.
+
+use super::{BoundaryError, PreparedApplication, RuntimeBoundary};
+use crate::{
+    docker::{DockerApi, DockerError, IMAGE_RESOLVE_TIMEOUT},
+    store::StoredApplication,
 };
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
+use piqueld_core::{
+    InstanceId, NormalizedApplication, ResolutionSet, compile_application, manifest::Source,
+    resource::ResolvedSource,
+};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
 
 const DOCKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 

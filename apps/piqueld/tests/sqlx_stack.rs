@@ -4,7 +4,7 @@ use piqueld::store::{SCHEMA_VERSION, SqliteStore};
 use sqlx::{Connection, sqlite::SqliteConnection};
 
 #[tokio::test]
-async fn sqlx_applies_the_single_fresh_plan_migration() {
+async fn sqlx_applies_migrations_and_preserves_instance_identity() {
     let directory = tempfile::tempdir().unwrap();
     let database_path = directory.path().join("sqlx-validation.db");
     let store = SqliteStore::open(&database_path).await.unwrap();
@@ -23,7 +23,7 @@ async fn sqlx_applies_the_single_fresh_plan_migration() {
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(table_count, 6);
+    assert_eq!(table_count, 4);
 
     let schema_version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(&mut connection)

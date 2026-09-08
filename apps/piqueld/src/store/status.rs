@@ -1,110 +1,72 @@
-//! Status repository implementation.
+//! Runtime status writes are guarded by the operation that observed them.
 
-use super::{
-    ApplicationId, ApplicationState, ApplicationStatus, SqliteStore, StoreError, generation_i64,
-    now_ms, valid_bounded_text,
-};
+use super::{ApplicationId, ApplicationState, ApplicationStatus, SqliteStore, StoreError, now_ms};
+use serde::Deserialize;
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 impl SqliteStore {
-    /// Reads the durable lifecycle status for one application.
+    /// Reads the application's last observed status.
     ///
     /// # Errors
-    ///
-    /// Returns [`StoreError`] when the status is missing, malformed, or the
-    /// database cannot be read.
+    /// Returns a storage error or `NotFound`.
     pub async fn status(&self, id: &ApplicationId) -> Result<ApplicationStatus, StoreError> {
-        let id_value = id.as_str();
-        let row = sqlx::query!(
-            r#"SELECT s.state AS "state!",s.observed_generation,s.message,s.updated_at_ms AS "updated_at_ms!" FROM application_status s JOIN applications a ON a.id=s.application_id WHERE s.application_id=?1 AND a.deleted_at_ms IS NULL"#,
-            id_value
+        Self::status_on(
+            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
+            id,
         )
-        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub(super) async fn status_on(
+        connection: &mut SqliteConnection,
+        id: &ApplicationId,
+    ) -> Result<ApplicationStatus, StoreError> {
+        let app_id = id.as_str();
+        let row = sqlx::query!(
+            "SELECT state,message,updated_at_ms FROM application_status WHERE application_id=?1",
+            app_id
+        )
+        .fetch_optional(connection)
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
         Ok(ApplicationStatus {
             application_id: id.clone(),
-            state: ApplicationState::parse(&row.state)?,
-            observed_generation: row
-                .observed_generation
-                .map(u64::try_from)
-                .transpose()
-                .map_err(StoreError::corrupt)?,
+            state: ApplicationState::deserialize(serde::de::value::StrDeserializer::<
+                serde::de::value::Error,
+            >::new(&row.state))
+            .map_err(StoreError::corrupt)?,
             message: row.message,
             updated_at_ms: row.updated_at_ms,
         })
     }
 
-    pub(crate) async fn set_status(
+    /// Updates status only for the application's latest operation.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn set_status_for_operation(
         &self,
-        id: &ApplicationId,
-        from: ApplicationState,
-        to: ApplicationState,
-        observed_generation: Option<u64>,
+        operation_id: &str,
+        state: ApplicationState,
         message: Option<&str>,
-    ) -> Result<(), StoreError> {
-        if !from.can_transition_to(to) {
-            return Err(StoreError::IllegalTransition);
-        }
-        if observed_generation.is_some()
-            && !matches!(
-                to,
-                ApplicationState::Ready | ApplicationState::Degraded | ApplicationState::Failed
-            )
-        {
-            return Err(StoreError::IllegalTransition);
-        }
-        if to == ApplicationState::Ready && observed_generation.is_none() {
-            return Err(StoreError::IllegalTransition);
-        }
-        if message.is_some_and(|value| !valid_bounded_text(value, 2048)) {
-            return Err(StoreError::InvalidInput);
-        }
-        let mut connection = self.connection().await?;
-        let observed_generation = observed_generation.map(generation_i64).transpose()?;
-        let to_state = to.as_str();
-        let from_state = from.as_str();
+    ) -> Result<bool, StoreError> {
         let now = now_ms();
-        let id_value = id.as_str();
-        let changed = sqlx::query!(
-            "UPDATE application_status SET state=?1,observed_generation=?2,message=?3,updated_at_ms=?4 WHERE application_id=?5 AND state=?6 AND (?2 IS NULL OR (observed_generation IS NULL OR ?2 >= observed_generation)) AND (?2 IS NULL OR ?2 <= (SELECT generation FROM applications WHERE id=?5)) AND (?1 != 'ready' OR ?2 = (SELECT generation FROM applications WHERE id=?5)) AND (?1 != 'deleting' OR (SELECT delete_intent FROM applications WHERE id=?5)=1) AND ((SELECT delete_intent FROM applications WHERE id=?5)=0 OR ?1 IN ('deleting','degraded','failed'))",
-            to_state,
-            observed_generation,
-            message,
-            now,
-            id_value,
-            from_state
-        )
-        .execute(&mut *connection)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        if changed == 1 {
-            Ok(())
-        } else {
-            Err(Self::transition_miss(&mut connection, "application_status", id_value).await?)
-        }
+        let state = state.as_str();
+        let changed = sqlx::query!("UPDATE application_status SET state=?1,message=?2,updated_at_ms=?3 WHERE application_id=(SELECT application_id FROM operations WHERE id=?4) AND ?4=(SELECT latest.id FROM operations latest WHERE latest.application_id=application_status.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",state,message,now,operation_id)
+            .execute(&self.pool).await.map_err(StoreError::database)?.rows_affected();
+        Ok(changed == 1)
     }
 
-    /// Marks a generation ready only while it is still the application's owner.
-    pub(crate) async fn mark_ready_if_current(
-        &self,
-        id: &ApplicationId,
-        generation: u64,
-    ) -> Result<bool, StoreError> {
-        let generation = generation_i64(generation)?;
-        let now = now_ms();
-        let id = id.as_str();
-        let changed = sqlx::query!(
-            "UPDATE application_status SET state='ready',observed_generation=?1,message='runtime converged',updated_at_ms=?2 WHERE application_id=?3 AND state IN ('deploying','degraded','failed','ready') AND EXISTS (SELECT 1 FROM applications WHERE id=?3 AND generation=?1 AND delete_intent=0 AND deleted_at_ms IS NULL)",
-            generation,
-            now,
-            id
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(StoreError::database)?
-        .rows_affected();
-        Ok(changed == 1)
+    pub(super) async fn write_status(
+        tx: &mut Transaction<'_, Sqlite>,
+        app_id: &str,
+        state: &str,
+        message: Option<&str>,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        sqlx::query!("INSERT INTO application_status(application_id,state,message,updated_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(application_id) DO UPDATE SET state=excluded.state,message=excluded.message,updated_at_ms=excluded.updated_at_ms",app_id,state,message,now)
+            .execute(&mut **tx).await.map_err(StoreError::database)?;
+        Ok(())
     }
 }

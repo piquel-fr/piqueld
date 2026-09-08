@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use std::{path::PathBuf, time::Duration};
 
-/// Essential commands for inspecting and operating Plan 06 applications.
+/// Essential commands for inspecting and operating applications.
 #[derive(Debug, Parser)]
 #[command(
     name = "piquelctl",
@@ -55,10 +55,6 @@ pub(crate) struct ManifestArgs {
     /// TOML application manifest.
     #[arg(long, value_name = "PATH")]
     pub(crate) file: PathBuf,
-
-    /// Generation to require when replacing an existing application.
-    #[arg(long, value_parser = parse_generation)]
-    pub(crate) expected_generation: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -66,10 +62,6 @@ pub(crate) struct ApplyArgs {
     /// TOML application manifest.
     #[arg(long, value_name = "PATH")]
     pub(crate) file: PathBuf,
-
-    /// Generation to require when replacing an existing application.
-    #[arg(long, value_parser = parse_generation)]
-    pub(crate) expected_generation: Option<u64>,
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]
@@ -84,10 +76,6 @@ pub(crate) struct ApplyArgs {
 pub(crate) struct DeleteArgs {
     /// Application name or stable ID.
     pub(crate) name_or_id: String,
-
-    /// Generation to require for deletion.
-    #[arg(long, value_parser = parse_generation)]
-    pub(crate) expected_generation: Option<u64>,
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]
@@ -106,15 +94,6 @@ pub(crate) struct OperationArgs {
     /// Fetch once instead of waiting for a terminal state.
     #[arg(long)]
     pub(crate) no_wait: bool,
-}
-
-pub(crate) fn parse_generation(value: &str) -> std::result::Result<u64, String> {
-    let generation = value
-        .parse::<u64>()
-        .map_err(|_| "generation must be a positive integer".to_owned())?;
-    (generation > 0)
-        .then_some(generation)
-        .ok_or_else(|| "generation must be a positive integer".to_owned())
 }
 
 pub(crate) fn parse_duration(value: &str) -> std::result::Result<Duration, String> {

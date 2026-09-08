@@ -1,34 +1,31 @@
 //! Docker-backed runtime preparation and durable reconciliation.
 
 use crate::{
-    api::{BoundaryError, PreparedApplication, RuntimeBoundary},
-    docker::{DockerApi, DockerError, IMAGE_RESOLVE_TIMEOUT},
-    operations::{OperationError, OperationHandler, OperationScheduler, SchedulerError},
+    docker::{DockerApi, DockerError},
+    operations::OperationError,
     store::{
-        ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, SqliteStore, StepState,
+        ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, OperationState, SqliteStore,
         StoreError, StoredApplication,
     },
 };
 use piqueld_core::{
-    InstanceId, NormalizedApplication, Plan, PlanAction, PlanRequest, ResolutionSet, codes,
-    compile_application,
-    manifest::Source,
+    Plan, PlanRequest, codes,
     planner::ActionKind,
-    resource::{APPLICATION_LABEL, Convergence, INSTANCE_LABEL, MANAGED_LABEL, ResolvedSource},
+    resource::{APPLICATION_LABEL, Convergence, INSTANCE_LABEL, MANAGED_LABEL},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 /// Executes durable operations against `Docker` and `SQLite`.
-pub struct ReconcileHandler<D> {
+pub struct Controller<D> {
     docker: Arc<D>,
     store: Arc<SqliteStore>,
     retry: RetryPolicy,
 }
 
-impl<D> ReconcileHandler<D> {
-    /// Creates a handler with the default retry policy.
+impl<D> Controller<D> {
+    /// Creates a controller with the default retry policy.
     #[must_use]
     pub fn new(docker: Arc<D>, store: Arc<SqliteStore>) -> Self {
         Self {
@@ -38,7 +35,7 @@ impl<D> ReconcileHandler<D> {
         }
     }
 
-    /// Replaces the retry policy used by this handler.
+    /// Replaces the retry policy used by this controller.
     #[must_use]
     ///
     /// # Panics
@@ -136,8 +133,5 @@ pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
 }
 
 mod actions;
+mod controller;
 mod coordinator;
-mod handler;
-mod runtime;
-pub use coordinator::run_coordinator;
-pub use runtime::DockerRuntime;

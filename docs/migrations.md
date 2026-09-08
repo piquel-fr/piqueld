@@ -1,42 +1,33 @@
 # Database migrations
 
-`piqueld` uses SQLx's SQLite driver as its sole persistence engine. The current
-product has one baseline migration, `migrations/0001_control_plane.sql`, which
-creates the fresh control-plane schema: instance metadata, applications, application
-status, durable operations, operation steps, and mutation idempotency bindings
-for create, replace, and delete requests.
+SQLx's SQLite driver owns persistence. The database at
+`<server.data_dir>/piqueld.db` contains application manifests, resolved targets,
+application status, operation history, and the control-plane instance identity.
+The store reads and writes these records; it does not resolve images or plan
+runtime changes.
 
-The product has never been deployed. The baseline may therefore be edited or
-consolidated while this branch is finalized; no compatibility migrations are
-needed for the abandoned internal schemas. After deployment, normal forward
-migration discipline applies.
+The migration sequence is:
 
-The applications table requires canonical desired JSON, resolved runtime JSON,
-the specification hash, generation, deletion intent, and a tombstone timestamp.
-The schema contains no build, source, registry, secret, route, or published-port
-tables. Operation and status diagnostics are bounded safe strings and never raw
-backend errors.
+- `0001_control_plane.sql`: the original prototype schema.
+- `0002_simplify_operations.sql`: preserves application IDs, desired and resolved
+  state, status, and operation history while removing generations, stored spec
+  hashes, idempotency bindings, and the individual operation-step journal.
+  Earlier create, replace, and reconcile operations become `apply`; pending and
+  recovery states become `requested`. Only the latest operation for an
+  application remains active.
 
-On startup the daemon reads `PRAGMA user_version`, rejects a newer schema, applies
-missing embedded migrations, and verifies the singleton instance metadata row. The
-final migration transaction also writes the instance metadata row, so a crash can
-never commit a schema version without instance identity. Retention pruning can
-delete terminal operations older than a configured cutoff together with their
-steps and idempotency bindings in one transaction; the partial index
-`operations_finished_retention_idx` serves that cutoff scan. The coordinator
-runs the pass during each reconciliation cycle.
-Before opening SQLite the daemon prepares its single private `server.data_dir`
-(creating missing components with mode 0700, refusing symlinks anywhere in the
-path, rejecting unsafe writable ancestors, and requiring a private final
-directory owned by the daemon user); the store itself only
-verifies that the database target inside it is absent or a regular file.
-The database file `<data_dir>/piqueld.db` is the sole authoritative state location.
-The build script provisions a disposable migrated SQLite database before SQLx
-compile-time queries are checked. It never opens an operator database.
+Startup reads `PRAGMA user_version`, rejects an unsupported newer schema, and
+applies missing embedded migrations transactionally. Existing application data
+and operation IDs survive the simplification migration. Fresh databases apply
+the same migration sequence.
 
-Run the focused fresh-database coverage with:
+Deletion marks an application deleted only after runtime verification. Its
+operation history remains available. Retention removes eligible terminal history
+older than the configured cutoff; `retention.finished_operation_days = 0`
+disables pruning. The latest operation is retained because it identifies the
+current target and supports duplicate requests and reconciliation.
 
-```console
-cargo test -p piqueld --test persistence
-cargo test -p piqueld --test sqlx_stack
-```
+The daemon prepares its private data directory before opening SQLite. The store
+checks the database file path. During builds, the daemon build script provisions
+a disposable migrated database for SQLx query checks; it does not open an
+operator database.

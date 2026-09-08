@@ -1,35 +1,30 @@
 # Resource compilation and planning
 
-`piqueld-core` is the pure center of the runtime model. Image resolution is the
-only mutable input required before compilation:
+`piqueld-core` contains deterministic manifest validation, resource compilation,
+planning, and shared lifecycle records. It performs no Docker or database I/O.
+Manifest input and normalized state share the same service, mount, health-check,
+and resource-limit types.
 
 ```text
-image reference -> immutable repository digest -> desired Swarm resources
+manifest + resolved image digests -> desired resources
+                   desired resources + observation -> plan
 ```
 
-`preview_resolution` reports unresolved images without performing I/O.
-`compile_application` produces backend-neutral desired private networks, named
-volumes, and replicated services. Services carry environment, command, args,
-mounts, health checks, resource limits, immutable images, and ownership labels.
+Desired resources carry ownership labels and deterministic names based on the
+internal application ID. Services additionally carry their logical service name.
+The manifest remains portable; runtime names and resolved image references are
+separate from its user-facing fields.
 
-Every owned resource is labeled with the control-plane instance, application, and
-normalized specification hash. Services also carry their logical service name.
-Deterministic resource names use the internal application ID, so editing the
-user-facing name does not rename Docker resources.
+A reconcile plan ensures networks and volumes, applies services, waits for
+convergence, and removes obsolete services and networks. Cleanup waits until the
+wanted infrastructure and services are ready. The planner compares the fields
+piqueld owns and reports blocking ownership or immutable-configuration conflicts.
+Foreign resources are never mutated.
 
-The planner compares only fields that this product owns. Reconcile actions are
-ordered as network and volume ensures, service ensures, convergence waits, and
-cleanup of obsolete services and networks. Drift reasons name the differing
-fields individually (for example `command`, `arguments`, `environment`). Same-name
-foreign resources are blocking conflicts and are never mutated; obsolete owned
-resources are only removed once the wanted infrastructure and services have
-converged, and plans report `cleanup_deferred` diagnostics while removal is
-pending.
+A deletion plan removes owned services and networks. Named volumes appear as
+informational retention actions and remain available after application deletion.
 
-Deletion removes owned services, waits for their absence, removes the private
-network, and emits informational `retain_volume` actions for named volumes.
-Volume data is deliberately not deleted by application deletion.
-
-Plans are deterministic and safe to recompute from a fresh observation. The
-daemon persists the generated operation steps, but later execution re-plans
-against current Docker state so retries remain idempotent.
+Plans describe current work and are safe to recompute. The controller executes
+an action and observes again; plans are not persisted as operation steps.
+A preview is an explanation of the current proposed transition, not a promise
+that Docker state will remain unchanged until apply.

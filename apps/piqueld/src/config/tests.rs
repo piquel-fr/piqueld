@@ -25,8 +25,6 @@ fn host_paths_and_loopback_listener_are_validated() {
         "[server]\ndata_dir = '/'",
         "[docker]\nsocket = 'relative.sock'",
         "[database]\npath = '/tmp/piqueld.db'",
-        "[reconciliation]\nmax_parallel_operations = 0",
-        "[reconciliation]\nmax_parallel_operations = 1025",
         "[reconciliation]\nscan_interval_seconds = 0",
         "[reconciliation]\nscan_interval_seconds = 86401",
         "[reconciliation]\nprepare_timeout_seconds = 86401",

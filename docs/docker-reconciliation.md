@@ -1,55 +1,44 @@
 # Docker reconciliation
 
-The daemon connects directly to Docker Engine through Bollard. Startup
-requires an active single-node Swarm manager; configuration may opt into
-initializing an inactive local engine. The supported workload is a prebuilt image
-resolved to a digest before persistence.
+The daemon connects to a local Docker Engine through Bollard. It requires a
+single-node Swarm manager and can initialize an inactive Swarm when configured.
+Images are resolved to immutable digests before desired state is accepted.
 
-The adapter manages private overlay networks, local named volumes, and replicated
-services. It rechecks deterministic names and ownership labels before every
-mutation. Foreign resources block a plan. Service updates use conservative
-start-first, one-at-a-time rolling settings and pause on failure. The runtime
-policy verifies exactly the fields piqueld authors — replication, update
-settings, the restart condition and delay, mounts, environment, network targets,
-health checks, and resource limits. Fields the specification builder never sets
-are accepted only at known Engine defaults; unsupported non-default values are
-treated as drift.
+The Docker adapter owns resource names, ownership checks, wire specifications,
+image resolution, and runtime observation. It manages private overlay networks,
+local named volumes, and replicated services. It verifies ownership before
+mutating a resource. Service updates use start-first rolling updates, one task at
+a time, and pause on failure.
 
-Every Docker interaction is bounded by a request-timeout deadline at the adapter
-boundary; Bollard only bounds a request up to the response headers, so the
-adapter applies its own deadline and reports elapsed deadlines as engine
-unavailability. The hand-rolled service wire path shares that classification:
-connect, handshake, and request deadlines all surface as unavailability with
-distinguishing context.
+One controller scans applications sequentially, waking after accepted mutations
+and at the configured interval. For each active operation it observes Docker,
+builds a fresh plan, executes the next action, and repeats. A stored action
+cursor is unnecessary: Docker state determines what remains to do. Interrupted
+work resumes through the same observation and planning loop after restart.
+The latest operation ID determines whether work is still current; superseded
+work stops before continuing with further actions.
 
-Image resolution verifies tag stability across the pull. The repository digests
-recorded for the tag are captured before and after the pull and must still
-overlap; a concurrently re-pointed tag restarts the resolution a bounded number
-of times before failing with the sanitized image-resolution error.
+Periodic scans also detect drift after a successful apply. Drift reconciliation
+uses the stored immutable image references. It does not refresh mutable tags;
+applying the manifest again does that.
 
-Docker's compact service-list response is never used as the final semantic source:
-the adapter performs a complete service inspection before ordinary observation or
-deciding whether an update is needed. Observations inspect the listed services
-concurrently and tolerate services deleted mid-observation; the task list is
-skipped entirely when no services remain. Service create, update, and inspection
-pass through a narrow wire adapter that normalizes Docker's `Healthcheck`
-spelling to the typed `HealthCheck` model. An exact transient
-`update out of sequence` response gets a bounded retry with a refreshed service
-version; other errors fail without retry.
+Apply operations succeed when the desired resources converge and fail when
+execution cannot complete within its limits. Applying the same resolved target
+after failure or cancellation requests another attempt under the same operation
+ID. A newer target receives a new operation and cancels earlier active work.
 
-Application deletion removes services and the private network, waits for
-convergence, and retains named volumes. Raw Docker messages and task text are
-kept in internal error sources for logs only; durable operation and status
-diagnostics contain stable codes and sanitized messages.
+Deletion removes services and networks and retains named volumes. A deletion
+operation remains `running` until a fresh observation verifies resource absence.
+An error or convergence timeout is recorded on the running operation, and the
+next scan tries again. A successful Docker removal response alone does not
+complete deletion.
 
-The coordinator wakes after API mutations and performs authoritative periodic
-polling scans. No Docker event listener or event-stream API is required. Durable
-operation steps resume after interruption, while each step re-observes and
-re-plans before executing.
+Docker requests and convergence attempts have deadlines. Image resolution checks
+that the pulled tag still identifies a stable repository digest. Service
+observations inspect full specifications, and service updates retry an exact
+transient version conflict with a refreshed Docker version. Raw Docker errors
+remain available to daemon logs; public diagnostics contain safe messages.
 
-The Docker boundary remains a real test seam. Focused fake-Docker tests exercise
-the scheduler and handler without an Engine, including foreign-resource
-refusals for services, networks, and volumes and the image tag-stability retry.
-The privileged lifecycle test is ignored by ordinary runs; `just docker-test`
-starts an isolated privileged Docker-in-Docker daemon, runs it against a private
-Unix socket, and cleans up the temporary daemon and resources afterward.
+The Docker trait supports fake-runtime tests. `just docker-test` runs the
+optional privileged lifecycle check against an isolated Docker-in-Docker daemon.
+Running that command is separate from ordinary compile and test checks.

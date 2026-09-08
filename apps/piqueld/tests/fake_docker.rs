@@ -2,9 +2,8 @@
 
 use async_trait::async_trait;
 use piqueld::docker::{DockerApi, DockerError, ImageSource, SwarmState, resolve_image_digest};
-use piqueld::operations::OperationScheduler;
-use piqueld::reconcile::ReconcileHandler;
-use piqueld::store::{SqliteStore, WorkState};
+use piqueld::reconcile::Controller;
+use piqueld::store::SqliteStore;
 use piqueld_core::Sha256Digest;
 use piqueld_core::planner::PlanRequest;
 use piqueld_core::resource::{
@@ -13,9 +12,17 @@ use piqueld_core::resource::{
     ResolutionSet, ResolvedApplication, ResolvedSource, SERVICE_LABEL, SPEC_HASH_LABEL, TaskState,
     compile_application, image_repository,
 };
-use piqueld_core::{ApplicationId, InstanceId, Plan, PlanAction, parse_toml};
+use piqueld_core::{ApplicationId, InstanceId, Plan, parse_toml};
+use piqueld_core::{Operation, OperationState};
 use sqlx::{Connection, SqliteConnection};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -23,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 struct FakeDocker {
     observed: Arc<Mutex<ObservedApplication>>,
     registry: Arc<Mutex<RegistryState>>,
+    deny_network_removal: Arc<AtomicBool>,
 }
 
 /// Programmatic hook: the tag is re-pointed after this many remaining pulls.
@@ -73,6 +81,7 @@ impl FakeDocker {
     fn with_observed(observed: ObservedApplication) -> Self {
         Self {
             observed: Arc::new(Mutex::new(observed)),
+            deny_network_removal: Arc::default(),
             registry: Arc::new(Mutex::new(RegistryState::default())),
         }
     }
@@ -267,6 +276,9 @@ impl DockerApi for FakeDocker {
         name: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
+        if self.deny_network_removal.load(Ordering::Relaxed) {
+            return Err(DockerError::OwnershipConflict);
+        }
         let mut observed = self.observed.lock().await;
         if let Some(existing) = observed
             .networks
@@ -331,7 +343,7 @@ fn foreign_labels(application_id: &ApplicationId) -> BTreeMap<String, String> {
     ])
 }
 
-struct SchedulerHarness {
+struct ControllerHarness {
     _directory: tempfile::TempDir,
     database_path: PathBuf,
     store: Arc<SqliteStore>,
@@ -339,10 +351,10 @@ struct SchedulerHarness {
     resolutions: ResolutionSet,
     resolved: ResolvedApplication,
     docker: Arc<FakeDocker>,
-    scheduler: OperationScheduler<ReconcileHandler<FakeDocker>>,
+    controller: Controller<FakeDocker>,
 }
 
-impl SchedulerHarness {
+impl ControllerHarness {
     async fn new() -> Self {
         let directory = tempfile::tempdir().expect("temporary directory");
         let database_path = directory.path().join("control-plane.db");
@@ -370,11 +382,7 @@ impl SchedulerHarness {
         )
         .expect("fixture resolves");
         let docker = Arc::new(FakeDocker::default());
-        let handler = Arc::new(ReconcileHandler::new(
-            Arc::clone(&docker),
-            Arc::clone(&store),
-        ));
-        let scheduler = OperationScheduler::new(store.clone(), handler, 1);
+        let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store));
         Self {
             _directory: directory,
             database_path,
@@ -383,15 +391,8 @@ impl SchedulerHarness {
             resolutions,
             resolved,
             docker,
-            scheduler,
+            controller,
         }
-    }
-
-    fn steps(plan: &piqueld_core::Plan) -> Vec<String> {
-        plan.actions
-            .iter()
-            .map(PlanAction::operation_step)
-            .collect()
     }
 
     fn reconcile_plan(
@@ -401,14 +402,11 @@ impl SchedulerHarness {
         Plan::from_request(&PlanRequest::Reconcile { desired }, observed)
     }
 
-    async fn create(&self) -> piqueld::store::MutationResult {
-        let initial_plan =
-            Self::reconcile_plan(self.resolved.clone(), &ObservedApplication::default());
-        let steps = Self::steps(&initial_plan);
+    async fn create(&self) -> Operation {
         self.store
-            .create(&self.application, &self.resolved, &steps)
+            .save_application(&self.application, &self.resolved)
             .await
-            .expect("application is created")
+            .expect("application saved")
     }
 
     async fn interrupt(&self, operation_id: &str) {
@@ -425,13 +423,6 @@ impl SchedulerHarness {
         .execute(&mut connection)
         .await
         .expect("operation can be interrupted");
-        sqlx::query(
-            "UPDATE operation_steps SET state='running',started_at_ms=created_at_ms,updated_at_ms=created_at_ms WHERE operation_id=?1",
-        )
-        .bind(operation_id)
-        .execute(&mut connection)
-        .await
-        .expect("operation steps can be interrupted");
     }
 
     async fn assert_recovered(&self, operation_id: &str) {
@@ -441,18 +432,12 @@ impl SchedulerHarness {
             .await
             .expect("status is readable");
         assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
-        let (operation, steps) = self
+        let operation = self
             .store
-            .operation_with_steps(operation_id)
+            .operation(operation_id)
             .await
             .expect("operation journal is readable");
-        assert_eq!(operation.state, piqueld::store::WorkState::Succeeded);
-        assert!(steps.iter().all(|step| {
-            matches!(
-                step.state,
-                piqueld::store::StepState::Succeeded | piqueld::store::StepState::Skipped
-            )
-        }));
+        assert_eq!(operation.state, OperationState::Succeeded);
         let observed = self
             .docker
             .observe(&self.application.id)
@@ -462,7 +447,7 @@ impl SchedulerHarness {
         assert_eq!(observed.services.len(), 1);
     }
 
-    async fn replace(&self) -> (piqueld::store::MutationResult, ResolvedApplication) {
+    async fn replace(&self) -> (Operation, ResolvedApplication) {
         let mut replacement = self.application.clone();
         replacement.spec.services[0].replicas = 2;
         let replacement = replacement.normalize();
@@ -472,42 +457,22 @@ impl SchedulerHarness {
             &self.resolutions,
         )
         .expect("replacement resolves");
-        let observed = self
-            .docker
-            .observe(&self.application.id)
-            .await
-            .expect("observation");
-        let replacement_plan = Self::reconcile_plan(replacement_resolved.clone(), &observed);
-        let steps = Self::steps(&replacement_plan);
         let replaced = self
             .store
-            .replace(&replacement, &replacement_resolved, 1, &steps)
+            .save_application(&replacement, &replacement_resolved)
             .await
             .expect("application replacement is durable");
         (replaced, replacement_resolved)
     }
 
-    async fn repair_drift(&self, desired: &ResolvedApplication) {
+    async fn repair_drift(&self) {
         {
             let mut observed = self.docker.observed.lock().await;
             observed.services[0].replicas = 1;
             observed.services[0].convergence = Convergence::Degraded;
         }
-        let observed = self
-            .docker
-            .observe(&self.application.id)
-            .await
-            .expect("drift observation");
-        let drift_plan = Self::reconcile_plan(desired.clone(), &observed);
-        let steps = Self::steps(&drift_plan);
-        let drift = self
-            .store
-            .request_reconcile(&self.application.id, 2, &steps)
-            .await
-            .expect("drift repair is durable");
-        assert_eq!(drift.generation, 2);
-        self.scheduler
-            .recover_and_run(CancellationToken::new())
+        self.controller
+            .scan(&CancellationToken::new())
             .await
             .expect("drift repair converges");
         assert_eq!(
@@ -521,22 +486,9 @@ impl SchedulerHarness {
         );
     }
 
-    async fn delete(&self, desired: &ResolvedApplication) -> piqueld::store::MutationResult {
-        let observed = self
-            .docker
-            .observe(&self.application.id)
-            .await
-            .expect("delete observation");
-        let deletion_plan = Plan::from_request(
-            &PlanRequest::Delete {
-                application_id: self.application.id.clone(),
-                instance_id: desired.instance_id.clone(),
-            },
-            &observed,
-        );
-        let steps = Self::steps(&deletion_plan);
+    async fn delete(&self) -> Operation {
         self.store
-            .request_delete(&self.application.id, 2, &steps)
+            .request_delete(&self.application.id)
             .await
             .expect("delete is durable")
     }
@@ -558,24 +510,23 @@ impl SchedulerHarness {
 }
 
 #[tokio::test]
-async fn scheduler_converges_a_prebuilt_application_through_the_docker_seam() {
-    let harness = SchedulerHarness::new().await;
+async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
+    let harness = ControllerHarness::new().await;
     let created = harness.create().await;
-    harness.interrupt(&created.operation_id).await;
+    harness.interrupt(&created.id).await;
     harness
-        .scheduler
-        .recover_and_run(CancellationToken::new())
+        .controller
+        .scan(&CancellationToken::new())
         .await
-        .expect("scheduler converges the operation");
-    harness.assert_recovered(&created.operation_id).await;
+        .expect("controller converges the operation");
+    harness.assert_recovered(&created.id).await;
 
-    let (replaced, replacement) = harness.replace().await;
+    harness.replace().await;
     harness
-        .scheduler
-        .recover_and_run(CancellationToken::new())
+        .controller
+        .scan(&CancellationToken::new())
         .await
         .expect("replacement converges");
-    assert_eq!(replaced.generation, 2);
     assert_eq!(
         harness
             .docker
@@ -588,33 +539,51 @@ async fn scheduler_converges_a_prebuilt_application_through_the_docker_seam() {
     );
 
     harness
-        .scheduler
-        .recover_and_run(CancellationToken::new())
+        .controller
+        .scan(&CancellationToken::new())
         .await
         .expect("matching state is idempotent");
+    harness.repair_drift().await;
+    let deletion = harness.delete().await;
+    harness
+        .docker
+        .deny_network_removal
+        .store(true, Ordering::Relaxed);
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let blocked = harness.store.operation(&deletion.id).await.unwrap();
+    assert_eq!(blocked.state, OperationState::Running);
+    assert_eq!(blocked.error_code.as_deref(), Some("ownership_conflict"));
+    assert!(blocked.finished_at_ms.is_none());
     assert!(
         harness
             .store
-            .active_reconcile(&harness.application.id, 2)
+            .get(&harness.application.id)
             .await
             .unwrap()
-            .is_none()
+            .delete_intent
     );
-
-    harness.repair_drift(&replacement).await;
-    let deleted = harness.delete(&replacement).await;
-    assert_eq!(deleted.generation, 3);
     harness
-        .scheduler
-        .recover_and_run(CancellationToken::new())
+        .docker
+        .deny_network_removal
+        .store(false, Ordering::Relaxed);
+    harness
+        .controller
+        .scan(&CancellationToken::new())
         .await
         .expect("delete converges");
     harness.assert_deleted().await;
+    let completed = harness.store.operation(&deletion.id).await.unwrap();
+    assert_eq!(completed.state, OperationState::Succeeded);
+    assert!(completed.error_code.is_none());
 }
 
 #[tokio::test]
-async fn scheduler_journals_and_executes_actions_introduced_by_fresh_planning() {
-    let harness = SchedulerHarness::new().await;
+async fn controller_executes_actions_introduced_by_fresh_planning() {
+    let harness = ControllerHarness::new().await;
     harness
         .docker
         .ensure_network(&harness.resolved.networks[0])
@@ -635,39 +604,29 @@ async fn scheduler_journals_and_executes_actions_introduced_by_fresh_planning() 
         .observe(&harness.application.id)
         .await
         .expect("matching observation");
-    let plan = SchedulerHarness::reconcile_plan(harness.resolved.clone(), &observed);
+    let plan = ControllerHarness::reconcile_plan(harness.resolved.clone(), &observed);
     assert!(plan.actions.is_empty());
-    let created = harness
+    harness
         .store
-        .create(&harness.application, &harness.resolved, &[])
+        .save_application(&harness.application, &harness.resolved)
         .await
         .expect("matching application is journaled");
 
     harness.docker.observed.lock().await.networks.clear();
     harness
-        .scheduler
-        .recover_and_run(CancellationToken::new())
+        .controller
+        .scan(&CancellationToken::new())
         .await
         .expect("fresh action converges");
 
     let status = harness.store.status(&harness.application.id).await.unwrap();
     assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
-    let (_, steps) = harness
-        .store
-        .operation_with_steps(&created.operation_id)
-        .await
-        .expect("fresh steps are journaled");
-    assert!(
-        steps
-            .iter()
-            .any(|step| step.action.starts_with("ENSURE NETWORK "))
-    );
     assert_eq!(harness.docker.observed.lock().await.networks.len(), 1);
 }
 
 #[tokio::test]
 async fn superseded_operations_do_not_plan_stale_runtime_state() {
-    let harness = SchedulerHarness::new().await;
+    let harness = ControllerHarness::new().await;
     harness
         .docker
         .ensure_network(&harness.resolved.networks[0])
@@ -688,39 +647,38 @@ async fn superseded_operations_do_not_plan_stale_runtime_state() {
         .observe(&harness.application.id)
         .await
         .expect("matching observation");
-    let plan = SchedulerHarness::reconcile_plan(harness.resolved.clone(), &observed);
+    let plan = ControllerHarness::reconcile_plan(harness.resolved.clone(), &observed);
     assert!(plan.actions.is_empty());
     let stale = harness
         .store
-        .create(&harness.application, &harness.resolved, &[])
+        .save_application(&harness.application, &harness.resolved)
         .await
         .expect("matching application is journaled");
 
     harness.docker.observed.lock().await.networks.clear();
     let (replacement, _) = harness.replace().await;
     harness
-        .scheduler
-        .recover_and_run(CancellationToken::new())
+        .controller
+        .scan(&CancellationToken::new())
         .await
-        .expect("the current generation converges");
+        .expect("the latest desired state converges");
 
-    let (stale_operation, stale_steps) = harness
+    let stale_operation = harness
         .store
-        .operation_with_steps(&stale.operation_id)
+        .operation(&stale.id)
         .await
         .expect("superseded operation is readable");
-    assert_eq!(stale_operation.state, WorkState::Cancelled);
-    assert!(stale_steps.is_empty());
-    let (replacement_operation, _) = harness
+    assert_eq!(stale_operation.state, OperationState::Cancelled);
+    let replacement_operation = harness
         .store
-        .operation_with_steps(&replacement.operation_id)
+        .operation(&replacement.id)
         .await
         .expect("replacement operation is readable");
-    assert_eq!(replacement_operation.state, WorkState::Succeeded);
+    assert_eq!(replacement_operation.state, OperationState::Succeeded);
 }
 
 #[tokio::test]
-async fn scheduler_refuses_a_foreign_same_name_service() {
+async fn controller_refuses_a_foreign_same_name_service() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let (store, application, resolved) = fixture_store(&directory).await;
     let mut foreign_service_labels = foreign_labels(&application.id);
@@ -729,35 +687,17 @@ async fn scheduler_refuses_a_foreign_same_name_service() {
         labels: foreign_service_labels,
         ..observed_service(&resolved.services[0])
     };
-    let initial_plan = Plan::from_request(
-        &PlanRequest::Reconcile {
-            desired: resolved.clone(),
-        },
-        &ObservedApplication::default(),
-    );
     let created = store
-        .create(
-            &application,
-            &resolved,
-            &initial_plan
-                .actions
-                .iter()
-                .map(PlanAction::operation_step)
-                .collect::<Vec<_>>(),
-        )
+        .save_application(&application, &resolved)
         .await
         .expect("application is created");
     let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
         services: vec![foreign],
         ..ObservedApplication::default()
     }));
-    let handler = Arc::new(ReconcileHandler::new(
-        Arc::clone(&docker),
-        Arc::clone(&store),
-    ));
-    let scheduler = OperationScheduler::new(store.clone(), handler, 1);
-    scheduler
-        .recover_and_run(CancellationToken::new())
+    let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store));
+    controller
+        .scan(&CancellationToken::new())
         .await
         .expect("ownership conflict is journaled");
     let status = store
@@ -765,14 +705,11 @@ async fn scheduler_refuses_a_foreign_same_name_service() {
         .await
         .expect("status is readable");
     assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
-    let (operation, steps) = store
-        .operation_with_steps(&created.operation_id)
+    let operation = store
+        .operation(&created.id)
         .await
         .expect("failed operation is readable");
-    assert_eq!(operation.state, piqueld::store::WorkState::Failed);
-    assert!(steps.iter().any(|step| {
-        step.state == piqueld::store::StepState::Cancelled && step.error_code.is_none()
-    }));
+    assert_eq!(operation.state, OperationState::Failed);
     assert_eq!(
         docker
             .observe(&application.id)
@@ -791,29 +728,14 @@ async fn assert_foreign_fixture_refuses_reconciliation(
     store: &Arc<SqliteStore>,
     application: &piqueld_core::NormalizedApplication,
     resolved: &ResolvedApplication,
-) -> piqueld::store::MutationResult {
-    let initial_plan = Plan::from_request(
-        &PlanRequest::Reconcile {
-            desired: resolved.clone(),
-        },
-        &ObservedApplication::default(),
-    );
+) -> Operation {
     let created = store
-        .create(
-            application,
-            resolved,
-            &initial_plan
-                .actions
-                .iter()
-                .map(PlanAction::operation_step)
-                .collect::<Vec<_>>(),
-        )
+        .save_application(application, resolved)
         .await
         .expect("application is created");
-    let handler = Arc::new(ReconcileHandler::new(Arc::clone(docker), Arc::clone(store)));
-    let scheduler = OperationScheduler::new(Arc::clone(store), handler, 1);
-    scheduler
-        .recover_and_run(CancellationToken::new())
+    let controller = Controller::new(Arc::clone(docker), Arc::clone(store));
+    controller
+        .scan(&CancellationToken::new())
         .await
         .expect("ownership conflict is journaled");
     let status = store
@@ -821,19 +743,16 @@ async fn assert_foreign_fixture_refuses_reconciliation(
         .await
         .expect("status is readable");
     assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
-    let (operation, steps) = store
-        .operation_with_steps(&created.operation_id)
+    let operation = store
+        .operation(&created.id)
         .await
         .expect("failed operation is readable");
-    assert_eq!(operation.state, piqueld::store::WorkState::Failed);
-    assert!(steps.iter().any(|step| {
-        step.state == piqueld::store::StepState::Cancelled && step.error_code.is_none()
-    }));
+    assert_eq!(operation.state, OperationState::Failed);
     created
 }
 
 #[tokio::test]
-async fn scheduler_refuses_a_foreign_same_name_network() {
+async fn controller_refuses_a_foreign_same_name_network() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let (store, application, resolved) = fixture_store(&directory).await;
     let foreign = ObservedNetwork {
@@ -845,10 +764,7 @@ async fn scheduler_refuses_a_foreign_same_name_network() {
         networks: vec![foreign],
         ..ObservedApplication::default()
     }));
-    let created =
-        assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved)
-            .await;
-    assert_eq!(created.generation, 1);
+    assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved).await;
     // The foreign network must survive untouched.
     let observed = docker.observe(&application.id).await.unwrap();
     assert_eq!(observed.networks.len(), 1);
@@ -859,7 +775,7 @@ async fn scheduler_refuses_a_foreign_same_name_network() {
 }
 
 #[tokio::test]
-async fn scheduler_refuses_a_foreign_same_name_volume() {
+async fn controller_refuses_a_foreign_same_name_volume() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let (store, application, resolved) = fixture_store(&directory).await;
     let foreign = ObservedVolume {
@@ -871,10 +787,7 @@ async fn scheduler_refuses_a_foreign_same_name_volume() {
         volumes: vec![foreign],
         ..ObservedApplication::default()
     }));
-    let created =
-        assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved)
-            .await;
-    assert_eq!(created.generation, 1);
+    assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved).await;
     // The foreign volume must survive untouched.
     let observed = docker.observe(&application.id).await.unwrap();
     assert_eq!(observed.volumes.len(), 1);

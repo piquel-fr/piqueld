@@ -1,15 +1,23 @@
 # piqueld
 
 `piqueld` is a small Rust control plane for one Docker Engine running a
-single-node Swarm. It supports one honest workflow: submit an application
-manifest that names prebuilt container images, resolve those images to digests,
-and reconcile the resulting private network, named volumes, and replicated
-services.
+single-node Swarm. Submit an application
+manifest naming prebuilt images; the server resolves those images to digests
+and reconciles a private network, named volumes, and replicated services.
 
-The daemon stores normalized intent, resolved runtime state, application status,
-and durable operations in SQLite. It exposes a versioned HTTP API over a
-loopback TCP listener and a Unix socket. Clients poll application and operation
-resources; there is no event-stream endpoint.
+Applications are identified by name. One apply endpoint creates or updates the
+desired state. The server resolves images on every apply and reuses the current
+operation when the resulting target is unchanged. Failed or cancelled operations
+can be requested again under the same ID. Clients need no keys or generations.
+
+One sequential controller observes Docker and computes fresh plans until each
+operation converges. A new target supersedes earlier active work; operation
+history remains in SQLite. Deletion stays running until services and networks
+are verified absent, while named volumes are retained.
+
+The daemon exposes a polling HTTP API over loopback TCP and a Unix socket. The
+CLI and optional read-only dashboard share domain records and HTTP contracts.
+See [module boundaries](docs/architecture/dependency-flow.md) for the code layout.
 
 A single configured `data_dir` is the only state location and holds the Unix
 API socket (`piqueld.sock`) and the embedded database (`piqueld.db`). On a clean
@@ -65,7 +73,7 @@ The reproducible Nix package and checks can be evaluated explicitly with
 
 The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
 another host configuration. Configuration only covers local paths, listeners,
-SQLite, Docker, and reconciliation limits. The complete non-root development
+SQLite, Docker, and reconciliation timing. The complete non-root development
 example is [`config/piqueld.example.toml`](config/piqueld.example.toml).
 See [`docs/web-ui.md`](docs/web-ui.md) for development and release dashboard
 asset commands.

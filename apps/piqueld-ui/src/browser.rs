@@ -160,7 +160,7 @@ fn DashboardLayout() -> impl IntoView {
         <main id="dashboard-main" class="mx-auto w-[calc(100%-2rem)] max-w-[1180px] pb-8" tabindex="-1">
             <section class="mb-4 rounded-xl border border-line border-l-4 border-l-accent bg-surface p-4 shadow-panel" aria-labelledby="read-only-title">
                 <h2 id="read-only-title" class="mb-1 text-lg font-bold">"Read-only view"</h2>
-                <p class="mb-0">"This dashboard shows daemon and application state. Use "<code>"piquelctl"</code>" for plan, apply, reconcile, and delete operations."</p>
+                <p class="mb-0">"This dashboard shows daemon and application state. Use "<code>"piquelctl"</code>" for plan, apply, and delete operations."</p>
             </section>
 
             {system_summary(signals)}
@@ -437,7 +437,6 @@ fn application_card(row: &ApplicationRow, signals: DashboardSignals) -> View {
             <article class="application-card flex h-full flex-col gap-2 rounded-lg border border-line bg-surface-muted p-4" class:selected=move || selected_id.get().as_deref() == Some(id_for_class.as_str())>
                 <div class="flex items-start justify-between gap-3">
                     <span class=health_class(health)>{health.label()}</span>
-                    <span class="text-xs text-muted">{format!("Generation {}", row.application.generation)}</span>
                 </div>
                 <h3 class="mb-0 text-lg font-bold">{name}</h3>
                 <p class="mb-0 text-sm text-muted"><code>{short_id(&id)}</code></p>
@@ -485,23 +484,14 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
         .collect_view();
     let diagnostics_view = diagnostics.iter().map(diagnostic_view).collect_view();
     let operation_view = operation.map(|operation| {
-        let steps = operation
-            .steps
-            .iter()
-            .map(|step| {
-                let step_state = step.state.clone();
-                view! { <li class="flex justify-between gap-3 rounded-md bg-surface-muted p-2"><span>{step.action.clone()}</span><span class="text-muted">{step_state}</span></li> }
-            })
-            .collect_view();
         view! {
             <section class="border-t border-line pt-4" aria-labelledby="operation-title">
                 <h3 id="operation-title" class="mb-2 text-lg font-bold">"Latest operation"</h3>
-                <p><strong>{operation.kind.clone()}</strong>" · "{operation.state.clone()}</p>
-                <ul class="grid gap-2">{steps}</ul>
+                <p><strong>{operation.kind.as_str()}</strong>" · "{operation.state.as_str()}</p>
             </section>
         }
     });
-    let health = ApplicationHealth::from_server_state(&status.state);
+    let health = ApplicationHealth::from_server_state(status.state);
     let refresh_detail = {
         let id = application_id.clone();
         move || load_detail(client.clone(), signals, id.clone())
@@ -517,9 +507,7 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                 <div><h3 class="mb-1 text-xl font-bold">{application_name}</h3><p class="mb-0 text-sm text-muted"><code>{application_id}</code></p></div>
                 <span class=health_class(health)>{health.label()}</span>
             </div>
-            <dl class="grid gap-3 rounded-lg bg-surface-muted p-3 sm:grid-cols-3">
-                <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Desired generation"</dt><dd class="mt-1">{detail.application.generation}</dd></div>
-                <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Observed generation"</dt><dd class="mt-1">{status.observed_generation.map_or_else(|| "Not observed".into(), |generation| generation.to_string())}</dd></div>
+            <dl class="grid gap-3 rounded-lg bg-surface-muted p-3">
                 <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Networks / volumes"</dt><dd class="mt-1">{format!("{} / {}", observed.network_count, observed.volume_count)}</dd></div>
             </dl>
             <p class="m-0 border-l-4 border-l-accent bg-surface-muted p-3"><span class=health_class(health)>{health.label()}</span> {status.message.clone().unwrap_or_else(|| "No additional daemon diagnostic.".into())}</p>
@@ -547,7 +535,7 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
 }
 
 fn observed_service_view(service: &ObservedServiceView) -> View {
-    let health = ApplicationHealth::from_server_state(&service.convergence);
+    let health = ApplicationHealth::from_convergence(&service.convergence);
     let image = service
         .image
         .clone()
@@ -788,7 +776,7 @@ fn row_health(row: &ApplicationRow) -> ApplicationHealth {
             row.status
                 .as_ref()
                 .map_or(ApplicationHealth::Pending, |status| {
-                    ApplicationHealth::from_server_state(&status.state)
+                    ApplicationHealth::from_server_state(status.state)
                 })
         },
         |_| ApplicationHealth::Pending,
@@ -799,7 +787,7 @@ fn row_status_text(row: &ApplicationRow) -> String {
     row.status_error.clone().unwrap_or_else(|| {
         row.status
             .as_ref()
-            .map_or_else(|| "Not observed".into(), |status| status.state.clone())
+            .map_or_else(|| "Not observed".into(), |status| status.state.to_string())
     })
 }
 

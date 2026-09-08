@@ -6,13 +6,13 @@ use crate::{
         report_operation,
     },
     support::{
-        confirm, desired_replicas, idempotency_key, looks_like_application_id, manifest_name,
-        read_manifest, retry_transport, terminal_operation,
+        confirm, desired_replicas, looks_like_application_id, manifest_name, read_manifest,
+        retry_transport,
     },
 };
 use futures_util::StreamExt;
 use piqueld_client::{
-    ApplicationView, Client, ClientError, ListApplicationsOptions, OperationView, Page, PlanView,
+    ApplicationView, Client, ClientError, ListApplicationsOptions, Operation, OperationState, Page,
     Source,
 };
 use serde_json::{Value, json};
@@ -114,15 +114,15 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
         writeln!(io::stdout().lock(), "No applications.")?;
     } else {
         for (application, status) in rows {
-            let state = status
-                .as_ref()
-                .map_or_else(|| "unavailable".to_owned(), |status| status.state.clone());
+            let state = status.as_ref().map_or_else(
+                || "unavailable".to_owned(),
+                |status| status.state.to_string(),
+            );
             writeln!(
                 io::stdout().lock(),
-                "{}\t{}\tgeneration {}\tdesired replicas {}\t{}",
+                "{}\t{}\tdesired replicas {}\t{}",
                 application.application.metadata.name,
                 application.application.id,
-                application.generation,
                 desired_replicas(&application),
                 state,
             )?;
@@ -150,15 +150,7 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
         application.application.metadata.name,
         application.application.id
     )?;
-    writeln!(
-        io::stdout().lock(),
-        "generation {} (observed {})\tstate {}",
-        application.generation,
-        status
-            .observed_generation
-            .map_or_else(|| "none".to_owned(), |generation| generation.to_string()),
-        status.state,
-    )?;
+    writeln!(io::stdout().lock(), "state {}", status.state)?;
     writeln!(
         io::stdout().lock(),
         "desired replicas: {}",
@@ -197,8 +189,7 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
 
 async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
-    let name = manifest_name(&manifest, &args.file)?;
-    let (plan, _) = prepare_plan(client, &manifest, &name, args.expected_generation).await?;
+    let plan = client.plan_application_toml(&manifest).await?;
     if cli.json {
         emit_json(&plan)?;
         if plan.plan.is_blocked() {
@@ -218,7 +209,7 @@ async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result
 async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
     let name = manifest_name(&manifest, &args.file)?;
-    let (plan, existing) = prepare_plan(client, &manifest, &name, args.expected_generation).await?;
+    let plan = client.plan_application_toml(&manifest).await?;
     render_plan_stderr(&plan).map_err(|error| {
         CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
     })?;
@@ -227,24 +218,7 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     }
     confirm(args.yes, &format!("Apply application {name:?}? [y/N] ")).await?;
 
-    let key = idempotency_key();
-    let accepted = if let Some(application) = existing {
-        let expected = args.expected_generation.unwrap_or(application.generation);
-        retry_transport(|| {
-            client.replace_application_toml_with_key(
-                application.application.id.as_str(),
-                &manifest,
-                expected,
-                Some(&key),
-            )
-        })
-        .await
-        .map_err(CliError::from)?
-    } else {
-        retry_transport(|| client.create_application_toml(&manifest, &key))
-            .await
-            .map_err(CliError::from)?
-    };
+    let accepted = retry_transport(|| client.apply_application_toml(&manifest)).await?;
     if args.no_wait {
         if cli.json {
             return emit_json(&accepted);
@@ -272,7 +246,6 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
 
 async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
-    let expected = args.expected_generation.unwrap_or(application.generation);
     eprintln!(
         "deleting {} ({}): managed services and network are removed; named volumes are retained",
         application.application.metadata.name, application.application.id
@@ -286,19 +259,10 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     )
     .await?;
 
-    let key = idempotency_key();
-    let request = piqueld_client::DeleteApplicationRequest {
-        expected_generation: expected,
-    };
-    let accepted = retry_transport(|| {
-        client.delete_application_with_key(
-            application.application.id.as_str(),
-            &request,
-            Some(&key),
-        )
-    })
-    .await
-    .map_err(CliError::from)?;
+    let accepted =
+        retry_transport(|| client.delete_application(application.application.id.as_str()))
+            .await
+            .map_err(CliError::from)?;
     if args.no_wait {
         if cli.json {
             return emit_json(&json!({"accepted": accepted, "volumes_retained": true}));
@@ -335,32 +299,6 @@ async fn operation(cli: &Cli, client: &Client, args: &OperationArgs) -> Result<(
     }
     let operation = wait_for_operation(client, &args.operation_id, None).await?;
     render_operation(cli, &operation)
-}
-
-async fn prepare_plan(
-    client: &Client,
-    manifest: &str,
-    name: &str,
-    expected_generation: Option<u64>,
-) -> Result<(PlanView, Option<ApplicationView>)> {
-    let existing = find_by_name(client, name).await?;
-    let plan = if let Some(application) = &existing {
-        let expected = expected_generation.unwrap_or(application.generation);
-        client
-            .plan_replace_toml(application.application.id.as_str(), manifest, expected)
-            .await?
-    } else {
-        if expected_generation.is_some() {
-            return Err(CliError::new(
-                ErrorKind::Conflict,
-                format!(
-                    "expected generation was supplied, but application {name:?} does not exist"
-                ),
-            ));
-        }
-        client.plan_create_toml(manifest).await?
-    };
-    Ok((plan, existing))
 }
 
 async fn all_applications(client: &Client) -> Result<Vec<ApplicationView>> {
@@ -438,8 +376,8 @@ async fn resolve_application(client: &Client, name_or_id: &str) -> Result<Applic
 async fn wait_for_operation(
     client: &Client,
     operation_id: &str,
-    initial: Option<OperationView>,
-) -> Result<OperationView> {
+    initial: Option<Operation>,
+) -> Result<Operation> {
     let wait = async {
         let mut current = initial;
         loop {
@@ -448,7 +386,7 @@ async fn wait_for_operation(
                 None => client.operation(operation_id).await?,
             };
             report_operation(&operation);
-            if terminal_operation(&operation.state) {
+            if operation.state.terminal() {
                 return finish_operation(operation);
             }
             time::sleep(POLL_INTERVAL).await;
@@ -469,11 +407,8 @@ async fn wait_for_operation(
     }
 }
 
-fn finish_operation(operation: OperationView) -> Result<OperationView> {
-    if matches!(
-        operation.state.to_ascii_lowercase().as_str(),
-        "succeeded" | "completed"
-    ) {
+fn finish_operation(operation: Operation) -> Result<Operation> {
+    if operation.state == OperationState::Succeeded {
         Ok(operation)
     } else {
         let mut message = format!(

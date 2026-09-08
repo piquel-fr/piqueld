@@ -1,10 +1,28 @@
-# Workspace dependency flow
+# Module boundaries
 
-`piqueld-core` is the pure center of the workspace. It owns manifest, resource, and
-planning contracts and must not depend on Axum, SQLx, Bollard, or UI code.
+`piqueld-core` owns manifest and resource types, pure planning, application status,
+operation records, and shared API requests and responses. It has no HTTP server,
+database, Docker, or UI dependency. The daemon uses these contracts directly.
+`piqueld-client` adds HTTP transport and reexports the shared contracts for the
+CLI and dashboard.
 
-`piqueld-client` depends on core and will own typed HTTP client behavior. `piquelctl`
-and `piqueld-ui` depend on the client and core contracts. The `piqueld` daemon depends
-on core directly; persistence, Docker, API, and other
-adapters remain internal daemon modules. Applications never become dependencies of
-libraries.
+Inside the daemon:
+
+| Module | Responsibility |
+| --- | --- |
+| `api` | HTTP decoding, response composition, and error mapping |
+| `application` | Resolve incoming intent, compare targets, and accept application changes |
+| `store` | SQLite records, transactions, and guarded writes |
+| `reconcile` | One sequential scan; observe, plan, execute, and verify |
+| `docker` | Docker requests, runtime specifications, ownership, and observation |
+| `config` | Local configuration and private state-directory preparation |
+
+The application service decides whether an apply is new work, an equivalent
+request, or a retry. Store transactions preserve that decision atomically.
+The controller checks the latest operation before continuing runtime work and
+computes each plan from a fresh observation. Shared records avoid conversion
+between separate store, API, and client operation models.
+
+`scripts/check-dependency-boundaries.sh` checks crate dependency boundaries.
+Older plans under `.agents` are historical design material, not the current
+architecture contract.

@@ -1,7 +1,6 @@
-//! Typed asynchronous client and transport contracts for the versioned piqueld API.
+//! Typed asynchronous client for the versioned piqueld API.
 //!
-//! Each contract module holds its request and response types next to the
-//! [`Client`] endpoint methods that serve them. The client runs one
+//! Shared API contracts are reexported from `piqueld-core`. The client runs one
 //! shared request pipeline on every target, with platform differences
 //! confined inside `client`: loopback TCP and Unix-domain sockets natively,
 //! and same-origin browser fetch under WASM.
@@ -9,7 +8,7 @@
 #[cfg(target_os = "windows")]
 compile_error!("Windows is not supported by piqueld-client");
 
-/// Application CRUD, planning, and observation contracts.
+/// Application desired-state, planning, and observation contracts.
 pub mod applications;
 /// Generated OpenAPI document retrieval.
 pub mod openapi;
@@ -22,70 +21,34 @@ mod client;
 
 pub use applications::{
     AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
-    CreateApplicationRequest, DeleteApplicationRequest, DiagnosticView, ExpectedGeneration,
-    ListApplicationsOptions, ObservedApplicationView, ObservedServiceView, PlanApplicationRequest,
-    PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
+    ApplyApplicationRequest, DiagnosticView, ListApplicationsOptions, ObservedApplicationView,
+    ObservedServiceView, PlanView,
 };
 pub use client::Client;
-pub use operations::{OperationStepView, OperationView};
 pub use piqueld_core::manifest::{
-    ApplicationManifest, ApplicationSpecInput, HealthCheckInput, MetadataInput, MountInput,
-    ResourceLimitsInput, ServiceInput, Source, SourceInput, VolumeInput,
+    ApplicationManifest, ApplicationSpec, HealthCheck, Metadata, Mount, ResourceLimits, Service,
+    Source, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{ApplicationId, ValidatedApplication, ValidationError, ValidationErrors};
+pub use piqueld_core::{ApplicationState, Convergence, Operation, OperationKind, OperationState};
 pub use system::SystemStatus;
 
 use http::StatusCode;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use utoipa::ToSchema;
 
-/// Versioned prefix used by all API endpoints.
-pub const API_PREFIX: &str = "/api/v1";
+pub use piqueld_core::api::{API_PREFIX, Envelope, ErrorBody, Page};
 
 /// Validates a TOML application manifest and returns its editable name.
 ///
 /// The daemon repeats this validation. The helper lets local CLI workflows
-/// resolve a replacement target without importing the core crate directly.
+/// display the application name without importing the core crate directly.
 ///
 /// # Errors
 /// Returns field-level validation errors when the manifest is malformed or
 /// outside the supported application schema.
 pub fn application_name_from_toml(input: &str) -> Result<String, ValidationErrors> {
     piqueld_core::parse_toml(input).map(|application| application.name().to_owned())
-}
-
-/// Successful API response envelope.
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-pub struct Envelope<T> {
-    /// Response payload.
-    pub data: T,
-}
-
-/// Cursor-paginated API response.
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-pub struct Page<T> {
-    /// Items in this page.
-    pub items: Vec<T>,
-    /// Cursor for the next page, when more items are available.
-    pub next_cursor: Option<String>,
-}
-
-/// Structured error returned by the API.
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-pub struct ErrorBody {
-    /// Stable machine-readable error code.
-    pub code: String,
-    /// Safe human-readable error message.
-    pub message: String,
-    /// Optional structured error details.
-    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
-    pub details: serde_json::Value,
-    /// Server-generated request identifier.
-    #[serde(default)]
-    #[schema(required = true)]
-    pub request_id: String,
 }
 
 #[derive(Debug, Error)]

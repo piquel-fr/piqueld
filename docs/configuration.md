@@ -32,13 +32,12 @@ defaults are:
 | `docker.socket` | `/var/run/docker.sock` |
 | `docker.auto_initialize_swarm` | `true` |
 | `reconciliation.scan_interval_seconds` | `60` |
-| `reconciliation.max_parallel_operations` | `4` |
 | `reconciliation.prepare_timeout_seconds` | `300` |
 | `reconciliation.convergence_timeout_seconds` | `120` |
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
 
-Reconciliation intervals and timeouts are bounded to `1..=86400` seconds, and
-`max_parallel_operations` is bounded to `1..=1024`.
+Reconciliation intervals and timeouts are bounded to `1..=86400` seconds.
+Applications are scanned sequentially; there is no operation-concurrency setting.
 
 The data directory is the only persistent daemon state.
 
