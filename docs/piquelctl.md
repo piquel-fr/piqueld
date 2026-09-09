@@ -14,6 +14,9 @@ piquelctl plan --file application.toml
 piquelctl apply --file application.toml
 piquelctl delete <name-or-id>
 piquelctl operation <operation-id>
+piquelctl reconcile <name-or-id>
+piquelctl refresh <name-or-id>
+piquelctl events --application <application-id> --limit 50
 ```
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit loopback
@@ -46,6 +49,9 @@ written to stderr, so stdout remains valid JSON.
 | `delete` | `{ "accepted": AcceptedOperation, "operation": Operation, "volumes_retained": true }` |
 | `operation --no-wait` | `Operation` |
 | `operation` | `Operation` |
+| `reconcile` / `refresh` | `{ "accepted": AcceptedOperation, "operation": Operation }` |
+| `reconcile --no-wait` / `refresh --no-wait` | `AcceptedOperation` |
+| `events` | `{ "items": [Event], "next_cursor": string or null }` |
 
 The DTO fields and error envelope are defined by the versioned API and the
 `piqueld-client` crate. CLI errors are reported on stderr and never mixed into
@@ -64,13 +70,30 @@ provided. `--yes` is the explicit noninteractive confirmation for scripts.
 Deleting an application retains its named volumes; the CLI prints that notice
 and includes `volumes_retained: true` in JSON output.
 
-The server resolves images and deduplicates equivalent targets. The CLI does
-not create idempotency keys or send generation checks. It retries a transport
-failure once using the same manifest. Applying a mutable image tag again can
-produce new work if the digest changed.
+Apply durably accepts intent before image preparation. Identical manifests do
+nothing unless the operation failed; failed operations retry under the same ID.
+`reconcile` repairs the latest intent using stored digests. `refresh` explicitly
+resolves image references again and is rejected during deletion. Both accept
+`--yes` and `--no-wait` like apply/delete.
 
-By default, `apply`, `delete`, and `operation` poll the accepted operation every
-250 ms until it reaches a terminal state. `--no-wait` returns immediately.
+`plan`, `apply`, `delete`, `reconcile`, and `refresh` accept an optional
+`--expected-generation N`. Checks are opt-in; zero on apply means create-only.
+A changed manifest or deletion intent advances generation. Image refresh does
+not. `show` reports intent and resolved target generations and separate observed
+runtime health; a resolved target does not imply container convergence.
+
+The CLI retains one automatic transport retry and sends no idempotency keys.
+A retry after a lost success response can encounter a generation conflict if a
+precondition was supplied. A refresh retry after completion can start a new
+refresh. There is no exact request replay guarantee.
+
+`events` reads one page, oldest first. `--application ID` optionally filters by
+stable ID, including deleted applications. Use `--cursor CURSOR` for subsequent
+pages and `--limit N` (1–100, default 50). JSON includes the next cursor.
+
+By default, apply, delete, reconcile, refresh, and operation poll every 250 ms
+until a terminal state. `--no-wait` returns immediately. For long image pulls,
+use a longer `--timeout` or return immediately and inspect the operation later.
 Pressing Ctrl-C ends only the local wait; it does not cancel the server-side
 operation, which can still be inspected with `piquelctl operation <id>`.
 

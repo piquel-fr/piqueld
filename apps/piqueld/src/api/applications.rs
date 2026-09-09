@@ -19,10 +19,7 @@ use piqueld_core::api::{
 use piqueld_core::{
     ApplicationId, NormalizedApplication, ObservedApplication, Plan, PlanRequest, ResolutionSet,
     compile_application, preview_resolution,
-    resource::{
-        Convergence, ObservedService, ResolvedApplication, ResolvedSource, TaskDiagnostic,
-        TaskState,
-    },
+    resource::{Convergence, ObservedService, TaskDiagnostic, TaskState},
 };
 use serde::Deserialize;
 
@@ -153,6 +150,7 @@ pub(super) async fn detail(
 #[utoipa::path(
     post, path = "/api/v1/applications/apply", operation_id = "applyApplication",
     summary = "Apply an application manifest",
+    params(("X-Expected-Generation"=Option<u64>,Header,description="Optional revision for TOML requests; zero requires absence")),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 202, description = "Accepted or unchanged target", body = Envelope<AcceptedOperation>),
@@ -171,9 +169,10 @@ pub(super) async fn apply(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
-    let manifest = parse_manifest(&headers, &request_body(body)?)?;
-    let operation = state.apply(manifest).await?;
+    let (manifest, expected) = parse_manifest(&headers, &request_body(body)?)?;
+    let operation = state.apply(manifest, expected).await?;
     Ok(accepted(AcceptedOperation {
+        generation: operation.generation,
         operation_id: operation.id,
         application_id: operation.application_id.to_string(),
     }))
@@ -182,8 +181,9 @@ pub(super) async fn apply(
 #[utoipa::path(
     delete, path = "/api/v1/applications/{id}", operation_id = "deleteApplication",
     summary = "Delete services and networks, retaining volumes",
-    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    params(("id" = String, Path, min_length = 8, max_length = 64), GenerationQuery),
     responses(
+        (status = 409, response = inline(ApiErrorResponse)),
         (status = 202, description = "Deletion operation", body = Envelope<AcceptedOperation>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 404, response = inline(ApiErrorResponse)),
@@ -194,9 +194,13 @@ pub(super) async fn apply(
 pub(super) async fn delete(
     State(state): State<ApiState>,
     Path(id): Path<String>,
+    query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let operation = state.delete(&ApplicationId::parse(id)?).await?;
+    let operation = state
+        .delete(&ApplicationId::parse(id)?, GenerationQuery::decode(query)?)
+        .await?;
     Ok(accepted(AcceptedOperation {
+        generation: operation.generation,
         operation_id: operation.id,
         application_id: operation.application_id.to_string(),
     }))
@@ -205,9 +209,11 @@ pub(super) async fn delete(
 #[utoipa::path(
     post, path = "/api/v1/applications/plan", operation_id = "planApplication",
     summary = "Preview an application manifest",
+    params(("X-Expected-Generation"=Option<u64>,Header)),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 200, description = "Preview", body = Envelope<PlanView>),
+        (status = 409, response = inline(ApiErrorResponse)),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 413, response = inline(ApiErrorResponse)),
         (status = 415, response = inline(ApiErrorResponse)),
@@ -222,8 +228,12 @@ pub(super) async fn plan(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let manifest = parse_manifest(&headers, &request_body(body)?)?;
+    let (manifest, expected) = parse_manifest(&headers, &request_body(body)?)?;
     let current = state.store.find_by_name(manifest.name()).await?;
+    crate::store::SqliteStore::check_generation(
+        expected,
+        current.as_ref().map_or(0, |app| app.generation),
+    )?;
     let id = current.as_ref().map_or_else(
         || ApplicationId::parse("preview-application").expect("valid preview ID"),
         |app| app.application.id.clone(),
@@ -241,6 +251,9 @@ async fn preview_plan(
     app: &NormalizedApplication,
     current: Option<&StoredApplication>,
 ) -> Result<piqueld_core::Plan, ApiError> {
+    if current.is_some_and(|current| !current.delete_intent && current.application == *app) {
+        return Ok(Plan::default());
+    }
     let observed = if let Some(current) = current {
         match state.runtime.observe(current).await {
             Ok(observed) => observed,
@@ -249,14 +262,13 @@ async fn preview_plan(
     } else {
         ObservedApplication::default()
     };
-    let resolutions = current.map_or_else(ResolutionSet::default, |stored| {
-        reusable_resolutions(app, &stored.resolved)
-    });
+    let resolutions = ResolutionSet::default();
     let unresolved = preview_resolution(app, &resolutions);
     let desired = if unresolved.is_empty() {
         current
-            .map(|stored| {
-                compile_application(app, stored.resolved.instance_id.clone(), &resolutions)
+            .and_then(|stored| stored.resolved.as_ref())
+            .map(|resolved| {
+                compile_application(app, resolved.instance_id.clone(), &resolutions)
                     .map_err(BoundaryError::Compilation)
             })
             .transpose()?
@@ -270,31 +282,6 @@ async fn preview_plan(
         },
         &observed,
     ))
-}
-
-fn reusable_resolutions(
-    app: &NormalizedApplication,
-    current: &ResolvedApplication,
-) -> ResolutionSet {
-    let sources = app
-        .spec
-        .services
-        .iter()
-        .filter_map(|service| {
-            let resolved = current
-                .services
-                .iter()
-                .find(|candidate| candidate.logical_name == service.name)?;
-            let reusable = match (&service.source, &resolved.source) {
-                (
-                    piqueld_core::manifest::Source::Image { image },
-                    ResolvedSource::Image { requested, .. },
-                ) => image == requested,
-            };
-            reusable.then(|| (service.name.clone(), resolved.source.clone()))
-        })
-        .collect();
-    ResolutionSet { sources }
 }
 
 fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes, ApiError> {
@@ -339,6 +326,8 @@ pub(super) async fn status(
 
 fn application_view(stored: StoredApplication) -> ApplicationView {
     ApplicationView {
+        generation: stored.generation,
+        resolved_generation: stored.resolved_generation,
         spec_hash: stored.application.spec_hash(),
         application: stored.application,
         delete_intent: stored.delete_intent,
@@ -351,6 +340,7 @@ fn status_view(status: ApplicationStatus) -> ApplicationStatusView {
     ApplicationStatusView {
         application_id: status.application_id.to_string(),
         state: status.state,
+        runtime_health: status.runtime_health,
         message: status.message,
         updated_at_ms: status.updated_at_ms,
     }
@@ -366,8 +356,8 @@ fn observed_view(
 ) -> ObservedApplicationView {
     let services = stored
         .resolved
-        .services
         .iter()
+        .flat_map(|target| &target.services)
         .map(|desired| {
             let runtime = observed
                 .services
@@ -591,4 +581,67 @@ mod tests {
         service.healthcheck_configured = false;
         assert_eq!(healthy_replicas(&service), 1);
     }
+}
+
+#[derive(Default, Deserialize, utoipa::IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub(super) struct GenerationQuery {
+    /// Optional current intent revision.
+    expected_generation: Option<u64>,
+}
+impl GenerationQuery {
+    fn decode(
+        query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
+    ) -> Result<Option<u64>, ApiError> {
+        query
+            .map(|Query(value)| value.expected_generation)
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "generation_invalid",
+                    "invalid expected generation",
+                )
+            })
+    }
+}
+
+#[utoipa::path(post,path="/api/v1/applications/{id}/reconcile",operation_id="reconcileApplication",
+    params(("id"=String,Path),GenerationQuery),
+    responses((status=202,description="Reconciliation accepted",body=Envelope<AcceptedOperation>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn reconcile(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Response, ApiError> {
+    let operation = state
+        .reconcile(&ApplicationId::parse(id)?, GenerationQuery::decode(query)?)
+        .await?;
+    Ok(accepted(AcceptedOperation {
+        generation: operation.generation,
+        application_id: operation.application_id.to_string(),
+        operation_id: operation.id,
+    }))
+}
+
+#[utoipa::path(post,path="/api/v1/applications/{id}/refresh",operation_id="refreshApplication",
+    params(("id"=String,Path),GenerationQuery),
+    responses((status=202,description="Image refresh accepted",body=Envelope<AcceptedOperation>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn refresh(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Response, ApiError> {
+    let operation = state
+        .refresh(&ApplicationId::parse(id)?, GenerationQuery::decode(query)?)
+        .await?;
+    Ok(accepted(AcceptedOperation {
+        generation: operation.generation,
+        application_id: operation.application_id.to_string(),
+        operation_id: operation.id,
+    }))
 }

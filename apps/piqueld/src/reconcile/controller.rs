@@ -2,6 +2,7 @@ use super::{
     ApplicationState, CancellationToken, Controller, DockerApi, Operation, OperationError,
     OperationKind, OperationState, Plan, PlanRequest, StoreError, blocked_plan_error,
 };
+use std::sync::Arc;
 
 impl<D: DockerApi> Controller<D> {
     pub(super) async fn run_operation(
@@ -25,6 +26,25 @@ impl<D: DockerApi> Controller<D> {
                 Err(error) => return Err(error),
             }
         }
+        if operation.state == OperationState::Running && operation.error_code.is_some() {
+            self.store
+                .transition_operation(
+                    &operation.id,
+                    OperationState::Running,
+                    OperationState::Requested,
+                    None,
+                )
+                .await?;
+            self.store
+                .transition_operation(
+                    &operation.id,
+                    OperationState::Requested,
+                    OperationState::Running,
+                    None,
+                )
+                .await?;
+        }
+        let operation = &self.store.operation(&operation.id).await?;
         let result = self.execute_operation(operation, cancellation).await;
         if cancellation.is_cancelled() {
             return Ok(());
@@ -94,14 +114,18 @@ impl<D: DockerApi> Controller<D> {
         let request = if operation.kind == OperationKind::Delete {
             PlanRequest::Delete {
                 application_id: operation.application_id.clone(),
-                instance_id: application.resolved.instance_id.clone(),
+                instance_id: piqueld_core::InstanceId::parse(self.store.instance_id())
+                    .expect("valid store identity"),
             }
         } else {
             PlanRequest::Reconcile {
-                desired: application.resolved.clone(),
+                desired: tokio::select! {
+                    ()=cancellation.cancelled()=>return Err(OperationError::Cancelled),
+                    result=self.prepare_target(operation,&application)=>result?,
+                },
             }
         };
-        let ownership = Self::ownership_labels(&application);
+        let ownership = self.ownership_labels(&application);
         if operation.kind != OperationKind::Delete
             && !self
                 .store
@@ -120,13 +144,26 @@ impl<D: DockerApi> Controller<D> {
             if tokio::time::Instant::now() >= deadline {
                 return Err(OperationError::ConvergenceTimeout);
             }
-            let observed = self
-                .observe_with_retry(operation, cancellation, deadline)
-                .await?;
+            let observed = tokio::time::timeout_at(
+                deadline,
+                self.observe_with_retry(operation, cancellation, deadline),
+            )
+            .await
+            .map_err(|_| OperationError::ConvergenceTimeout)??;
             self.check_current(operation).await?;
+            self.store
+                .record_health(&operation.id, &observed)
+                .await
+                .map_err(OperationError::from)?;
             let plan = Plan::from_request(&request, &observed);
             if plan.is_blocked() {
                 return Err(blocked_plan_error(&plan));
+            }
+            if operation.kind != OperationKind::Delete {
+                self.store
+                    .publish_prepared(operation)
+                    .await
+                    .map_err(OperationError::from)?;
             }
             let action = plan.actions.iter().find(|action| {
                 !matches!(action.kind, piqueld_core::ActionKind::RetainVolume { .. })
@@ -150,6 +187,42 @@ impl<D: DockerApi> Controller<D> {
             .await
             .map_err(|_| OperationError::ConvergenceTimeout)??;
         }
+    }
+
+    async fn prepare_target(
+        &self,
+        operation: &Operation,
+        application: &super::StoredApplication,
+    ) -> Result<piqueld_core::ResolvedApplication, OperationError> {
+        self.check_current(operation).await?;
+        if let Some(target) = self
+            .store
+            .prepared_target(&operation.id)
+            .await
+            .map_err(OperationError::from)?
+        {
+            return Ok(target);
+        }
+        let runtime = self.runtime(Arc::new(tokio::sync::Notify::new()));
+        let prepared =
+            runtime
+                .prepare(&application.application)
+                .await
+                .map_err(|error| match error {
+                    crate::application::BoundaryError::Runtime(error) => {
+                        OperationError::from(error)
+                    }
+                    crate::application::BoundaryError::Compilation(errors) => {
+                        tracing::error!(?errors, "application compilation failed");
+                        OperationError::ValidationFailed("compile application")
+                    }
+                })?;
+        self.check_current(operation).await?;
+        self.store
+            .save_prepared(operation, &prepared)
+            .await
+            .map_err(OperationError::from)?;
+        Ok(prepared)
     }
 
     pub(super) async fn check_current(&self, operation: &Operation) -> Result<(), OperationError> {

@@ -457,6 +457,15 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
     let operation = detail.latest_operation.clone();
     let diagnostics = detail.diagnostics.clone();
     let observed = detail.observed.clone();
+    let intent_generation = detail.application.generation;
+    let resolved_generation = detail
+        .application
+        .resolved_generation
+        .map_or_else(|| "none".to_owned(), |value| value.to_string());
+    let runtime_health = status
+        .runtime_health
+        .clone()
+        .unwrap_or_else(|| "unknown".to_owned());
     let application_name = app.metadata.name.clone();
     let application_id = app.id.to_string();
     let desired_services = app
@@ -508,6 +517,9 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                 <span class=health_class(health)>{health.label()}</span>
             </div>
             <dl class="grid gap-3 rounded-lg bg-surface-muted p-3">
+                <div><dt>"Requested generation"</dt><dd>{intent_generation}</dd></div>
+                <div><dt>"Resolved target generation"</dt><dd>{resolved_generation}</dd></div>
+                <div><dt>"Observed runtime health"</dt><dd>{runtime_health}</dd></div>
                 <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Networks / volumes"</dt><dd class="mt-1">{format!("{} / {}", observed.network_count, observed.volume_count)}</dd></div>
             </dl>
             <p class="m-0 border-l-4 border-l-accent bg-surface-muted p-3"><span class=health_class(health)>{health.label()}</span> {status.message.clone().unwrap_or_else(|| "No additional daemon diagnostic.".into())}</p>

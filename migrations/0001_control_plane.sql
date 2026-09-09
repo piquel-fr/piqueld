@@ -16,7 +16,9 @@ CREATE TABLE applications (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     desired_json TEXT NOT NULL CHECK (json_valid(desired_json)),
-    resolved_json TEXT NOT NULL CHECK (json_valid(resolved_json)),
+    resolved_json TEXT CHECK (resolved_json IS NULL OR json_valid(resolved_json)),
+    generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
+    resolved_generation INTEGER,
     delete_intent INTEGER NOT NULL DEFAULT 0 CHECK (delete_intent IN (0, 1)),
     deleted_at_ms INTEGER,
     created_at_ms INTEGER NOT NULL,
@@ -28,14 +30,19 @@ CREATE TABLE application_status (
     application_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
     state TEXT NOT NULL CHECK (state IN ('pending','deploying','ready','degraded','deleting','failed')),
     message TEXT,
+    runtime_health TEXT,
     updated_at_ms INTEGER NOT NULL
 );
 
 CREATE TABLE operations (
     id TEXT PRIMARY KEY,
     application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('apply','delete')),
+    kind TEXT NOT NULL CHECK (kind IN ('apply','refresh','delete')),
     state TEXT NOT NULL CHECK (state IN ('requested','running','succeeded','failed','cancelled')),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+    consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+    target_json TEXT CHECK (target_json IS NULL OR json_valid(target_json)),
     error_code TEXT,
     error_message TEXT,
     created_at_ms INTEGER NOT NULL,
@@ -49,3 +56,16 @@ CREATE TABLE operations (
 CREATE INDEX operation_application ON operations(application_id,created_at_ms DESC,id DESC);
 CREATE UNIQUE INDEX operation_running ON operations(application_id) WHERE state='running';
 CREATE INDEX operation_finished ON operations(finished_at_ms) WHERE finished_at_ms IS NOT NULL;
+
+-- Informational history deliberately has no foreign keys to prunable records.
+CREATE TABLE events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    application_id TEXT,
+    operation_id TEXT,
+    generation INTEGER,
+    attempt INTEGER,
+    kind TEXT NOT NULL,
+    message TEXT,
+    created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX event_application ON events(application_id,id);

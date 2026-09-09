@@ -3,12 +3,10 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use piqueld::api::{ApiState, UiAssets};
-use piqueld::application::DockerRuntime;
 use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::reconcile::Controller;
 use piqueld::store::SqliteStore;
-use piqueld_core::InstanceId;
 use std::{
     os::unix::fs::{FileTypeExt, PermissionsExt},
     path::PathBuf,
@@ -60,17 +58,7 @@ async fn main() -> Result<()> {
 
     let docker = connect_docker(&config.docker).await?;
 
-    let instance = InstanceId::parse(store.instance_id().to_owned())
-        .context("stored instance identity is invalid")?;
-
     let wake = Arc::new(tokio::sync::Notify::new());
-
-    let runtime = Arc::new(DockerRuntime::new(
-        Arc::clone(&docker),
-        instance,
-        Arc::clone(&wake),
-        std::time::Duration::from_secs(config.reconciliation.prepare_timeout_seconds),
-    ));
 
     let reconciler = Controller::new(Arc::clone(&docker), Arc::clone(&store)).with_retry_policy(
         piqueld::reconcile::RetryPolicy {
@@ -81,6 +69,10 @@ async fn main() -> Result<()> {
         },
     );
 
+    let reconciler = reconciler.with_prepare_timeout(std::time::Duration::from_secs(
+        config.reconciliation.prepare_timeout_seconds,
+    ));
+    let runtime = reconciler.runtime(Arc::clone(&wake));
     let ui_assets = UiAssets::resolve();
     log_ui_status(&ui_assets);
     let state = ApiState::new(Arc::clone(&store), runtime);
@@ -93,12 +85,14 @@ async fn main() -> Result<()> {
     let controller_cancellation = cancellation.clone();
     let scan_interval = std::time::Duration::from_secs(config.reconciliation.scan_interval_seconds);
     let finished_operation_days = config.retention.finished_operation_days;
+    let event_days = config.retention.event_days;
     let controller = tokio::spawn(async move {
         let result = reconciler
             .run(
                 wake,
                 scan_interval,
                 finished_operation_days,
+                event_days,
                 controller_token,
             )
             .await;

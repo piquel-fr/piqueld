@@ -55,14 +55,14 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     let application = application();
     let desired = resolved(&application, store.instance_id());
     let created = store
-        .save_application(&application, &desired)
+        .save_application(&application, Some(&desired), None)
         .await
         .expect("application saved");
     let stored = store
         .get(&application.id)
         .await
         .expect("application readable");
-    assert_eq!(stored.resolved, desired);
+    assert_eq!(stored.resolved, Some(desired.clone()));
     assert!(!stored.delete_intent);
     assert_eq!(
         store.operation(&created.id).await.unwrap().state,
@@ -70,7 +70,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     );
 
     let deleted = store
-        .request_delete(&application.id)
+        .request_delete(&application.id, None)
         .await
         .expect("deletion saved");
     assert_eq!(
@@ -85,7 +85,12 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
         .await
         .expect("database reopens");
     assert_eq!(
-        reopened.get(&application.id).await.unwrap().resolved,
+        reopened
+            .get(&application.id)
+            .await
+            .unwrap()
+            .resolved
+            .unwrap(),
         desired
     );
     assert!(reopened.get(&application.id).await.unwrap().delete_intent);
@@ -118,14 +123,22 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
         .unwrap();
     let application = application();
     let first = store
-        .save_application(&application, &resolved(&application, store.instance_id()))
+        .save_application(
+            &application,
+            Some(&resolved(&application, store.instance_id())),
+            None,
+        )
         .await
         .unwrap();
     let mut replacement = application.clone();
     replacement.spec.services[0].replicas = 2;
     let replacement = replacement.normalize();
     let replaced = store
-        .save_application(&replacement, &resolved(&replacement, store.instance_id()))
+        .save_application(
+            &replacement,
+            Some(&resolved(&replacement, store.instance_id())),
+            None,
+        )
         .await
         .unwrap();
     assert_ne!(first.id, replaced.id);
@@ -179,11 +192,19 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     let corrupt = application();
     let healthy = application_named("app-persist-02", "archive");
     store
-        .save_application(&corrupt, &resolved(&corrupt, store.instance_id()))
+        .save_application(
+            &corrupt,
+            Some(&resolved(&corrupt, store.instance_id())),
+            None,
+        )
         .await
         .expect("corrupt application is created");
     store
-        .save_application(&healthy, &resolved(&healthy, store.instance_id()))
+        .save_application(
+            &healthy,
+            Some(&resolved(&healthy, store.instance_id())),
+            None,
+        )
         .await
         .expect("healthy application is created");
 
@@ -212,12 +233,12 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     // applications stay reachable on later pages.
     let third = application_named("app-persist-03", "gallery");
     store
-        .save_application(&third, &resolved(&third, store.instance_id()))
+        .save_application(&third, Some(&resolved(&third, store.instance_id())), None)
         .await
         .expect("third application is created");
     let fourth = application_named("app-persist-04", "wiki");
     store
-        .save_application(&fourth, &resolved(&fourth, store.instance_id()))
+        .save_application(&fourth, Some(&resolved(&fourth, store.instance_id())), None)
         .await
         .expect("fourth application is created");
 
@@ -250,4 +271,44 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         vec![third.id.as_str(), fourth.id.as_str()],
         "the remaining healthy application follows the quarantined page"
     );
+}
+
+#[tokio::test]
+async fn event_history_survives_operation_pruning_and_has_independent_retention() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(directory.path().join("state.db"))
+        .await
+        .unwrap();
+    let app = application();
+    let desired = resolved(&app, store.instance_id());
+    let first = store
+        .save_application(&app, Some(&desired), Some(0))
+        .await
+        .unwrap();
+    let second = store.request_refresh(&app.id, Some(1)).await.unwrap();
+    store.prune_finished_operations(i64::MAX).await.unwrap();
+    assert!(matches!(
+        store.operation(&first.id).await,
+        Err(StoreError::NotFound)
+    ));
+    assert!(store.operation(&second.id).await.is_ok());
+    let events = store.events(Some(&app.id), None, 100).await.unwrap();
+    assert!(
+        events
+            .items
+            .iter()
+            .any(|event| event.operation_id.as_deref() == Some(&first.id)
+                && event.kind == "operation_cancelled")
+    );
+    store.prune_events(i64::MAX).await.unwrap();
+    assert!(
+        store
+            .events(None, None, 100)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert!(store.get(&app.id).await.is_ok());
+    assert!(store.operation(&second.id).await.is_ok());
 }

@@ -36,6 +36,36 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
         Command::Apply(args) => apply(cli, &client, args).await,
         Command::Delete(args) => delete(cli, &client, args).await,
         Command::Operation(args) => operation(cli, &client, args).await,
+        Command::Reconcile(args) => reconcile_or_refresh(cli, &client, args, false).await,
+        Command::Refresh(args) => reconcile_or_refresh(cli, &client, args, true).await,
+        Command::Events {
+            application,
+            cursor,
+            limit,
+        } => {
+            let page = client
+                .events(application.as_deref(), cursor.as_deref(), *limit)
+                .await?;
+            if cli.json {
+                return emit_json(&page);
+            }
+            for event in page.items {
+                writeln!(
+                    io::stdout().lock(),
+                    "{}\t{}\t{}\t{}\tattempt {}\t{}",
+                    event.id,
+                    event.created_at_ms,
+                    event.kind,
+                    event.operation_id.as_deref().unwrap_or("-"),
+                    event.attempt.unwrap_or(0),
+                    event.message.as_deref().unwrap_or("")
+                )?;
+            }
+            if let Some(cursor) = page.next_cursor {
+                writeln!(io::stdout().lock(), "next cursor: {cursor}")?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -150,7 +180,20 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
         application.application.metadata.name,
         application.application.id
     )?;
-    writeln!(io::stdout().lock(), "state {}", status.state)?;
+    writeln!(
+        io::stdout().lock(),
+        "intent state {}, observed runtime {}",
+        status.state,
+        status.runtime_health.as_deref().unwrap_or("unknown")
+    )?;
+    writeln!(
+        io::stdout().lock(),
+        "intent generation {}, resolved target generation {}",
+        application.generation,
+        application
+            .resolved_generation
+            .map_or_else(|| "none".to_owned(), |value| value.to_string())
+    )?;
     writeln!(
         io::stdout().lock(),
         "desired replicas: {}",
@@ -189,7 +232,9 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
 
 async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
-    let plan = client.plan_application_toml(&manifest).await?;
+    let plan = client
+        .plan_application_toml_with_generation(&manifest, args.expected_generation)
+        .await?;
     if cli.json {
         emit_json(&plan)?;
         if plan.plan.is_blocked() {
@@ -209,7 +254,9 @@ async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result
 async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
     let name = manifest_name(&manifest, &args.file)?;
-    let plan = client.plan_application_toml(&manifest).await?;
+    let plan = client
+        .plan_application_toml_with_generation(&manifest, args.expected_generation)
+        .await?;
     render_plan_stderr(&plan).map_err(|error| {
         CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
     })?;
@@ -218,7 +265,10 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     }
     confirm(args.yes, &format!("Apply application {name:?}? [y/N] ")).await?;
 
-    let accepted = retry_transport(|| client.apply_application_toml(&manifest)).await?;
+    let accepted = retry_transport(|| {
+        client.apply_application_toml_with_generation(&manifest, args.expected_generation)
+    })
+    .await?;
     if args.no_wait {
         if cli.json {
             return emit_json(&accepted);
@@ -259,10 +309,14 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     )
     .await?;
 
-    let accepted =
-        retry_transport(|| client.delete_application(application.application.id.as_str()))
-            .await
-            .map_err(CliError::from)?;
+    let accepted = retry_transport(|| {
+        client.delete_application_with_generation(
+            application.application.id.as_str(),
+            args.expected_generation,
+        )
+    })
+    .await
+    .map_err(CliError::from)?;
     if args.no_wait {
         if cli.json {
             return emit_json(&json!({"accepted": accepted, "volumes_retained": true}));
@@ -424,5 +478,58 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
         }
         Err(CliError::new(ErrorKind::Operation, message)
             .with_details(json!({"operation": operation})))
+    }
+}
+
+async fn reconcile_or_refresh(
+    cli: &Cli,
+    client: &Client,
+    args: &DeleteArgs,
+    refresh: bool,
+) -> Result<()> {
+    let application = resolve_application(client, &args.name_or_id).await?;
+    let action = if refresh {
+        "Refresh images for"
+    } else {
+        "Reconcile"
+    };
+    confirm(
+        args.yes,
+        &format!(
+            "{action} application {:?}? [y/N] ",
+            application.application.metadata.name
+        ),
+    )
+    .await?;
+    let id = application.application.id.as_str();
+    let accepted = retry_transport(|| async {
+        if refresh {
+            client
+                .refresh_application(id, args.expected_generation)
+                .await
+        } else {
+            client
+                .reconcile_application(id, args.expected_generation)
+                .await
+        }
+    })
+    .await?;
+    if args.no_wait {
+        if cli.json {
+            return emit_json(&accepted);
+        }
+        writeln!(
+            io::stdout().lock(),
+            "accepted operation {} for application {}",
+            accepted.operation_id,
+            accepted.application_id
+        )?;
+        return Ok(());
+    }
+    let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
+    if cli.json {
+        emit_json(&json!({"accepted":accepted,"operation":operation}))
+    } else {
+        render_operation(cli, &operation)
     }
 }

@@ -48,6 +48,22 @@ pub(crate) enum Command {
     Delete(DeleteArgs),
     /// Inspect or wait for one asynchronous operation.
     Operation(OperationArgs),
+    /// Repair latest intent without refreshing resolved images.
+    Reconcile(DeleteArgs),
+    /// Resolve current image references again and deploy the resulting target.
+    Refresh(DeleteArgs),
+    /// Read one page of informational events, oldest first.
+    Events {
+        /// Filter by stable application ID, including deleted applications.
+        #[arg(long)]
+        application: Option<String>,
+        /// Continue after a cursor returned by the previous page.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Maximum number of events in the page.
+        #[arg(long,default_value_t=50,value_parser=clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -55,6 +71,9 @@ pub(crate) struct ManifestArgs {
     /// TOML application manifest.
     #[arg(long, value_name = "PATH")]
     pub(crate) file: PathBuf,
+    /// Require this intent generation; zero requires an absent application.
+    #[arg(long)]
+    pub(crate) expected_generation: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -62,6 +81,9 @@ pub(crate) struct ApplyArgs {
     /// TOML application manifest.
     #[arg(long, value_name = "PATH")]
     pub(crate) file: PathBuf,
+    /// Require this intent generation; zero requires an absent application.
+    #[arg(long)]
+    pub(crate) expected_generation: Option<u64>,
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]
@@ -76,6 +98,9 @@ pub(crate) struct ApplyArgs {
 pub(crate) struct DeleteArgs {
     /// Application name or stable ID.
     pub(crate) name_or_id: String,
+    /// Require this intent generation.
+    #[arg(long)]
+    pub(crate) expected_generation: Option<u64>,
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]

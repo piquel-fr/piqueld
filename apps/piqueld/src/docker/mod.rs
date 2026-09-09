@@ -76,6 +76,8 @@ pub struct BollardDocker {
 }
 
 mod engine;
+mod limited;
+pub(crate) use limited::LimitedDocker;
 mod errors;
 mod identity;
 mod observation;

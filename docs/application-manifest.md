@@ -72,8 +72,9 @@ canonical JSON envelope (`piqueld-spec-hash/v2`) covering only the canonical
 spec. The application name selects which application an apply targets; changing
 it targets a different application.
 
-The parser is pure. The Docker runtime resolves each image reference to an
-immutable digest on every apply before comparing it with the stored target.
-Equivalent resolved targets share one operation; failed or cancelled operations
-can be requested again. Resolved runtime state is
-internal persistence data and is not mixed into the public manifest DTOs.
+The parser is pure. Apply compares complete normalized manifests. Identical intent
+causes no image resolution or deployment, unless its operation failed and needs
+another attempt. Changed intent is persisted before operation execution resolves
+images. Explicit refresh resolves unchanged image references again; reconciliation
+reuses the prepared target. Resolved runtime state remains separate from portable
+manifest DTOs. Generations advance only for changed manifests or deletion intent.

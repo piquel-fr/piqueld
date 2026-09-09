@@ -118,9 +118,20 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn delete_application(&self, id: &str) -> Result<AcceptedOperation, ClientError> {
+        self.delete_application_with_generation(id, None).await
+    }
+
+    /// Deletes only if the optional intent revision still matches.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn delete_application_with_generation(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+    ) -> Result<AcceptedOperation, ClientError> {
         self.send::<_, ()>(
             Method::DELETE,
-            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
+            &Self::mutation_path(id, "", expected),
             None,
             &[],
         )
@@ -170,11 +181,28 @@ impl Client {
         &self,
         manifest: &str,
     ) -> Result<AcceptedOperation, ClientError> {
+        self.apply_application_toml_with_generation(manifest, None)
+            .await
+    }
+
+    /// Applies TOML with an optional intent revision precondition.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn apply_application_toml_with_generation(
+        &self,
+        manifest: &str,
+        expected: Option<u64>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        let generation = expected.map(|value| value.to_string());
+        let mut headers = vec![("content-type", "application/toml")];
+        if let Some(value) = generation.as_deref() {
+            headers.push(("x-expected-generation", value));
+        }
         self.send_text(
             Method::POST,
             &format!("{}/applications/apply", crate::API_PREFIX),
             manifest,
-            &[("content-type", "application/toml")],
+            &headers,
         )
         .await
     }
@@ -184,12 +212,100 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn plan_application_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
+        self.plan_application_toml_with_generation(manifest, None)
+            .await
+    }
+
+    /// Previews TOML conditioned on the optional current generation.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn plan_application_toml_with_generation(
+        &self,
+        manifest: &str,
+        expected: Option<u64>,
+    ) -> Result<PlanView, ClientError> {
+        let generation = expected.map(|value| value.to_string());
+        let mut headers = vec![("content-type", "application/toml")];
+        if let Some(value) = generation.as_deref() {
+            headers.push(("x-expected-generation", value));
+        }
         self.send_text(
             Method::POST,
             &format!("{}/applications/plan", crate::API_PREFIX),
             manifest,
-            &[("content-type", "application/toml")],
+            &headers,
         )
         .await
+    }
+
+    fn mutation_path(id: &str, action: &str, expected: Option<u64>) -> String {
+        let path = format!(
+            "{}/applications/{}{}",
+            crate::API_PREFIX,
+            path_segment(id),
+            action
+        );
+        expected.map_or_else(
+            || path.clone(),
+            |generation| format!("{path}?expected_generation={generation}"),
+        )
+    }
+
+    /// Repairs the latest accepted intent using its already resolved digests.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn reconcile_application(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        self.send::<_, ()>(
+            Method::POST,
+            &Self::mutation_path(id, "/reconcile", expected),
+            None,
+            &[],
+        )
+        .await
+    }
+
+    /// Explicitly resolves the current manifest again.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn refresh_application(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        self.send::<_, ()>(
+            Method::POST,
+            &Self::mutation_path(id, "/refresh", expected),
+            None,
+            &[],
+        )
+        .await
+    }
+
+    /// Reads one page of informational events, including history of deleted applications.
+    /// # Errors
+    /// Returns transport, API, decoding, or pagination errors.
+    pub async fn events(
+        &self,
+        application_id: Option<&str>,
+        cursor: Option<&str>,
+        limit: u16,
+    ) -> Result<Page<piqueld_core::Event>, ClientError> {
+        if !(1..=100).contains(&limit) {
+            return Err(invalid_request("event limit must be between 1 and 100"));
+        }
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        if let Some(id) = application_id {
+            query.append_pair("application_id", id);
+        }
+        if let Some(cursor) = cursor {
+            query.append_pair("cursor", cursor);
+        }
+        query.append_pair("limit", &limit.to_string());
+        let path = format!("{}/events?{}", crate::API_PREFIX, query.finish());
+        self.send::<_, ()>(Method::GET, &path, None, &[]).await
     }
 }

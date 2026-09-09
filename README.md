@@ -5,15 +5,16 @@ single-node Swarm. Submit an application
 manifest naming prebuilt images; the server resolves those images to digests
 and reconciles a private network, named volumes, and replicated services.
 
-Applications are identified by name. One apply endpoint creates or updates the
-desired state. The server resolves images on every apply and reuses the current
-operation when the resulting target is unchanged. Failed or cancelled operations
-can be requested again under the same ID. Clients need no keys or generations.
+Applications are identified by name. Apply durably accepts the full normalized
+manifest and returns an operation ID before resolving images. Identical applies
+are no-ops unless the operation failed. Explicit reconcile repairs stored targets;
+refresh explicitly resolves images again. Optional generation checks protect
+manifest and deletion-intent changes without request replay keys.
 
-One sequential controller observes Docker and computes fresh plans until each
-operation converges. A new target supersedes earlier active work; operation
-history remains in SQLite. Deletion stays running until services and networks
-are verified absent, while named volumes are retained.
+One async controller overlaps image pulls, observations, and timers while allowing
+one resource mutation request at a time. New intent supersedes old work. Durable
+operations, attempt outcomes, and informational events remain in SQLite. Deletion
+completes only after services and networks are verified absent; volumes remain.
 
 The daemon exposes a polling HTTP API over loopback TCP and a Unix socket. The
 CLI and optional read-only dashboard share domain records and HTTP contracts.

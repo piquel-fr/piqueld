@@ -30,6 +30,9 @@ pub enum OperationError {
     /// An image could not be resolved while performing the described operation.
     #[error("container image could not be resolved to a digest while {0}")]
     ImageResolutionFailed(&'static str),
+    /// The registry rejected the requested image or credentials.
+    #[error("container image was rejected by the registry while {0}")]
+    ImageResolutionRejected(&'static str),
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     DockerRequestFailed(&'static str),
@@ -61,6 +64,7 @@ impl OperationError {
             Self::SwarmTopologyUnsupported => "swarm_topology_unsupported",
             Self::DockerUnavailable(_) => "docker_unavailable",
             Self::ImageResolutionFailed(_) => "image_resolution_failed",
+            Self::ImageResolutionRejected(_) => "image_resolution_rejected",
             Self::DockerRequestFailed(_) => "docker_request_failed",
             Self::ValidationFailed(_) => "validation_failed",
             Self::ServiceUpdateFailed => "service_update_failed",
@@ -78,6 +82,7 @@ impl OperationError {
 
 impl From<crate::docker::DockerError> for OperationError {
     fn from(error: crate::docker::DockerError) -> Self {
+        tracing::warn!(error=?error,"Docker execution error");
         match error {
             crate::docker::DockerError::OwnershipConflict => Self::OwnershipConflict,
             crate::docker::DockerError::ConfigurationConflict => Self::DockerConfigurationConflict,
@@ -87,6 +92,12 @@ impl From<crate::docker::DockerError> for OperationError {
             crate::docker::DockerError::Unavailable(operation)
             | crate::docker::DockerError::UnavailableSource { operation, .. } => {
                 Self::DockerUnavailable(operation)
+            }
+            crate::docker::DockerError::ImageResolutionSource {
+                operation,
+                ref source,
+            } if matches!(source,bollard::errors::Error::DockerResponseServerError {status_code:400..=407 | 409..=428 | 430..=499,..}) => {
+                Self::ImageResolutionRejected(operation)
             }
             crate::docker::DockerError::ImageResolution(operation)
             | crate::docker::DockerError::ImageResolutionSource { operation, .. } => {

@@ -35,8 +35,10 @@ just run --socket /run/user/1000/piqueld/piqueld.sock show notes
 `status` reports the daemon version and `--json` produces the same structured
 result as the public API. `apply` waits for the durable operation by default;
 `--no-wait` returns immediately with its operation identifier. Apply the same
-manifest to update an existing application by name. Each apply resolves image
-tags again; an unchanged resolved target reuses the existing operation.
+manifest to update an existing application by name. Identical manifests do nothing
+unless the operation failed. Use `piquelctl reconcile notes --yes` for repair and
+`piquelctl refresh notes --yes` to resolve mutable image tags again.
+`piquelctl events --application <application-id>` reads informational history.
 
 ## Dashboard and cleanup
 

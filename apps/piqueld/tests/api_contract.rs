@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use axum::{body::Body, http::Request, serve};
 use http_body_util::BodyExt;
 use piqueld::api::{ApiState, EmbeddedBundle, UiAssets, api_router, router, web_router};
-use piqueld::application::{BoundaryError, PreparedApplication, RuntimeBoundary};
+use piqueld::application::{BoundaryError, RuntimeBoundary};
 use piqueld::store::{SqliteStore, StoredApplication};
 use piqueld_client::{AcceptedOperation, ApplyApplicationRequest, Client};
 use piqueld_core::{
@@ -27,7 +27,7 @@ impl RuntimeBoundary for FakeRuntime {
     async fn prepare(
         &self,
         application: &NormalizedApplication,
-    ) -> Result<PreparedApplication, BoundaryError> {
+    ) -> Result<piqueld_core::ResolvedApplication, BoundaryError> {
         let sources = application
             .spec
             .services
@@ -52,10 +52,7 @@ impl RuntimeBoundary for FakeRuntime {
             &ResolutionSet { sources },
         )
         .map_err(BoundaryError::Compilation)?;
-        Ok(PreparedApplication {
-            resolved,
-            observed: ObservedApplication::default(),
-        })
+        Ok(resolved)
     }
 
     async fn observe(
@@ -125,6 +122,7 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
 async fn assert_create_plan(client: &Client, manifest: &ApplicationManifest) {
     let preview = client
         .plan_application(&ApplyApplicationRequest {
+            expected_generation: None,
             manifest: manifest.clone(),
         })
         .await
@@ -137,6 +135,7 @@ async fn assert_create_plan(client: &Client, manifest: &ApplicationManifest) {
 
 async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> AcceptedOperation {
     let request = ApplyApplicationRequest {
+        expected_generation: None,
         manifest: manifest.clone(),
     };
     let created = client
@@ -158,10 +157,8 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
         created.application_id.parse().unwrap()
     );
     assert_eq!(detail.application.application.spec.services.len(), 1);
-    assert_eq!(
-        detail.observed.services[0].convergence,
-        piqueld_core::Convergence::Updating
-    );
+    assert!(detail.observed.services.is_empty());
+    assert_eq!(detail.application.resolved_generation, None);
     assert!(detail.diagnostics.is_empty());
     assert_eq!(
         client.operation(&created.operation_id).await.unwrap().kind,
@@ -535,7 +532,10 @@ async fn replace_and_plan(
     mut manifest: ApplicationManifest,
 ) -> AcceptedOperation {
     manifest.spec.services[0].replicas = 2;
-    let request = ApplyApplicationRequest { manifest };
+    let request = ApplyApplicationRequest {
+        expected_generation: None,
+        manifest,
+    };
     let replaced = client
         .apply_application(&request)
         .await
@@ -1070,4 +1070,75 @@ async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
     delete(&client, &created).await;
 
     server.abort();
+}
+
+#[tokio::test]
+async fn generations_refresh_reconcile_and_event_pagination_share_the_http_contract() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let client = Client::tcp(&format!("http://{address}")).unwrap();
+    let mut request = ApplyApplicationRequest {
+        manifest: manifest(),
+        expected_generation: Some(0),
+    };
+    let first = client.apply_application(&request).await.unwrap();
+    assert_eq!(first.generation, 1);
+    let stale = client.apply_application(&request).await.unwrap_err();
+    assert!(
+        matches!(stale,piqueld_client::ClientError::Api {status,..} if status==axum::http::StatusCode::CONFLICT)
+    );
+    request.expected_generation = Some(1);
+    request.manifest.spec.services[0].replicas = 2;
+    let changed = client.apply_application(&request).await.unwrap();
+    assert_eq!(changed.generation, 2);
+    let refreshed = client
+        .refresh_application(&first.application_id, Some(2))
+        .await
+        .unwrap();
+    assert_eq!(refreshed.generation, 2);
+    assert_ne!(refreshed.operation_id, changed.operation_id);
+    let reconciled = client
+        .reconcile_application(&first.application_id, Some(2))
+        .await
+        .unwrap();
+    assert_eq!(reconciled.operation_id, refreshed.operation_id);
+    let first_page = client
+        .events(Some(&first.application_id), None, 2)
+        .await
+        .unwrap();
+    assert_eq!(first_page.items.len(), 2);
+    let second_page = client
+        .events(
+            Some(&first.application_id),
+            first_page.next_cursor.as_deref(),
+            100,
+        )
+        .await
+        .unwrap();
+    assert!(!second_page.items.is_empty());
+    assert!(
+        second_page
+            .items
+            .iter()
+            .all(|event| event.id > first_page.items.last().unwrap().id)
+    );
+    let deletion = client
+        .delete_application_with_generation(&first.application_id, Some(2))
+        .await
+        .unwrap();
+    assert_eq!(deletion.generation, 3);
+    assert!(
+        client
+            .refresh_application(&first.application_id, None)
+            .await
+            .is_err()
+    );
+    let repeated = client
+        .delete_application(&first.application_id)
+        .await
+        .unwrap();
+    assert_eq!(repeated.operation_id, deletion.operation_id);
+    task.abort();
 }

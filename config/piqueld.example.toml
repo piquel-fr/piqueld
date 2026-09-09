@@ -19,3 +19,7 @@ auto_initialize_swarm = true
 scan_interval_seconds = 60
 prepare_timeout_seconds = 300
 convergence_timeout_seconds = 120
+
+[retention]
+finished_operation_days = 10
+event_days = 30

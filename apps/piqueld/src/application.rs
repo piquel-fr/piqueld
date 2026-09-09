@@ -1,4 +1,4 @@
-//! Accept application intent after resolution and conflict checks; deduplicate targets on the server.
+//! Accept manifest intent immediately; Docker preparation belongs to operation execution.
 
 mod runtime;
 pub use runtime::DockerRuntime;
@@ -15,15 +15,6 @@ use piqueld_core::{
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[derive(Clone, Debug)]
-/// Resolved desired state paired with the initial runtime observation.
-pub struct PreparedApplication {
-    /// Immutable desired application state.
-    pub resolved: ResolvedApplication,
-    /// Runtime resources observed before planning.
-    pub observed: ObservedApplication,
-}
-
 #[derive(Debug, thiserror::Error)]
 /// Errors crossing the runtime boundary.
 pub enum BoundaryError {
@@ -35,16 +26,16 @@ pub enum BoundaryError {
     Compilation(Vec<CompileError>),
 }
 
-/// Resolves application inputs and reads the runtime before accepting desired state.
+/// Resolves accepted intent during execution and observes runtime for API reads.
 #[async_trait]
 pub trait RuntimeBoundary: Send + Sync + 'static {
     /// Wakes the reconciler after a mutation requests an immediate scan.
     fn trigger_reconciliation(&self) {}
-    /// Resolves mutable inputs and captures an initial runtime observation.
+    /// Resolves all mutable inputs into a complete immutable target.
     async fn prepare(
         &self,
         application: &NormalizedApplication,
-    ) -> Result<PreparedApplication, BoundaryError>;
+    ) -> Result<ResolvedApplication, BoundaryError>;
     /// Captures current runtime state for a stored application.
     async fn observe(
         &self,
@@ -85,26 +76,24 @@ impl Applications {
         }
     }
 
-    /// Resolves a manifest and accepts only a changed target, or retries failed work.
-    ///
+    /// Accepts normalized intent without waiting for Docker or image resolution.
     /// # Errors
-    /// Returns a resolution, compilation or persistence error.
+    /// Returns storage or generation errors.
     pub async fn apply(
         &self,
         manifest: ValidatedApplication,
+        expected: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        // Serialize name lookup, resolution and acceptance. This intentionally keeps
-        // the prototype's mutation ordering straightforward, including concurrent creates.
         let _guard = self.mutations.lock().await;
         let current = self.store.find_by_name(manifest.name()).await?;
+        SqliteStore::check_generation(expected, current.as_ref().map_or(0, |app| app.generation))?;
         let id = current
             .as_ref()
-            .map_or_else(Self::new_id, |current| current.application.id.clone());
+            .map_or_else(Self::new_id, |app| app.application.id.clone());
         let application = manifest.normalize(id);
-        let prepared = self.runtime.prepare(&application).await?;
         if let Some(current) = current
             && !current.delete_intent
-            && current.resolved == prepared.resolved
+            && current.application == application
             && let Some(operation) = self
                 .store
                 .latest_operation_for_application(&application.id)
@@ -112,35 +101,81 @@ impl Applications {
         {
             return self.reuse(operation).await;
         }
-        let plan = piqueld_core::Plan::from_request(
-            &piqueld_core::PlanRequest::Reconcile {
-                desired: prepared.resolved.clone(),
-            },
-            &prepared.observed,
-        );
-        if plan.is_blocked() {
-            return Err(ApplicationError::PlanBlocked(plan.diagnostics));
-        }
         let operation = self
             .store
-            .save_application(&application, &prepared.resolved)
+            .save_application(&application, None, expected)
             .await?;
         self.runtime.trigger_reconciliation();
         Ok(operation)
     }
 
-    /// Requests absence of services and networks; repeated deletion reuses its operation.
-    ///
+    /// Requests deletion, optionally conditioned on an intent revision.
     /// # Errors
-    /// Returns a persistence error or `NotFound`.
-    pub async fn delete(&self, id: &ApplicationId) -> Result<Operation, ApplicationError> {
+    /// Returns storage, absence, or generation errors.
+    pub async fn delete(
+        &self,
+        id: &ApplicationId,
+        expected: Option<u64>,
+    ) -> Result<Operation, ApplicationError> {
         let _guard = self.mutations.lock().await;
+        // Repeated deletion remains inspectable after the application disappears.
         if let Some(operation) = self.store.latest_operation_for_application(id).await?
             && operation.kind == piqueld_core::OperationKind::Delete
         {
+            SqliteStore::check_generation(expected, operation.generation)?;
             return self.reuse(operation).await;
         }
-        let operation = self.store.request_delete(id).await?;
+        let operation = self.store.request_delete(id, expected).await?;
+        self.runtime.trigger_reconciliation();
+        Ok(operation)
+    }
+
+    /// Repairs latest intent, retrying preparation only if it never completed.
+    /// # Errors
+    /// Returns storage, absence, or generation errors.
+    pub async fn reconcile(
+        &self,
+        id: &ApplicationId,
+        expected: Option<u64>,
+    ) -> Result<Operation, ApplicationError> {
+        let _guard = self.mutations.lock().await;
+        let app = self.store.get(id).await?;
+        SqliteStore::check_generation(expected, app.generation)?;
+        let operation = self
+            .store
+            .latest_operation_for_application(id)
+            .await?
+            .ok_or(StoreError::NotFound)?;
+        let operation = if operation.state.terminal() || operation.error_code.is_some() {
+            self.store.retry_operation(&operation).await?
+        } else {
+            operation
+        };
+        self.runtime.trigger_reconciliation();
+        Ok(operation)
+    }
+
+    /// Explicitly refreshes images without changing manifest generation.
+    /// # Errors
+    /// Returns storage, deletion-intent, or generation errors.
+    pub async fn refresh(
+        &self,
+        id: &ApplicationId,
+        expected: Option<u64>,
+    ) -> Result<Operation, ApplicationError> {
+        let _guard = self.mutations.lock().await;
+        let app = self.store.get(id).await?;
+        SqliteStore::check_generation(expected, app.generation)?;
+        if app.delete_intent {
+            return Err(StoreError::IllegalTransition.into());
+        }
+        if let Some(operation) = self.store.latest_operation_for_application(id).await?
+            && operation.kind == piqueld_core::OperationKind::Refresh
+            && operation.state != OperationState::Succeeded
+        {
+            return self.reuse(operation).await;
+        }
+        let operation = self.store.request_refresh(id, expected).await?;
         self.runtime.trigger_reconciliation();
         Ok(operation)
     }
@@ -151,10 +186,7 @@ impl Applications {
     }
 
     async fn reuse(&self, operation: Operation) -> Result<Operation, ApplicationError> {
-        if matches!(
-            operation.state,
-            OperationState::Failed | OperationState::Cancelled
-        ) {
+        if operation.state == OperationState::Failed {
             let operation = self.store.retry_operation(&operation).await?;
             self.runtime.trigger_reconciliation();
             Ok(operation)

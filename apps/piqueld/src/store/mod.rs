@@ -2,6 +2,7 @@
 //! Docker planning and execution belong to the controller.
 
 mod application;
+mod event;
 mod operation;
 mod status;
 
@@ -51,6 +52,14 @@ pub enum StoreError {
     /// A requested row does not exist.
     #[error("resource was not found")]
     NotFound,
+    /// The requested intent revision is stale.
+    #[error("application generation conflict: expected {expected}, actual {actual}")]
+    GenerationConflict {
+        /// Requested revision.
+        expected: u64,
+        /// Current revision; zero means absent.
+        actual: u64,
+    },
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,
@@ -99,7 +108,11 @@ pub struct StoredApplication {
     /// Validated, normalized manifest.
     pub application: NormalizedApplication,
     /// Resolved Docker target, including immutable image digests.
-    pub resolved: ResolvedApplication,
+    pub resolved: Option<ResolvedApplication>,
+    /// Current intent revision.
+    pub generation: u64,
+    /// Revision associated with the last resolved target.
+    pub resolved_generation: Option<u64>,
     /// Whether the target is absence of services and networks.
     pub delete_intent: bool,
     /// When this application was created.
@@ -120,6 +133,8 @@ pub struct ApplicationStatus {
     pub application_id: ApplicationId,
     /// Current status.
     pub state: ApplicationState,
+    /// Last observed runtime health, independent of pending intent.
+    pub runtime_health: Option<String>,
     /// Latest diagnostic, when present.
     pub message: Option<String>,
     /// Observation timestamp.
@@ -311,7 +326,9 @@ fn page_limit(limit: usize) -> Result<i64, StoreError> {
 struct ApplicationRow {
     id: String,
     desired_json: String,
-    resolved_json: String,
+    resolved_json: Option<String>,
+    generation: i64,
+    resolved_generation: Option<i64>,
     delete_intent: i64,
     created_at_ms: i64,
     updated_at_ms: i64,
@@ -325,7 +342,18 @@ impl ApplicationRow {
         }
         Ok(StoredApplication {
             application,
-            resolved: serde_json::from_str(&self.resolved_json).map_err(StoreError::corrupt)?,
+            resolved: self
+                .resolved_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            generation: u64::try_from(self.generation).map_err(StoreError::corrupt)?,
+            resolved_generation: self
+                .resolved_generation
+                .map(u64::try_from)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
             delete_intent: self.delete_intent != 0,
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,

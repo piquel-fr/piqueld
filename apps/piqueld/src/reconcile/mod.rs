@@ -19,7 +19,9 @@ use tokio_util::sync::CancellationToken;
 
 /// Executes durable operations against `Docker` and `SQLite`.
 pub struct Controller<D> {
-    docker: Arc<D>,
+    docker: Arc<crate::docker::LimitedDocker<D>>,
+    mutations: tokio::sync::Mutex<()>,
+    prepare_timeout: Duration,
     store: Arc<SqliteStore>,
     retry: RetryPolicy,
 }
@@ -29,10 +31,19 @@ impl<D> Controller<D> {
     #[must_use]
     pub fn new(docker: Arc<D>, store: Arc<SqliteStore>) -> Self {
         Self {
-            docker,
+            docker: Arc::new(crate::docker::LimitedDocker::new(docker)),
+            mutations: tokio::sync::Mutex::new(()),
+            prepare_timeout: Duration::from_secs(300),
             store,
             retry: RetryPolicy::default(),
         }
+    }
+
+    /// Sets the complete image-preparation deadline.
+    #[must_use]
+    pub fn with_prepare_timeout(mut self, timeout: Duration) -> Self {
+        self.prepare_timeout = timeout;
+        self
     }
 
     /// Replaces the retry policy used by this controller.
@@ -99,6 +110,22 @@ impl Default for RetryPolicy {
             max_delay: Duration::from_secs(2),
             convergence_timeout: Duration::from_mins(2),
         }
+    }
+}
+
+impl<D: DockerApi> Controller<D> {
+    /// Shares the controller's I/O limits with API observation and preview.
+    /// # Panics
+    /// Panics if the store violates its validated instance identity invariant.
+    #[must_use]
+    pub fn runtime(&self, wake: Arc<Notify>) -> Arc<dyn crate::application::RuntimeBoundary> {
+        Arc::new(crate::application::DockerRuntime::new(
+            Arc::clone(&self.docker),
+            piqueld_core::InstanceId::parse(self.store.instance_id())
+                .expect("store instance identity is valid"),
+            wake,
+            self.prepare_timeout,
+        ))
     }
 }
 

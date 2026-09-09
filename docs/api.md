@@ -1,60 +1,69 @@
 # HTTP API
 
-The API is rooted at `/api/v1` and served over a Unix socket and optional
-loopback TCP listener. JSON responses have a `data` envelope. Lists contain
-`items` and an opaque `next_cursor`; errors contain a code, safe message,
-optional details, and request ID. Clients poll for status.
+The API is rooted at `/api/v1` over a Unix socket and optional loopback TCP.
+Responses use a `data` envelope; lists contain `items` and an opaque
+`next_cursor`. Errors expose a safe message, code, details, and request ID.
+Clients poll for progress.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/v1/system/status` | Daemon status |
-| GET | `/api/v1/openapi.json` | API schema |
+| GET | `/api/v1/openapi.json` | Generated API schema |
 | GET | `/api/v1/applications` | Paginated applications |
-| GET | `/api/v1/applications/{id}` | Desired application state |
-| GET | `/api/v1/applications/{id}/detail` | Desired state, runtime summary, latest operation, and diagnostics |
-| GET | `/api/v1/applications/{id}/status` | Reconciliation status |
-| POST | `/api/v1/applications/plan` | Preview a manifest |
-| POST | `/api/v1/applications/apply` | Apply a manifest by application name |
-| DELETE | `/api/v1/applications/{id}` | Request deletion; no request body |
-| GET | `/api/v1/operations/{id}` | Inspect an operation |
+| GET | `/api/v1/applications/{id}` | Latest accepted application intent |
+| GET | `/api/v1/applications/{id}/detail` | Intent, resolved generation, observed runtime, operation, diagnostics |
+| GET | `/api/v1/applications/{id}/status` | Intent progress and separate runtime health |
+| POST | `/api/v1/applications/plan` | Preview a manifest without pulling images |
+| POST | `/api/v1/applications/apply` | Accept a full manifest by name |
+| DELETE | `/api/v1/applications/{id}` | Request deletion; no body |
+| POST | `/api/v1/applications/{id}/reconcile` | Repair latest intent without refreshing prepared digests |
+| POST | `/api/v1/applications/{id}/refresh` | Explicitly refresh image references |
+| GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
+| GET | `/api/v1/events` | Paginated informational history, oldest first |
 
-Apply and plan accept JSON `{ "manifest": ... }` using `ApplyApplicationRequest`,
-or a complete TOML manifest with `Content-Type: application/toml` or `text/toml`.
-A name identifies the application: applying a new name creates it, and applying
-an existing name updates its desired state. There are no separate create,
-replace, or explicit reconcile routes.
+Apply and plan accept JSON `{ "manifest": ..., "expected_generation": 3 }`,
+or complete TOML with `Content-Type: application/toml` or `text/toml`. The optional
+TOML precondition is `X-Expected-Generation`. Delete, reconcile, and refresh accept
+an optional `expected_generation` query parameter. A mismatch returns 409
+`generation_conflict`. Zero requires an absent name on apply. Without a supplied
+generation, a mutation targets current intent unconditionally.
 
-Every apply resolves image references again. Before accepting a changed target,
-the server rejects known ownership and configuration conflicts from its runtime
-plan. The server compares resolved state
-with the current target before scheduling work. An equivalent request returns
-the existing operation; if that operation failed or was cancelled, it is reset
-to `requested` under the same ID. A different target cancels earlier active work
-and becomes the latest operation. Clients send neither idempotency keys nor
-generation checks. Repeating a mutable tag can deploy a new digest if the tag
-has changed.
+Generation starts at 1 and advances for a changed normalized manifest or deletion
+intent. Comments and ordering do not cause changes. Full apply replaces the
+manifest without merging. Refresh, reconciliation, attempts, and runtime health
+never advance generation. Applying the same manifest while deletion is intended
+reverses deletion and advances generation.
 
-Mutations return HTTP 202 with `AcceptedOperation` containing `application_id`
-and `operation_id`. Operations have kind `apply` or `delete` and state
-`requested`, `running`, `succeeded`, `failed`, or `cancelled`. They expose
-operation-level diagnostics; execution plans and individual action progress are
-not stored as a step journal. Earlier operations remain inspectable subject to
-retention settings.
+Apply returns 202 and an `AcceptedOperation` before image resolution. Preparation
+failures are reported on the operation. An identical manifest returns the current
+operation without resolution or scheduling; if it failed, it is requested again.
+Refresh explicitly resolves the current manifest: active refreshes are reused,
+failed refreshes retry, and a refresh after success starts a new operation.
+Refresh is rejected during deletion. Reconcile reuses stored digests for latest
+intent, retrying preparation only when it did not complete.
 
-Deletion retains named volumes. It remains `running`, recording errors and
-retrying on later scans, until Docker observation confirms that services and
-networks are absent. Only then does the application disappear from active reads
-and the operation succeed.
+There are no idempotency keys or exact request replay guarantees. Clients may
+retry a transport failure. In particular, a refresh retry after completion can
+start another refresh; a conditioned mutation retry after a lost success response
+can conflict because the first request advanced generation.
 
-Plan returns HTTP 200 with a `PlanView`. It does not commit application state or
-schedule work. Inspect its blocking diagnostics before applying; Docker state
-can change between preview and execution.
+Operations have kind `apply`, `refresh`, or `delete` and state `requested`,
+`running`, `succeeded`, `failed`, or `cancelled`. Each execution increments
+`attempt`. Previous outcomes remain in events even when the operation is reused.
+Deletion retains volumes and completes only after runtime absence is verified.
 
-Shared application and operation states and HTTP request/response contracts live
-in `piqueld-core`. The client adds transport and reexports those contracts. Detail responses expose bounded
-runtime summaries rather than raw Docker labels, environment, or internal errors.
-See [the CLI guide](piquelctl.md) and [generated schema](openapi-v1.json).
+Preview returns 200 with a `PlanView`, no durable changes, and no image pulls.
+An unchanged apply has an empty plan. Changed manifests identify image-resolution
+requirements; execution checks the concrete plan after resolving images. Preview
+cannot freeze mutable tags or runtime state.
 
-The unauthenticated TCP API accepts only loopback hosts. The optional dashboard
-is served below `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
-The Unix socket serves the API alone. Unknown API paths return JSON errors.
+Events accept optional `application_id`, `cursor`, and `limit` (1–100, default 50).
+They include history for deleted applications and survive operation pruning.
+Event retention is independently configured by `retention.event_days` (default
+30; zero disables pruning). Events contain safe diagnostics and identifiers,
+never manifests, environment values, or raw Docker errors.
+
+The unauthenticated TCP API accepts only loopback hosts. The read-only dashboard
+is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
+The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
+[the generated contract](openapi-v1.json).

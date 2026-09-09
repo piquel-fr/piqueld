@@ -46,6 +46,10 @@ pub struct ErrorBody {
 pub struct ApplicationView {
     /// Normalized application manifest.
     pub application: NormalizedApplication,
+    /// Current manifest or deletion-intent revision.
+    pub generation: u64,
+    /// Revision of the last completely resolved target, not a convergence guarantee.
+    pub resolved_generation: Option<u64>,
     /// Hash of the normalized desired specification.
     pub spec_hash: String,
     /// Whether deletion has been requested.
@@ -62,6 +66,9 @@ pub struct ApplicationView {
 pub struct ApplyApplicationRequest {
     /// Application manifest to store and reconcile.
     pub manifest: ApplicationManifest,
+    /// Optional intent precondition; zero requires an absent application name.
+    #[serde(default)]
+    pub expected_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -71,6 +78,8 @@ pub struct AcceptedOperation {
     pub operation_id: String,
     /// Stable application identifier.
     pub application_id: String,
+    /// Accepted intent revision.
+    pub generation: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -89,6 +98,8 @@ pub struct ApplicationStatusView {
     pub application_id: String,
     /// Machine-readable lifecycle state.
     pub state: ApplicationState,
+    /// Observed runtime health, independent of operation progress.
+    pub runtime_health: Option<String>,
     /// Optional safe status message.
     pub message: Option<String>,
     /// Last update timestamp in Unix milliseconds.

@@ -23,6 +23,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::store::StoreError;
 
 mod applications;
+mod events;
 mod openapi;
 mod operations;
 mod system;
@@ -81,6 +82,14 @@ impl From<StoreError> for ApiError {
             tracing::error!(error = ?value, "storage request failed");
         }
         match value {
+            StoreError::GenerationConflict { expected, actual } => Self::new(
+                StatusCode::CONFLICT,
+                "generation_conflict",
+                "application intent changed",
+            )
+            .details(
+                serde_json::json!({"expected_generation":expected,"actual_generation":actual}),
+            ),
             StoreError::NotFound => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
             }
@@ -331,6 +340,9 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::get, applications::delete))
         .routes(routes!(applications::detail))
         .routes(routes!(applications::status))
+        .routes(routes!(applications::reconcile))
+        .routes(routes!(applications::refresh))
+        .routes(routes!(events::list))
         .routes(routes!(operations::get))
 }
 
@@ -505,11 +517,11 @@ fn decode_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, ApiError>
 fn parse_manifest(
     headers: &HeaderMap,
     body: &[u8],
-) -> Result<piqueld_core::ValidatedApplication, ApiError> {
+) -> Result<(piqueld_core::ValidatedApplication, Option<u64>), ApiError> {
     match content_type(headers) {
         Some(value) if value.eq_ignore_ascii_case(JSON) => {
             let request: ApplyApplicationRequest = decode_json(body)?;
-            Ok(request.manifest.validate()?)
+            Ok((request.manifest.validate()?, request.expected_generation))
         }
         Some(value)
             if value.eq_ignore_ascii_case(TOML) || value.eq_ignore_ascii_case("text/toml") =>
@@ -521,7 +533,31 @@ fn parse_manifest(
                     "request TOML is malformed",
                 )
             })?;
-            Ok(piqueld_core::parse_toml(text)?)
+            let expected = if headers.get_all("x-expected-generation").iter().count() > 1 {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "generation_invalid",
+                    "expected generation must occur once",
+                ));
+            } else {
+                headers
+                    .get("x-expected-generation")
+                    .map(|value| {
+                        value
+                            .to_str()
+                            .ok()
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .ok_or_else(|| {
+                                ApiError::new(
+                                    StatusCode::BAD_REQUEST,
+                                    "generation_invalid",
+                                    "expected generation must be an unsigned integer",
+                                )
+                            })
+                    })
+                    .transpose()?
+            };
+            Ok((piqueld_core::parse_toml(text)?, expected))
         }
         _ => Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,

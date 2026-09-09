@@ -23,7 +23,7 @@ async fn sqlx_applies_migrations_and_preserves_instance_identity() {
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(table_count, 4);
+    assert_eq!(table_count, 5);
 
     let schema_version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(&mut connection)

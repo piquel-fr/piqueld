@@ -11,6 +11,8 @@ use utoipa::ToSchema;
 pub enum OperationKind {
     /// Apply the requested application state.
     Apply,
+    /// Resolve the current manifest again without changing its generation.
+    Refresh,
     /// Delete its resources.
     Delete,
 }
@@ -21,6 +23,7 @@ impl OperationKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Apply => "apply",
+            Self::Refresh => "refresh",
             Self::Delete => "delete",
         }
     }
@@ -78,7 +81,10 @@ impl OperationState {
                         Self::Running,
                         Self::Requested | Self::Succeeded | Self::Failed | Self::Cancelled
                     )
-                    | (Self::Failed | Self::Cancelled, Self::Requested)
+                    | (
+                        Self::Succeeded | Self::Failed | Self::Cancelled,
+                        Self::Requested
+                    )
             )
     }
 }
@@ -98,6 +104,13 @@ pub struct Operation {
     pub application_id: ApplicationId,
     /// Requested change.
     pub kind: OperationKind,
+    /// Intent revision this operation targets.
+    pub generation: u64,
+    /// Number of execution attempts started, including interrupted attempts.
+    pub attempt: u64,
+    /// Consecutive failed attempts since the last successful execution.
+    #[serde(default)]
+    pub consecutive_failures: u64,
     /// Current lifecycle state.
     pub state: OperationState,
     /// Stable failure code, when present.

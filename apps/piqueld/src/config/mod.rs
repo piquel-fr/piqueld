@@ -202,12 +202,15 @@ pub struct RetentionConfig {
     /// Days a finished operation is retained before pruning.
     /// `0` disables pruning.
     pub finished_operation_days: u64,
+    /// Days informational events are retained; zero disables pruning.
+    pub event_days: u64,
 }
 
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
             finished_operation_days: 10,
+            event_days: 30,
         }
     }
 }

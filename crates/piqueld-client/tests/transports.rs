@@ -52,6 +52,7 @@ async fn capture_toml_apply(headers: HeaderMap, body: String) -> Json<Envelope<A
     });
     Json(Envelope {
         data: AcceptedOperation {
+            generation: 1,
             operation_id: "op-1".into(),
             application_id: "app-1".into(),
         },

@@ -34,10 +34,13 @@ defaults are:
 | `reconciliation.scan_interval_seconds` | `60` |
 | `reconciliation.prepare_timeout_seconds` | `300` |
 | `reconciliation.convergence_timeout_seconds` | `120` |
+| `retention.event_days` | `30` (`0` disables event pruning, independently of operations) |
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
 
 Reconciliation intervals and timeouts are bounded to `1..=86400` seconds.
-Applications are scanned sequentially; there is no operation-concurrency setting.
+One async controller overlaps pending work. Internal global limits allow two
+image resolutions, eight observations, and one resource mutation request. Timers
+consume no I/O slot. These limits are not configurable.
 
 The data directory is the only persistent daemon state.
 

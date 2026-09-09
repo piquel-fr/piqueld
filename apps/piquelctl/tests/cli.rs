@@ -325,7 +325,7 @@ fn app_view(id: &str, name: &str) -> Value {
                 "volumes": [{"name": "data"}]
             }
         },
-        "spec_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "generation": 1, "resolved_generation": 1, "spec_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "delete_intent": false,
         "created_at_ms": 1,
         "updated_at_ms": 1
@@ -358,7 +358,7 @@ fn plan(id: &str) -> Value {
 
 fn accepted(id: &str) -> Value {
     json!({
-        "operation_id": "operation-01",
+        "generation": 1, "operation_id": "operation-01",
         "application_id": id
     })
 }
@@ -368,7 +368,7 @@ fn operation(state: &str) -> Value {
     json!({
         "id": "operation-01",
         "application_id": "app-notes-01",
-        "kind": "apply",
+        "kind": "apply", "generation": 1, "attempt": 1,
         "state": state,
         "error_code": if failed { json!("runtime_failed") } else { Value::Null },
         "error_message": if failed { json!("runtime reconciliation failed") } else { Value::Null },
@@ -811,4 +811,80 @@ fn human_output_reports_a_closed_pipe_without_panicking() {
     assert!(error.contains("could not write output"));
     assert!(!error.contains("panicked"));
     server.finish();
+}
+
+#[test]
+fn reconcile_and_refresh_forward_generation_and_retry_transport() {
+    for action in ["reconcile", "refresh"] {
+        let mut attempts = 0;
+        let server = start_server(false, 3, move |request| {
+            if request.method == "GET" {
+                return Reply::json(app_view("app-notes-01", "notes"));
+            }
+            assert_eq!(request.method, "POST");
+            assert_eq!(
+                request.path,
+                format!("/api/v1/applications/app-notes-01/{action}?expected_generation=1")
+            );
+            attempts += 1;
+            if attempts == 1 {
+                Reply::dropped()
+            } else {
+                Reply::accepted(accepted("app-notes-01"))
+            }
+        });
+        let output = run(
+            &server,
+            &[
+                action,
+                "app-notes-01",
+                "--expected-generation",
+                "1",
+                "--yes",
+                "--no-wait",
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["generation"], 1);
+        assert_eq!(server.finish().len(), 3);
+    }
+}
+
+#[test]
+fn events_cli_reads_a_filtered_page() {
+    let server = start_server(false, 1, |request| {
+        assert_eq!(request.method, "GET");
+        assert_eq!(
+            request.path,
+            "/api/v1/events?application_id=app-notes-01&cursor=v1%3A7&limit=2"
+        );
+        Reply::json(
+            json!({"items":[{"id":8,"application_id":"app-notes-01","operation_id":"operation-01","generation":1,"attempt":2,"kind":"operation_succeeded","message":null,"created_at_ms":123}],"next_cursor":null}),
+        )
+    });
+    let output = run(
+        &server,
+        &[
+            "events",
+            "--application",
+            "app-notes-01",
+            "--cursor",
+            "v1:7",
+            "--limit",
+            "2",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["items"][0]["attempt"], 2);
+    assert_eq!(server.finish().len(), 1);
 }

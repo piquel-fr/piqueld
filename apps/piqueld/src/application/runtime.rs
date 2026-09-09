@@ -1,6 +1,6 @@
-//! Resolves manifest inputs and observes Docker before target acceptance.
+//! Resolves accepted manifest inputs during operation execution.
 
-use super::{BoundaryError, PreparedApplication, RuntimeBoundary};
+use super::{BoundaryError, RuntimeBoundary};
 use crate::{
     docker::{DockerApi, DockerError, IMAGE_RESOLVE_TIMEOUT},
     store::StoredApplication,
@@ -52,7 +52,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
     async fn prepare(
         &self,
         application: &NormalizedApplication,
-    ) -> Result<PreparedApplication, BoundaryError> {
+    ) -> Result<piqueld_core::ResolvedApplication, BoundaryError> {
         tokio::time::timeout(self.prepare_timeout, async {
             let docker = Arc::clone(&self.docker);
             let jobs = application
@@ -90,13 +90,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             };
             let resolved = compile_application(application, self.instance_id.clone(), &resolutions)
                 .map_err(BoundaryError::Compilation)?;
-            let observed =
-                tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, self.docker.observe(&application.id))
-                    .await
-                    .map_err(|_| {
-                        BoundaryError::Runtime(DockerError::Unavailable("observe application"))
-                    })??;
-            Ok(PreparedApplication { resolved, observed })
+            Ok(resolved)
         })
         .await
         .map_err(|_| BoundaryError::Runtime(DockerError::Unavailable("prepare application")))?

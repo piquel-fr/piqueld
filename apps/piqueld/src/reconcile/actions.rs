@@ -54,14 +54,15 @@ impl<D: DockerApi> Controller<D> {
         }
     }
     pub(super) fn ownership_labels(
+        &self,
         application: &crate::store::StoredApplication,
     ) -> std::collections::BTreeMap<String, String> {
-        let resolved = &application.resolved;
+        let _ = application;
         std::collections::BTreeMap::from([
             (super::MANAGED_LABEL.into(), "true".into()),
             (
                 super::INSTANCE_LABEL.into(),
-                resolved.instance_id.to_string(),
+                self.store.instance_id().to_owned(),
             ),
             (
                 super::APPLICATION_LABEL.into(),
@@ -86,7 +87,12 @@ impl<D: DockerApi> Controller<D> {
             if cancellation.is_cancelled() {
                 return Err(OperationError::Cancelled);
             }
-            match call().await {
+            let result = {
+                let _guard = self.mutations.lock().await;
+                self.check_current(operation).await?;
+                call().await
+            };
+            match result {
                 Ok(()) => return Ok(()),
                 Err(
                     error @ (DockerError::OwnershipConflict

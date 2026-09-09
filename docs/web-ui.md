@@ -89,3 +89,8 @@ older browsers without those primitives are outside the support target.
 The advanced UI remains deferred: forms, mutation workflows, secrets,
 logs and streams, state transfer, authentication, persistence, global state
 machinery, and richer navigation are intentionally not part of this dashboard.
+
+Application detail distinguishes requested generation, resolved target generation,
+and observed runtime health. Operation progress may report a pending or failed
+replacement while the existing deployment remains healthy. Event history is
+available through the API and CLI; dashboard event presentation is deferred.

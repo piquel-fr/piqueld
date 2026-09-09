@@ -8,8 +8,8 @@ SQLx owns the pool, transactions, migrations, and query execution. Production
 queries use compile-time checking against a disposable database created by the
 daemon build script from the migration sequence.
 
-The store is a persistence boundary. Image resolution, target comparison, and
-runtime planning belong to the application service and controller. SQLite
+The store is a persistence boundary. Manifest comparison belongs to the application service; image resolution and
+runtime planning belong to the controller. SQLite
 transactions provide atomic acceptance and guarded lifecycle writes; they do
 not implement another scheduler or persist an execution plan.
 
