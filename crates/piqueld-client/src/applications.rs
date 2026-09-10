@@ -3,7 +3,7 @@ use http::Method;
 pub use piqueld_core::api::{
     AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
     ApplyApplicationRequest, DiagnosticView, ObservedApplicationView, ObservedServiceView,
-    PlanView,
+    PlanView, RenameApplicationRequest, RenamedApplication,
 };
 
 use crate::{
@@ -193,10 +193,26 @@ impl Client {
         manifest: &str,
         expected: Option<u64>,
     ) -> Result<AcceptedOperation, ClientError> {
+        self.apply_application_toml_with_preconditions(manifest, expected, None)
+            .await
+    }
+
+    /// Applies TOML only to the inspected identity and revision when supplied.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn apply_application_toml_with_preconditions(
+        &self,
+        manifest: &str,
+        expected: Option<u64>,
+        expected_id: Option<&str>,
+    ) -> Result<AcceptedOperation, ClientError> {
         let generation = expected.map(|value| value.to_string());
         let mut headers = vec![("content-type", "application/toml")];
         if let Some(value) = generation.as_deref() {
             headers.push(("x-expected-generation", value));
+        }
+        if let Some(id) = expected_id {
+            headers.push(("x-expected-application-id", id));
         }
         self.send_text(
             Method::POST,
@@ -280,6 +296,23 @@ impl Client {
             Method::POST,
             &Self::mutation_path(id, "/refresh", expected),
             None,
+            &[],
+        )
+        .await
+    }
+
+    /// Renames an idle application without touching its runtime resources.
+    /// # Errors
+    /// Returns transport, API, decoding, name, busy, or generation errors.
+    pub async fn rename_application(
+        &self,
+        id: &str,
+        request: &RenameApplicationRequest,
+    ) -> Result<RenamedApplication, ClientError> {
+        self.send(
+            Method::POST,
+            &Self::mutation_path(id, "/rename", None),
+            Some(request),
             &[],
         )
         .await

@@ -22,7 +22,7 @@ mod client;
 pub use applications::{
     AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
     ApplyApplicationRequest, DiagnosticView, ListApplicationsOptions, ObservedApplicationView,
-    ObservedServiceView, PlanView,
+    ObservedServiceView, PlanView, RenameApplicationRequest, RenamedApplication,
 };
 pub use client::Client;
 pub use piqueld_core::manifest::{

@@ -50,9 +50,20 @@ impl SqliteStore {
         resolved: Option<&ResolvedApplication>,
         expected: Option<u64>,
     ) -> Result<Operation, StoreError> {
-        let mut tx = self.begin_immediate().await?;
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let result = Self::save_application_on(&mut tx, app, resolved, expected).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(result)
+    }
+
+    pub(crate) async fn save_application_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        app: &NormalizedApplication,
+        resolved: Option<&ResolvedApplication>,
+        expected: Option<u64>,
+    ) -> Result<Operation, StoreError> {
         let id = app.id.as_str();
-        let generation = Self::generation_on(&mut tx, id, expected)
+        let generation = Self::generation_on(tx, id, expected)
             .await?
             .checked_add(1)
             .ok_or(StoreError::InvalidInput)?;
@@ -65,18 +76,17 @@ impl SqliteStore {
         let name = app.metadata.name.as_str();
         let now = now_ms();
         sqlx::query!("INSERT INTO applications(id,name,desired_json,resolved_json,generation,resolved_generation,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?7) ON CONFLICT(id) DO UPDATE SET desired_json=excluded.desired_json,generation=excluded.generation,resolved_json=COALESCE(excluded.resolved_json,applications.resolved_json),resolved_generation=COALESCE(excluded.resolved_generation,applications.resolved_generation),delete_intent=0,updated_at_ms=excluded.updated_at_ms",id,name,desired,resolved,generation,resolved_generation,now)
-            .execute(&mut *tx).await.map_err(|error| if error.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) { StoreError::AlreadyExists } else { StoreError::database(error) })?;
-        let operation = Self::insert_operation(&mut tx, &app.id, OperationKind::Apply, now).await?;
+            .execute(&mut **tx).await.map_err(|error| if error.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) { StoreError::AlreadyExists } else { StoreError::database(error) })?;
+        let operation = Self::insert_operation(tx, &app.id, OperationKind::Apply, now).await?;
         sqlx::query!(
             "UPDATE operations SET target_json=?1 WHERE id=?2",
             resolved,
             operation.id
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Self::write_status(&mut tx, id, "pending", None, now).await?;
-        tx.commit().await.map_err(StoreError::database)?;
+        Self::write_status(tx, id, "pending", None, now).await?;
         Ok(operation)
     }
 
@@ -88,17 +98,26 @@ impl SqliteStore {
         id: &ApplicationId,
         expected: Option<u64>,
     ) -> Result<Operation, StoreError> {
-        let mut tx = self.begin_immediate().await?;
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let result = Self::request_delete_on(&mut tx, id, expected).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(result)
+    }
+
+    pub(crate) async fn request_delete_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &ApplicationId,
+        expected: Option<u64>,
+    ) -> Result<Operation, StoreError> {
         let app_id = id.as_str();
-        Self::generation_on(&mut tx, app_id, expected).await?;
+        Self::generation_on(tx, app_id, expected).await?;
         let now = now_ms();
-        let changed = sqlx::query!("UPDATE applications SET delete_intent=1,generation=generation+1,updated_at_ms=?1 WHERE id=?2 AND deleted_at_ms IS NULL AND delete_intent=0",now,app_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
+        let changed = sqlx::query!("UPDATE applications SET delete_intent=1,generation=generation+1,updated_at_ms=?1 WHERE id=?2 AND deleted_at_ms IS NULL AND delete_intent=0",now,app_id).execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
-        let operation = Self::insert_operation(&mut tx, id, OperationKind::Delete, now).await?;
-        Self::write_status(&mut tx, app_id, "deleting", None, now).await?;
-        tx.commit().await.map_err(StoreError::database)?;
+        let operation = Self::insert_operation(tx, id, OperationKind::Delete, now).await?;
+        Self::write_status(tx, app_id, "deleting", None, now).await?;
         Ok(operation)
     }
 
@@ -110,14 +129,24 @@ impl SqliteStore {
         id: &ApplicationId,
         expected: Option<u64>,
     ) -> Result<Operation, StoreError> {
-        let mut tx = self.begin_immediate().await?;
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let result = Self::request_refresh_on(&mut tx, id, expected).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(result)
+    }
+
+    pub(crate) async fn request_refresh_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &ApplicationId,
+        expected: Option<u64>,
+    ) -> Result<Operation, StoreError> {
         let app_id = id.as_str();
-        Self::generation_on(&mut tx, app_id, expected).await?;
+        Self::generation_on(tx, app_id, expected).await?;
         let deleting = sqlx::query_scalar!(
             "SELECT delete_intent FROM applications WHERE id=?1 AND deleted_at_ms IS NULL",
             app_id
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
@@ -125,9 +154,8 @@ impl SqliteStore {
             return Err(StoreError::IllegalTransition);
         }
         let now = now_ms();
-        let operation = Self::insert_operation(&mut tx, id, OperationKind::Refresh, now).await?;
-        Self::write_status(&mut tx, app_id, "pending", None, now).await?;
-        tx.commit().await.map_err(StoreError::database)?;
+        let operation = Self::insert_operation(tx, id, OperationKind::Refresh, now).await?;
+        Self::write_status(tx, app_id, "pending", None, now).await?;
         Ok(operation)
     }
 
@@ -175,7 +203,7 @@ impl SqliteStore {
         operation: &Operation,
         resolved: &ResolvedApplication,
     ) -> Result<(), StoreError> {
-        let mut tx = self.begin_immediate().await?;
+        let (_writer, mut tx) = self.begin_immediate().await?;
         let json = serde_json::to_string(resolved).map_err(StoreError::corrupt)?;
         let changed=sqlx::query!("UPDATE operations SET target_json=?1 WHERE id=?2 AND state='running' AND id=(SELECT latest.id FROM operations latest WHERE latest.application_id=operations.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",json,operation.id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
@@ -190,11 +218,24 @@ impl SqliteStore {
     /// Returns a store error or `IllegalTransition` for obsolete work.
     pub async fn publish_prepared(&self, operation: &Operation) -> Result<(), StoreError> {
         let app_id = operation.application_id.as_str();
-        let changed=sqlx::query!("UPDATE applications SET resolved_json=(SELECT target_json FROM operations WHERE id=?1),resolved_generation=generation WHERE id=?2 AND ?1=(SELECT latest.id FROM operations latest WHERE latest.application_id=applications.id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1) AND EXISTS(SELECT 1 FROM operations WHERE id=?1 AND state='running' AND target_json IS NOT NULL)",operation.id,app_id).execute(&self.pool).await.map_err(StoreError::database)?.rows_affected();
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let changed=sqlx::query!("UPDATE applications SET resolved_json=(SELECT target_json FROM operations WHERE id=?1),resolved_generation=generation WHERE id=?2 AND ?1=(SELECT latest.id FROM operations latest WHERE latest.application_id=applications.id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1) AND EXISTS(SELECT 1 FROM operations WHERE id=?1 AND state='running' AND target_json IS NOT NULL)",operation.id,app_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
-        Ok(())
+        let promoted = sqlx::query!(
+            "UPDATE operations SET promoted=1 WHERE id=?1 AND promoted=0",
+            operation.id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if promoted == 1 {
+            Self::operation_event(&mut tx, &operation.id, "target_promoted", None, now_ms())
+                .await?;
+        }
+        tx.commit().await.map_err(StoreError::database)
     }
 
     /// Reads a live application.

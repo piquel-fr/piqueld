@@ -72,6 +72,7 @@ impl<D: DockerApi> Controller<D> {
                                     let health_operation=operation_id.clone();
                                     health_jobs.push(async move {
                                         let result=async {
+                                            self.maintain_active(&health_id,&health_operation).await?;
                                             let observed=self.docker.observe(&health_id).await.map_err(super::OperationError::from)?;
                                             self.store.record_health(&health_operation,&observed).await.map_err(super::OperationError::from)
                                         }.await;
@@ -186,6 +187,12 @@ impl<D: DockerApi> Controller<D> {
         else {
             return Ok(());
         };
+        if let Err(error) = self
+            .maintain_active(&application.application.id, &latest.id)
+            .await
+        {
+            tracing::warn!(%error,"active target repair failed");
+        }
         if latest.state == OperationState::Requested
             || (latest.state == OperationState::Running && latest.error_code.is_none())
         {
@@ -271,7 +278,72 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    async fn maintain_active(
+        &self,
+        id: &piqueld_core::ApplicationId,
+        operation_id: &str,
+    ) -> Result<(), super::OperationError> {
+        let operation = self.store.operation(operation_id).await?;
+        if operation.kind == super::OperationKind::Delete
+            || self.store.is_promoted(operation_id).await?
+        {
+            return Ok(());
+        }
+        let app = self.store.get(id).await?;
+        let Some(target) = app.resolved else {
+            return Ok(());
+        };
+        let observed = self.docker.observe(id).await?;
+        let plan = Plan::from_request(
+            &PlanRequest::Reconcile {
+                desired: target.clone(),
+            },
+            &observed,
+        );
+        if plan.is_blocked() {
+            return Ok(());
+        }
+        let Some(action) = plan
+            .actions
+            .iter()
+            .find(|action| action.kind.mutates_runtime())
+        else {
+            return Ok(());
+        };
+        let _guard = self.mutations.lock().await;
+        if self
+            .store
+            .latest_operation_for_application(id)
+            .await?
+            .is_none_or(|op| op.id != operation_id)
+            || self.store.is_promoted(operation_id).await?
+        {
+            return Ok(());
+        }
+        let ownership = self.ownership_labels(id);
+        let result = self
+            .mutate_action(&action.kind, &ownership)
+            .await
+            .map_err(super::OperationError::from);
+        let error = result
+            .as_ref()
+            .err()
+            .map(|error| (error.code(), error.message()));
+        self.store
+            .maintenance_event(
+                operation_id,
+                action.kind.name(),
+                action.kind.resource_name(),
+                error
+                    .as_ref()
+                    .map(|(code, message)| (*code, message.as_str())),
+            )
+            .await?;
+        result
+    }
+
     async fn prune_history(&self, operation_days: u64, event_days: u64) -> Result<(), StoreError> {
+        self.store.prune_receipts().await?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

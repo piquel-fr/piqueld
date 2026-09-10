@@ -93,8 +93,14 @@ mod tests {
             vec!["piquelctl", "list"],
             vec!["piquelctl", "show", "notes"],
             vec!["piquelctl", "plan", "--file", "application.toml"],
-            vec!["piquelctl", "apply", "--file", "application.toml", "--yes"],
-            vec!["piquelctl", "delete", "notes", "--yes", "--no-wait"],
+            vec![
+                "piquelctl",
+                "apply",
+                "--file",
+                "application.toml",
+                "--force",
+            ],
+            vec!["piquelctl", "delete", "notes", "--force", "--no-wait"],
             vec!["piquelctl", "operation", "operation-01", "--no-wait"],
         ];
         for arguments in cases {

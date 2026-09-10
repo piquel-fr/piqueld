@@ -85,10 +85,25 @@ impl From<StoreError> for ApiError {
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",
-                "application intent changed",
+                "Application changed since inspection; run the command again",
             )
             .details(
                 serde_json::json!({"expected_generation":expected,"actual_generation":actual}),
+            ),
+            StoreError::IdentityConflict => Self::new(
+                StatusCode::CONFLICT,
+                "identity_conflict",
+                "Application changed since inspection; run the command again",
+            ),
+            StoreError::ReplayConflict => Self::new(
+                StatusCode::CONFLICT,
+                "request_id_conflict",
+                "request ID was already used for different input",
+            ),
+            StoreError::Busy => Self::new(
+                StatusCode::CONFLICT,
+                "application_busy",
+                "application is busy; wait for its operation before renaming",
             ),
             StoreError::NotFound => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
@@ -133,6 +148,7 @@ impl From<BoundaryError> for ApiError {
     fn from(value: BoundaryError) -> Self {
         tracing::error!(error = ?value, "runtime boundary request failed");
         match value {
+            BoundaryError::Store(error) => error.into(),
             BoundaryError::Runtime(_) => Self::new(
                 StatusCode::BAD_GATEWAY,
                 "runtime_request_failed",
@@ -342,6 +358,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::status))
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::refresh))
+        .routes(routes!(applications::rename))
         .routes(routes!(events::list))
         .routes(routes!(operations::get))
 }
@@ -517,11 +534,22 @@ fn decode_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, ApiError>
 fn parse_manifest(
     headers: &HeaderMap,
     body: &[u8],
-) -> Result<(piqueld_core::ValidatedApplication, Option<u64>), ApiError> {
+) -> Result<
+    (
+        piqueld_core::ValidatedApplication,
+        Option<u64>,
+        Option<String>,
+    ),
+    ApiError,
+> {
     match content_type(headers) {
         Some(value) if value.eq_ignore_ascii_case(JSON) => {
             let request: ApplyApplicationRequest = decode_json(body)?;
-            Ok((request.manifest.validate()?, request.expected_generation))
+            Ok((
+                request.manifest.validate()?,
+                request.expected_generation,
+                request.expected_application_id,
+            ))
         }
         Some(value)
             if value.eq_ignore_ascii_case(TOML) || value.eq_ignore_ascii_case("text/toml") =>
@@ -557,7 +585,11 @@ fn parse_manifest(
                     })
                     .transpose()?
             };
-            Ok((piqueld_core::parse_toml(text)?, expected))
+            Ok((
+                piqueld_core::parse_toml(text)?,
+                expected,
+                optional_header(headers, "x-expected-application-id")?,
+            ))
         }
         _ => Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -580,4 +612,26 @@ impl From<ApplicationError> for ApiError {
             .details(json!({"diagnostics":diagnostics})),
         }
     }
+}
+
+fn optional_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, ApiError> {
+    if headers.get_all(name).iter().count() > 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "header_invalid",
+            "mutation headers must occur once",
+        ));
+    }
+    headers
+        .get(name)
+        .map(|value| {
+            value.to_str().map(str::to_owned).map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "header_invalid",
+                    "invalid mutation header",
+                )
+            })
+        })
+        .transpose()
 }

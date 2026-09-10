@@ -349,6 +349,8 @@ fn status(id: &str, state: &str) -> Value {
 fn plan(id: &str) -> Value {
     json!({
         "application_id": id,
+        "generation": u64::from(!id.starts_with("preview-")),
+        "identical": false, "operation": null, "changes": [],
         "plan": {
             "actions": [],
             "diagnostics": []
@@ -532,7 +534,7 @@ fn plan_before_apply_confirmation_and_transport_retry_are_exercised() {
                 "apply",
                 "--file",
                 manifest.to_str().expect("manifest path"),
-                "--yes",
+                "--force",
                 "--no-wait",
             ],
         );
@@ -550,6 +552,22 @@ fn plan_before_apply_confirmation_and_transport_retry_are_exercised() {
             .collect::<Vec<_>>();
         assert_eq!(retries.len(), 2);
         assert_eq!(retries[0], retries[1]);
+        let mutations = records
+            .iter()
+            .filter(|request| request.path == "/api/v1/applications/apply")
+            .collect::<Vec<_>>();
+        let key = mutations[0]
+            .headers
+            .get("idempotency-key")
+            .expect("command has a replay identity");
+        assert_eq!(Some(key), mutations[1].headers.get("idempotency-key"));
+        assert_eq!(
+            mutations[0]
+                .headers
+                .get("x-expected-generation")
+                .map(String::as_str),
+            Some("0")
+        );
     }
 }
 
@@ -587,7 +605,7 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
             "apply",
             "--file",
             manifest.to_str().expect("manifest path"),
-            "--yes",
+            "--force",
         ],
     );
     assert_eq!(output.status.code(), Some(5));
@@ -631,11 +649,13 @@ fn delete_reports_named_volume_retention_and_operation_completion() {
             "/api/v1/applications?limit=3" => {
                 Reply::json(page(vec![app_view("app-notes-01", "notes")], None))
             }
-            "/api/v1/applications/app-notes-01" => Reply::accepted(accepted("app-notes-01")),
+            "/api/v1/applications/app-notes-01?expected_generation=1" => {
+                Reply::accepted(accepted("app-notes-01"))
+            }
             "/api/v1/operations/operation-01" => Reply::json(operation("succeeded")),
             path => panic!("unexpected path {path}"),
         });
-        let output = run(&server, &["delete", "notes", "--yes"]);
+        let output = run(&server, &["delete", "notes", "--force"]);
         let value = assert_json_success(&output);
         assert_eq!(value["volumes_retained"], true);
         assert!(String::from_utf8_lossy(&output.stderr).contains("named volumes are retained"));
@@ -833,17 +853,7 @@ fn reconcile_and_refresh_forward_generation_and_retry_transport() {
                 Reply::accepted(accepted("app-notes-01"))
             }
         });
-        let output = run(
-            &server,
-            &[
-                action,
-                "app-notes-01",
-                "--expected-generation",
-                "1",
-                "--yes",
-                "--no-wait",
-            ],
-        );
+        let output = run(&server, &[action, "app-notes-01", "--force", "--no-wait"]);
         assert!(
             output.status.success(),
             "{}",
@@ -864,7 +874,7 @@ fn events_cli_reads_a_filtered_page() {
             "/api/v1/events?application_id=app-notes-01&cursor=v1%3A7&limit=2"
         );
         Reply::json(
-            json!({"items":[{"id":8,"application_id":"app-notes-01","operation_id":"operation-01","generation":1,"attempt":2,"kind":"operation_succeeded","message":null,"created_at_ms":123}],"next_cursor":null}),
+            json!({"items":[{"id":8,"application_id":"app-notes-01","operation_id":"operation-01","generation":1,"attempt":2,"kind":"operation_succeeded","message":null,"error_code":null,"phase":null,"resource":null,"created_at_ms":123}],"next_cursor":null}),
         )
     });
     let output = run(
@@ -887,4 +897,96 @@ fn events_cli_reads_a_filtered_page() {
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["items"][0]["attempt"], 2);
     assert_eq!(server.finish().len(), 1);
+}
+
+#[test]
+fn identical_apply_reports_status_without_confirmation_mutation_or_waiting() {
+    for (state, exit) in [("succeeded", 0), ("running", 0), ("failed", 5)] {
+        let directory = tempdir().unwrap();
+        let manifest = write_manifest(&directory);
+        let server = start_server(false, 1, move |request| {
+            assert_eq!(request.path, "/api/v1/applications/plan");
+            let mut preview = plan("app-notes-01");
+            preview["identical"] = json!(true);
+            preview["operation"] = operation(state);
+            Reply::json(preview)
+        });
+        let output = run(&server, &["apply", "--file", manifest.to_str().unwrap()]);
+        assert_eq!(
+            output.status.code(),
+            Some(exit),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["identical"], true);
+        assert_eq!(result["operation"]["state"], state);
+        if exit != 0 {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("reconcile"));
+        }
+        assert_eq!(server.finish().len(), 1);
+    }
+}
+
+#[test]
+fn apply_protects_the_preview_identity_and_revision_even_with_force() {
+    let directory = tempdir().unwrap();
+    let manifest = write_manifest(&directory);
+    let server = start_server(false, 2, move |request| {
+        if request.path == "/api/v1/applications/plan" {
+            let mut preview = plan("app-notes-01");
+            preview["generation"] = json!(7);
+            return Reply::json(preview);
+        }
+        assert_eq!(
+            request
+                .headers
+                .get("x-expected-generation")
+                .map(String::as_str),
+            Some("7")
+        );
+        assert_eq!(
+            request
+                .headers
+                .get("x-expected-application-id")
+                .map(String::as_str),
+            Some("app-notes-01")
+        );
+        let mut reply = Reply::json(Value::Null);
+        reply.status = "409 Conflict";
+        reply.body=serde_json::to_vec(&json!({"code":"generation_conflict","message":"Application changed since inspection; run the command again"})).unwrap();
+        reply
+    });
+    let output = run(
+        &server,
+        &["apply", "--file", manifest.to_str().unwrap(), "--force"],
+    );
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("run the command again"));
+    assert_eq!(
+        server.finish().len(),
+        2,
+        "generation conflicts must not retry"
+    );
+}
+
+#[test]
+fn rename_uses_the_inspected_revision_and_preserves_identity() {
+    let server = start_server(false, 2, |request| {
+        if request.method == "GET" {
+            return Reply::json(app_view("app-notes-01", "notes"));
+        }
+        assert_eq!(request.path, "/api/v1/applications/app-notes-01/rename");
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body, json!({"name":"renamed","expected_generation":1}));
+        assert!(request.headers.contains_key("idempotency-key"));
+        Reply::json(json!({"application_id":"app-notes-01","name":"renamed","generation":2}))
+    });
+    let output = run(&server, &["rename", "app-notes-01", "renamed", "--force"]);
+    assert_eq!(
+        assert_json_success(&output)["application_id"],
+        "app-notes-01"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("metadata.name"));
+    assert_eq!(server.finish().len(), 2);
 }

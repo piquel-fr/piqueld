@@ -27,6 +27,7 @@ impl RuntimeBoundary for FakeRuntime {
     async fn prepare(
         &self,
         application: &NormalizedApplication,
+        _reusable: &piqueld_core::ResolutionSet,
     ) -> Result<piqueld_core::ResolvedApplication, BoundaryError> {
         let sources = application
             .spec
@@ -123,6 +124,7 @@ async fn assert_create_plan(client: &Client, manifest: &ApplicationManifest) {
     let preview = client
         .plan_application(&ApplyApplicationRequest {
             expected_generation: None,
+            expected_application_id: None,
             manifest: manifest.clone(),
         })
         .await
@@ -136,6 +138,7 @@ async fn assert_create_plan(client: &Client, manifest: &ApplicationManifest) {
 async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> AcceptedOperation {
     let request = ApplyApplicationRequest {
         expected_generation: None,
+        expected_application_id: None,
         manifest: manifest.clone(),
     };
     let created = client
@@ -534,6 +537,7 @@ async fn replace_and_plan(
     manifest.spec.services[0].replicas = 2;
     let request = ApplyApplicationRequest {
         expected_generation: None,
+        expected_application_id: None,
         manifest,
     };
     let replaced = client
@@ -1082,6 +1086,7 @@ async fn generations_refresh_reconcile_and_event_pagination_share_the_http_contr
     let mut request = ApplyApplicationRequest {
         manifest: manifest(),
         expected_generation: Some(0),
+        expected_application_id: None,
     };
     let first = client.apply_application(&request).await.unwrap();
     assert_eq!(first.generation, 1);
@@ -1141,4 +1146,295 @@ async fn generations_refresh_reconcile_and_event_pagination_share_the_http_contr
         .unwrap();
     assert_eq!(repeated.operation_id, deletion.operation_id);
     task.abort();
+}
+
+struct AcceptanceApi {
+    client: Client,
+    store: Arc<SqliteStore>,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+impl AcceptanceApi {
+    async fn start(temp: &TempDir) -> Self {
+        let store = Arc::new(
+            SqliteStore::open(temp.path().join("state.db"))
+                .await
+                .unwrap(),
+        );
+        let instance = InstanceId::parse(store.instance_id()).unwrap();
+        let state = ApiState::new(Arc::clone(&store), Arc::new(FakeRuntime { instance }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Client::tcp(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let task = tokio::spawn(serve(listener, router(state)).into_future());
+        Self {
+            client,
+            store,
+            task,
+        }
+    }
+
+    fn request() -> ApplyApplicationRequest {
+        ApplyApplicationRequest {
+            manifest: manifest(),
+            expected_generation: Some(0),
+            expected_application_id: None,
+        }
+    }
+}
+
+impl Drop for AcceptanceApi {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[tokio::test]
+async fn acceptance_receipts_survive_restart_and_supersession() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let request = AcceptanceApi::request();
+    let keyed = api.client.clone().with_request_id("apply-command-1");
+    let accepted = keyed.apply_application(&request).await.unwrap();
+    let mut replacement = request.clone();
+    replacement.expected_generation = Some(1);
+    replacement.expected_application_id = Some(accepted.application_id.clone());
+    replacement.manifest.spec.services[0].replicas = 2;
+    api.client.apply_application(&replacement).await.unwrap();
+    drop(api);
+    let api = AcceptanceApi::start(&temp).await;
+    let keyed = api.client.clone().with_request_id("apply-command-1");
+    let replayed = keyed.apply_application(&request).await.unwrap();
+    assert_eq!(replayed.operation_id, accepted.operation_id);
+    assert_eq!(replayed.generation, 1);
+    assert_eq!(
+        api.client
+            .application(&accepted.application_id)
+            .await
+            .unwrap()
+            .generation,
+        2
+    );
+    assert_eq!(
+        api.client
+            .operation(&accepted.operation_id)
+            .await
+            .unwrap()
+            .state,
+        piqueld_core::OperationState::Cancelled
+    );
+    let error = keyed.apply_application(&replacement).await.unwrap_err();
+    assert!(
+        matches!(error,piqueld_client::ClientError::Api {error,..} if error.code=="request_id_conflict")
+    );
+    // Two concurrent requests still produce exactly one durable acceptance.
+    let mut fresh = request.clone();
+    fresh.manifest.metadata.name = "another".into();
+    let concurrent = api.client.clone().with_request_id("concurrent-command");
+    let (a, b) = tokio::join!(
+        concurrent.apply_application(&fresh),
+        concurrent.apply_application(&fresh)
+    );
+    assert_eq!(a.unwrap().operation_id, b.unwrap().operation_id);
+}
+
+#[tokio::test]
+async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let accepted = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let request = piqueld_client::RenameApplicationRequest {
+        name: "renamed".into(),
+        expected_generation: Some(1),
+    };
+    let keyed = api.client.clone().with_request_id("rename-command");
+    let error = keyed
+        .rename_application(&accepted.application_id, &request)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error,piqueld_client::ClientError::Api {error,..} if error.code=="application_busy")
+    );
+    api.store
+        .transition_operation(
+            &accepted.operation_id,
+            piqueld_core::OperationState::Requested,
+            piqueld_core::OperationState::Running,
+            None,
+        )
+        .await
+        .unwrap();
+    api.store
+        .transition_operation(
+            &accepted.operation_id,
+            piqueld_core::OperationState::Running,
+            piqueld_core::OperationState::Failed,
+            Some(("image_resolution_rejected", "image unavailable")),
+        )
+        .await
+        .unwrap();
+    let renamed = keyed
+        .rename_application(&accepted.application_id, &request)
+        .await
+        .unwrap();
+    assert_eq!(renamed.application_id, accepted.application_id);
+    assert_eq!(renamed.generation, 2);
+    let replay = keyed
+        .rename_application(&accepted.application_id, &request)
+        .await
+        .unwrap();
+    assert_eq!(replay.generation, 2);
+    let app = api
+        .client
+        .application(&accepted.application_id)
+        .await
+        .unwrap();
+    assert_eq!(app.application.metadata.name, "renamed");
+    assert_eq!(
+        api.client
+            .operation(&accepted.operation_id)
+            .await
+            .unwrap()
+            .state,
+        piqueld_core::OperationState::Failed
+    );
+    let mut identical = AcceptanceApi::request();
+    identical.manifest.metadata.name = "renamed".into();
+    identical.expected_generation = Some(2);
+    let no_op = api.client.apply_application(&identical).await.unwrap();
+    assert_eq!(no_op.operation_id, accepted.operation_id);
+    assert_eq!(no_op.generation, 2);
+    assert_eq!(
+        api.client
+            .operation(&accepted.operation_id)
+            .await
+            .unwrap()
+            .state,
+        piqueld_core::OperationState::Failed
+    );
+    // The old name now identifies a different app. A captured ID must prevent overwriting it.
+    let old_name = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let mut stale = AcceptanceApi::request();
+    stale.expected_generation = Some(1);
+    stale.expected_application_id = Some(accepted.application_id);
+    stale.manifest.spec.services[0].replicas = 3;
+    let error = api.client.apply_application(&stale).await.unwrap_err();
+    assert!(
+        matches!(error,piqueld_client::ClientError::Api {error,..} if error.code=="identity_conflict")
+    );
+    assert_eq!(
+        api.client
+            .application(&old_name.application_id)
+            .await
+            .unwrap()
+            .application
+            .spec
+            .services[0]
+            .replicas,
+        1
+    );
+}
+
+#[tokio::test]
+async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
+    use sqlx::Connection;
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let mut connection = sqlx::SqliteConnection::connect(&format!(
+        "sqlite://{}",
+        temp.path().join("state.db").display()
+    ))
+    .await
+    .unwrap();
+    sqlx::query("CREATE TRIGGER reject_receipt BEFORE INSERT ON request_receipts BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END").execute(&mut connection).await.unwrap();
+    let keyed = api.client.clone().with_request_id("atomic-command");
+    let request = AcceptanceApi::request();
+    assert!(keyed.apply_application(&request).await.is_err());
+    assert!(api.store.list(None, 50).await.unwrap().items.is_empty());
+    sqlx::query("DROP TRIGGER reject_receipt")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let accepted = keyed.apply_application(&request).await.unwrap();
+    sqlx::query("UPDATE request_receipts SET expires_at_ms=0")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let refreshed = keyed
+        .refresh_application(&accepted.application_id, Some(1))
+        .await
+        .unwrap();
+    assert_ne!(refreshed.operation_id, accepted.operation_id);
+}
+
+#[tokio::test]
+async fn preview_reuses_active_digests_and_redacts_manifest_and_runtime_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let mut request = AcceptanceApi::request();
+    request.manifest.spec.services[0]
+        .environment
+        .insert("TOKEN".into(), "old-private-value".into());
+    let normalized = request
+        .manifest
+        .clone()
+        .validate()
+        .unwrap()
+        .normalize(piqueld_core::ApplicationId::parse("app-preview-01").unwrap());
+    let runtime = FakeRuntime {
+        instance: InstanceId::parse(api.store.instance_id()).unwrap(),
+    };
+    let target = runtime
+        .prepare(&normalized, &ResolutionSet::default())
+        .await
+        .unwrap();
+    api.store
+        .save_application(&normalized, Some(&target), Some(0))
+        .await
+        .unwrap();
+    request.expected_generation = Some(1);
+    request.expected_application_id = Some(normalized.id.to_string());
+    request.manifest.spec.services[0].replicas = 3;
+    request.manifest.spec.services[0]
+        .environment
+        .insert("TOKEN".into(), "new-private-value".into());
+    request.manifest.spec.services[0].command = vec!["command-private-value".into()];
+    let preview = api.client.plan_application(&request).await.unwrap();
+    assert_eq!(preview.generation, 1);
+    assert!(!preview.identical);
+    assert!(
+        preview
+            .changes
+            .iter()
+            .any(|change| change.field == "services.web.replicas"
+                && change.after.as_deref() == Some("3"))
+    );
+    assert!(
+        !preview
+            .plan
+            .actions
+            .iter()
+            .any(|action| matches!(action.kind, piqueld_core::ActionKind::ResolveImage { .. }))
+    );
+    let json = serde_json::to_string(&preview).unwrap();
+    for secret in [
+        "old-private-value",
+        "new-private-value",
+        "command-private-value",
+    ] {
+        assert!(!json.contains(secret));
+    }
+    assert!(json.contains("redacted"));
+    assert_eq!(
+        api.store.get(&normalized.id).await.unwrap().generation,
+        1,
+        "preview is read-only"
+    );
 }

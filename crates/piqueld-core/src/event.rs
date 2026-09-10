@@ -20,6 +20,12 @@ pub struct Event {
     pub kind: String,
     /// Sanitized diagnostic or state description.
     pub message: Option<String>,
+    /// Stable failure classification, when this event records failure.
+    pub error_code: Option<String>,
+    /// Execution phase at the time of the event.
+    pub phase: Option<String>,
+    /// Related logical or Docker resource.
+    pub resource: Option<String>,
     /// Unix timestamp in milliseconds.
     pub created_at_ms: i64,
 }

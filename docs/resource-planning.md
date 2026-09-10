@@ -28,3 +28,8 @@ Plans describe current work and are safe to recompute. The controller executes
 an action and observes again; plans are not persisted as operation steps.
 A preview is an explanation of the current proposed transition, not a promise
 that Docker state will remain unchanged until apply.
+
+Preview responses also include redacted differences between accepted and proposed
+manifest fields. Unchanged service image references reuse active digests; new or
+changed references remain explicit resolution requirements. Runtime actions in
+previews have sensitive configuration redacted and are never used for execution.

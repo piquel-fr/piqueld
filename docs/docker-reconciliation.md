@@ -9,13 +9,20 @@ Apply validates and persists the entire normalized manifest before returning an
 operation ID. Execution resolves all images to immutable digests, checks a fresh
 plan, then deploys the complete target. Previous resolved state remains available
 while replacement preparation is pending or blocked; old services keep running,
-but corrective mutations toward obsolete intent stop.
+and the controller continues correcting drift toward that active target. Once
+preparation and a fresh concrete plan succeed, promotion switches the maintained
+target immediately before rollout. Promotion and active repair share the mutation
+lock, so old-target repair cannot continue after promotion. There is no automatic
+rollback after rollout starts.
 
 An identical normalized manifest reuses the current operation without pulling
-images or scheduling work. A failed operation is requested again under its
-existing ID. Explicit `reconcile`, periodic repair, and restart recovery use the
+images or scheduling work, including after failure. Explicit reconcile requests
+a failed operation again under its existing ID. Explicit `reconcile`, periodic repair, and restart recovery use the
 same execution path. They reuse the latest intent's prepared digests, or retry
-preparation if it never completed. They never fall back to an older intent.
+preparation if it never completed. Apply reuses active digests for unchanged
+service image references; new/changed references resolve during preparation.
+Maintaining the active target during preparation does not replace the requested
+candidate or report it as successfully deployed.
 
 Explicit `refresh` resolves the current manifest again without advancing its
 generation. Active refreshes are reused; failed refreshes retry their prepared
@@ -50,7 +57,9 @@ The intent generation and last resolved target generation are exposed separately
 a resolved generation alone does not assert container convergence.
 
 Informational events record accepted changes, attempt starts/outcomes,
-supersession, deletion completion, and meaningful health transitions. State
+supersession, promotion, deletion completion, significant resource mutations,
+active-target repairs, and meaningful health transitions. Operations expose current
+phase/resource; failure events retain those fields and a structured error code. State
 changes and their events share a transaction. Events never drive execution or
 reconstruct state. Their independent retention defaults to 30 days; zero disables
 pruning. Unchanged observations and raw Docker errors are not logged as events.

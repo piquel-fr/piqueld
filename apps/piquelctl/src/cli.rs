@@ -52,6 +52,8 @@ pub(crate) enum Command {
     Reconcile(DeleteArgs),
     /// Resolve current image references again and deploy the resulting target.
     Refresh(DeleteArgs),
+    /// Rename an idle application without redeploying it.
+    Rename(RenameArgs),
     /// Read one page of informational events, oldest first.
     Events {
         /// Filter by stable application ID, including deleted applications.
@@ -87,7 +89,7 @@ pub(crate) struct ApplyArgs {
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]
-    pub(crate) yes: bool,
+    pub(crate) force: bool,
 
     /// Return after the daemon accepts the operation.
     #[arg(long)]
@@ -104,7 +106,7 @@ pub(crate) struct DeleteArgs {
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]
-    pub(crate) yes: bool,
+    pub(crate) force: bool,
 
     /// Return after the daemon accepts the operation.
     #[arg(long)]
@@ -158,4 +160,18 @@ pub(crate) fn parse_duration(value: &str) -> std::result::Result<Duration, Strin
         return Err("timeout must be greater than zero".to_owned());
     }
     Ok(duration)
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct RenameArgs {
+    /// Existing application name or stable ID.
+    pub(crate) name_or_id: String,
+    /// New unique application name.
+    pub(crate) new_name: String,
+    /// Require this intent generation.
+    #[arg(long)]
+    pub(crate) expected_generation: Option<u64>,
+    /// Skip confirmation while retaining generation protection.
+    #[arg(long)]
+    pub(crate) force: bool,
 }

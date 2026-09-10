@@ -69,6 +69,9 @@ pub struct ApplyApplicationRequest {
     /// Optional intent precondition; zero requires an absent application name.
     #[serde(default)]
     pub expected_generation: Option<u64>,
+    /// Stable identity inspected by the caller, protecting name reuse.
+    #[serde(default)]
+    pub expected_application_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -87,7 +90,15 @@ pub struct AcceptedOperation {
 pub struct PlanView {
     /// Stable application identifier.
     pub application_id: String,
-    /// Ordered runtime plan.
+    /// Current intent revision; zero means the name is absent.
+    pub generation: u64,
+    /// Whether this manifest already matches accepted intent (excluding deletion).
+    pub identical: bool,
+    /// Latest operation at the time of comparison.
+    pub operation: Option<Operation>,
+    /// Safe changes to accepted manifest fields, independent of Docker availability.
+    pub changes: Vec<ManifestChange>,
+    /// Ordered runtime plan; unresolved images are explicit actions.
     pub plan: Plan,
 }
 
@@ -171,4 +182,46 @@ pub struct SystemStatus {
     pub daemon_version: String,
     /// Control-plane instance identifier.
     pub instance_id: String,
+}
+
+/// A change to a manifest field. Environment and process values are redacted.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct ManifestChange {
+    /// Logical manifest path.
+    pub field: String,
+    /// Safe previous value; absent for additions.
+    pub before: Option<String>,
+    /// Safe proposed value; absent for removals.
+    pub after: Option<String>,
+}
+
+/// Metadata-only rename, conditioned on the inspected intent revision.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RenameApplicationRequest {
+    /// New unique application name.
+    pub name: String,
+    /// Optional current intent revision.
+    pub expected_generation: Option<u64>,
+}
+
+/// Completed metadata-only rename.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct RenamedApplication {
+    /// Unchanged application identity.
+    pub application_id: String,
+    /// Current application name.
+    pub name: String,
+    /// Revision after renaming.
+    pub generation: u64,
+}
+
+impl From<&Operation> for AcceptedOperation {
+    fn from(operation: &Operation) -> Self {
+        Self {
+            operation_id: operation.id.clone(),
+            application_id: operation.application_id.to_string(),
+            generation: operation.generation,
+        }
+    }
 }

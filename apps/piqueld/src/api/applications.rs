@@ -1,6 +1,7 @@
 use super::{
     ApiError, ApiState, BoundaryError, accepted, ok, openapi::ApiErrorResponse, parse_manifest,
 };
+use crate::application::{Mutation, MutationResponse};
 use crate::store::{ApplicationStatus, StoreError, StoredApplication};
 use axum::{
     body::Bytes,
@@ -13,8 +14,8 @@ use axum::{
 };
 use piqueld_core::api::{
     AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
-    ApplyApplicationRequest, DiagnosticView, Envelope, ObservedApplicationView,
-    ObservedServiceView, Page, PlanView,
+    ApplyApplicationRequest, DiagnosticView, Envelope, ManifestChange, ObservedApplicationView,
+    ObservedServiceView, Page, PlanView, RenameApplicationRequest, RenamedApplication,
 };
 use piqueld_core::{
     ApplicationId, NormalizedApplication, ObservedApplication, Plan, PlanRequest, ResolutionSet,
@@ -150,7 +151,7 @@ pub(super) async fn detail(
 #[utoipa::path(
     post, path = "/api/v1/applications/apply", operation_id = "applyApplication",
     summary = "Apply an application manifest",
-    params(("X-Expected-Generation"=Option<u64>,Header,description="Optional revision for TOML requests; zero requires absence")),
+    params(("X-Expected-Generation"=Option<u64>,Header,description="Optional revision for TOML requests; zero requires absence"),("X-Expected-Application-Id"=Option<String>,Header),("Idempotency-Key"=Option<String>,Header)),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 202, description = "Accepted or unchanged target", body = Envelope<AcceptedOperation>),
@@ -169,19 +170,20 @@ pub(super) async fn apply(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
-    let (manifest, expected) = parse_manifest(&headers, &request_body(body)?)?;
-    let operation = state.apply(manifest, expected).await?;
-    Ok(accepted(AcceptedOperation {
-        generation: operation.generation,
-        operation_id: operation.id,
-        application_id: operation.application_id.to_string(),
-    }))
+    let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
+    accept_mutation(
+        &state,
+        Mutation::apply(manifest, expected_id),
+        expected,
+        &headers,
+    )
+    .await
 }
 
 #[utoipa::path(
     delete, path = "/api/v1/applications/{id}", operation_id = "deleteApplication",
     summary = "Delete services and networks, retaining volumes",
-    params(("id" = String, Path, min_length = 8, max_length = 64), GenerationQuery),
+    params(("id" = String, Path, min_length = 8, max_length = 64), GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
     responses(
         (status = 409, response = inline(ApiErrorResponse)),
         (status = 202, description = "Deletion operation", body = Envelope<AcceptedOperation>),
@@ -194,22 +196,24 @@ pub(super) async fn apply(
 pub(super) async fn delete(
     State(state): State<ApiState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let operation = state
-        .delete(&ApplicationId::parse(id)?, GenerationQuery::decode(query)?)
-        .await?;
-    Ok(accepted(AcceptedOperation {
-        generation: operation.generation,
-        operation_id: operation.id,
-        application_id: operation.application_id.to_string(),
-    }))
+    accept_mutation(
+        &state,
+        Mutation::Delete {
+            id: ApplicationId::parse(id)?,
+        },
+        GenerationQuery::decode(query)?,
+        &headers,
+    )
+    .await
 }
 
 #[utoipa::path(
     post, path = "/api/v1/applications/plan", operation_id = "planApplication",
     summary = "Preview an application manifest",
-    params(("X-Expected-Generation"=Option<u64>,Header)),
+    params(("X-Expected-Generation"=Option<u64>,Header),("X-Expected-Application-Id"=Option<String>,Header)),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 200, description = "Preview", body = Envelope<PlanView>),
@@ -228,20 +232,44 @@ pub(super) async fn plan(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let (manifest, expected) = parse_manifest(&headers, &request_body(body)?)?;
+    let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
     let current = state.store.find_by_name(manifest.name()).await?;
     crate::store::SqliteStore::check_generation(
         expected,
         current.as_ref().map_or(0, |app| app.generation),
     )?;
+    if let Some(expected_id) = expected_id
+        && current
+            .as_ref()
+            .is_none_or(|app| app.application.id.as_str() != expected_id)
+    {
+        return Err(StoreError::IdentityConflict.into());
+    }
     let id = current.as_ref().map_or_else(
         || ApplicationId::parse("preview-application").expect("valid preview ID"),
         |app| app.application.id.clone(),
     );
     let application = manifest.normalize(id.clone());
     let plan = preview_plan(&state, &application, current.as_ref()).await?;
+    let operation = if let Some(current) = &current {
+        state
+            .store
+            .latest_operation_for_application(&current.application.id)
+            .await?
+    } else {
+        None
+    };
     Ok(ok(PlanView {
         application_id: id.to_string(),
+        generation: current.as_ref().map_or(0, |app| app.generation),
+        identical: current
+            .as_ref()
+            .is_some_and(|app| !app.delete_intent && app.application == application),
+        operation,
+        changes: ManifestChange::between(
+            current.as_ref().map(|app| &app.application),
+            &application,
+        ),
         plan,
     }))
 }
@@ -254,34 +282,54 @@ async fn preview_plan(
     if current.is_some_and(|current| !current.delete_intent && current.application == *app) {
         return Ok(Plan::default());
     }
+    let mut unavailable = false;
     let observed = if let Some(current) = current {
         match state.runtime.observe(current).await {
             Ok(observed) => observed,
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                tracing::warn!(?error, "preview runtime observation unavailable");
+                unavailable = true;
+                ObservedApplication::default()
+            }
         }
     } else {
         ObservedApplication::default()
     };
-    let resolutions = ResolutionSet::default();
+    let resolutions = current
+        .and_then(|app| app.resolved.as_ref())
+        .map_or_else(ResolutionSet::default, |target| {
+            target.reusable_resolutions(app)
+        });
     let unresolved = preview_resolution(app, &resolutions);
-    let desired = if unresolved.is_empty() {
-        current
-            .and_then(|stored| stored.resolved.as_ref())
-            .map(|resolved| {
-                compile_application(app, resolved.instance_id.clone(), &resolutions)
-                    .map_err(BoundaryError::Compilation)
-            })
-            .transpose()?
+    let desired = if unresolved.is_empty() && !unavailable {
+        Some(
+            compile_application(
+                app,
+                piqueld_core::InstanceId::parse(state.store.instance_id())
+                    .map_err(StoreError::corrupt)?,
+                &resolutions,
+            )
+            .map_err(BoundaryError::Compilation)?,
+        )
     } else {
         None
     };
-    Ok(Plan::from_request(
+    let mut plan = Plan::from_request(
         &PlanRequest::Preview {
             unresolved,
             desired,
         },
         &observed,
-    ))
+    );
+    if unavailable {
+        plan.diagnostics.push(piqueld_core::PlanDiagnostic {
+            severity:piqueld_core::DiagnosticSeverity::Warning,
+            code:"runtime_unavailable".into(),resource:app.metadata.name.clone(),
+            message:"Runtime observation is unavailable; only manifest changes and resolution requirements are shown".into(),blocking:false,
+        });
+    }
+    plan.redact_configuration();
+    Ok(plan)
 }
 
 fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes, ApiError> {
@@ -607,41 +655,93 @@ impl GenerationQuery {
 }
 
 #[utoipa::path(post,path="/api/v1/applications/{id}/reconcile",operation_id="reconcileApplication",
-    params(("id"=String,Path),GenerationQuery),
+    params(("id"=String,Path),GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
     responses((status=202,description="Reconciliation accepted",body=Envelope<AcceptedOperation>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
     (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn reconcile(
     State(state): State<ApiState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let operation = state
-        .reconcile(&ApplicationId::parse(id)?, GenerationQuery::decode(query)?)
-        .await?;
-    Ok(accepted(AcceptedOperation {
-        generation: operation.generation,
-        application_id: operation.application_id.to_string(),
-        operation_id: operation.id,
-    }))
+    accept_mutation(
+        &state,
+        Mutation::Reconcile {
+            id: ApplicationId::parse(id)?,
+        },
+        GenerationQuery::decode(query)?,
+        &headers,
+    )
+    .await
 }
 
 #[utoipa::path(post,path="/api/v1/applications/{id}/refresh",operation_id="refreshApplication",
-    params(("id"=String,Path),GenerationQuery),
+    params(("id"=String,Path),GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
     responses((status=202,description="Image refresh accepted",body=Envelope<AcceptedOperation>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
     (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn refresh(
     State(state): State<ApiState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let operation = state
-        .refresh(&ApplicationId::parse(id)?, GenerationQuery::decode(query)?)
-        .await?;
-    Ok(accepted(AcceptedOperation {
-        generation: operation.generation,
-        application_id: operation.application_id.to_string(),
-        operation_id: operation.id,
-    }))
+    accept_mutation(
+        &state,
+        Mutation::Refresh {
+            id: ApplicationId::parse(id)?,
+        },
+        GenerationQuery::decode(query)?,
+        &headers,
+    )
+    .await
+}
+
+async fn accept_mutation(
+    state: &ApiState,
+    mutation: Mutation,
+    expected: Option<u64>,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_id = super::optional_header(headers, "idempotency-key")?;
+    match state
+        .accept(mutation, expected, request_id.as_deref())
+        .await?
+    {
+        MutationResponse::Operation(operation) => Ok(accepted(operation)),
+        MutationResponse::Rename(renamed) => Ok(ok(renamed).into_response()),
+    }
+}
+
+#[utoipa::path(post,path="/api/v1/applications/{id}/rename",operation_id="renameApplication",
+    params(("id"=String,Path),("Idempotency-Key"=Option<String>,Header)),
+    request_body=RenameApplicationRequest,
+    responses((status=200,description="Application renamed without redeployment",body=Envelope<RenamedApplication>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn rename(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Response, ApiError> {
+    if super::content_type(&headers) != Some("application/json") {
+        return Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "content_type_unsupported",
+            "Content-Type must be application/json",
+        ));
+    }
+    let request: RenameApplicationRequest = super::decode_json(&request_body(body)?)?;
+    accept_mutation(
+        &state,
+        Mutation::Rename {
+            id: ApplicationId::parse(id)?,
+            name: request.name,
+        },
+        request.expected_generation,
+        &headers,
+    )
+    .await
 }

@@ -92,6 +92,29 @@ impl FakeDocker {
         }
     }
 
+    async fn assert_active_repair(&self, id: &ApplicationId) {
+        {
+            let mut observed = self.observed.lock().await;
+            let service = observed
+                .services
+                .iter_mut()
+                .find(|service| service.labels.get(APPLICATION_LABEL) == Some(&id.to_string()))
+                .unwrap();
+            service.replicas = 9;
+            service.convergence = Convergence::Degraded;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if self.observe(id).await.unwrap().services[0].replicas == 1 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("active target is repaired while candidate image pull is blocked");
+    }
+
     /// Arms the registry to re-point the tag after each remaining pull.
     async fn arm_tag_flips(&self, flips: usize) {
         self.registry.lock().await.flips_remaining = flips;
@@ -1181,12 +1204,13 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     let token = cancellation.clone();
     let controller_task = tokio::spawn(async move {
         controller
-            .run(wake, std::time::Duration::from_secs(60), 10, 30, token)
+            .run(wake, std::time::Duration::from_millis(50), 10, 30, token)
             .await
     });
     tokio::time::timeout(std::time::Duration::from_secs(3), gate.entered.notified())
         .await
         .expect("pull started");
+    docker.assert_active_repair(&accepted.application_id).await;
     let mut fast = manifest();
     fast.metadata.name = "fast".into();
     let fast = applications
@@ -1287,4 +1311,152 @@ fn manifest() -> piqueld_core::manifest::ApplicationManifest {
         "../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
     ))
     .unwrap()
+}
+
+#[tokio::test]
+async fn configuration_changes_reuse_active_images_and_rename_preserves_resources() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let mut input = manifest();
+    let first = applications
+        .apply(input.clone().validate().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    let pulls = harness.pulls().await;
+    let piqueld_core::Source::Image { image } = &input.spec.services[0].source;
+    harness
+        .docker
+        .registry
+        .lock()
+        .await
+        .digests
+        .insert(image.clone(), "b".repeat(64));
+    input.spec.services[0].replicas = 2;
+    input.spec.services[0]
+        .environment
+        .insert("TOKEN".into(), "private-value".into());
+    let changed = applications
+        .apply(input.clone().validate().unwrap(), Some(1))
+        .await
+        .unwrap();
+    harness.finish(&changed).await;
+    assert_eq!(harness.pulls().await, pulls);
+    let app = harness.store.get(&first.application_id).await.unwrap();
+    assert!(
+        app.resolved.unwrap().services[0]
+            .image
+            .ends_with(&"a".repeat(64))
+    );
+    let refreshed = applications
+        .refresh(&first.application_id, Some(2))
+        .await
+        .unwrap();
+    harness.finish(&refreshed).await;
+    let before = harness
+        .store
+        .get(&first.application_id)
+        .await
+        .unwrap()
+        .resolved
+        .unwrap();
+    assert!(before.services[0].image.ends_with(&"b".repeat(64)));
+    let renamed = applications
+        .accept(
+            piqueld::application::Mutation::Rename {
+                id: first.application_id.clone(),
+                name: "renamed".into(),
+            },
+            Some(2),
+            Some("rename-resources"),
+        )
+        .await
+        .unwrap();
+    let piqueld::application::MutationResponse::Rename(renamed) = renamed else {
+        panic!("rename response")
+    };
+    assert_eq!(renamed.generation, 3);
+    let after = harness
+        .store
+        .get(&first.application_id)
+        .await
+        .unwrap()
+        .resolved
+        .unwrap();
+    assert_eq!(after.services, before.services);
+    assert_eq!(after.networks, before.networks);
+    assert_eq!(after.volumes, before.volumes);
+    assert_eq!(
+        harness
+            .store
+            .latest_operation_for_application(&first.application_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        refreshed.id
+    );
+    let events = harness.store.events(None, None, 100).await.unwrap().items;
+    assert!(events.iter().any(|event| event.kind == "resource_mutated"
+        && event.phase.as_deref() == Some("ensure_service")
+        && event.resource.as_deref() == Some(after.services[0].name.as_str())));
+    assert!(
+        !serde_json::to_string(&events)
+            .unwrap()
+            .contains("private-value")
+    );
+}
+
+#[tokio::test]
+async fn failed_preparation_preserves_active_repair_and_identical_apply_does_not_retry() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let mut input = manifest();
+    let first = applications
+        .apply(input.clone().validate().unwrap(), None)
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    input.spec.services[0].source = piqueld_core::Source::Image {
+        image: "ghcr.io/example/unstable:1".into(),
+    };
+    harness.docker.arm_tag_flips(100).await;
+    let failed = applications
+        .apply(input.clone().validate().unwrap(), None)
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let failure = harness.store.operation(&failed.id).await.unwrap();
+    assert_eq!(failure.state, OperationState::Failed);
+    assert_eq!(failure.phase.as_deref(), Some("resolving_image"));
+    assert_eq!(failure.resource.as_deref(), Some("web"));
+    let pulls = harness.pulls().await;
+    let duplicate = applications
+        .apply(input.validate().unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(duplicate.state, OperationState::Failed);
+    assert_eq!(duplicate.attempt, failure.attempt);
+    assert_eq!(harness.pulls().await, pulls);
+    {
+        let mut observed = harness.docker.observed.lock().await;
+        observed.services[0].replicas = 9;
+        observed.services[0].convergence = Convergence::Degraded;
+    }
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(harness.docker.observed.lock().await.services[0].replicas, 1);
+    let stored = harness.store.get(&first.application_id).await.unwrap();
+    assert_eq!(stored.resolved_generation, Some(1));
+    let events = harness.store.events(None, None, 100).await.unwrap().items;
+    assert!(events.iter().any(|event| event.kind == "operation_failed"
+        && event.error_code.as_deref() == Some("image_resolution_failed")
+        && event.resource.as_deref() == Some("web")));
 }

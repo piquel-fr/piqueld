@@ -43,6 +43,9 @@ CREATE TABLE operations (
     attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
     consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
     target_json TEXT CHECK (target_json IS NULL OR json_valid(target_json)),
+    phase TEXT,
+    resource TEXT,
+    promoted INTEGER NOT NULL DEFAULT 0 CHECK (promoted IN (0, 1)),
     error_code TEXT,
     error_message TEXT,
     created_at_ms INTEGER NOT NULL,
@@ -66,6 +69,18 @@ CREATE TABLE events (
     attempt INTEGER,
     kind TEXT NOT NULL,
     message TEXT,
+    error_code TEXT,
+    phase TEXT,
+    resource TEXT,
     created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX event_application ON events(application_id,id);
+
+-- Acceptance receipts outlive operation pruning and contain no manifest values.
+CREATE TABLE request_receipts (
+    request_id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    response_json TEXT NOT NULL CHECK (json_valid(response_json)),
+    expires_at_ms INTEGER NOT NULL
+);
+CREATE INDEX receipt_expiry ON request_receipts(expires_at_ms);

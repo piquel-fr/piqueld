@@ -1,6 +1,7 @@
-//! SQLite persistence. Application decisions belong to the application service;
+//! SQLite persistence and atomic acceptance of validated application commands;
 //! Docker planning and execution belong to the controller.
 
+mod acceptance;
 mod application;
 mod event;
 mod operation;
@@ -60,6 +61,15 @@ pub enum StoreError {
         /// Current revision; zero means absent.
         actual: u64,
     },
+    /// The name no longer selects the application inspected by the caller.
+    #[error("application identity changed since inspection")]
+    IdentityConflict,
+    /// A request ID was already used for different input.
+    #[error("request ID was already used for different input")]
+    ReplayConflict,
+    /// Rename cannot run during pending work or deletion.
+    #[error("application is busy; wait for its operation before renaming")]
+    Busy,
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,
@@ -155,6 +165,7 @@ pub struct ApplicationPage {
 pub struct SqliteStore {
     pool: SqlitePool,
     instance_id: String,
+    writers: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SqliteStore {
@@ -247,7 +258,11 @@ impl SqliteStore {
         if metadata_version != SCHEMA_VERSION {
             return Err(StoreError::SchemaMismatch);
         }
-        Ok(Self { pool, instance_id })
+        Ok(Self {
+            pool,
+            instance_id,
+            writers: std::sync::Arc::default(),
+        })
     }
 
     async fn set_user_version(
@@ -269,11 +284,25 @@ impl SqliteStore {
         &self.instance_id
     }
 
-    async fn begin_immediate(&self) -> Result<Transaction<'static, Sqlite>, StoreError> {
-        self.pool
+    // Queue writers asynchronously before acquiring SQLite's single write lock.
+    // Competing BEGIN requests otherwise occupy pool workers and can starve a
+    // transaction under concurrent reconciliation.
+    pub(crate) async fn begin_immediate(
+        &self,
+    ) -> Result<
+        (
+            tokio::sync::MutexGuard<'_, ()>,
+            Transaction<'static, Sqlite>,
+        ),
+        StoreError,
+    > {
+        let writer = self.writers.lock().await;
+        let tx = self
+            .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(StoreError::database)
+            .map_err(StoreError::database)?;
+        Ok((writer, tx))
     }
 }
 

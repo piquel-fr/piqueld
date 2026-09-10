@@ -495,6 +495,7 @@ pub struct Client {
     #[cfg(not(target_arch = "wasm32"))]
     endpoint: loopback::Endpoint,
     timeout: Duration,
+    request_id: Option<String>,
 }
 
 impl Client {
@@ -511,6 +512,7 @@ impl Client {
         Ok(Self {
             endpoint: loopback::tcp_endpoint(base_url)?,
             timeout: Duration::from_secs(30),
+            request_id: None,
         })
     }
 
@@ -527,6 +529,7 @@ impl Client {
         Self {
             endpoint: loopback::Endpoint::Unix(path.as_ref().to_owned()),
             timeout: Duration::from_secs(30),
+            request_id: None,
         }
     }
 
@@ -536,6 +539,7 @@ impl Client {
     pub fn browser() -> Self {
         Self {
             timeout: Duration::from_secs(30),
+            request_id: None,
         }
     }
 
@@ -545,6 +549,14 @@ impl Client {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Sets one command's replay identity. Reuse this client for transport retries only;
+    /// use a new identity for a separately intended mutation.
+    #[must_use]
+    pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
+        self.request_id = Some(request_id.into());
         self
     }
 
@@ -595,6 +607,14 @@ impl Client {
         payload: Vec<u8>,
         headers: &[(&str, &str)],
     ) -> Result<(StatusCode, Vec<u8>), ClientError> {
+        let mut headers = headers.to_vec();
+        if method != Method::GET
+            && method != Method::HEAD
+            && let Some(id) = self.request_id.as_deref()
+        {
+            headers.push(("idempotency-key", id));
+        }
+        let headers = headers.as_slice();
         validate_headers(headers)?;
         #[cfg(not(target_arch = "wasm32"))]
         return loopback::exchange(&self.endpoint, self.timeout, method, path, payload, headers)

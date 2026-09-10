@@ -397,6 +397,29 @@ pub struct ResolvedApplication {
     pub services: Vec<DesiredService>,
 }
 
+impl ResolvedApplication {
+    /// Reuses immutable sources for services whose requested image is unchanged.
+    #[must_use]
+    pub fn reusable_resolutions(&self, application: &NormalizedApplication) -> ResolutionSet {
+        ResolutionSet {
+            sources: application
+                .spec
+                .services
+                .iter()
+                .filter_map(|service| {
+                    let prior = self
+                        .services
+                        .iter()
+                        .find(|prior| prior.logical_name == service.name)?;
+                    let crate::Source::Image { image } = &service.source;
+                    let ResolvedSource::Image { requested, .. } = &prior.source;
+                    (requested == image).then(|| (service.name.clone(), prior.source.clone()))
+                })
+                .collect(),
+        }
+    }
+}
+
 fn desired_application_from_labels(
     labels: &BTreeMap<String, String>,
 ) -> Option<(ApplicationId, InstanceId)> {

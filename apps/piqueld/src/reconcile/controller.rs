@@ -2,6 +2,7 @@ use super::{
     ApplicationState, CancellationToken, Controller, DockerApi, Operation, OperationError,
     OperationKind, OperationState, Plan, PlanRequest, StoreError, blocked_plan_error,
 };
+use crate::application::RuntimeBoundary;
 use std::sync::Arc;
 
 impl<D: DockerApi> Controller<D> {
@@ -106,6 +107,10 @@ impl<D: DockerApi> Controller<D> {
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
+        self.store
+            .progress(&operation.id, "preparing", None)
+            .await
+            .map_err(OperationError::from)?;
         let application = self
             .store
             .get(&operation.application_id)
@@ -125,7 +130,7 @@ impl<D: DockerApi> Controller<D> {
                 },
             }
         };
-        let ownership = self.ownership_labels(&application);
+        let ownership = self.ownership_labels(&application.application.id);
         if operation.kind != OperationKind::Delete
             && !self
                 .store
@@ -156,10 +161,10 @@ impl<D: DockerApi> Controller<D> {
                 .await
                 .map_err(OperationError::from)?;
             let plan = Plan::from_request(&request, &observed);
-            if plan.is_blocked() {
-                return Err(blocked_plan_error(&plan));
-            }
+            self.check_plan(operation, &plan).await?;
             if operation.kind != OperationKind::Delete {
+                let _guard = self.mutations.lock().await;
+                self.check_current(operation).await?;
                 self.store
                     .publish_prepared(operation)
                     .await
@@ -189,6 +194,22 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
+    async fn check_plan(&self, operation: &Operation, plan: &Plan) -> Result<(), OperationError> {
+        let resource = plan
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.blocking)
+            .map(|diagnostic| diagnostic.resource.as_str());
+        self.store
+            .progress(&operation.id, "planning", resource)
+            .await
+            .map_err(OperationError::from)?;
+        if plan.is_blocked() {
+            return Err(blocked_plan_error(plan));
+        }
+        Ok(())
+    }
+
     async fn prepare_target(
         &self,
         operation: &Operation,
@@ -203,20 +224,34 @@ impl<D: DockerApi> Controller<D> {
         {
             return Ok(target);
         }
-        let runtime = self.runtime(Arc::new(tokio::sync::Notify::new()));
-        let prepared =
-            runtime
-                .prepare(&application.application)
-                .await
-                .map_err(|error| match error {
-                    crate::application::BoundaryError::Runtime(error) => {
-                        OperationError::from(error)
-                    }
-                    crate::application::BoundaryError::Compilation(errors) => {
-                        tracing::error!(?errors, "application compilation failed");
-                        OperationError::ValidationFailed("compile application")
-                    }
-                })?;
+        let runtime = crate::application::DockerRuntime::new(
+            Arc::clone(&self.docker),
+            piqueld_core::InstanceId::parse(self.store.instance_id()).expect("valid identity"),
+            Arc::new(tokio::sync::Notify::new()),
+            self.prepare_timeout,
+        )
+        .with_progress(Arc::clone(&self.store), operation.id.clone());
+        let reusable = if operation.kind == OperationKind::Refresh {
+            piqueld_core::ResolutionSet::default()
+        } else {
+            application
+                .resolved
+                .as_ref()
+                .map_or_else(piqueld_core::ResolutionSet::default, |target| {
+                    target.reusable_resolutions(&application.application)
+                })
+        };
+        let prepared = runtime
+            .prepare(&application.application, &reusable)
+            .await
+            .map_err(|error| match error {
+                crate::application::BoundaryError::Store(error) => OperationError::from(error),
+                crate::application::BoundaryError::Runtime(error) => OperationError::from(error),
+                crate::application::BoundaryError::Compilation(errors) => {
+                    tracing::error!(?errors, "application compilation failed");
+                    OperationError::ValidationFailed("compile application")
+                }
+            })?;
         self.check_current(operation).await?;
         self.store
             .save_prepared(operation, &prepared)

@@ -537,6 +537,13 @@
         "additionalProperties": false,
         "description": "Desired application state to apply or preview.",
         "properties": {
+          "expected_application_id": {
+            "description": "Stable identity inspected by the caller, protecting name reuse.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "expected_generation": {
             "description": "Optional intent precondition; zero requires an absent application name.",
             "format": "int64",
@@ -1039,6 +1046,20 @@
                 "$ref": "#/components/schemas/OperationKind",
                 "description": "Requested change."
               },
+              "phase": {
+                "description": "Current execution phase, retained on failure.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resource": {
+                "description": "Logical or Docker resource currently being processed.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "started_at_ms": {
                 "description": "Start timestamp in Unix milliseconds.",
                 "format": "int64",
@@ -1191,6 +1212,13 @@
                       "format": "int64",
                       "type": "integer"
                     },
+                    "error_code": {
+                      "description": "Stable failure classification, when this event records failure.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "generation": {
                       "description": "Intent generation, when applicable.",
                       "format": "int64",
@@ -1218,6 +1246,20 @@
                     },
                     "operation_id": {
                       "description": "Related operation, retained even if that operation is pruned.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "phase": {
+                      "description": "Execution phase at the time of the event.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "resource": {
+                      "description": "Related logical or Docker resource.",
                       "type": [
                         "string",
                         "null"
@@ -1262,14 +1304,79 @@
                 "description": "Stable application identifier.",
                 "type": "string"
               },
+              "changes": {
+                "description": "Safe changes to accepted manifest fields, independent of Docker availability.",
+                "items": {
+                  "$ref": "#/components/schemas/ManifestChange"
+                },
+                "type": "array"
+              },
+              "generation": {
+                "description": "Current intent revision; zero means the name is absent.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "identical": {
+                "description": "Whether this manifest already matches accepted intent (excluding deletion).",
+                "type": "boolean"
+              },
+              "operation": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/Operation",
+                    "description": "Latest operation at the time of comparison."
+                  }
+                ]
+              },
               "plan": {
                 "$ref": "#/components/schemas/Plan",
-                "description": "Ordered runtime plan."
+                "description": "Ordered runtime plan; unresolved images are explicit actions."
               }
             },
             "required": [
               "application_id",
+              "generation",
+              "identical",
+              "changes",
               "plan"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_RenamedApplication": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Completed metadata-only rename.",
+            "properties": {
+              "application_id": {
+                "description": "Unchanged application identity.",
+                "type": "string"
+              },
+              "generation": {
+                "description": "Revision after renaming.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "description": "Current application name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "application_id",
+              "name",
+              "generation"
             ],
             "type": "object"
           }
@@ -1370,6 +1477,13 @@
             "format": "int64",
             "type": "integer"
           },
+          "error_code": {
+            "description": "Stable failure classification, when this event records failure.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "generation": {
             "description": "Intent generation, when applicable.",
             "format": "int64",
@@ -1397,6 +1511,20 @@
           },
           "operation_id": {
             "description": "Related operation, retained even if that operation is pruned.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phase": {
+            "description": "Execution phase at the time of the event.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource": {
+            "description": "Related logical or Docker resource.",
             "type": [
               "string",
               "null"
@@ -1487,6 +1615,33 @@
             "type": "object"
           }
         ]
+      },
+      "ManifestChange": {
+        "description": "A change to a manifest field. Environment and process values are redacted.",
+        "properties": {
+          "after": {
+            "description": "Safe proposed value; absent for removals.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "before": {
+            "description": "Safe previous value; absent for additions.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "description": "Logical manifest path.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "type": "object"
       },
       "Metadata": {
         "additionalProperties": false,
@@ -1702,6 +1857,20 @@
             "$ref": "#/components/schemas/OperationKind",
             "description": "Requested change."
           },
+          "phase": {
+            "description": "Current execution phase, retained on failure.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource": {
+            "description": "Logical or Docker resource currently being processed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "started_at_ms": {
             "description": "Start timestamp in Unix milliseconds.",
             "format": "int64",
@@ -1837,14 +2006,93 @@
             "description": "Stable application identifier.",
             "type": "string"
           },
+          "changes": {
+            "description": "Safe changes to accepted manifest fields, independent of Docker availability.",
+            "items": {
+              "$ref": "#/components/schemas/ManifestChange"
+            },
+            "type": "array"
+          },
+          "generation": {
+            "description": "Current intent revision; zero means the name is absent.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "identical": {
+            "description": "Whether this manifest already matches accepted intent (excluding deletion).",
+            "type": "boolean"
+          },
+          "operation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Operation",
+                "description": "Latest operation at the time of comparison."
+              }
+            ]
+          },
           "plan": {
             "$ref": "#/components/schemas/Plan",
-            "description": "Ordered runtime plan."
+            "description": "Ordered runtime plan; unresolved images are explicit actions."
           }
         },
         "required": [
           "application_id",
+          "generation",
+          "identical",
+          "changes",
           "plan"
+        ],
+        "type": "object"
+      },
+      "RenameApplicationRequest": {
+        "additionalProperties": false,
+        "description": "Metadata-only rename, conditioned on the inspected intent revision.",
+        "properties": {
+          "expected_generation": {
+            "description": "Optional current intent revision.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "New unique application name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "RenamedApplication": {
+        "description": "Completed metadata-only rename.",
+        "properties": {
+          "application_id": {
+            "description": "Unchanged application identity.",
+            "type": "string"
+          },
+          "generation": {
+            "description": "Revision after renaming.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Current application name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "application_id",
+          "name",
+          "generation"
         ],
         "type": "object"
       },
@@ -2148,6 +2396,28 @@
                 "null"
               ]
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Application-Id",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "requestBody": {
@@ -2278,6 +2548,17 @@
               "minimum": 0,
               "type": [
                 "integer",
+                "null"
+              ]
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Application-Id",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
                 "null"
               ]
             }
@@ -2421,6 +2702,17 @@
               "format": "int64",
               "minimum": 0,
               "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -2659,6 +2951,17 @@
               "minimum": 0,
               "type": "integer"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2747,6 +3050,17 @@
               "minimum": 0,
               "type": "integer"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2759,6 +3073,104 @@
               }
             },
             "description": "Image refresh accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/rename": {
+      "post": {
+        "operationId": "renameApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameApplicationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_RenamedApplication"
+                }
+              }
+            },
+            "description": "Application renamed without redeployment"
           },
           "400": {
             "content": {

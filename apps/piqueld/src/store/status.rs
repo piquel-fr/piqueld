@@ -54,7 +54,7 @@ impl SqliteStore {
     ) -> Result<bool, StoreError> {
         let now = now_ms();
         let state = state.as_str();
-        let mut tx = self.begin_immediate().await?;
+        let (_writer, mut tx) = self.begin_immediate().await?;
         let changed = sqlx::query!("UPDATE application_status SET state=?1,message=?2,updated_at_ms=?3 WHERE (state!=?1 OR message IS NOT ?2) AND application_id=(SELECT application_id FROM operations WHERE id=?4) AND ?4=(SELECT latest.id FROM operations latest WHERE latest.application_id=application_status.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",state,message,now,operation_id)
             .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if changed == 1 {
@@ -99,7 +99,7 @@ impl SqliteStore {
         } else {
             "degraded"
         };
-        let mut tx = self.begin_immediate().await?;
+        let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
         let changed=sqlx::query!("UPDATE application_status SET runtime_health=?1 WHERE runtime_health IS NOT ?1 AND application_id=(SELECT application_id FROM operations WHERE id=?2) AND ?2=(SELECT latest.id FROM operations latest WHERE latest.application_id=application_status.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",health,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if changed == 1 {

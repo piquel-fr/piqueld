@@ -113,6 +113,12 @@ pub struct Operation {
     pub consecutive_failures: u64,
     /// Current lifecycle state.
     pub state: OperationState,
+    /// Current execution phase, retained on failure.
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// Logical or Docker resource currently being processed.
+    #[serde(default)]
+    pub resource: Option<String>,
     /// Stable failure code, when present.
     pub error_code: Option<String>,
     /// Safe failure message, when present.

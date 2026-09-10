@@ -131,6 +131,22 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
+    /// Resource named by this action, without configuration or secret values.
+    #[must_use]
+    pub fn resource_name(&self) -> &str {
+        match self {
+            Self::EnsureNetwork { network } => &network.name,
+            Self::EnsureVolume { volume } => &volume.name,
+            Self::EnsureService { service } => &service.name,
+            Self::RemoveService { name }
+            | Self::RemoveNetwork { name }
+            | Self::RetainVolume { name } => name,
+            Self::WaitForService { service }
+            | Self::WaitForServiceRemoval { service }
+            | Self::ResolveImage { service, .. } => service,
+        }
+    }
+
     /// Classifies the effect of executing this action.
     #[must_use]
     pub const fn risk(&self) -> ActionRisk {

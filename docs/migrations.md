@@ -6,11 +6,16 @@ application status, operation history, and the control-plane instance identity.
 The store reads and writes these records; it does not resolve images or plan
 runtime changes.
 
-`0001_control_plane.sql` creates the current prototype schema directly. It
-contains five tables: instance metadata, applications, application status,
-operations, and informational events. Accepted manifests may have no resolved
-target yet; operation preparation publishes the target after planning checks. There is no upgrade path from the earlier prototype schemas; use a
-fresh database with this version.
+`0001_control_plane.sql` creates the consolidated prototype schema with six
+tables: instance metadata, applications, application status, operations,
+informational events, and request receipts. Accepted manifests may have no resolved
+target yet; operation preparation publishes the target after planning checks.
+Operation promotion is durable, so restart recovery knows whether to maintain the
+old target during preparation or continue the new rollout. SQLite writers queue
+asynchronously to avoid contention between concurrent application futures.
+Request receipts are committed with acceptance and expire after 24 hours,
+independently of operation and event retention. Earlier prototype schemas require
+a fresh database.
 
 Startup reads `PRAGMA user_version`, rejects an unsupported newer schema, and
 applies missing embedded migrations transactionally.

@@ -70,11 +70,13 @@ volumes, and environment maps are
 canonicalized before hashing. The specification hash is SHA-256 over a versioned
 canonical JSON envelope (`piqueld-spec-hash/v2`) covering only the canonical
 spec. The application name selects which application an apply targets; changing
-it targets a different application.
+it targets a different application. Use the explicit rename action to retain
+identity and resources, then update the manifest name.
 
 The parser is pure. Apply compares complete normalized manifests. Identical intent
-causes no image resolution or deployment, unless its operation failed and needs
-another attempt. Changed intent is persisted before operation execution resolves
-images. Explicit refresh resolves unchanged image references again; reconciliation
+causes no image resolution or deployment, including after failure; use reconcile
+to explicitly request another attempt. Changed intent is persisted before operation execution resolves
+new/changed image references. Unchanged service image references reuse active
+digests. Explicit refresh resolves unchanged image references again; reconciliation
 reuses the prepared target. Resolved runtime state remains separate from portable
 manifest DTOs. Generations advance only for changed manifests or deletion intent.

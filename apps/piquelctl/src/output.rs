@@ -8,19 +8,26 @@ use serde_json::json;
 use std::io::{self, Write};
 
 pub(crate) fn report_operation(operation: &Operation) {
-    eprintln!("operation {}: {}", operation.id, operation.state);
+    eprintln!(
+        "operation {}: {}{}{}",
+        operation.id,
+        operation.state,
+        operation
+            .phase
+            .as_ref()
+            .map_or_else(String::new, |phase| format!("; {phase}")),
+        operation
+            .resource
+            .as_ref()
+            .map_or_else(String::new, |resource| format!("; {resource}"))
+    );
 }
 
 pub(crate) fn render_operation(cli: &Cli, operation: &Operation) -> Result<()> {
     if cli.json {
         return emit_json(operation);
     }
-    writeln!(
-        io::stdout().lock(),
-        "operation {}: {}",
-        operation.id,
-        operation.state
-    )?;
+    report_operation(operation);
     writeln!(
         io::stdout().lock(),
         "application {}",
@@ -34,6 +41,18 @@ pub(crate) fn render_operation(cli: &Cli, operation: &Operation) -> Result<()> {
 
 pub(crate) fn render_plan(plan: &PlanView, output: &mut impl Write) -> io::Result<()> {
     writeln!(output, "application {}", plan.application_id)?;
+    if plan.identical {
+        return writeln!(output, "This is identical to the existing manifest.");
+    }
+    for change in &plan.changes {
+        writeln!(
+            output,
+            "  {}: {} -> {}",
+            change.field,
+            change.before.as_deref().unwrap_or("absent"),
+            change.after.as_deref().unwrap_or("absent")
+        )?;
+    }
     let summary = plan.plan.summary();
     writeln!(
         output,

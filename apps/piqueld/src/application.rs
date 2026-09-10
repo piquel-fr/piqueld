@@ -10,10 +10,9 @@ use crate::{
 use async_trait::async_trait;
 use piqueld_core::{
     ApplicationId, CompileError, NormalizedApplication, ObservedApplication, Operation,
-    OperationState, ValidatedApplication, resource::ResolvedApplication,
+    ValidatedApplication, resource::ResolvedApplication,
 };
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[derive(Debug, thiserror::Error)]
 /// Errors crossing the runtime boundary.
@@ -21,6 +20,9 @@ pub enum BoundaryError {
     /// A Docker runtime request failed.
     #[error("runtime request failed")]
     Runtime(#[from] DockerError),
+    /// Progress persistence failed.
+    #[error(transparent)]
+    Store(#[from] StoreError),
     /// Resolved inputs could not be compiled into desired runtime resources.
     #[error("application compilation failed")]
     Compilation(Vec<CompileError>),
@@ -35,6 +37,7 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     async fn prepare(
         &self,
         application: &NormalizedApplication,
+        resolutions: &piqueld_core::ResolutionSet,
     ) -> Result<ResolvedApplication, BoundaryError>;
     /// Captures current runtime state for a stored application.
     async fn observe(
@@ -57,26 +60,110 @@ pub enum ApplicationError {
     Runtime(#[from] BoundaryError),
 }
 
-/// Application use cases. HTTP only decodes requests; the store only persists decisions.
+/// Validated application mutation. Its serialization defines request replay identity.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Mutation {
+    /// Replace intent by name, optionally requiring the previously inspected identity.
+    Apply {
+        /// Normalized manifest; acceptance assigns its stable ID.
+        application: NormalizedApplication,
+        /// Previously inspected stable ID.
+        expected_application_id: Option<String>,
+    },
+    /// Request resource deletion.
+    Delete {
+        /// Stable application ID.
+        id: ApplicationId,
+    },
+    /// Repair accepted intent.
+    Reconcile {
+        /// Stable application ID.
+        id: ApplicationId,
+    },
+    /// Explicitly resolve images again.
+    Refresh {
+        /// Stable application ID.
+        id: ApplicationId,
+    },
+    /// Change only the user-facing name.
+    Rename {
+        /// Stable application ID.
+        id: ApplicationId,
+        /// Validated new name.
+        name: String,
+    },
+}
+
+/// Small acceptance response stored for request replay, without manifest contents.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum MutationResponse {
+    /// Accepted runtime operation.
+    Operation(piqueld_core::api::AcceptedOperation),
+    /// Completed metadata mutation.
+    Rename(piqueld_core::api::RenamedApplication),
+}
+
+impl Mutation {
+    /// Creates normalized apply intent before the store assigns application identity.
+    /// # Panics
+    /// Panics if the built-in placeholder ID is invalid.
+    #[must_use]
+    pub fn apply(manifest: ValidatedApplication, expected_application_id: Option<String>) -> Self {
+        Self::Apply {
+            application: manifest.normalize(
+                ApplicationId::parse("pending-application").expect("valid placeholder ID"),
+            ),
+            expected_application_id,
+        }
+    }
+}
+
+/// Validates application commands and delegates atomic acceptance to SQLite.
 #[derive(Clone)]
 pub struct Applications {
     pub(crate) store: Arc<SqliteStore>,
     pub(crate) runtime: Arc<dyn RuntimeBoundary>,
-    mutations: Arc<Mutex<()>>,
 }
 
 impl Applications {
-    /// Creates the application service. Clones share mutation serialization.
+    /// Creates the application service.
     #[must_use]
     pub fn new(store: Arc<SqliteStore>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
-        Self {
-            store,
-            runtime,
-            mutations: Arc::new(Mutex::new(())),
-        }
+        Self { store, runtime }
     }
 
-    /// Accepts normalized intent without waiting for Docker or image resolution.
+    /// Accepts a mutation and records its receipt in the same transaction.
+    /// # Errors
+    /// Returns validation, conflict, or persistence errors.
+    pub async fn accept(
+        &self,
+        mutation: Mutation,
+        expected: Option<u64>,
+        request_id: Option<&str>,
+    ) -> Result<MutationResponse, ApplicationError> {
+        if request_id.is_some_and(|id| {
+            id.is_empty()
+                || id.len() > 128
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+        }) {
+            return Err(StoreError::InvalidInput.into());
+        }
+        if let Mutation::Rename { name, .. } = &mutation
+            && !piqueld_core::valid_logical_name(name)
+        {
+            return Err(StoreError::InvalidInput.into());
+        }
+        let (response, wake) = self.store.accept(mutation, expected, request_id).await?;
+        if wake {
+            self.runtime.trigger_reconciliation();
+        }
+        Ok(response)
+    }
+
+    /// Accepts normalized intent without waiting for Docker.
     /// # Errors
     /// Returns storage or generation errors.
     pub async fn apply(
@@ -84,32 +171,11 @@ impl Applications {
         manifest: ValidatedApplication,
         expected: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        let _guard = self.mutations.lock().await;
-        let current = self.store.find_by_name(manifest.name()).await?;
-        SqliteStore::check_generation(expected, current.as_ref().map_or(0, |app| app.generation))?;
-        let id = current
-            .as_ref()
-            .map_or_else(Self::new_id, |app| app.application.id.clone());
-        let application = manifest.normalize(id);
-        if let Some(current) = current
-            && !current.delete_intent
-            && current.application == application
-            && let Some(operation) = self
-                .store
-                .latest_operation_for_application(&application.id)
-                .await?
-        {
-            return self.reuse(operation).await;
-        }
-        let operation = self
-            .store
-            .save_application(&application, None, expected)
-            .await?;
-        self.runtime.trigger_reconciliation();
-        Ok(operation)
+        self.operation(Mutation::apply(manifest, None), expected)
+            .await
     }
 
-    /// Requests deletion, optionally conditioned on an intent revision.
+    /// Requests deletion of the application's services and networks.
     /// # Errors
     /// Returns storage, absence, or generation errors.
     pub async fn delete(
@@ -117,20 +183,11 @@ impl Applications {
         id: &ApplicationId,
         expected: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        let _guard = self.mutations.lock().await;
-        // Repeated deletion remains inspectable after the application disappears.
-        if let Some(operation) = self.store.latest_operation_for_application(id).await?
-            && operation.kind == piqueld_core::OperationKind::Delete
-        {
-            SqliteStore::check_generation(expected, operation.generation)?;
-            return self.reuse(operation).await;
-        }
-        let operation = self.store.request_delete(id, expected).await?;
-        self.runtime.trigger_reconciliation();
-        Ok(operation)
+        self.operation(Mutation::Delete { id: id.clone() }, expected)
+            .await
     }
 
-    /// Repairs latest intent, retrying preparation only if it never completed.
+    /// Repairs latest intent using already prepared digests when available.
     /// # Errors
     /// Returns storage, absence, or generation errors.
     pub async fn reconcile(
@@ -138,24 +195,11 @@ impl Applications {
         id: &ApplicationId,
         expected: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        let _guard = self.mutations.lock().await;
-        let app = self.store.get(id).await?;
-        SqliteStore::check_generation(expected, app.generation)?;
-        let operation = self
-            .store
-            .latest_operation_for_application(id)
-            .await?
-            .ok_or(StoreError::NotFound)?;
-        let operation = if operation.state.terminal() || operation.error_code.is_some() {
-            self.store.retry_operation(&operation).await?
-        } else {
-            operation
-        };
-        self.runtime.trigger_reconciliation();
-        Ok(operation)
+        self.operation(Mutation::Reconcile { id: id.clone() }, expected)
+            .await
     }
 
-    /// Explicitly refreshes images without changing manifest generation.
+    /// Explicitly resolves current image references again.
     /// # Errors
     /// Returns storage, deletion-intent, or generation errors.
     pub async fn refresh(
@@ -163,35 +207,19 @@ impl Applications {
         id: &ApplicationId,
         expected: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        let _guard = self.mutations.lock().await;
-        let app = self.store.get(id).await?;
-        SqliteStore::check_generation(expected, app.generation)?;
-        if app.delete_intent {
-            return Err(StoreError::IllegalTransition.into());
-        }
-        if let Some(operation) = self.store.latest_operation_for_application(id).await?
-            && operation.kind == piqueld_core::OperationKind::Refresh
-            && operation.state != OperationState::Succeeded
-        {
-            return self.reuse(operation).await;
-        }
-        let operation = self.store.request_refresh(id, expected).await?;
-        self.runtime.trigger_reconciliation();
-        Ok(operation)
+        self.operation(Mutation::Refresh { id: id.clone() }, expected)
+            .await
     }
 
-    fn new_id() -> ApplicationId {
-        ApplicationId::parse(format!("app-{}", uuid::Uuid::now_v7().simple()))
-            .expect("UUID application ID is valid")
-    }
-
-    async fn reuse(&self, operation: Operation) -> Result<Operation, ApplicationError> {
-        if operation.state == OperationState::Failed {
-            let operation = self.store.retry_operation(&operation).await?;
-            self.runtime.trigger_reconciliation();
-            Ok(operation)
-        } else {
-            Ok(operation)
-        }
+    async fn operation(
+        &self,
+        mutation: Mutation,
+        expected: Option<u64>,
+    ) -> Result<Operation, ApplicationError> {
+        let MutationResponse::Operation(accepted) = self.accept(mutation, expected, None).await?
+        else {
+            return Err(StoreError::Corrupt.into());
+        };
+        Ok(self.store.operation(&accepted.operation_id).await?)
     }
 }

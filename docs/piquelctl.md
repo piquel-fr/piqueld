@@ -16,6 +16,7 @@ piquelctl delete <name-or-id>
 piquelctl operation <operation-id>
 piquelctl reconcile <name-or-id>
 piquelctl refresh <name-or-id>
+piquelctl rename <name-or-id> <new-name>
 piquelctl events --application <application-id> --limit 50
 ```
 
@@ -43,6 +44,8 @@ written to stderr, so stdout remains valid JSON.
 | `list` | `{ "items": [{ "application": ApplicationView, "status": ApplicationStatusView }], "next_cursor": null }` |
 | `show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
 | `plan` | `PlanView` |
+| identical `apply` | `{ "identical": true, "application_id": string, "operation": Operation or null }` |
+| `rename` | `RenamedApplication` |
 | `apply --no-wait` | `AcceptedOperation` |
 | `apply` | `{ "accepted": AcceptedOperation, "operation": Operation }` |
 | `delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
@@ -65,27 +68,41 @@ always previews first and stops when the plan is blocked or confirmation is
 declined. `show` and `delete` accept a name or ID; name lookup follows the
 paginated application list.
 
-Interactive `apply` and `delete` require a TTY confirmation unless `--yes` is
-provided. `--yes` is the explicit noninteractive confirmation for scripts.
+Interactive `apply` and `delete` require a TTY confirmation unless `--force` is
+provided. `--force` is the explicit noninteractive confirmation for scripts.
 Deleting an application retains its named volumes; the CLI prints that notice
 and includes `volumes_retained: true` in JSON output.
 
-Apply durably accepts intent before image preparation. Identical manifests do
-nothing unless the operation failed; failed operations retry under the same ID.
-`reconcile` repairs the latest intent using stored digests. `refresh` explicitly
-resolves image references again and is rejected during deletion. Both accept
-`--yes` and `--no-wait` like apply/delete.
+Apply durably accepts intent before image preparation. Identical manifests print
+“This is identical to the existing manifest” and current operation status, then
+exit without confirmation, mutation, or waiting. Failed/cancelled operations exit
+with code 5 and guidance to use `reconcile`; pending operations report their ID and
+exit successfully. `reconcile` repairs or retries latest intent using stored
+digests. Apply reuses active digests for unchanged service image references;
+`refresh` explicitly resolves them again and is rejected during deletion. Both
+reconcile and refresh accept `--force` and `--no-wait` like apply/delete.
 
-`plan`, `apply`, `delete`, `reconcile`, and `refresh` accept an optional
-`--expected-generation N`. Checks are opt-in; zero on apply means create-only.
-A changed manifest or deletion intent advances generation. Image refresh does
-not. `show` reports intent and resolved target generations and separate observed
-runtime health; a resolved target does not imply container convergence.
+Previews are computed by the daemon. They describe manifest changes even when
+Docker observation is unavailable, redact sensitive configuration values, and
+identify unresolved images separately from known runtime actions.
 
-The CLI retains one automatic transport retry and sends no idempotency keys.
-A retry after a lost success response can encounter a generation conflict if a
-precondition was supplied. A refresh retry after completion can start a new
-refresh. There is no exact request replay guarantee.
+The CLI automatically sends the revision it inspected before confirmation. Apply
+also sends the inspected application ID, or generation zero for create-only.
+`--expected-generation N` supplies an explicit revision for scripts. Conflicts
+stop the command rather than adopting the newer revision. `--force` only skips
+confirmation; it never bypasses generation checks. `show` reports intent and
+active target generations and separate runtime health.
+
+The CLI retains one automatic transport retry, using the same command UUID in
+`Idempotency-Key`. SQLite receipts replay the original acceptance response for
+24 hours across daemon restarts. Replays do not restart failed or superseded work;
+a separately invoked command gets a new UUID.
+
+Rename checks the inspected generation and name availability. It rejects pending
+or running operations and deletion intent. It preserves identity, services,
+networks, and volumes without image resolution or redeployment. A changed name
+advances generation and records an event. Update `metadata.name` in your manifest
+file afterward; the CLI does not edit files automatically.
 
 `events` reads one page, oldest first. `--application ID` optionally filters by
 stable ID, including deleted applications. Use `--cursor CURSOR` for subsequent

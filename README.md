@@ -7,12 +7,16 @@ and reconciles a private network, named volumes, and replicated services.
 
 Applications are identified by name. Apply durably accepts the full normalized
 manifest and returns an operation ID before resolving images. Identical applies
-are no-ops unless the operation failed. Explicit reconcile repairs stored targets;
-refresh explicitly resolves images again. Optional generation checks protect
-manifest and deletion-intent changes without request replay keys.
+are no-ops, including after failure. Explicit reconcile repairs or retries stored targets;
+refresh explicitly resolves images again. The CLI automatically protects mutations
+with the inspected identity and generation, and reuses a request ID across transport
+retries. SQLite retains acceptance receipts for 24 hours.
 
 One async controller overlaps image pulls, observations, and timers while allowing
-one resource mutation request at a time. New intent supersedes old work. Durable
+one resource mutation request at a time. The active deployment remains maintained
+while a candidate prepares; promotion starts rollout without automatic rollback.
+Unchanged image references reuse active digests. Rename changes metadata without
+redeployment. Durable
 operations, attempt outcomes, and informational events remain in SQLite. Deletion
 completes only after services and networks are verified absent; volumes remain.
 

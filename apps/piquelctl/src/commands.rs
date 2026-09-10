@@ -1,5 +1,5 @@
 use crate::{
-    cli::{ApplyArgs, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs},
+    cli::{ApplyArgs, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs, RenameArgs},
     error::{CliError, ErrorKind, Result},
     output::{
         blocked_plan_error, emit_json, render_operation, render_plan, render_plan_stderr,
@@ -37,6 +37,7 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
         Command::Delete(args) => delete(cli, &client, args).await,
         Command::Operation(args) => operation(cli, &client, args).await,
         Command::Reconcile(args) => reconcile_or_refresh(cli, &client, args, false).await,
+        Command::Rename(args) => rename(cli, &client, args).await,
         Command::Refresh(args) => reconcile_or_refresh(cli, &client, args, true).await,
         Command::Events {
             application,
@@ -58,7 +59,13 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
                     event.kind,
                     event.operation_id.as_deref().unwrap_or("-"),
                     event.attempt.unwrap_or(0),
-                    event.message.as_deref().unwrap_or("")
+                    format_args!(
+                        "{} {} {} {}",
+                        event.phase.as_deref().unwrap_or(""),
+                        event.resource.as_deref().unwrap_or(""),
+                        event.error_code.as_deref().unwrap_or(""),
+                        event.message.as_deref().unwrap_or("")
+                    )
                 )?;
             }
             if let Some(cursor) = page.next_cursor {
@@ -79,7 +86,9 @@ fn build_client(cli: &Cli) -> Result<Client> {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET)),
         )
     };
-    Ok(client.with_timeout(cli.timeout))
+    Ok(client
+        .with_timeout(cli.timeout)
+        .with_request_id(uuid::Uuid::now_v7().to_string()))
 }
 
 async fn status(cli: &Cli, client: &Client) -> Result<()> {
@@ -257,16 +266,44 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     let plan = client
         .plan_application_toml_with_generation(&manifest, args.expected_generation)
         .await?;
+    if plan.identical {
+        if cli.json {
+            emit_json(
+                &json!({"identical":true,"application_id":plan.application_id,"operation":plan.operation}),
+            )?;
+        } else {
+            writeln!(
+                io::stdout().lock(),
+                "This is identical to the existing manifest."
+            )?;
+            if let Some(operation) = &plan.operation {
+                report_operation(operation);
+            }
+        }
+        if plan.operation.as_ref().is_some_and(|op| {
+            matches!(op.state, OperationState::Failed | OperationState::Cancelled)
+        }) {
+            return Err(CliError::new(
+                ErrorKind::Operation,
+                "Existing operation did not succeed; use piquelctl reconcile to retry",
+            ));
+        }
+        return Ok(());
+    }
     render_plan_stderr(&plan).map_err(|error| {
         CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
     })?;
     if plan.plan.is_blocked() {
         return Err(blocked_plan_error(&plan, true));
     }
-    confirm(args.yes, &format!("Apply application {name:?}? [y/N] ")).await?;
+    confirm(args.force, &format!("Apply application {name:?}? [y/N] ")).await?;
 
     let accepted = retry_transport(|| {
-        client.apply_application_toml_with_generation(&manifest, args.expected_generation)
+        client.apply_application_toml_with_preconditions(
+            &manifest,
+            Some(args.expected_generation.unwrap_or(plan.generation)),
+            (plan.generation > 0).then_some(plan.application_id.as_str()),
+        )
     })
     .await?;
     if args.no_wait {
@@ -301,7 +338,7 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
         application.application.metadata.name, application.application.id
     );
     confirm(
-        args.yes,
+        args.force,
         &format!(
             "Delete application {:?}? Named volumes will be retained. [y/N] ",
             application.application.metadata.name
@@ -312,7 +349,7 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     let accepted = retry_transport(|| {
         client.delete_application_with_generation(
             application.application.id.as_str(),
-            args.expected_generation,
+            Some(args.expected_generation.unwrap_or(application.generation)),
         )
     })
     .await
@@ -494,7 +531,7 @@ async fn reconcile_or_refresh(
         "Reconcile"
     };
     confirm(
-        args.yes,
+        args.force,
         &format!(
             "{action} application {:?}? [y/N] ",
             application.application.metadata.name
@@ -505,11 +542,17 @@ async fn reconcile_or_refresh(
     let accepted = retry_transport(|| async {
         if refresh {
             client
-                .refresh_application(id, args.expected_generation)
+                .refresh_application(
+                    id,
+                    Some(args.expected_generation.unwrap_or(application.generation)),
+                )
                 .await
         } else {
             client
-                .reconcile_application(id, args.expected_generation)
+                .reconcile_application(
+                    id,
+                    Some(args.expected_generation.unwrap_or(application.generation)),
+                )
                 .await
         }
     })
@@ -532,4 +575,40 @@ async fn reconcile_or_refresh(
     } else {
         render_operation(cli, &operation)
     }
+}
+
+async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
+    let application = resolve_application(client, &args.name_or_id).await?;
+    confirm(
+        args.force,
+        &format!(
+            "Rename application {:?} to {:?}? [y/N] ",
+            application.application.metadata.name, args.new_name
+        ),
+    )
+    .await?;
+    let request = piqueld_client::RenameApplicationRequest {
+        name: args.new_name.clone(),
+        expected_generation: Some(args.expected_generation.unwrap_or(application.generation)),
+    };
+    let renamed = retry_transport(|| {
+        client.rename_application(application.application.id.as_str(), &request)
+    })
+    .await?;
+    if cli.json {
+        emit_json(&renamed)?;
+    } else {
+        writeln!(
+            io::stdout().lock(),
+            "Renamed {} to {} (generation {}).",
+            application.application.metadata.name,
+            renamed.name,
+            renamed.generation
+        )?;
+    }
+    eprintln!(
+        "Update metadata.name to {:?} in your manifest file before applying it again.",
+        renamed.name
+    );
+    Ok(())
 }

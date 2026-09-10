@@ -11,34 +11,18 @@ impl<D: DockerApi> Controller<D> {
         ownership: &std::collections::BTreeMap<String, String>,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
-        match &action.kind {
-            ActionKind::EnsureNetwork { network } => {
+        self.store
+            .progress(
+                &operation.id,
+                action.kind.name(),
+                Some(action.kind.resource_name()),
+            )
+            .await
+            .map_err(OperationError::from)?;
+        let result = match &action.kind {
+            kind if kind.mutates_runtime() => {
                 self.retry(operation, cancellation, || {
-                    self.docker.ensure_network(network)
-                })
-                .await
-            }
-            ActionKind::EnsureVolume { volume } => {
-                self.retry(operation, cancellation, || {
-                    self.docker.ensure_volume(volume)
-                })
-                .await
-            }
-            ActionKind::EnsureService { service } => {
-                self.retry(operation, cancellation, || {
-                    self.docker.ensure_service(service)
-                })
-                .await
-            }
-            ActionKind::RemoveService { name } => {
-                self.retry(operation, cancellation, || {
-                    self.docker.remove_service(name, ownership)
-                })
-                .await
-            }
-            ActionKind::RemoveNetwork { name } => {
-                self.retry(operation, cancellation, || {
-                    self.docker.remove_network(name, ownership)
+                    self.mutate_action(kind, ownership)
                 })
                 .await
             }
@@ -50,24 +34,42 @@ impl<D: DockerApi> Controller<D> {
                 self.wait_service(operation, service, true, cancellation)
                     .await
             }
-            ActionKind::RetainVolume { .. } | ActionKind::ResolveImage { .. } => Ok(()),
+            _ => Ok(()),
+        };
+        if result.is_ok() && action.kind.mutates_runtime() {
+            self.store
+                .mutation_event(&operation.id)
+                .await
+                .map_err(OperationError::from)?;
+        }
+        result
+    }
+    pub(super) async fn mutate_action(
+        &self,
+        kind: &ActionKind,
+        ownership: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        match kind {
+            ActionKind::EnsureNetwork { network } => self.docker.ensure_network(network).await,
+            ActionKind::EnsureVolume { volume } => self.docker.ensure_volume(volume).await,
+            ActionKind::EnsureService { service } => self.docker.ensure_service(service).await,
+            ActionKind::RemoveService { name } => self.docker.remove_service(name, ownership).await,
+            ActionKind::RemoveNetwork { name } => self.docker.remove_network(name, ownership).await,
+            _ => Err(DockerError::Validation("execute a non-mutating action")),
         }
     }
+
     pub(super) fn ownership_labels(
         &self,
-        application: &crate::store::StoredApplication,
+        id: &piqueld_core::ApplicationId,
     ) -> std::collections::BTreeMap<String, String> {
-        let _ = application;
         std::collections::BTreeMap::from([
             (super::MANAGED_LABEL.into(), "true".into()),
             (
                 super::INSTANCE_LABEL.into(),
                 self.store.instance_id().to_owned(),
             ),
-            (
-                super::APPLICATION_LABEL.into(),
-                application.application.id.to_string(),
-            ),
+            (super::APPLICATION_LABEL.into(), id.to_string()),
         ])
     }
     pub(super) async fn retry<F, Fut>(
