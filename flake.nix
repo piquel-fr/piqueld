@@ -153,7 +153,7 @@
             cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
               name = "piqueld-dependency-boundary-deps";
               src = pkgs.lib.cleanSource self;
-              hash = "sha256-xfYZnFA/cUlyVgyZCSI31UTycmcRN0fxDfQVJ//rqAs=";
+              hash = "sha256-P/bwWIZ/M+G4pSLg1u59KD3LCKkkKvlqK8olNisz85o=";
             };
             dontConfigure = true;
             buildPhase = ''
