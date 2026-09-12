@@ -12,7 +12,6 @@ use std::{
     time::Duration,
 };
 use tokio::{sync::Notify, time};
-use uuid::Uuid;
 
 pub(crate) const DEFAULT_SOCKET: &str = "/var/lib/piqueld/piqueld.sock";
 /// Must not exceed the daemon's `REQUEST_BODY_LIMIT_BYTES`, or a locally
@@ -202,10 +201,6 @@ where
     }
 }
 
-pub(crate) fn idempotency_key() -> String {
-    format!("piquelctl-{}", Uuid::now_v7().simple())
-}
-
 pub(crate) fn transport_description(cli: &Cli) -> String {
     if let Some(url) = &cli.url {
         format!("loopback TCP {url}")
@@ -238,11 +233,4 @@ pub(crate) fn format_duration(duration: Duration) -> String {
     } else {
         format!("{}ms", duration.as_millis())
     }
-}
-
-pub(crate) fn terminal_operation(state: &str) -> bool {
-    matches!(
-        state.to_ascii_lowercase().as_str(),
-        "succeeded" | "completed" | "failed" | "cancelled" | "canceled"
-    )
 }

@@ -1,181 +1,15 @@
 use http::Method;
-use piqueld_core::manifest::ApplicationManifest;
-use piqueld_core::{NormalizedApplication, Plan};
-use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
-use crate::{
-    Client, ClientError, OperationView, Page,
-    client::{invalid_request, path_segment},
+pub use piqueld_core::api::{
+    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
+    ApplyApplicationRequest, DiagnosticView, ObservedApplicationView, ObservedServiceView,
+    PlanView, RenameApplicationRequest, RenamedApplication,
 };
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Public application state returned by the API.
-pub struct ApplicationView {
-    /// Normalized application manifest.
-    pub application: NormalizedApplication,
-    /// Monotonic application generation.
-    #[schema(minimum = 1)]
-    pub generation: u64,
-    /// Hash of the normalized desired specification.
-    pub spec_hash: String,
-    /// Whether deletion has been requested.
-    pub delete_intent: bool,
-    /// Creation timestamp in Unix milliseconds.
-    pub created_at_ms: i64,
-    /// Last update timestamp in Unix milliseconds.
-    pub updated_at_ms: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-/// Request to create an application.
-pub struct CreateApplicationRequest {
-    /// Application manifest to store and reconcile.
-    pub manifest: ApplicationManifest,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-/// Request to replace an application at an expected generation.
-pub struct ReplaceApplicationRequest {
-    /// Generation that must still be current.
-    #[schema(minimum = 1)]
-    pub expected_generation: u64,
-    /// Replacement application manifest.
-    pub manifest: ApplicationManifest,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-/// Request to preview creation of an application.
-pub struct PlanApplicationRequest {
-    /// Application manifest to plan.
-    pub manifest: ApplicationManifest,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-/// Request to preview replacing an application.
-pub struct ReplacePlanRequest {
-    /// Generation that the plan is based on.
-    #[schema(minimum = 1)]
-    pub expected_generation: u64,
-    /// Replacement application manifest.
-    pub manifest: ApplicationManifest,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-/// Request carrying an optimistic-concurrency generation.
-pub struct ExpectedGeneration {
-    /// Generation that must still be current.
-    #[schema(minimum = 1)]
-    pub expected_generation: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-/// Request to mark an application for deletion.
-pub struct DeleteApplicationRequest {
-    /// Generation that must still be current.
-    #[schema(minimum = 1)]
-    pub expected_generation: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Operation accepted by an application mutation endpoint.
-pub struct AcceptedOperation {
-    /// Asynchronous operation identifier.
-    pub operation_id: String,
-    /// Stable application identifier.
-    pub application_id: String,
-    /// Generation created by the mutation.
-    #[schema(minimum = 1)]
-    pub generation: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Dry-run plan returned by the API.
-pub struct PlanView {
-    /// Stable application identifier.
-    pub application_id: String,
-    /// Generation that would be created.
-    #[schema(minimum = 1)]
-    pub proposed_generation: u64,
-    /// Ordered runtime plan.
-    pub plan: Plan,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Current application reconciliation status.
-pub struct ApplicationStatusView {
-    /// Stable application identifier.
-    pub application_id: String,
-    /// Machine-readable lifecycle state.
-    pub state: String,
-    /// Last observed application generation.
-    #[schema(minimum = 1)]
-    pub observed_generation: Option<u64>,
-    /// Optional safe status message.
-    pub message: Option<String>,
-    /// Last update timestamp in Unix milliseconds.
-    pub updated_at_ms: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Sanitized runtime diagnostic shown by the read-only dashboard.
-pub struct DiagnosticView {
-    /// Stable diagnostic category.
-    pub code: String,
-    /// Bounded, actionable message safe for a browser.
-    pub message: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Observed service state summarized for browser and operator clients.
-pub struct ObservedServiceView {
-    /// Logical service name from the desired application.
-    pub name: String,
-    /// Observed immutable image reference, when the service exists.
-    pub image: Option<String>,
-    /// Desired replica count from the application manifest.
-    pub desired_replicas: u16,
-    /// Replicas currently reported by the runtime.
-    pub observed_replicas: u16,
-    /// Replicas that are running and healthy enough to serve traffic.
-    pub healthy_replicas: u16,
-    /// Runtime convergence category.
-    pub convergence: String,
-    /// Sanitized task and service diagnostics.
-    pub diagnostics: Vec<DiagnosticView>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
-/// Bounded observed runtime state for one application.
-pub struct ObservedApplicationView {
-    /// Observed services in desired service order.
-    pub services: Vec<ObservedServiceView>,
-    /// Number of owned networks observed.
-    pub network_count: u32,
-    /// Number of owned volumes observed.
-    pub volume_count: u32,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Read-only application detail composed at the API boundary.
-pub struct ApplicationDetailView {
-    /// Desired application and generation.
-    pub application: ApplicationView,
-    /// Durable application lifecycle status.
-    pub status: ApplicationStatusView,
-    /// Sanitized runtime observation.
-    pub observed: ObservedApplicationView,
-    /// Most recent durable operation, when one exists.
-    pub latest_operation: Option<OperationView>,
-    /// Bounded diagnostics from status, runtime, and the latest operation.
-    pub diagnostics: Vec<DiagnosticView>,
-}
+use crate::{
+    Client, ClientError, Page,
+    client::{invalid_request, path_segment},
+};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// Cursor and page-size options for listing applications.
@@ -262,152 +96,76 @@ impl Client {
         .await
     }
 
-    /// Creates an application and starts its asynchronous reconciliation.
+    /// Applies desired application state and starts asynchronous reconciliation.
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn create_application(
+    pub async fn apply_application(
         &self,
-        request: &CreateApplicationRequest,
-        idempotency_key: &str,
+        request: &ApplyApplicationRequest,
+    ) -> Result<AcceptedOperation, ClientError> {
+        self.apply_application_with_force(request, false).await
+    }
+
+    /// Applies a manifest, optionally overriding identity and revision preconditions.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn apply_application_with_force(
+        &self,
+        request: &ApplyApplicationRequest,
+        force: bool,
     ) -> Result<AcceptedOperation, ClientError> {
         self.send(
             Method::POST,
-            &format!("{}/applications", crate::API_PREFIX),
+            &Self::force_path(format!("{}/applications/apply", crate::API_PREFIX), force),
             Some(request),
-            &[("idempotency-key", idempotency_key)],
+            &[],
         )
         .await
     }
 
-    /// Replaces an application at an expected generation.
-    ///
+    /// Deletes only if the supplied intent revision still matches; absence is rejected.
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn replace_application(
+    /// Returns transport, API, or decoding errors.
+    pub async fn delete_application_with_generation(
         &self,
         id: &str,
-        request: &ReplaceApplicationRequest,
+        expected: Option<u64>,
     ) -> Result<AcceptedOperation, ClientError> {
-        self.replace_application_with_key(id, request, None).await
+        self.delete_application_with_preconditions(id, expected, false)
+            .await
     }
 
-    /// Replaces an application and optionally binds the mutation to an
-    /// idempotency key for safe transport retries.
-    ///
+    /// Deletes with a revision precondition or an explicit force override.
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn replace_application_with_key(
+    /// Returns transport, API, or decoding errors.
+    pub async fn delete_application_with_preconditions(
         &self,
         id: &str,
-        request: &ReplaceApplicationRequest,
-        idempotency_key: Option<&str>,
+        expected: Option<u64>,
+        force: bool,
     ) -> Result<AcceptedOperation, ClientError> {
-        let headers = idempotency_key
-            .map(|key| vec![("idempotency-key", key)])
-            .unwrap_or_default();
-        self.send(
-            Method::PUT,
-            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
-            Some(request),
-            &headers,
-        )
-        .await
-    }
-
-    /// Marks an application for deletion.
-    ///
-    /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn delete_application(
-        &self,
-        id: &str,
-        request: &DeleteApplicationRequest,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.delete_application_with_key(id, request, None).await
-    }
-
-    /// Marks an application for deletion and optionally binds the mutation to
-    /// an idempotency key for safe transport retries.
-    ///
-    /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn delete_application_with_key(
-        &self,
-        id: &str,
-        request: &DeleteApplicationRequest,
-        idempotency_key: Option<&str>,
-    ) -> Result<AcceptedOperation, ClientError> {
-        let headers = idempotency_key
-            .map(|key| vec![("idempotency-key", key)])
-            .unwrap_or_default();
-        self.send(
+        self.send::<_, ()>(
             Method::DELETE,
-            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
-            Some(request),
-            &headers,
+            &Self::force_path(Self::mutation_path(id, "", expected), force),
+            None,
+            &[],
         )
         .await
     }
 
-    /// Plans creating an application without mutating runtime state.
+    /// Previews applying an application without mutating runtime state.
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn plan_create(
+    pub async fn plan_application(
         &self,
-        request: &PlanApplicationRequest,
+        request: &ApplyApplicationRequest,
     ) -> Result<PlanView, ClientError> {
         self.send(
             Method::POST,
             &format!("{}/applications/plan", crate::API_PREFIX),
             Some(request),
-            &[],
-        )
-        .await
-    }
-
-    /// Plans replacing an application without mutating runtime state.
-    ///
-    /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn plan_replace(
-        &self,
-        id: &str,
-        request: &ReplacePlanRequest,
-    ) -> Result<PlanView, ClientError> {
-        self.send(
-            Method::POST,
-            &format!(
-                "{}/applications/{}/plan",
-                crate::API_PREFIX,
-                path_segment(id)
-            ),
-            Some(request),
-            &[],
-        )
-        .await
-    }
-
-    /// Requests reconciliation at an expected generation.
-    ///
-    /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn reconcile(
-        &self,
-        id: &str,
-        expected_generation: u64,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.send(
-            Method::POST,
-            &format!(
-                "{}/applications/{}/reconcile",
-                crate::API_PREFIX,
-                path_segment(id)
-            ),
-            Some(&ExpectedGeneration {
-                expected_generation,
-            }),
             &[],
         )
         .await
@@ -431,108 +189,193 @@ impl Client {
         .await
     }
 
-    /// Creates an application from a TOML manifest.
+    /// Creates an application from TOML, requiring its name to be absent.
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn create_application_toml(
+    pub async fn apply_application_toml(
         &self,
         manifest: &str,
-        idempotency_key: &str,
     ) -> Result<AcceptedOperation, ClientError> {
-        self.send_text(
-            Method::POST,
-            &format!("{}/applications", crate::API_PREFIX),
-            manifest,
-            &[
-                ("content-type", "application/toml"),
-                ("idempotency-key", idempotency_key),
-            ],
-        )
-        .await
-    }
-
-    /// Replaces an application using a TOML manifest.
-    ///
-    /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn replace_application_toml(
-        &self,
-        id: &str,
-        manifest: &str,
-        expected_generation: u64,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.replace_application_toml_with_key(id, manifest, expected_generation, None)
+        self.apply_application_toml_with_generation(manifest, Some(0))
             .await
     }
 
-    /// Replaces an application from TOML and optionally binds the mutation to
-    /// an idempotency key for safe transport retries.
-    ///
+    /// Applies TOML with a revision; existing names also require identity via the full method.
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn replace_application_toml_with_key(
+    /// Returns transport, API, or decoding errors.
+    pub async fn apply_application_toml_with_generation(
         &self,
-        id: &str,
         manifest: &str,
-        expected_generation: u64,
-        idempotency_key: Option<&str>,
+        expected: Option<u64>,
     ) -> Result<AcceptedOperation, ClientError> {
-        let generation = expected_generation.to_string();
-        let mut headers = vec![
-            ("content-type", "application/toml"),
-            ("x-expected-generation", generation.as_str()),
-        ];
-        if let Some(key) = idempotency_key {
-            headers.push(("idempotency-key", key));
+        self.apply_application_toml_with_preconditions(manifest, expected, None, false)
+            .await
+    }
+
+    /// Applies TOML to the inspected identity and revision, unless explicitly forced.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn apply_application_toml_with_preconditions(
+        &self,
+        manifest: &str,
+        expected: Option<u64>,
+        expected_id: Option<&str>,
+        force: bool,
+    ) -> Result<AcceptedOperation, ClientError> {
+        let generation = expected.map(|value| value.to_string());
+        let mut headers = vec![("content-type", "application/toml")];
+        if let Some(value) = generation.as_deref() {
+            headers.push(("x-expected-generation", value));
+        }
+        if let Some(id) = expected_id {
+            headers.push(("x-expected-application-id", id));
         }
         self.send_text(
-            Method::PUT,
-            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
+            Method::POST,
+            &Self::force_path(format!("{}/applications/apply", crate::API_PREFIX), force),
             manifest,
             &headers,
         )
         .await
     }
 
-    /// Plans creating an application from a TOML manifest.
+    /// Previews applying an application from a TOML manifest.
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn plan_create_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
+    pub async fn plan_application_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
+        self.plan_application_toml_with_generation(manifest, None)
+            .await
+    }
+
+    /// Previews TOML conditioned on the optional current generation.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn plan_application_toml_with_generation(
+        &self,
+        manifest: &str,
+        expected: Option<u64>,
+    ) -> Result<PlanView, ClientError> {
+        let generation = expected.map(|value| value.to_string());
+        let mut headers = vec![("content-type", "application/toml")];
+        if let Some(value) = generation.as_deref() {
+            headers.push(("x-expected-generation", value));
+        }
         self.send_text(
             Method::POST,
             &format!("{}/applications/plan", crate::API_PREFIX),
             manifest,
-            &[("content-type", "application/toml")],
+            &headers,
         )
         .await
     }
 
-    /// Plans replacing an application from a TOML manifest.
-    ///
+    fn force_path(mut path: String, force: bool) -> String {
+        if force {
+            path.push(if path.contains('?') { '&' } else { '?' });
+            path.push_str("force=true");
+        }
+        path
+    }
+
+    fn mutation_path(id: &str, action: &str, expected: Option<u64>) -> String {
+        let path = format!(
+            "{}/applications/{}{}",
+            crate::API_PREFIX,
+            path_segment(id),
+            action
+        );
+        expected.map_or_else(
+            || path.clone(),
+            |generation| format!("{path}?expected_generation={generation}"),
+        )
+    }
+
+    /// Repairs the latest accepted intent using its already resolved digests.
     /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn plan_replace_toml(
+    /// Returns transport, API, or decoding errors.
+    pub async fn reconcile_application(
         &self,
         id: &str,
-        manifest: &str,
-        expected_generation: u64,
-    ) -> Result<PlanView, ClientError> {
-        let generation = expected_generation.to_string();
-        self.send_text(
+        expected: Option<u64>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        self.send::<_, ()>(
             Method::POST,
-            &format!(
-                "{}/applications/{}/plan",
-                crate::API_PREFIX,
-                path_segment(id)
-            ),
-            manifest,
-            &[
-                ("content-type", "application/toml"),
-                ("x-expected-generation", &generation),
-            ],
+            &Self::mutation_path(id, "/reconcile", expected),
+            None,
+            &[],
         )
         .await
+    }
+
+    /// Explicitly resolves the current manifest again.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn refresh_application(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        self.send::<_, ()>(
+            Method::POST,
+            &Self::mutation_path(id, "/refresh", expected),
+            None,
+            &[],
+        )
+        .await
+    }
+
+    /// Renames an idle application without touching its runtime resources.
+    /// # Errors
+    /// Returns transport, API, decoding, name, busy, or generation errors.
+    pub async fn rename_application(
+        &self,
+        id: &str,
+        request: &RenameApplicationRequest,
+    ) -> Result<RenamedApplication, ClientError> {
+        self.rename_application_with_force(id, request, false).await
+    }
+
+    /// Renames with an explicit override of the revision precondition.
+    /// # Errors
+    /// Returns transport, API, decoding, name, or busy errors.
+    pub async fn rename_application_with_force(
+        &self,
+        id: &str,
+        request: &RenameApplicationRequest,
+        force: bool,
+    ) -> Result<RenamedApplication, ClientError> {
+        self.send(
+            Method::POST,
+            &Self::force_path(Self::mutation_path(id, "/rename", None), force),
+            Some(request),
+            &[],
+        )
+        .await
+    }
+
+    /// Reads one page of informational events, including history of deleted applications.
+    /// # Errors
+    /// Returns transport, API, decoding, or pagination errors.
+    pub async fn events(
+        &self,
+        application_id: Option<&str>,
+        cursor: Option<&str>,
+        limit: u16,
+    ) -> Result<Page<piqueld_core::Event>, ClientError> {
+        if !(1..=100).contains(&limit) {
+            return Err(invalid_request("event limit must be between 1 and 100"));
+        }
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        if let Some(id) = application_id {
+            query.append_pair("application_id", id);
+        }
+        if let Some(cursor) = cursor {
+            query.append_pair("cursor", cursor);
+        }
+        query.append_pair("limit", &limit.to_string());
+        let path = format!("{}/events?{}", crate::API_PREFIX, query.finish());
+        self.send::<_, ()>(Method::GET, &path, None, &[]).await
     }
 }

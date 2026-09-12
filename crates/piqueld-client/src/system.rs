@@ -1,21 +1,8 @@
 use http::Method;
-use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+
+pub use piqueld_core::api::SystemStatus;
 
 use crate::{Client, ClientError};
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-/// Current control-plane status.
-pub struct SystemStatus {
-    /// Machine-readable service status.
-    pub status: String,
-    /// Version of the exposed API.
-    pub api_version: String,
-    /// Version of the running daemon binary.
-    pub daemon_version: String,
-    /// Control-plane instance identifier.
-    pub instance_id: String,
-}
 
 impl Client {
     /// Fetches control-plane status.

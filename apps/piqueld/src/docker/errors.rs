@@ -1,5 +1,3 @@
-use super::OperationError;
-
 #[derive(Debug, thiserror::Error)]
 /// A stable Docker boundary error.
 pub enum DockerError {
@@ -79,30 +77,5 @@ impl DockerError {
 
     pub(super) fn request(operation: &'static str, source: bollard::errors::Error) -> Self {
         Self::RequestSource { operation, source }
-    }
-}
-
-impl From<DockerError> for OperationError {
-    fn from(error: DockerError) -> Self {
-        match error {
-            DockerError::OwnershipConflict => Self::OwnershipConflict,
-            DockerError::ConfigurationConflict => Self::DockerConfigurationConflict,
-            DockerError::Validation(operation) => Self::ValidationFailed(operation),
-            DockerError::NotManager => Self::SwarmManagerUnavailable,
-            DockerError::IncompatibleSwarm => Self::SwarmTopologyUnsupported,
-            DockerError::Unavailable(operation)
-            | DockerError::UnavailableSource { operation, .. } => {
-                Self::DockerUnavailable(operation)
-            }
-            DockerError::ImageResolution(operation)
-            | DockerError::ImageResolutionSource { operation, .. } => {
-                Self::ImageResolutionFailed(operation)
-            }
-            DockerError::Request(operation)
-            | DockerError::RequestSource { operation, .. }
-            | DockerError::RequestDiagnostic { operation, .. } => {
-                Self::DockerRequestFailed(operation)
-            }
-        }
     }
 }

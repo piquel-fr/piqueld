@@ -1,6 +1,6 @@
 use axum::{Extension, response::IntoResponse};
 use http::header;
-use piqueld_client::ErrorBody;
+use piqueld_core::api::ErrorBody;
 use serde_json::Value;
 use std::sync::Arc;
 use utoipa::{OpenApi, ToResponse};

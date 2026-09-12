@@ -1,15 +1,29 @@
 # piqueld
 
 `piqueld` is a small Rust control plane for one Docker Engine running a
-single-node Swarm. It supports one honest workflow: submit an application
-manifest that names prebuilt container images, resolve those images to digests,
-and reconcile the resulting private network, named volumes, and replicated
-services.
+single-node Swarm. Submit an application
+manifest naming prebuilt images; the server resolves those images to digests
+and reconciles a private network, named volumes, and replicated services.
 
-The daemon stores normalized intent, resolved runtime state, application status,
-and durable operations in SQLite. It exposes a versioned HTTP API over a
-loopback TCP listener and a Unix socket. Clients poll application and operation
-resources; there is no event-stream endpoint.
+Applications are identified by name. Apply durably accepts the full normalized
+manifest and returns an operation ID before resolving images. Identical applies
+are no-ops, including after failure. Explicit reconcile repairs or retries stored targets;
+refresh explicitly resolves images again. Apply, delete, and rename require inspected preconditions by default;
+explicit force overrides them. The CLI separates `--force` from `--yes` confirmation
+and waits for existing operations on identical applies. Refresh and reconcile act
+on current intent. Request IDs are reused across transport retries. SQLite retains acceptance receipts for 24 hours.
+
+One async controller overlaps image pulls, observations, and timers while allowing
+one resource mutation request at a time. The active deployment remains maintained
+while a candidate prepares; promotion starts rollout without automatic rollback.
+Unchanged image references reuse active digests. Rename changes metadata without
+redeployment. Durable
+operations, attempt outcomes, and informational events remain in SQLite. Deletion
+completes only after services and networks are verified absent; volumes remain.
+
+The daemon exposes a polling HTTP API over loopback TCP and a Unix socket. The
+CLI and optional read-only dashboard share domain records and HTTP contracts.
+See [module boundaries](docs/architecture/dependency-flow.md) for the code layout.
 
 A single configured `data_dir` is the only state location and holds the Unix
 API socket (`piqueld.sock`) and the embedded database (`piqueld.db`). On a clean
@@ -65,7 +79,7 @@ The reproducible Nix package and checks can be evaluated explicitly with
 
 The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
 another host configuration. Configuration only covers local paths, listeners,
-SQLite, Docker, and reconciliation limits. The complete non-root development
+SQLite, Docker, and reconciliation timing. The complete non-root development
 example is [`config/piqueld.example.toml`](config/piqueld.example.toml).
 See [`docs/web-ui.md`](docs/web-ui.md) for development and release dashboard
 asset commands.

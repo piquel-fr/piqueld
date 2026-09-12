@@ -1,55 +1,74 @@
 # Docker reconciliation
 
-The daemon connects directly to Docker Engine through Bollard. Startup
-requires an active single-node Swarm manager; configuration may opt into
-initializing an inactive local engine. The supported workload is a prebuilt image
-resolved to a digest before persistence.
+The daemon controls one local Docker Engine running a single-node Swarm. It
+manages private overlay networks, named volumes, and replicated services,
+verifies ownership before mutations, and retains volumes on deletion. Service
+updates are start-first, one task at a time, and pause on failure.
 
-The adapter manages private overlay networks, local named volumes, and replicated
-services. It rechecks deterministic names and ownership labels before every
-mutation. Foreign resources block a plan. Service updates use conservative
-start-first, one-at-a-time rolling settings and pause on failure. The runtime
-policy verifies exactly the fields piqueld authors — replication, update
-settings, the restart condition and delay, mounts, environment, network targets,
-health checks, and resource limits. Fields the specification builder never sets
-are accepted only at known Engine defaults; unsupported non-default values are
-treated as drift.
+Apply validates and persists the entire normalized manifest before returning an
+operation ID. Execution resolves all images to immutable digests, checks a fresh
+plan, then deploys the complete target. Previous resolved state remains available
+while replacement preparation is pending or blocked; old services keep running,
+and the controller continues correcting drift toward that active target. Once
+preparation and a fresh concrete plan succeed, promotion switches the maintained
+target immediately before rollout. Promotion and active repair share the mutation
+lock, so old-target repair cannot continue after promotion. There is no automatic
+rollback after rollout starts.
 
-Every Docker interaction is bounded by a request-timeout deadline at the adapter
-boundary; Bollard only bounds a request up to the response headers, so the
-adapter applies its own deadline and reports elapsed deadlines as engine
-unavailability. The hand-rolled service wire path shares that classification:
-connect, handshake, and request deadlines all surface as unavailability with
-distinguishing context.
+An identical normalized manifest reuses the current operation without pulling
+images or scheduling work, including after failure. Explicit reconcile requests
+a failed operation again under its existing ID. Explicit `reconcile`, periodic repair, and restart recovery use the
+same execution path. They reuse the latest intent's prepared digests, or retry
+preparation if it never completed. Apply reuses active digests for unchanged
+service image references; new/changed references resolve during preparation.
+Maintaining the active target during preparation does not replace the requested
+candidate or report it as successfully deployed.
 
-Image resolution verifies tag stability across the pull. The repository digests
-recorded for the tag are captured before and after the pull and must still
-overlap; a concurrently re-pointed tag restarts the resolution a bounded number
-of times before failing with the sanitized image-resolution error.
+Explicit `refresh` resolves the current manifest again without advancing its
+generation. Active refreshes are reused; failed refreshes retry their prepared
+target when available. A refresh after success starts a new operation. Refresh
+supersedes apply/reconcile and is rejected while deletion is intended.
 
-Docker's compact service-list response is never used as the final semantic source:
-the adapter performs a complete service inspection before ordinary observation or
-deciding whether an update is needed. Observations inspect the listed services
-concurrently and tolerate services deleted mid-observation; the task list is
-skipped entirely when no services remain. Service create, update, and inspection
-pass through a narrow wire adapter that normalizes Docker's `Healthcheck`
-spelling to the typed `HealthCheck` model. An exact transient
-`update out of sequence` response gets a bounded retry with a refreshed service
-version; other errors fail without retry.
+One async controller polls pending application futures and discovery together.
+SQLite calls, Docker observations, image pulls, and convergence timers yield to
+other ready work. Shared limits allow two image resolutions, eight application
+observations, and one resource mutation request globally. Timers consume no I/O
+slot. New intent cancels obsolete local preparation; dispatched Docker requests
+may finish, but obsolete results cannot authorize subsequent actions.
 
-Application deletion removes services and the private network, waits for
-convergence, and retains named volumes. Raw Docker messages and task text are
-kept in internal error sources for logs only; durable operation and status
-diagnostics contain stable codes and sanitized messages.
+New intent marks pending/running older operations superseded; the CLI stops waiting
+successfully with that explicit outcome rather than following the replacement.
 
-The coordinator wakes after API mutations and performs authoritative periodic
-polling scans. No Docker event listener or event-stream API is required. Durable
-operation steps resume after interruption, while each step re-observes and
-re-plans before executing.
+Every action is followed by observation and fresh planning. No action cursor or
+execution plan is stored. Interrupted attempts are recorded on startup, then
+requested again. Each started attempt increments its operation's attempt number.
 
-The Docker boundary remains a real test seam. Focused fake-Docker tests exercise
-the scheduler and handler without an Engine, including foreign-resource
-refusals for services, networks, and volumes and the image tag-stability retry.
-The privileged lifecycle test is ignored by ordinary runs; `just docker-test`
-starts an isolated privileged Docker-in-Docker daemon, runs it against a private
-Unix socket, and cleans up the temporary daemon and resources afterward.
+Transient failures retry indefinitely with exponential delays from 5 to 60
+seconds. Preparation and convergence retain their configured deadlines. Success
+resets the consecutive-failure backoff. Ownership/configuration conflicts and
+paused rollouts remain observed without forced mutation. A fresh unblocked plan
+can resume corrective work. Registry request rejections require explicit retry
+or changed intent; temporary availability failures retry automatically.
+
+Deletion remains running until a fresh observation confirms services and
+networks are absent. Failed deletion attempts record diagnostics and follow the
+same retry policy. Named volumes remain available after deletion.
+
+Operation state describes progress toward intent. Runtime health is recorded
+separately, so a failed replacement can coexist with healthy existing services.
+The intent generation and last resolved target generation are exposed separately;
+a resolved generation alone does not assert container convergence.
+
+Informational events record accepted changes, attempt starts/outcomes,
+supersession, promotion, deletion completion, significant resource mutations,
+active-target repairs, and meaningful health transitions. Operations expose current
+phase/resource; failure events retain those fields and a structured error code. State
+changes and their events share a transaction. Events never drive execution or
+reconstruct state. Their independent retention defaults to 30 days; zero disables
+pruning. Unchanged observations and raw Docker errors are not logged as events.
+
+Docker requests have deadlines, image resolution checks tag stability, and
+service observation inspects complete specifications. Raw engine error sources
+remain in daemon logs; durable diagnostics are sanitized. Focused fake-runtime
+tests cover execution; `just docker-test` is the separate privileged Docker
+qualification against an isolated Docker-in-Docker daemon.

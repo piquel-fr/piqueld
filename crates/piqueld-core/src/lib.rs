@@ -3,10 +3,15 @@
 //! This crate deliberately has no transport, persistence, container-runtime, or
 //! user-interface dependencies.
 
+pub mod api;
 pub mod codes;
+pub mod event;
 pub mod identity;
+pub use event::Event;
 pub mod manifest;
+pub mod operation;
 pub mod planner;
+mod preview;
 pub mod resource;
 
 pub use identity::{
@@ -23,10 +28,11 @@ pub use planner::{
     PlanRequest, PlanSummary,
 };
 pub use resource::{
-    CompileError, Convergence, DesiredApplication, DesiredMount, DesiredNetwork, DesiredService,
-    DesiredVolume, InstanceId, InstanceIdError, ObservedApplication, ObservedNetwork,
-    ObservedService, ObservedTask, ObservedVolume, Ownership, OwnershipState,
-    ResolutionRequirement, ResolutionSet, ResolvedApplication, ResolvedSource, Sha256Digest,
-    Sha256DigestError, TaskDiagnostic, TaskState, compile_application, image_repository,
-    preview_resolution, valid_logical_name,
+    CompileError, Convergence, DesiredMount, DesiredNetwork, DesiredService, DesiredVolume,
+    InstanceId, InstanceIdError, ObservedApplication, ObservedNetwork, ObservedService,
+    ObservedTask, ObservedVolume, Ownership, OwnershipState, ResolutionRequirement, ResolutionSet,
+    ResolvedApplication, ResolvedSource, Sha256Digest, Sha256DigestError, TaskDiagnostic,
+    TaskState, compile_application, image_repository, preview_resolution, valid_logical_name,
 };
+
+pub use operation::{ApplicationState, Operation, OperationKind, OperationState};

@@ -1,6 +1,5 @@
 //! Versioned HTTP/JSON API boundary.
 
-use async_trait::async_trait;
 use axum::{
     Extension, Router,
     body::Body,
@@ -10,17 +9,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use piqueld_client::{
-    AcceptedOperation, CreateApplicationRequest, Envelope, ErrorBody, PlanApplicationRequest,
-    ReplaceApplicationRequest,
-};
-use piqueld_core::{
-    ApplicationId, ApplicationIdError, CompileError, NormalizedApplication, ObservedApplication,
-    resource::ResolvedApplication,
-};
+use piqueld_core::ApplicationIdError;
+use piqueld_core::api::{AcceptedOperation, ApplyApplicationRequest, Envelope, ErrorBody};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
@@ -28,17 +20,17 @@ use tower_http::{
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-use crate::{
-    docker::DockerError,
-    store::{SqliteStore, StoreError, StoredApplication},
-};
+use crate::store::StoreError;
 
 mod applications;
+mod events;
 mod openapi;
 mod operations;
 mod system;
 mod ui;
 
+pub use crate::application::Applications as ApiState;
+use crate::application::{ApplicationError, BoundaryError};
 pub use openapi::openapi_document;
 pub use ui::{EmbeddedBundle, UiAssets};
 
@@ -49,71 +41,6 @@ const TOML: &str = "application/toml";
 /// (`piquelctl::support::MAX_MANIFEST_BYTES`) must not exceed this value, or a
 /// locally accepted manifest would fail server-side with 413.
 const REQUEST_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
-
-#[derive(Clone, Debug)]
-/// Resolved desired state paired with the initial runtime observation.
-pub struct PreparedApplication {
-    /// Immutable desired application state.
-    pub resolved: ResolvedApplication,
-    /// Runtime resources observed before planning.
-    pub observed: ObservedApplication,
-}
-
-#[derive(Debug, thiserror::Error)]
-/// Errors crossing the runtime boundary.
-pub enum BoundaryError {
-    /// A Docker runtime request failed.
-    #[error("runtime request failed")]
-    Runtime(#[from] DockerError),
-    /// Resolved inputs could not be compiled into desired runtime resources.
-    #[error("application compilation failed")]
-    Compilation(Vec<CompileError>),
-}
-
-/// Source resolution, runtime observation, and execution seam supplied by Plan 06.
-#[async_trait]
-pub trait RuntimeBoundary: Send + Sync + 'static {
-    /// Wakes the reconciler after a mutation requests an immediate scan.
-    fn trigger_reconciliation(&self) {}
-    /// Resolves mutable inputs and captures an initial runtime observation.
-    async fn prepare(
-        &self,
-        application: &NormalizedApplication,
-    ) -> Result<PreparedApplication, BoundaryError>;
-    /// Captures current runtime state for a stored application.
-    async fn observe(
-        &self,
-        application: &StoredApplication,
-    ) -> Result<ObservedApplication, BoundaryError>;
-}
-
-/// Shared state for API handlers.
-#[derive(Clone)]
-pub struct ApiState {
-    store: Arc<SqliteStore>,
-    runtime: Arc<dyn RuntimeBoundary>,
-    instance_id: String,
-    mutation_lock: Arc<tokio::sync::Mutex<()>>,
-}
-
-impl ApiState {
-    /// Creates API state backed by the given store and runtime adapter.
-    #[must_use]
-    pub fn new(store: Arc<SqliteStore>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
-        Self {
-            instance_id: store.instance_id().to_owned(),
-            store,
-            runtime,
-            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
-        }
-    }
-
-    /// Serializes mutation preparation so the idempotency lookup-through-commit
-    /// window cannot race with a concurrent retry of the same key.
-    pub(super) async fn mutation_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.mutation_lock.lock().await
-    }
-}
 
 #[derive(Debug)]
 struct ApiError {
@@ -155,6 +82,29 @@ impl From<StoreError> for ApiError {
             tracing::error!(error = ?value, "storage request failed");
         }
         match value {
+            StoreError::GenerationConflict { expected, actual } => Self::new(
+                StatusCode::CONFLICT,
+                "generation_conflict",
+                "Application changed since inspection; run the command again",
+            )
+            .details(
+                serde_json::json!({"expected_generation":expected,"actual_generation":actual}),
+            ),
+            StoreError::IdentityConflict => Self::new(
+                StatusCode::CONFLICT,
+                "identity_conflict",
+                "Application changed since inspection; run the command again",
+            ),
+            StoreError::ReplayConflict => Self::new(
+                StatusCode::CONFLICT,
+                "request_id_conflict",
+                "request ID was already used for different input",
+            ),
+            StoreError::Busy => Self::new(
+                StatusCode::CONFLICT,
+                "application_busy",
+                "application is busy; wait for its operation before renaming",
+            ),
             StoreError::NotFound => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
             }
@@ -163,17 +113,6 @@ impl From<StoreError> for ApiError {
                 "application_name_collision",
                 "application identity or name already exists",
             ),
-            StoreError::IdempotencyConflict => Self::new(
-                StatusCode::CONFLICT,
-                "idempotency_key_reused",
-                "Idempotency-Key was already used for a different request",
-            ),
-            StoreError::GenerationConflict { expected, actual } => Self::new(
-                StatusCode::CONFLICT,
-                "application_generation_conflict",
-                "the application was modified by another client",
-            )
-            .details(json!({"expected_generation": expected, "current_generation": actual})),
             StoreError::IllegalTransition => Self::new(
                 StatusCode::CONFLICT,
                 "application_state_conflict",
@@ -209,6 +148,15 @@ impl From<BoundaryError> for ApiError {
     fn from(value: BoundaryError) -> Self {
         tracing::error!(error = ?value, "runtime boundary request failed");
         match value {
+            BoundaryError::Store(error) => error.into(),
+            BoundaryError::Runtime(
+                crate::docker::DockerError::Unavailable(_)
+                | crate::docker::DockerError::UnavailableSource { .. },
+            ) => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "docker_unavailable",
+                "Docker Engine is unavailable",
+            ),
             BoundaryError::Runtime(_) => Self::new(
                 StatusCode::BAD_GATEWAY,
                 "runtime_request_failed",
@@ -410,17 +358,16 @@ fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .routes(routes!(system::status))
         .routes(routes!(openapi::openapi))
-        .routes(routes!(applications::list, applications::create))
-        .routes(routes!(applications::plan_create))
-        .routes(routes!(
-            applications::get,
-            applications::replace,
-            applications::delete
-        ))
+        .routes(routes!(applications::list))
+        .routes(routes!(applications::apply))
+        .routes(routes!(applications::plan))
+        .routes(routes!(applications::get, applications::delete))
         .routes(routes!(applications::detail))
-        .routes(routes!(applications::plan_replace))
-        .routes(routes!(applications::reconcile))
         .routes(routes!(applications::status))
+        .routes(routes!(applications::reconcile))
+        .routes(routes!(applications::refresh))
+        .routes(routes!(applications::rename))
+        .routes(routes!(events::list))
         .routes(routes!(operations::get))
 }
 
@@ -568,80 +515,11 @@ fn ok<T: Serialize>(data: T) -> impl IntoResponse {
 fn accepted(data: AcceptedOperation) -> Response {
     (StatusCode::ACCEPTED, axum::Json(Envelope { data })).into_response()
 }
-fn generation(expected: u64, actual: u64) -> Result<(), ApiError> {
-    if expected == actual {
-        Ok(())
-    } else {
-        Err(ApiError::from(StoreError::GenerationConflict {
-            expected,
-            actual,
-        }))
-    }
-}
-fn valid_expected_generation(expected: u64) -> Result<(), ApiError> {
-    if expected == 0 {
-        Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "expected_generation_invalid",
-            "expected generation must be a positive integer",
-        ))
-    } else {
-        Ok(())
-    }
-}
-fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers.get(name)?.to_str().ok()
-}
-
-fn optional_idempotency_key(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
-    let mut values = headers.get_all("idempotency-key").iter();
-    let Some(value) = values.next() else {
-        return Ok(None);
-    };
-    let invalid = || {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "idempotency_key_invalid",
-            "Idempotency-Key is invalid",
-        )
-    };
-    if values.next().is_some() {
-        return Err(invalid());
-    }
-    let Ok(key) = value.to_str() else {
-        return Err(invalid());
-    };
-    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
-        return Err(invalid());
-    }
-    Ok(Some(key))
-}
-
-fn mutation_request_hash(
-    kind: &str,
-    application_id: &ApplicationId,
-    expected_generation: u64,
-    spec_hash: Option<&str>,
-) -> String {
-    let request = format!(
-        "piqueld-mutation/v1\0{kind}\0{application_id}\0{expected_generation}\0{}",
-        spec_hash.unwrap_or_default()
-    );
-    format!("sha256:{}", hex(&Sha256::digest(request.as_bytes())))
-}
-
-fn require_json(headers: &HeaderMap) -> Result<(), ApiError> {
-    match content_type(headers) {
-        Some(value) if value.eq_ignore_ascii_case(JSON) => Ok(()),
-        _ => Err(ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "content_type_unsupported",
-            "Content-Type must be application/json",
-        )),
-    }
-}
 fn content_type(headers: &HeaderMap) -> Option<&str> {
-    header_text(headers, "content-type").map(|v| v.split(';').next().unwrap_or(v).trim())
+    headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(|v| v.split(';').next().unwrap_or(v).trim())
 }
 fn decode_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, ApiError> {
     let malformed = || {
@@ -661,100 +539,29 @@ fn decode_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, ApiError>
     Ok(value)
 }
 
-fn parse_expected_generation(raw: &str) -> Result<u64, ()> {
-    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(());
-    }
-    raw.parse().map_err(|_| ())
-}
-
-#[derive(Clone, Copy)]
-enum RequestShape {
-    Create,
-    PlanCreate,
-}
 fn parse_manifest(
     headers: &HeaderMap,
     body: &[u8],
-    shape: RequestShape,
-) -> Result<piqueld_core::ValidatedApplication, ApiError> {
+) -> Result<
+    (
+        piqueld_core::ValidatedApplication,
+        Option<u64>,
+        Option<String>,
+    ),
+    ApiError,
+> {
     match content_type(headers) {
         Some(value) if value.eq_ignore_ascii_case(JSON) => {
-            let manifest = match shape {
-                RequestShape::Create => decode_json::<CreateApplicationRequest>(body)?.manifest,
-                RequestShape::PlanCreate => decode_json::<PlanApplicationRequest>(body)?.manifest,
-            };
-            let encoded = serde_json::to_string(&manifest).map_err(|_| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "manifest_invalid",
-                    "application manifest is invalid",
-                )
-            })?;
-            Ok(piqueld_core::parse_json(&encoded)?)
-        }
-        Some(value)
-            if value.eq_ignore_ascii_case(TOML) || value.eq_ignore_ascii_case("text/toml") =>
-        {
-            std::str::from_utf8(body)
-                .map_err(|_| {
-                    ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        "toml_malformed",
-                        "request TOML is malformed",
-                    )
-                })
-                .and_then(|v| Ok(piqueld_core::parse_toml(v)?))
-        }
-        _ => Err(ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "content_type_unsupported",
-            "Content-Type must be application/json or application/toml",
-        )),
-    }
-}
-
-fn parse_update(
-    headers: &HeaderMap,
-    body: &[u8],
-) -> Result<(piqueld_core::ValidatedApplication, u64), ApiError> {
-    match content_type(headers) {
-        Some(value) if value.eq_ignore_ascii_case(JSON) => {
-            let request: ReplaceApplicationRequest = decode_json(body)?;
-            valid_expected_generation(request.expected_generation)?;
-            let encoded = serde_json::to_string(&request.manifest).map_err(|_| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "manifest_invalid",
-                    "application manifest is invalid",
-                )
-            })?;
+            let request: ApplyApplicationRequest = decode_json(body)?;
             Ok((
-                piqueld_core::parse_json(&encoded)?,
+                request.manifest.validate()?,
                 request.expected_generation,
+                request.expected_application_id,
             ))
         }
         Some(value)
             if value.eq_ignore_ascii_case(TOML) || value.eq_ignore_ascii_case("text/toml") =>
         {
-            let expected = header_text(headers, "x-expected-generation")
-                .ok_or_else(|| {
-                    ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        "expected_generation_required",
-                        "X-Expected-Generation is required for TOML replacement",
-                    )
-                })
-                .and_then(|raw| {
-                    parse_expected_generation(raw).map_err(|()| {
-                        ApiError::new(
-                            StatusCode::BAD_REQUEST,
-                            "expected_generation_invalid",
-                            "expected generation is invalid",
-                        )
-                    })
-                })?;
-            valid_expected_generation(expected)?;
             let text = std::str::from_utf8(body).map_err(|_| {
                 ApiError::new(
                     StatusCode::BAD_REQUEST,
@@ -762,7 +569,35 @@ fn parse_update(
                     "request TOML is malformed",
                 )
             })?;
-            Ok((piqueld_core::parse_toml(text)?, expected))
+            let expected = if headers.get_all("x-expected-generation").iter().count() > 1 {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "generation_invalid",
+                    "expected generation must occur once",
+                ));
+            } else {
+                headers
+                    .get("x-expected-generation")
+                    .map(|value| {
+                        value
+                            .to_str()
+                            .ok()
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .ok_or_else(|| {
+                                ApiError::new(
+                                    StatusCode::BAD_REQUEST,
+                                    "generation_invalid",
+                                    "expected generation must be an unsigned integer",
+                                )
+                            })
+                    })
+                    .transpose()?
+            };
+            Ok((
+                piqueld_core::parse_toml(text)?,
+                expected,
+                optional_header(headers, "x-expected-application-id")?,
+            ))
         }
         _ => Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -772,20 +607,39 @@ fn parse_update(
     }
 }
 
-fn idempotent_application_id(key: &str) -> ApplicationId {
-    let digest = Sha256::digest(format!("piqueld-create/v1\0{key}").as_bytes());
-    ApplicationId::parse(format!("app-{}", hex(&digest[..16])))
-        .expect("digest application ID is valid")
-}
-fn idempotency_key_hash(key: &str) -> String {
-    format!("sha256:{}", hex(&Sha256::digest(key.as_bytes())))
-}
-fn hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut value = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        value.push(char::from(HEX[usize::from(byte >> 4)]));
-        value.push(char::from(HEX[usize::from(byte & 0x0f)]));
+impl From<ApplicationError> for ApiError {
+    fn from(error: ApplicationError) -> Self {
+        match error {
+            ApplicationError::Store(error) => error.into(),
+            ApplicationError::Runtime(error) => error.into(),
+            ApplicationError::PlanBlocked(diagnostics) => Self::new(
+                StatusCode::CONFLICT,
+                "plan_blocked",
+                "runtime plan contains blocking conflicts",
+            )
+            .details(json!({"diagnostics":diagnostics})),
+        }
     }
-    value
+}
+
+fn optional_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, ApiError> {
+    if headers.get_all(name).iter().count() > 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "header_invalid",
+            "mutation headers must occur once",
+        ));
+    }
+    headers
+        .get(name)
+        .map(|value| {
+            value.to_str().map(str::to_owned).map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "header_invalid",
+                    "invalid mutation header",
+                )
+            })
+        })
+        .transpose()
 }

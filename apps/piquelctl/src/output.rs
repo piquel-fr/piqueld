@@ -2,53 +2,37 @@ use crate::{
     cli::Cli,
     error::{CliError, ErrorKind, Result},
 };
-use piqueld_client::{ActionReason, ActionRisk, OperationView, PlanView};
+use piqueld_client::{ActionReason, ActionRisk, Operation, PlanView};
 use serde::Serialize;
 use serde_json::json;
 use std::io::{self, Write};
 
-pub(crate) fn report_operation(operation: &OperationView) {
-    eprintln!("operation {}: {}", operation.id, operation.state);
-    for step in &operation.steps {
-        eprintln!(
-            "  {:>3} {}: {} (attempt {})",
-            step.position, step.action, step.state, step.attempt
-        );
-        if let Some(message) = &step.error_message {
-            eprintln!("      {message}");
-        }
-    }
+pub(crate) fn report_operation(operation: &Operation) {
+    eprintln!(
+        "operation {}: {}{}{}",
+        operation.id,
+        operation.state,
+        operation
+            .phase
+            .as_ref()
+            .map_or_else(String::new, |phase| format!("; {phase}")),
+        operation
+            .resource
+            .as_ref()
+            .map_or_else(String::new, |resource| format!("; {resource}"))
+    );
 }
 
-pub(crate) fn render_operation(cli: &Cli, operation: &OperationView) -> Result<()> {
+pub(crate) fn render_operation(cli: &Cli, operation: &Operation) -> Result<()> {
     if cli.json {
         return emit_json(operation);
     }
+    report_operation(operation);
     writeln!(
         io::stdout().lock(),
-        "operation {}: {}",
-        operation.id,
-        operation.state
+        "application {}",
+        operation.application_id
     )?;
-    writeln!(
-        io::stdout().lock(),
-        "application {} generation {}",
-        operation.application_id,
-        operation.generation
-    )?;
-    for step in &operation.steps {
-        writeln!(
-            io::stdout().lock(),
-            "  {} {}: {} (attempt {})",
-            step.position,
-            step.action,
-            step.state,
-            step.attempt
-        )?;
-        if let Some(message) = &step.error_message {
-            writeln!(io::stdout().lock(), "      {message}")?;
-        }
-    }
     if let Some(message) = &operation.error_message {
         eprintln!("diagnostic: {message}");
     }
@@ -56,25 +40,34 @@ pub(crate) fn render_operation(cli: &Cli, operation: &OperationView) -> Result<(
 }
 
 pub(crate) fn render_plan(plan: &PlanView, output: &mut impl Write) -> io::Result<()> {
-    writeln!(
-        output,
-        "application {} proposed generation {}",
-        plan.application_id, plan.proposed_generation
-    )?;
+    writeln!(output, "application {}", plan.application_id)?;
+    if plan.identical {
+        return writeln!(output, "This is identical to the existing manifest.");
+    }
+    for change in &plan.changes {
+        writeln!(
+            output,
+            "  {}: {} -> {}",
+            change.field,
+            change.before.as_deref().unwrap_or("absent"),
+            change.after.as_deref().unwrap_or("absent")
+        )?;
+    }
+    let summary = plan.plan.summary();
     writeln!(
         output,
         "{} action(s), {} mutation(s), {} destructive action(s), {} blocking conflict(s)",
-        plan.plan.summary.action_count,
-        plan.plan.summary.mutation_count,
-        plan.plan.summary.destructive_count,
-        plan.plan.summary.blocking_conflicts,
+        summary.action_count,
+        summary.mutation_count,
+        summary.destructive_count,
+        summary.blocking_conflicts,
     )?;
-    for action in &plan.plan.actions {
+    for (index, action) in plan.plan.actions.iter().enumerate() {
         writeln!(
             output,
             "  {:>3} [{}] {} ({})",
-            action.sequence,
-            risk_text(action.risk),
+            index + 1,
+            risk_text(action.kind.risk()),
             action.human_description(),
             reason_text(&action.reason),
         )?;

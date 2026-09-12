@@ -1,5 +1,5 @@
 use axum::{extract::State, http::StatusCode, response::IntoResponse};
-use piqueld_client::{Envelope, SystemStatus};
+use piqueld_core::api::{Envelope, SystemStatus};
 
 use super::{ApiState, ok};
 
@@ -17,7 +17,7 @@ pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
         status: "running".into(),
         api_version: "v1".into(),
         daemon_version: env!("CARGO_PKG_VERSION").into(),
-        instance_id: state.instance_id,
+        instance_id: state.store.instance_id().to_owned(),
     })
 }
 

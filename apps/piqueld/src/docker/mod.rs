@@ -2,7 +2,6 @@
 //!
 //! The reconciler only depends on [`DockerApi`]. Bollard is deliberately kept at
 //! this edge so unit tests can use a deterministic in-memory implementation.
-use crate::operations::OperationError;
 use async_trait::async_trait;
 use bollard::{
     Docker,
@@ -77,6 +76,8 @@ pub struct BollardDocker {
 }
 
 mod engine;
+mod limited;
+pub(crate) use limited::LimitedDocker;
 mod errors;
 mod identity;
 mod observation;

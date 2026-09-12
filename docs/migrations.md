@@ -1,42 +1,34 @@
 # Database migrations
 
-`piqueld` uses SQLx's SQLite driver as its sole persistence engine. The current
-product has one baseline migration, `migrations/0001_control_plane.sql`, which
-creates the fresh control-plane schema: instance metadata, applications, application
-status, durable operations, operation steps, and mutation idempotency bindings
-for create, replace, and delete requests.
+SQLx's SQLite driver owns persistence. The database at
+`<server.data_dir>/piqueld.db` contains application manifests, resolved targets,
+application status, operation history, and the control-plane instance identity.
+The store reads and writes these records; it does not resolve images or plan
+runtime changes.
 
-The product has never been deployed. The baseline may therefore be edited or
-consolidated while this branch is finalized; no compatibility migrations are
-needed for the abandoned internal schemas. After deployment, normal forward
-migration discipline applies.
+`0001_control_plane.sql` creates the consolidated prototype schema with six
+tables: instance metadata, applications, application status, operations,
+informational events, and request receipts. Accepted manifests may have no resolved
+target yet; operation preparation publishes the target after planning checks.
+Operation promotion is durable, so restart recovery knows whether to maintain the
+old target during preparation or continue the new rollout. SQLite writers queue
+asynchronously to avoid contention between concurrent application futures.
+Request receipts are committed with acceptance and expire after 24 hours,
+independently of operation and event retention. Earlier prototype schemas, including those without the distinct `superseded`
+operation state, require a fresh database.
 
-The applications table requires canonical desired JSON, resolved runtime JSON,
-the specification hash, generation, deletion intent, and a tombstone timestamp.
-The schema contains no build, source, registry, secret, route, or published-port
-tables. Operation and status diagnostics are bounded safe strings and never raw
-backend errors.
+Startup reads `PRAGMA user_version`, rejects an unsupported newer schema, and
+applies missing embedded migrations transactionally.
 
-On startup the daemon reads `PRAGMA user_version`, rejects a newer schema, applies
-missing embedded migrations, and verifies the singleton instance metadata row. The
-final migration transaction also writes the instance metadata row, so a crash can
-never commit a schema version without instance identity. Retention pruning can
-delete terminal operations older than a configured cutoff together with their
-steps and idempotency bindings in one transaction; the partial index
-`operations_finished_retention_idx` serves that cutoff scan. The coordinator
-runs the pass during each reconciliation cycle.
-Before opening SQLite the daemon prepares its single private `server.data_dir`
-(creating missing components with mode 0700, refusing symlinks anywhere in the
-path, rejecting unsafe writable ancestors, and requiring a private final
-directory owned by the daemon user); the store itself only
-verifies that the database target inside it is absent or a regular file.
-The database file `<data_dir>/piqueld.db` is the sole authoritative state location.
-The build script provisions a disposable migrated SQLite database before SQLx
-compile-time queries are checked. It never opens an operator database.
+Deletion marks an application deleted only after runtime verification. Its
+operation history remains available. Retention removes eligible terminal history
+older than the configured cutoff; `retention.finished_operation_days = 0`
+disables operation pruning. Event retention is separate: `retention.event_days`
+defaults to 30 and zero disables it. Events survive operation pruning and never
+reconstruct runtime state. The latest operation is retained because it identifies the
+current target and supports duplicate requests and reconciliation.
 
-Run the focused fresh-database coverage with:
-
-```console
-cargo test -p piqueld --test persistence
-cargo test -p piqueld --test sqlx_stack
-```
+The daemon prepares its private data directory before opening SQLite. The store
+checks the database file path. During builds, the daemon build script provisions
+a disposable migrated database for SQLx query checks; it does not open an
+operator database.

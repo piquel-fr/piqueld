@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use std::{path::PathBuf, time::Duration};
 
-/// Essential commands for inspecting and operating Plan 06 applications.
+/// Essential commands for inspecting and operating applications.
 #[derive(Debug, Parser)]
 #[command(
     name = "piquelctl",
@@ -48,6 +48,24 @@ pub(crate) enum Command {
     Delete(DeleteArgs),
     /// Inspect or wait for one asynchronous operation.
     Operation(OperationArgs),
+    /// Repair latest intent without refreshing resolved images.
+    Reconcile(ReconcileArgs),
+    /// Resolve current image references again and deploy the resulting target.
+    Refresh(ReconcileArgs),
+    /// Rename an idle application without redeploying it.
+    Rename(RenameArgs),
+    /// Read one page of informational events, oldest first.
+    Events {
+        /// Filter by stable application ID, including deleted applications.
+        #[arg(long)]
+        application: Option<String>,
+        /// Continue after a cursor returned by the previous page.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Maximum number of events in the page.
+        #[arg(long,default_value_t=50,value_parser=clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -55,9 +73,8 @@ pub(crate) struct ManifestArgs {
     /// TOML application manifest.
     #[arg(long, value_name = "PATH")]
     pub(crate) file: PathBuf,
-
-    /// Generation to require when replacing an existing application.
-    #[arg(long, value_parser = parse_generation)]
+    /// Require this intent generation; zero requires an absent application.
+    #[arg(long)]
     pub(crate) expected_generation: Option<u64>,
 }
 
@@ -66,14 +83,17 @@ pub(crate) struct ApplyArgs {
     /// TOML application manifest.
     #[arg(long, value_name = "PATH")]
     pub(crate) file: PathBuf,
-
-    /// Generation to require when replacing an existing application.
-    #[arg(long, value_parser = parse_generation)]
+    /// Require this intent generation; zero requires an absent application.
+    #[arg(long)]
     pub(crate) expected_generation: Option<u64>,
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]
     pub(crate) yes: bool,
+
+    /// Override intent preconditions (does not skip confirmation).
+    #[arg(long, conflicts_with = "expected_generation")]
+    pub(crate) force: bool,
 
     /// Return after the daemon accepts the operation.
     #[arg(long)]
@@ -84,14 +104,17 @@ pub(crate) struct ApplyArgs {
 pub(crate) struct DeleteArgs {
     /// Application name or stable ID.
     pub(crate) name_or_id: String,
-
-    /// Generation to require for deletion.
-    #[arg(long, value_parser = parse_generation)]
+    /// Require this intent generation.
+    #[arg(long)]
     pub(crate) expected_generation: Option<u64>,
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]
     pub(crate) yes: bool,
+
+    /// Override intent preconditions (does not skip confirmation).
+    #[arg(long, conflicts_with = "expected_generation")]
+    pub(crate) force: bool,
 
     /// Return after the daemon accepts the operation.
     #[arg(long)]
@@ -106,15 +129,6 @@ pub(crate) struct OperationArgs {
     /// Fetch once instead of waiting for a terminal state.
     #[arg(long)]
     pub(crate) no_wait: bool,
-}
-
-pub(crate) fn parse_generation(value: &str) -> std::result::Result<u64, String> {
-    let generation = value
-        .parse::<u64>()
-        .map_err(|_| "generation must be a positive integer".to_owned())?;
-    (generation > 0)
-        .then_some(generation)
-        .ok_or_else(|| "generation must be a positive integer".to_owned())
 }
 
 pub(crate) fn parse_duration(value: &str) -> std::result::Result<Duration, String> {
@@ -154,4 +168,36 @@ pub(crate) fn parse_duration(value: &str) -> std::result::Result<Duration, Strin
         return Err("timeout must be greater than zero".to_owned());
     }
     Ok(duration)
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct RenameArgs {
+    /// Existing application name or stable ID.
+    pub(crate) name_or_id: String,
+    /// New unique application name.
+    pub(crate) new_name: String,
+    /// Require this intent generation.
+    #[arg(long)]
+    pub(crate) expected_generation: Option<u64>,
+    /// Skip the interactive confirmation prompt.
+    #[arg(long)]
+    pub(crate) yes: bool,
+    /// Override the revision precondition (does not skip confirmation).
+    #[arg(long, conflicts_with = "expected_generation")]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReconcileArgs {
+    /// Application name or stable ID; acts on its latest accepted intent.
+    pub(crate) name_or_id: String,
+    /// Optionally require this intent generation.
+    #[arg(long)]
+    pub(crate) expected_generation: Option<u64>,
+    /// Skip the interactive confirmation prompt.
+    #[arg(long)]
+    pub(crate) yes: bool,
+    /// Return after the daemon accepts the operation.
+    #[arg(long)]
+    pub(crate) no_wait: bool,
 }

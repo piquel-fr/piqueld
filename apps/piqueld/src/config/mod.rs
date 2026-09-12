@@ -79,11 +79,9 @@ impl DaemonConfig {
                 ));
             }
         }
-        if !(1..=86_400).contains(&self.reconciliation.scan_interval_seconds)
-            || !(1..=1_024).contains(&self.reconciliation.max_parallel_operations)
-        {
+        if !(1..=86_400).contains(&self.reconciliation.scan_interval_seconds) {
             return Err(ConfigError::Invalid(
-                "reconciliation interval must be 1..=86400 seconds and concurrency must be 1..=1024".into(),
+                "reconciliation interval must be 1..=86400 seconds".into(),
             ));
         }
         if !(1..=86_400).contains(&self.reconciliation.prepare_timeout_seconds)
@@ -181,8 +179,6 @@ impl Default for DockerConfig {
 pub struct ReconciliationConfig {
     /// Period between full drift scans.
     pub scan_interval_seconds: u64,
-    /// Global cap on concurrently mutating application operations.
-    pub max_parallel_operations: usize,
     /// Outer budget for resolving one application's inputs before persistence.
     pub prepare_timeout_seconds: u64,
     /// Maximum time spent waiting for runtime convergence per operation.
@@ -193,7 +189,6 @@ impl Default for ReconciliationConfig {
     fn default() -> Self {
         Self {
             scan_interval_seconds: 60,
-            max_parallel_operations: 4,
             prepare_timeout_seconds: 300,
             convergence_timeout_seconds: 120,
         }
@@ -207,12 +202,15 @@ pub struct RetentionConfig {
     /// Days a finished operation is retained before pruning.
     /// `0` disables pruning.
     pub finished_operation_days: u64,
+    /// Days informational events are retained; zero disables pruning.
+    pub event_days: u64,
 }
 
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
             finished_operation_days: 10,
+            event_days: 30,
         }
     }
 }

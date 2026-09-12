@@ -1807,7 +1807,6 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "utoipa",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

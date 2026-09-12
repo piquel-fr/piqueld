@@ -1,5 +1,6 @@
 //! Small, transport-independent state helpers for the read-only dashboard.
 
+use piqueld_client::{ApplicationState, Convergence};
 use std::{collections::BTreeSet, time::Duration};
 
 /// Maximum number of applications requested per API page.
@@ -115,14 +116,25 @@ pub enum ApplicationHealth {
 }
 
 impl ApplicationHealth {
-    /// Converts the server's stable state string to a bounded UI category.
+    /// Converts application status to a UI health category.
     #[must_use]
-    pub fn from_server_state(value: &str) -> Self {
+    pub fn from_server_state(value: ApplicationState) -> Self {
         match value {
-            "ready" | "converged" => Self::Converged,
-            "degraded" => Self::Degraded,
-            "failed" => Self::Failed,
+            ApplicationState::Ready => Self::Converged,
+            ApplicationState::Degraded => Self::Degraded,
+            ApplicationState::Failed => Self::Failed,
             _ => Self::Pending,
+        }
+    }
+
+    /// Converts observed service health to a UI health category.
+    #[must_use]
+    pub fn from_convergence(value: &Convergence) -> Self {
+        match value {
+            Convergence::Converged => Self::Converged,
+            Convergence::Degraded => Self::Degraded,
+            Convergence::Failed => Self::Failed,
+            Convergence::Updating => Self::Pending,
         }
     }
 
@@ -302,19 +314,19 @@ mod tests {
     #[test]
     fn application_health_covers_terminal_and_pending_states() {
         assert_eq!(
-            ApplicationHealth::from_server_state("ready"),
+            ApplicationHealth::from_server_state(ApplicationState::Ready),
             ApplicationHealth::Converged
         );
         assert_eq!(
-            ApplicationHealth::from_server_state("degraded"),
+            ApplicationHealth::from_server_state(ApplicationState::Degraded),
             ApplicationHealth::Degraded
         );
         assert_eq!(
-            ApplicationHealth::from_server_state("failed"),
+            ApplicationHealth::from_server_state(ApplicationState::Failed),
             ApplicationHealth::Failed
         );
         assert_eq!(
-            ApplicationHealth::from_server_state("pending"),
+            ApplicationHealth::from_server_state(ApplicationState::Pending),
             ApplicationHealth::Pending
         );
     }

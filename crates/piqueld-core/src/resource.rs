@@ -380,7 +380,7 @@ impl DesiredService {
 /// Desired state for an application and its resources.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct DesiredApplication {
+pub struct ResolvedApplication {
     /// Stable application identity.
     pub id: ApplicationId,
     /// User-facing application name.
@@ -397,8 +397,28 @@ pub struct DesiredApplication {
     pub services: Vec<DesiredService>,
 }
 
-/// Resolved application state used by the runtime reconciler.
-pub type ResolvedApplication = DesiredApplication;
+impl ResolvedApplication {
+    /// Reuses immutable sources for services whose requested image is unchanged.
+    #[must_use]
+    pub fn reusable_resolutions(&self, application: &NormalizedApplication) -> ResolutionSet {
+        ResolutionSet {
+            sources: application
+                .spec
+                .services
+                .iter()
+                .filter_map(|service| {
+                    let prior = self
+                        .services
+                        .iter()
+                        .find(|prior| prior.logical_name == service.name)?;
+                    let crate::Source::Image { image } = &service.source;
+                    let ResolvedSource::Image { requested, .. } = &prior.source;
+                    (requested == image).then(|| (service.name.clone(), prior.source.clone()))
+                })
+                .collect(),
+        }
+    }
+}
 
 fn desired_application_from_labels(
     labels: &BTreeMap<String, String>,
@@ -459,7 +479,7 @@ pub fn compile_application(
     app: &NormalizedApplication,
     instance_id: InstanceId,
     resolutions: &ResolutionSet,
-) -> Result<DesiredApplication, Vec<CompileError>> {
+) -> Result<ResolvedApplication, Vec<CompileError>> {
     let errors = validate_application(app, resolutions);
     if !errors.is_empty() {
         return Err(errors);
@@ -475,7 +495,7 @@ pub fn compile_application(
         spec_hash: digest.as_str().to_owned(),
     };
     let private_network = docker_resource_name(&app.id, ResourceKind::Network, None);
-    Ok(DesiredApplication {
+    Ok(ResolvedApplication {
         id: app.id.clone(),
         name: app.metadata.name.clone(),
         instance_id,
@@ -718,7 +738,7 @@ pub enum TaskDiagnostic {
 }
 
 /// Aggregate health state derived from observed tasks.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Convergence {
     /// All desired tasks are healthy and running.
@@ -749,7 +769,7 @@ impl ObservedNetwork {
     pub fn matches_ownership(
         &self,
         desired: &DesiredNetwork,
-        application: &DesiredApplication,
+        application: &ResolvedApplication,
     ) -> bool {
         OwnershipState::from_labels(&self.labels, &application.instance_id, &application.id)
             == OwnershipState::Owned
@@ -828,7 +848,7 @@ impl ObservedService {
     pub fn matches_ownership(
         &self,
         desired: &DesiredService,
-        application: &DesiredApplication,
+        application: &ResolvedApplication,
     ) -> bool {
         OwnershipState::from_labels(&self.labels, &application.instance_id, &application.id)
             == OwnershipState::Owned

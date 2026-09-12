@@ -12,9 +12,9 @@ use std::{
 };
 use utoipa::ToSchema;
 
-/// The only application API version supported by the Plan 06A product.
+/// The supported application API version.
 pub const APPLICATION_API_VERSION: &str = "piqueld.dev/v1alpha1";
-/// The only resource kind supported by the Plan 06A product.
+/// The supported manifest resource kind.
 pub const APPLICATION_KIND: &str = "Application";
 /// Envelope version for the specification hash. Version 2 hashes only the
 /// canonical spec, so cosmetic metadata changes no longer redeploy services.
@@ -34,7 +34,7 @@ const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
 const MAX_CPU_MILLIS: u32 = 1_048_576;
 
 /// Strict public application manifest request and export shape.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationManifest {
     /// API version string.
@@ -42,37 +42,37 @@ pub struct ApplicationManifest {
     /// Resource kind string.
     pub kind: String,
     /// User-provided metadata.
-    pub metadata: MetadataInput,
+    pub metadata: Metadata,
     /// Desired application resources.
-    pub spec: ApplicationSpecInput,
+    pub spec: ApplicationSpec,
 }
 
 /// User-provided application metadata.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct MetadataInput {
+pub struct Metadata {
     /// User-facing application name.
     pub name: String,
 }
 
 /// User-provided application resource lists.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
-pub struct ApplicationSpecInput {
+pub struct ApplicationSpec {
     /// Declared services.
-    pub services: Vec<ServiceInput>,
+    pub services: Vec<Service>,
     /// Declared named volumes.
-    pub volumes: Vec<VolumeInput>,
+    pub volumes: Vec<Volume>,
 }
 
 /// User-declared application service.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ServiceInput {
+pub struct Service {
     /// Logical service name.
     pub name: String,
     /// Prebuilt container image source.
-    pub source: SourceInput,
+    pub source: Source,
     /// Desired replica count.
     #[serde(default = "default_replicas")]
     pub replicas: u16,
@@ -87,11 +87,11 @@ pub struct ServiceInput {
     pub arguments: Vec<String>,
     /// Persistent volume mounts.
     #[serde(default)]
-    pub mounts: Vec<MountInput>,
+    pub mounts: Vec<Mount>,
     /// Optional container health check.
-    pub healthcheck: Option<HealthCheckInput>,
+    pub healthcheck: Option<HealthCheck>,
     /// Optional CPU and memory limits.
-    pub resources: Option<ResourceLimitsInput>,
+    pub resources: Option<ResourceLimits>,
 }
 
 fn default_replicas() -> u16 {
@@ -99,9 +99,9 @@ fn default_replicas() -> u16 {
 }
 
 /// The exhaustive set of deployable service sources.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
-pub enum SourceInput {
+pub enum Source {
     /// Pull a prebuilt image from a registry.
     Image {
         /// Image reference.
@@ -110,17 +110,17 @@ pub enum SourceInput {
 }
 
 /// User-declared named volume.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct VolumeInput {
+pub struct Volume {
     /// Logical volume name.
     pub name: String,
 }
 
 /// A persistent volume mount in a service.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct MountInput {
+pub struct Mount {
     /// Referenced logical volume name.
     pub volume: String,
     /// Container target path.
@@ -131,9 +131,9 @@ pub struct MountInput {
 }
 
 /// User-declared container health check.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
-pub enum HealthCheckInput {
+pub enum HealthCheck {
     /// HTTP health endpoint check.
     Http {
         /// Container port to probe.
@@ -174,9 +174,9 @@ fn default_timeout() -> u32 {
 }
 
 /// Optional CPU and memory limits for a service.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ResourceLimitsInput {
+pub struct ResourceLimits {
     /// CPU limit in millicores.
     pub cpu_millis: Option<u32>,
     /// Memory limit in bytes.
@@ -242,111 +242,6 @@ pub struct NormalizedApplication {
     pub spec: ApplicationSpec,
 }
 
-/// Canonical application metadata.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-pub struct Metadata {
-    /// User-facing application name.
-    pub name: String,
-}
-
-/// Canonical resource specification.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-pub struct ApplicationSpec {
-    /// Canonical services.
-    pub services: Vec<Service>,
-    /// Canonical named volumes.
-    pub volumes: Vec<Volume>,
-}
-
-/// Canonical service definition.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-pub struct Service {
-    /// Logical service name.
-    pub name: String,
-    /// Prebuilt image source.
-    pub source: Source,
-    /// Desired replica count.
-    pub replicas: u16,
-    /// Environment variables keyed by name.
-    pub environment: BTreeMap<String, String>,
-    /// Container entrypoint command.
-    pub command: Vec<String>,
-    /// Arguments passed to the command.
-    pub arguments: Vec<String>,
-    /// Persistent volume mounts.
-    pub mounts: Vec<Mount>,
-    /// Optional health check.
-    pub healthcheck: Option<HealthCheck>,
-    /// Optional CPU and memory limits.
-    pub resources: Option<ResourceLimits>,
-}
-
-/// Canonical prebuilt image source.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum Source {
-    /// An image reference resolved by the Docker adapter before persistence.
-    Image {
-        /// Image reference requested by the user.
-        image: String,
-    },
-}
-
-/// Canonical named volume.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-pub struct Volume {
-    /// Logical volume name.
-    pub name: String,
-}
-
-/// Canonical persistent volume mount.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-pub struct Mount {
-    /// Referenced logical volume name.
-    pub volume: String,
-    /// Container target path.
-    pub target: String,
-    /// Whether the mount is read-only.
-    pub read_only: bool,
-}
-
-/// Canonical service health check.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum HealthCheck {
-    /// HTTP health endpoint check.
-    Http {
-        /// Container port to probe.
-        port: u16,
-        /// HTTP path to probe.
-        path: String,
-        /// Probe interval in seconds.
-        interval_seconds: u32,
-        /// Probe timeout in seconds.
-        timeout_seconds: u32,
-    },
-    /// Executable command health check.
-    Command {
-        /// Command and arguments to execute.
-        command: Vec<String>,
-        /// Probe interval in seconds.
-        interval_seconds: u32,
-        /// Probe timeout in seconds.
-        timeout_seconds: u32,
-    },
-}
-
-/// Canonical CPU and memory limits.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-pub struct ResourceLimits {
-    /// CPU limit in millicores.
-    pub cpu_millis: Option<u32>,
-    /// Memory limit in bytes.
-    // Keep in sync with the identical schema attribute on ResourceLimitsInput.
-    #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_u64)]
-    pub memory_bytes: Option<u64>,
-}
-
 /// Parses and validates strict TOML without performing I/O.
 ///
 /// # Errors
@@ -354,7 +249,7 @@ pub struct ResourceLimits {
 pub fn parse_toml(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
     let manifest = serde_path_to_error::deserialize(toml::Deserializer::new(input))
         .map_err(|error| decode_error(error.path()))?;
-    validate(manifest)
+    ApplicationManifest::validate(manifest)
 }
 
 /// Parses and validates strict JSON without performing I/O.
@@ -372,7 +267,7 @@ pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors>
             message: "manifest contains trailing JSON data".into(),
         }])
     })?;
-    validate(manifest)
+    ApplicationManifest::validate(manifest)
 }
 
 fn decode_error(path: &Path) -> ValidationErrors {
@@ -451,37 +346,47 @@ fn valid_path_indices(mut value: &str) -> bool {
     true
 }
 
-fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, ValidationErrors> {
-    let mut errors = Vec::new();
-    validate_header(&input, &mut errors);
-    // Bound validation work before walking attacker-controlled collections.
-    // Oversized manifests must shrink before individual entries are validated.
-    if !validate_budgets(&input, &mut errors) {
+impl ApplicationManifest {
+    /// Validates manifest semantics and returns a normalized-input wrapper.
+    ///
+    /// # Errors
+    /// Returns all detected manifest validation errors.
+    pub fn validate(mut self) -> Result<ValidatedApplication, ValidationErrors> {
+        let mut errors = Vec::new();
+        validate_header(&self, &mut errors);
+        // Bound work before walking attacker-controlled collections.
+        if !validate_budgets(&self, &mut errors) {
+            errors
+                .sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
+            return Err(ValidationErrors(errors));
+        }
+        unique_names(
+            self.spec.services.iter().map(|service| &service.name),
+            "spec.services",
+            codes::SERVICE_NAME_DUPLICATE,
+            &mut errors,
+        );
+        let volume_names = unique_names(
+            self.spec.volumes.iter().map(|volume| &volume.name),
+            "spec.volumes",
+            codes::VOLUME_NAME_DUPLICATE,
+            &mut errors,
+        );
+        validate_services(&self.spec.services, &volume_names, &mut errors);
+        validate_volumes(&self.spec.volumes, &mut errors);
         errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
-        return Err(ValidationErrors(errors));
+        if !errors.is_empty() {
+            return Err(ValidationErrors(errors));
+        }
+        for service in &mut self.spec.services {
+            let Source::Image { image } = &mut service.source;
+            *image = canonicalize_image_reference(image);
+        }
+        Ok(ValidatedApplication {
+            name: self.metadata.name,
+            spec: self.spec,
+        })
     }
-    unique_names(
-        input.spec.services.iter().map(|service| &service.name),
-        "spec.services",
-        codes::SERVICE_NAME_DUPLICATE,
-        &mut errors,
-    );
-    let volume_names = unique_names(
-        input.spec.volumes.iter().map(|volume| &volume.name),
-        "spec.volumes",
-        codes::VOLUME_NAME_DUPLICATE,
-        &mut errors,
-    );
-    validate_services(&input.spec.services, &volume_names, &mut errors);
-    validate_volumes(&input.spec.volumes, &mut errors);
-    errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
-    if !errors.is_empty() {
-        return Err(ValidationErrors(errors));
-    }
-    Ok(ValidatedApplication {
-        name: input.metadata.name,
-        spec: convert_spec(input.spec),
-    })
 }
 
 fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) {
@@ -536,7 +441,7 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
 }
 
 fn validate_services(
-    services: &[ServiceInput],
+    services: &[Service],
     volume_names: &BTreeSet<String>,
     errors: &mut Vec<ValidationError>,
 ) {
@@ -551,7 +456,7 @@ fn validate_services(
                 "replicas must be between 1 and 100",
             );
         }
-        if let SourceInput::Image { image } = &service.source
+        if let Source::Image { image } = &service.source
             && !valid_image_reference(image)
         {
             error(
@@ -658,7 +563,7 @@ fn safe_key_echo(key: &str) -> String {
 }
 
 fn validate_mounts(
-    mounts: &[MountInput],
+    mounts: &[Mount],
     base: &str,
     volume_names: &BTreeSet<String>,
     errors: &mut Vec<ValidationError>,
@@ -695,7 +600,7 @@ fn validate_mounts(
 }
 
 fn validate_resources(
-    resources: Option<&ResourceLimitsInput>,
+    resources: Option<&ResourceLimits>,
     base: &str,
     errors: &mut Vec<ValidationError>,
 ) {
@@ -741,15 +646,15 @@ fn validate_resources(
     }
 }
 
-fn validate_volumes(volumes: &[VolumeInput], errors: &mut Vec<ValidationError>) {
+fn validate_volumes(volumes: &[Volume], errors: &mut Vec<ValidationError>) {
     for (index, volume) in volumes.iter().enumerate() {
         validate_name(&volume.name, &format!("spec.volumes[{index}].name"), errors);
     }
 }
 
-fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<ValidationError>) {
+fn validate_health(value: &HealthCheck, path: &str, errors: &mut Vec<ValidationError>) {
     let (interval, timeout) = match value {
-        HealthCheckInput::Http {
+        HealthCheck::Http {
             port,
             path: request_path,
             interval_seconds,
@@ -786,7 +691,7 @@ fn validate_health(value: &HealthCheckInput, path: &str, errors: &mut Vec<Valida
             }
             (*interval_seconds, *timeout_seconds)
         }
-        HealthCheckInput::Command {
+        HealthCheck::Command {
             command,
             interval_seconds,
             timeout_seconds,
@@ -856,67 +761,6 @@ fn unique_names<'a>(
         }
     }
     found
-}
-
-fn convert_spec(input: ApplicationSpecInput) -> ApplicationSpec {
-    ApplicationSpec {
-        services: input
-            .services
-            .into_iter()
-            .map(|service| Service {
-                name: service.name,
-                source: match service.source {
-                    SourceInput::Image { image } => Source::Image {
-                        image: canonicalize_image_reference(&image),
-                    },
-                },
-                replicas: service.replicas,
-                environment: service.environment,
-                command: service.command,
-                arguments: service.arguments,
-                mounts: service
-                    .mounts
-                    .into_iter()
-                    .map(|mount| Mount {
-                        volume: mount.volume,
-                        target: mount.target,
-                        read_only: mount.read_only,
-                    })
-                    .collect(),
-                healthcheck: service.healthcheck.map(|health| match health {
-                    HealthCheckInput::Http {
-                        port,
-                        path,
-                        interval_seconds,
-                        timeout_seconds,
-                    } => HealthCheck::Http {
-                        port,
-                        path,
-                        interval_seconds,
-                        timeout_seconds,
-                    },
-                    HealthCheckInput::Command {
-                        command,
-                        interval_seconds,
-                        timeout_seconds,
-                    } => HealthCheck::Command {
-                        command,
-                        interval_seconds,
-                        timeout_seconds,
-                    },
-                }),
-                resources: service.resources.map(|resources| ResourceLimits {
-                    cpu_millis: resources.cpu_millis,
-                    memory_bytes: resources.memory_bytes,
-                }),
-            })
-            .collect(),
-        volumes: input
-            .volumes
-            .into_iter()
-            .map(|volume| Volume { name: volume.name })
-            .collect(),
-    }
 }
 
 impl ValidatedApplication {
@@ -1013,73 +857,8 @@ impl NormalizedApplication {
         ApplicationManifest {
             api_version: self.api_version.clone(),
             kind: self.kind.clone(),
-            metadata: MetadataInput {
-                name: self.metadata.name.clone(),
-            },
-            spec: ApplicationSpecInput {
-                services: self
-                    .spec
-                    .services
-                    .iter()
-                    .map(|service| ServiceInput {
-                        name: service.name.clone(),
-                        source: match &service.source {
-                            Source::Image { image } => SourceInput::Image {
-                                image: image.clone(),
-                            },
-                        },
-                        replicas: service.replicas,
-                        environment: service.environment.clone(),
-                        command: service.command.clone(),
-                        arguments: service.arguments.clone(),
-                        mounts: service
-                            .mounts
-                            .iter()
-                            .map(|mount| MountInput {
-                                volume: mount.volume.clone(),
-                                target: mount.target.clone(),
-                                read_only: mount.read_only,
-                            })
-                            .collect(),
-                        healthcheck: service.healthcheck.as_ref().map(|health| match health {
-                            HealthCheck::Http {
-                                port,
-                                path,
-                                interval_seconds,
-                                timeout_seconds,
-                            } => HealthCheckInput::Http {
-                                port: *port,
-                                path: path.clone(),
-                                interval_seconds: *interval_seconds,
-                                timeout_seconds: *timeout_seconds,
-                            },
-                            HealthCheck::Command {
-                                command,
-                                interval_seconds,
-                                timeout_seconds,
-                            } => HealthCheckInput::Command {
-                                command: command.clone(),
-                                interval_seconds: *interval_seconds,
-                                timeout_seconds: *timeout_seconds,
-                            },
-                        }),
-                        resources: service.resources.as_ref().map(|resources| {
-                            ResourceLimitsInput {
-                                cpu_millis: resources.cpu_millis,
-                                memory_bytes: resources.memory_bytes,
-                            }
-                        }),
-                    })
-                    .collect(),
-                volumes: self
-                    .spec
-                    .volumes
-                    .iter()
-                    .map(|volume| VolumeInput {
-                        name: volume.name.clone(),
-                    })
-                    .collect(),
-            },
+            metadata: self.metadata.clone(),
+            spec: self.spec.clone(),
         }
     }
 }

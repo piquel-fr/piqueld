@@ -34,7 +34,15 @@ just run --socket /run/user/1000/piqueld/piqueld.sock show notes
 
 `status` reports the daemon version and `--json` produces the same structured
 result as the public API. `apply` waits for the durable operation by default;
-`--no-wait` returns immediately with its operation identifier.
+`--no-wait` returns immediately with its operation identifier. Apply the same
+manifest to update an existing application by name. Identical manifests schedule no new work, but still wait for their existing
+operation by default; failed attempts require explicit retry. Use the same development socket for repair, image refresh, and informational history:
+
+```console
+just run --socket /run/user/1000/piqueld/piqueld.sock reconcile notes --yes
+just run --socket /run/user/1000/piqueld/piqueld.sock refresh notes --yes
+just run --socket /run/user/1000/piqueld/piqueld.sock events --application <application-id>
+```
 
 ## Dashboard and cleanup
 

@@ -4,9 +4,8 @@
 
 use axum::{
     Json, Router,
-    extract::Path,
     http::HeaderMap,
-    routing::{get, put},
+    routing::{get, post},
 };
 use piqueld_client::{
     AcceptedOperation, Client, ClientError, Envelope, ListApplicationsOptions, SystemStatus,
@@ -33,10 +32,8 @@ async fn status() -> Json<Envelope<SystemStatus>> {
 
 #[derive(Clone, Debug)]
 struct CapturedRequest {
-    id: String,
     content_type: Option<String>,
     expected_generation: Option<String>,
-    idempotency_key: Option<String>,
     body: String,
 }
 
@@ -49,23 +46,17 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-async fn capture_toml_replace(
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    body: String,
-) -> Json<Envelope<AcceptedOperation>> {
+async fn capture_toml_apply(headers: HeaderMap, body: String) -> Json<Envelope<AcceptedOperation>> {
     *CAPTURED.lock().unwrap() = Some(CapturedRequest {
-        id,
         content_type: header_value(&headers, "content-type"),
         expected_generation: header_value(&headers, "x-expected-generation"),
-        idempotency_key: header_value(&headers, "idempotency-key"),
         body,
     });
     Json(Envelope {
         data: AcceptedOperation {
+            generation: 1,
             operation_id: "op-1".into(),
             application_id: "app-1".into(),
-            generation: 7,
         },
     })
 }
@@ -73,7 +64,7 @@ async fn capture_toml_replace(
 fn app() -> Router {
     Router::new()
         .route("/api/v1/system/status", get(status))
-        .route("/api/v1/applications/{id}", put(capture_toml_replace))
+        .route("/api/v1/applications/apply", post(capture_toml_apply))
 }
 
 /// Answers one connection with a hand-written HTTP response.
@@ -320,7 +311,7 @@ async fn unreadable_error_bodies_fall_back_to_invalid_error_response() {
 async fn structured_api_errors_expose_status_code_and_message() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let body = r#"{"code":"application_generation_conflict","message":"the application was modified by another client","details":{"current_generation":4},"request_id":"req-1"}"#;
+    let body = r#"{"code":"application_deleting","message":"the application is being deleted","details":{"application_id":"app-notes-01"},"request_id":"req-1"}"#;
     let server = tokio::spawn(serve_raw(
         listener,
         raw_response("HTTP/1.1 409 Conflict", "application/json", body),
@@ -333,11 +324,8 @@ async fn structured_api_errors_expose_status_code_and_message() {
     match result {
         Err(ClientError::Api { status, error }) => {
             assert_eq!(status, http::StatusCode::CONFLICT);
-            assert_eq!(error.code, "application_generation_conflict");
-            assert_eq!(
-                error.message,
-                "the application was modified by another client"
-            );
+            assert_eq!(error.code, "application_deleting");
+            assert_eq!(error.message, "the application is being deleted");
             assert_eq!(error.request_id, "req-1");
         }
         other => panic!("expected an API error, got {other:?}"),
@@ -381,20 +369,18 @@ async fn toml_mutation_headers_are_forwarded() {
     let manifest = "name = 'my-app'\n";
     let accepted = Client::tcp(&format!("http://{address}/"))
         .unwrap()
-        .replace_application_toml_with_key("my-app", manifest, 7, Some("key-123"))
+        .apply_application_toml(manifest)
         .await
         .unwrap();
     server.abort();
-    assert_eq!(accepted.generation, 7);
+    assert_eq!(accepted.operation_id, "op-1");
     let captured = CAPTURED
         .lock()
         .unwrap()
         .clone()
         .expect("the mutation request must be captured");
-    assert_eq!(captured.id, "my-app");
     assert_eq!(captured.content_type.as_deref(), Some("application/toml"));
-    assert_eq!(captured.expected_generation.as_deref(), Some("7"));
-    assert_eq!(captured.idempotency_key.as_deref(), Some("key-123"));
+    assert_eq!(captured.expected_generation.as_deref(), Some("0"));
     assert_eq!(captured.body, manifest);
 }
 

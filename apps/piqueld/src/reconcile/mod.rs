@@ -1,44 +1,52 @@
 //! Docker-backed runtime preparation and durable reconciliation.
 
 use crate::{
-    api::{BoundaryError, PreparedApplication, RuntimeBoundary},
-    docker::{DockerApi, DockerError, IMAGE_RESOLVE_TIMEOUT},
-    operations::{OperationError, OperationHandler, OperationScheduler, SchedulerError},
+    docker::{DockerApi, DockerError},
+    operations::OperationError,
     store::{
-        ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, SqliteStore, StepState,
+        ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, OperationState, SqliteStore,
         StoreError, StoredApplication,
     },
 };
 use piqueld_core::{
-    InstanceId, NormalizedApplication, Plan, PlanAction, PlanRequest, ResolutionSet, codes,
-    compile_application,
-    manifest::Source,
+    Plan, PlanRequest, codes,
     planner::ActionKind,
-    resource::{APPLICATION_LABEL, Convergence, INSTANCE_LABEL, MANAGED_LABEL, ResolvedSource},
+    resource::{APPLICATION_LABEL, Convergence, INSTANCE_LABEL, MANAGED_LABEL},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 /// Executes durable operations against `Docker` and `SQLite`.
-pub struct ReconcileHandler<D> {
-    docker: Arc<D>,
+pub struct Controller<D> {
+    docker: Arc<crate::docker::LimitedDocker<D>>,
+    mutations: tokio::sync::Mutex<()>,
+    prepare_timeout: Duration,
     store: Arc<SqliteStore>,
     retry: RetryPolicy,
 }
 
-impl<D> ReconcileHandler<D> {
-    /// Creates a handler with the default retry policy.
+impl<D> Controller<D> {
+    /// Creates a controller with the default retry policy.
     #[must_use]
     pub fn new(docker: Arc<D>, store: Arc<SqliteStore>) -> Self {
         Self {
-            docker,
+            docker: Arc::new(crate::docker::LimitedDocker::new(docker)),
+            mutations: tokio::sync::Mutex::new(()),
+            prepare_timeout: Duration::from_secs(300),
             store,
             retry: RetryPolicy::default(),
         }
     }
 
-    /// Replaces the retry policy used by this handler.
+    /// Sets the complete image-preparation deadline.
+    #[must_use]
+    pub fn with_prepare_timeout(mut self, timeout: Duration) -> Self {
+        self.prepare_timeout = timeout;
+        self
+    }
+
+    /// Replaces the retry policy used by this controller.
     #[must_use]
     ///
     /// # Panics
@@ -105,6 +113,22 @@ impl Default for RetryPolicy {
     }
 }
 
+impl<D: DockerApi> Controller<D> {
+    /// Shares the controller's I/O limits with API observation and preview.
+    /// # Panics
+    /// Panics if the store violates its validated instance identity invariant.
+    #[must_use]
+    pub fn runtime(&self, wake: Arc<Notify>) -> Arc<dyn crate::application::RuntimeBoundary> {
+        Arc::new(crate::application::DockerRuntime::new(
+            Arc::clone(&self.docker),
+            piqueld_core::InstanceId::parse(self.store.instance_id())
+                .expect("store instance identity is valid"),
+            wake,
+            self.prepare_timeout,
+        ))
+    }
+}
+
 fn has_diagnostic(plan: &piqueld_core::Plan, code: &str) -> bool {
     plan.diagnostics
         .iter()
@@ -136,8 +160,5 @@ pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
 }
 
 mod actions;
+mod controller;
 mod coordinator;
-mod handler;
-mod runtime;
-pub use coordinator::run_coordinator;
-pub use runtime::DockerRuntime;

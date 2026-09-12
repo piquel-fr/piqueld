@@ -1,18 +1,20 @@
 use crate::{
-    cli::{ApplyArgs, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs},
+    cli::{
+        ApplyArgs, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs, ReconcileArgs, RenameArgs,
+    },
     error::{CliError, ErrorKind, Result},
     output::{
         blocked_plan_error, emit_json, render_operation, render_plan, render_plan_stderr,
         report_operation,
     },
     support::{
-        confirm, desired_replicas, idempotency_key, looks_like_application_id, manifest_name,
-        read_manifest, retry_transport, terminal_operation,
+        confirm, desired_replicas, looks_like_application_id, manifest_name, read_manifest,
+        retry_transport,
     },
 };
 use futures_util::StreamExt;
 use piqueld_client::{
-    ApplicationView, Client, ClientError, ListApplicationsOptions, OperationView, Page, PlanView,
+    ApplicationView, Client, ClientError, ListApplicationsOptions, Operation, OperationState, Page,
     Source,
 };
 use serde_json::{Value, json};
@@ -36,6 +38,45 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
         Command::Apply(args) => apply(cli, &client, args).await,
         Command::Delete(args) => delete(cli, &client, args).await,
         Command::Operation(args) => operation(cli, &client, args).await,
+        Command::Reconcile(args) => reconcile_or_refresh(cli, &client, args, false).await,
+        Command::Rename(args) => rename(cli, &client, args).await,
+        Command::Refresh(args) => reconcile_or_refresh(cli, &client, args, true).await,
+        Command::Events {
+            application,
+            cursor,
+            limit,
+        } => {
+            let page = client
+                .events(application.as_deref(), cursor.as_deref(), *limit)
+                .await?;
+            if cli.json {
+                return emit_json(&page);
+            }
+            for event in page.items {
+                writeln!(
+                    io::stdout().lock(),
+                    "{}\t{}\t{}\t{}\tattempt {}\t{}",
+                    event.id,
+                    event.created_at_ms,
+                    event.kind,
+                    event.operation_id.as_deref().unwrap_or("-"),
+                    event
+                        .attempt
+                        .map_or_else(|| "-".into(), |attempt| attempt.to_string()),
+                    format_args!(
+                        "{} {} {} {}",
+                        event.phase.as_deref().unwrap_or(""),
+                        event.resource.as_deref().unwrap_or(""),
+                        event.error_code.as_deref().unwrap_or(""),
+                        event.message.as_deref().unwrap_or("")
+                    )
+                )?;
+            }
+            if let Some(cursor) = page.next_cursor {
+                writeln!(io::stdout().lock(), "next cursor: {cursor}")?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -49,7 +90,9 @@ fn build_client(cli: &Cli) -> Result<Client> {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET)),
         )
     };
-    Ok(client.with_timeout(cli.timeout))
+    Ok(client
+        .with_timeout(cli.timeout)
+        .with_request_id(uuid::Uuid::now_v7().to_string()))
 }
 
 async fn status(cli: &Cli, client: &Client) -> Result<()> {
@@ -114,15 +157,15 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
         writeln!(io::stdout().lock(), "No applications.")?;
     } else {
         for (application, status) in rows {
-            let state = status
-                .as_ref()
-                .map_or_else(|| "unavailable".to_owned(), |status| status.state.clone());
+            let state = status.as_ref().map_or_else(
+                || "unavailable".to_owned(),
+                |status| status.state.to_string(),
+            );
             writeln!(
                 io::stdout().lock(),
-                "{}\t{}\tgeneration {}\tdesired replicas {}\t{}",
+                "{}\t{}\tdesired replicas {}\t{}",
                 application.application.metadata.name,
                 application.application.id,
-                application.generation,
                 desired_replicas(&application),
                 state,
             )?;
@@ -152,12 +195,17 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
     )?;
     writeln!(
         io::stdout().lock(),
-        "generation {} (observed {})\tstate {}",
-        application.generation,
-        status
-            .observed_generation
-            .map_or_else(|| "none".to_owned(), |generation| generation.to_string()),
+        "intent state {}, observed runtime {}",
         status.state,
+        status.runtime_health.as_deref().unwrap_or("unknown")
+    )?;
+    writeln!(
+        io::stdout().lock(),
+        "intent generation {}, resolved target generation {}",
+        application.generation,
+        application
+            .resolved_generation
+            .map_or_else(|| "none".to_owned(), |value| value.to_string())
     )?;
     writeln!(
         io::stdout().lock(),
@@ -197,8 +245,9 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
 
 async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
-    let name = manifest_name(&manifest, &args.file)?;
-    let (plan, _) = prepare_plan(client, &manifest, &name, args.expected_generation).await?;
+    let plan = client
+        .plan_application_toml_with_generation(&manifest, args.expected_generation)
+        .await?;
     if cli.json {
         emit_json(&plan)?;
         if plan.plan.is_blocked() {
@@ -218,7 +267,34 @@ async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result
 async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
     let name = manifest_name(&manifest, &args.file)?;
-    let (plan, existing) = prepare_plan(client, &manifest, &name, args.expected_generation).await?;
+    let plan = client
+        .plan_application_toml_with_generation(&manifest, args.expected_generation)
+        .await?;
+    if plan.identical && !args.force {
+        let operation = plan.operation.ok_or_else(|| {
+            CliError::new(ErrorKind::General, "identical application has no operation")
+        })?;
+        let operation = if args.no_wait {
+            if operation.state.terminal() {
+                finish_operation(operation)?
+            } else {
+                operation
+            }
+        } else {
+            wait_for_operation(client, &operation.id.clone(), Some(operation)).await?
+        };
+        if cli.json {
+            return emit_json(&json!({
+                "identical": true, "application_id": plan.application_id,
+                "outcome": operation.state, "operation": operation,
+            }));
+        }
+        writeln!(
+            io::stdout().lock(),
+            "This is identical to the existing manifest."
+        )?;
+        return render_operation(cli, &operation);
+    }
     render_plan_stderr(&plan).map_err(|error| {
         CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
     })?;
@@ -227,24 +303,15 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     }
     confirm(args.yes, &format!("Apply application {name:?}? [y/N] ")).await?;
 
-    let key = idempotency_key();
-    let accepted = if let Some(application) = existing {
-        let expected = args.expected_generation.unwrap_or(application.generation);
-        retry_transport(|| {
-            client.replace_application_toml_with_key(
-                application.application.id.as_str(),
-                &manifest,
-                expected,
-                Some(&key),
-            )
-        })
-        .await
-        .map_err(CliError::from)?
-    } else {
-        retry_transport(|| client.create_application_toml(&manifest, &key))
-            .await
-            .map_err(CliError::from)?
-    };
+    let accepted = retry_transport(|| {
+        client.apply_application_toml_with_preconditions(
+            &manifest,
+            (!args.force).then_some(args.expected_generation.unwrap_or(plan.generation)),
+            (!args.force && plan.generation > 0).then_some(plan.application_id.as_str()),
+            args.force,
+        )
+    })
+    .await?;
     if args.no_wait {
         if cli.json {
             return emit_json(&accepted);
@@ -259,7 +326,9 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     }
     let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
     if cli.json {
-        return emit_json(&json!({"accepted": accepted, "operation": operation}));
+        return emit_json(
+            &json!({"accepted": accepted, "outcome": operation.state, "operation": operation}),
+        );
     }
     writeln!(
         io::stdout().lock(),
@@ -272,7 +341,6 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
 
 async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
-    let expected = args.expected_generation.unwrap_or(application.generation);
     eprintln!(
         "deleting {} ({}): managed services and network are removed; named volumes are retained",
         application.application.metadata.name, application.application.id
@@ -286,15 +354,11 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     )
     .await?;
 
-    let key = idempotency_key();
-    let request = piqueld_client::DeleteApplicationRequest {
-        expected_generation: expected,
-    };
     let accepted = retry_transport(|| {
-        client.delete_application_with_key(
+        client.delete_application_with_preconditions(
             application.application.id.as_str(),
-            &request,
-            Some(&key),
+            (!args.force).then_some(args.expected_generation.unwrap_or(application.generation)),
+            args.force,
         )
     })
     .await
@@ -314,6 +378,7 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     if cli.json {
         return emit_json(&json!({
             "accepted": accepted,
+            "outcome": operation.state,
             "operation": operation,
             "volumes_retained": true,
         }));
@@ -335,32 +400,6 @@ async fn operation(cli: &Cli, client: &Client, args: &OperationArgs) -> Result<(
     }
     let operation = wait_for_operation(client, &args.operation_id, None).await?;
     render_operation(cli, &operation)
-}
-
-async fn prepare_plan(
-    client: &Client,
-    manifest: &str,
-    name: &str,
-    expected_generation: Option<u64>,
-) -> Result<(PlanView, Option<ApplicationView>)> {
-    let existing = find_by_name(client, name).await?;
-    let plan = if let Some(application) = &existing {
-        let expected = expected_generation.unwrap_or(application.generation);
-        client
-            .plan_replace_toml(application.application.id.as_str(), manifest, expected)
-            .await?
-    } else {
-        if expected_generation.is_some() {
-            return Err(CliError::new(
-                ErrorKind::Conflict,
-                format!(
-                    "expected generation was supplied, but application {name:?} does not exist"
-                ),
-            ));
-        }
-        client.plan_create_toml(manifest).await?
-    };
-    Ok((plan, existing))
 }
 
 async fn all_applications(client: &Client) -> Result<Vec<ApplicationView>> {
@@ -438,8 +477,8 @@ async fn resolve_application(client: &Client, name_or_id: &str) -> Result<Applic
 async fn wait_for_operation(
     client: &Client,
     operation_id: &str,
-    initial: Option<OperationView>,
-) -> Result<OperationView> {
+    initial: Option<Operation>,
+) -> Result<Operation> {
     let wait = async {
         let mut current = initial;
         loop {
@@ -448,7 +487,7 @@ async fn wait_for_operation(
                 None => client.operation(operation_id).await?,
             };
             report_operation(&operation);
-            if terminal_operation(&operation.state) {
+            if operation.state.terminal() {
                 return finish_operation(operation);
             }
             time::sleep(POLL_INTERVAL).await;
@@ -469,10 +508,10 @@ async fn wait_for_operation(
     }
 }
 
-fn finish_operation(operation: OperationView) -> Result<OperationView> {
+fn finish_operation(operation: Operation) -> Result<Operation> {
     if matches!(
-        operation.state.to_ascii_lowercase().as_str(),
-        "succeeded" | "completed"
+        operation.state,
+        OperationState::Succeeded | OperationState::Superseded
     ) {
         Ok(operation)
     } else {
@@ -487,7 +526,102 @@ fn finish_operation(operation: OperationView) -> Result<OperationView> {
             message.push_str(": ");
             message.push_str(error);
         }
+        message.push_str("; use piquelctl reconcile to retry current intent");
         Err(CliError::new(ErrorKind::Operation, message)
             .with_details(json!({"operation": operation})))
     }
+}
+
+async fn reconcile_or_refresh(
+    cli: &Cli,
+    client: &Client,
+    args: &ReconcileArgs,
+    refresh: bool,
+) -> Result<()> {
+    let application = resolve_application(client, &args.name_or_id).await?;
+    let action = if refresh {
+        "Refresh images for"
+    } else {
+        "Reconcile current intent for"
+    };
+    confirm(
+        args.yes,
+        &format!(
+            "{action} application {:?}? [y/N] ",
+            application.application.metadata.name
+        ),
+    )
+    .await?;
+    let id = application.application.id.as_str();
+    let accepted = retry_transport(|| async {
+        if refresh {
+            client
+                .refresh_application(id, args.expected_generation)
+                .await
+        } else {
+            client
+                .reconcile_application(id, args.expected_generation)
+                .await
+        }
+    })
+    .await?;
+    if args.no_wait {
+        if cli.json {
+            return emit_json(&accepted);
+        }
+        writeln!(
+            io::stdout().lock(),
+            "accepted operation {} for application {}",
+            accepted.operation_id,
+            accepted.application_id
+        )?;
+        return Ok(());
+    }
+    let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
+    if cli.json {
+        emit_json(&json!({"accepted":accepted,"outcome":operation.state,"operation":operation}))
+    } else {
+        render_operation(cli, &operation)
+    }
+}
+
+async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
+    let application = resolve_application(client, &args.name_or_id).await?;
+    confirm(
+        args.yes,
+        &format!(
+            "Rename application {:?} to {:?}? [y/N] ",
+            application.application.metadata.name, args.new_name
+        ),
+    )
+    .await?;
+    let request = piqueld_client::RenameApplicationRequest {
+        name: args.new_name.clone(),
+        expected_generation: (!args.force)
+            .then_some(args.expected_generation.unwrap_or(application.generation)),
+    };
+    let renamed = retry_transport(|| {
+        client.rename_application_with_force(
+            application.application.id.as_str(),
+            &request,
+            args.force,
+        )
+    })
+    .await?;
+    if cli.json {
+        emit_json(&renamed)?;
+    } else {
+        writeln!(
+            io::stdout().lock(),
+            "Renamed {} to {} (generation {}).",
+            application.application.metadata.name,
+            renamed.name,
+            renamed.generation
+        )?;
+    }
+    eprintln!(
+        "Update metadata.name to {:?} in your manifest file before applying it again.",
+        renamed.name
+    );
+    Ok(())
 }

@@ -1,79 +1,123 @@
 # HTTP API
 
-The versioned API is rooted at `/api/v1`. JSON responses use a `data` envelope;
-list responses contain `items` and an opaque `next_cursor`. Errors use one
-stable envelope with a machine-readable code, safe message, optional details,
-and a request ID. Internal database, parser, and Docker sources are logged for
-diagnostics but are not returned or persisted as raw messages; malformed
-request bodies additionally log the safe field path that was rejected.
+The API is rooted at `/api/v1` over a Unix socket and optional loopback TCP.
+Responses use a `data` envelope; lists contain `items` and an opaque
+`next_cursor`. Errors expose a safe message, code, details, and request ID.
+Clients poll for progress.
 
-The daemon serves the API over loopback TCP and a Unix-domain socket. The
-read-only browser dashboard is served only by the loopback TCP listener; the
-Unix socket remains API-only. The typed client supports both native transports
-and a same-origin browser transport. The API is intentionally polling-based:
-clients fetch application status and operation state instead of opening event
-streams.
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/v1/system/status` | Daemon status |
+| GET | `/api/v1/openapi.json` | Generated API schema |
+| GET | `/api/v1/applications` | Paginated applications |
+| GET | `/api/v1/applications/{id}` | Latest accepted application intent |
+| GET | `/api/v1/applications/{id}/detail` | Intent, resolved generation, observed runtime, operation, diagnostics |
+| GET | `/api/v1/applications/{id}/status` | Intent progress and separate runtime health |
+| POST | `/api/v1/applications/plan` | Preview a manifest without pulling images |
+| POST | `/api/v1/applications/apply` | Accept a full manifest by name |
+| DELETE | `/api/v1/applications/{id}` | Request deletion; no body |
+| POST | `/api/v1/applications/{id}/reconcile` | Repair latest intent without refreshing prepared digests |
+| POST | `/api/v1/applications/{id}/refresh` | Explicitly refresh image references |
+| POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
+| GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
+| GET | `/api/v1/events` | Paginated informational history, oldest first |
 
-Because the API is unauthenticated, TCP requests whose `Host` is not loopback
-(`localhost`, `127.0.0.1`, `[::1]`) are rejected with 403 `host_not_allowed`;
-this blocks DNS-rebinding browsers. Unix-socket requests carry no host and are
-always accepted. Unsupported methods on known routes answer 405 with an `Allow`
-header.
+Plan and new apply acceptance require Docker availability. Existing-application
+previews also require successful runtime observation. An unreachable
+Docker Engine returns 503 `docker_unavailable`; the response contains a safe
+message and the daemon logs the underlying diagnostic. No new intent is stored.
+A matching, unexpired idempotency receipt still replays its previously accepted
+response during an outage. Image resolution and reconciliation remain asynchronous;
+an outage after acceptance is reported by the operation.
 
-Supported resources and actions are:
+Apply and plan accept JSON `{ "manifest": ..., "expected_generation": 3,
+"expected_application_id": "app-..." }`, or complete TOML with
+`Content-Type: application/toml` or `text/toml`. TOML preconditions use
+`X-Expected-Generation` and `X-Expected-Application-Id`.
 
-- `GET /health` (unversioned liveness response outside the OpenAPI contract)
-- `GET /api/v1/system/status`
-- `GET /api/v1/openapi.json`
-- `GET /api/v1/applications` and `GET /api/v1/applications/{id}`
-- `GET /api/v1/applications/{id}/detail` (desired state, runtime summary, latest operation, and bounded diagnostics)
-- `POST /api/v1/applications` and `PUT /api/v1/applications/{id}`
-- `DELETE /api/v1/applications/{id}`
-- `POST /api/v1/applications/plan` and `POST /api/v1/applications/{id}/plan`
-- `POST /api/v1/applications/{id}/reconcile`
-- `GET /api/v1/applications/{id}/status`
-- `GET /api/v1/operations/{id}`
+Apply, delete, and rename require preconditions unless the endpoint is explicitly
+called with the query parameter `force=true`. Missing preconditions return 400
+`precondition_required`. Apply requires generation zero to create an absent name,
+or both the inspected application ID and generation to update an existing name.
+Delete requires `expected_generation` in its query; rename takes it in JSON.
+Revision mismatches return 409 `generation_conflict`; identity mismatches return
+409 `identity_conflict`. Checks and acceptance are atomic.
 
-Creation requires an `Idempotency-Key`; replacement and deletion accept one as
-well. Requests carrying more than one `Idempotency-Key` header value are
-rejected. Only the key's SHA-256 digest and the normalized request hash are
-stored; repeating a matching mutation replays the original operation identity,
-a cancelled or failed bound delete/replace is resurrected instead of replayed
-dead, and reusing a key for a different canonical spec conflicts with 409.
-Bindings live in the operation journal and are deleted together with their
-operation by the store's retention pruning, so key reuse after that horizon
-starts a new operation instead of replaying. All mutations use optimistic generation checks (JSON bodies carry
-`expected_generation`; deletion requires one) and return a durable operation
-identity with HTTP 202. Polling `GET /operations/{id}` exposes safe operation
-and step diagnostics.
+Force overrides both revision and name-based identity preconditions, even if stale
+values were supplied. Forced apply overwrites whichever application currently has
+the manifest name, or creates one if absent. ID-based mutations still target their
+URL's ID. Force never bypasses manifest validation, resource ownership, or rename
+busy/name-collision checks. There is no authorization logic for force yet.
 
-Deletion carries its `expected_generation` as a JSON request body on `DELETE`.
-Some HTTP clients and proxies strip bodies from DELETE requests; such clients
-should use the Unix-socket transport, the typed client, or a replacement
-carrying an explicit empty spec instead of relying on intermediaries to
-forward the body.
+Refresh and reconcile act on the current intent without requiring preconditions;
+they accept an optional `expected_generation` query for callers that want one.
+Reconcile can continue an already-requested deletion. Preview preconditions are
+also optional. The CLI supplies apply/delete/rename preconditions automatically;
+`--yes` skips confirmation and `--force` requests the override independently.
 
-Create, replace, and plan accept structured JSON or a complete TOML manifest with
-`Content-Type: application/toml` (also `text/toml`). TOML replacement carries
-`X-Expected-Generation`. Plan endpoints perform no durable mutation and report
-image resolution requirements when the runtime cannot yet produce a concrete
-desired plan. Successful preview requests answer 200 with a `PlanView`; callers
-still handle the documented API errors and inspect blocking diagnostics before
-deciding whether to mutate. In particular, create previews return HTTP 409 with
-collision diagnostics when the application name is already in use.
+Generation starts at 1 and advances for a changed normalized manifest or deletion
+intent. Comments and ordering do not cause changes. Full apply replaces the
+manifest without merging. Refresh, reconciliation, attempts, and runtime health
+never advance generation. Applying the same manifest while deletion is intended
+reverses deletion and advances generation.
 
-The public client contracts live in `piqueld-client`; persistence uses internal
-store rows and converts them to these DTOs at the API boundary. The detail DTO
-contains only sanitized, bounded runtime summaries and diagnostics, never raw
-Docker labels, environment, or daemon-internal errors. The essential CLI
-workflow is documented in [`docs/piquelctl.md`](piquelctl.md). Authentication,
-mutating browser controls, and additional transports are outside this product
-slice.
+Apply returns 202 and an `AcceptedOperation` before image resolution. Preparation
+failures are reported on the operation. An identical manifest returns the current
+operation without resolution or scheduling, even after failure. Explicit reconcile
+requests another attempt.
+Refresh explicitly resolves the current manifest: active refreshes are reused,
+failed refreshes retry, and a refresh after success starts a new operation.
+Refresh is rejected during deletion. Reconcile reuses stored digests for latest
+intent, retrying preparation only when it did not complete.
 
-The TCP router composes the API, `/health`, and the optional dashboard. When UI
-assets are enabled, `/` and `/dashboard` permanently redirect to
-`/dashboard/`; the dashboard serves its static files below that prefix and
-falls back to its shell for extensionless Leptos routes. Unknown `/api/...`
-paths remain structured JSON errors, while paths outside `/api` and
-`/dashboard` remain ordinary 404s. The Unix router uses the API routes directly
-and has no health, dashboard, or static fallback.
+Mutation endpoints accept an optional `Idempotency-Key` (1–128 ASCII letters,
+digits, `-`, `_`, `.`, or `:`). The CLI generates one UUID per command and reuses
+it for transport retries. The daemon atomically stores the accepted response and a
+fingerprint of the normalized request in SQLite for 24 hours. A matching retry
+returns the original response before checking the current generation, even after
+restart, failure, or supersession. It never restarts the operation. Different input
+under the same key returns 409 `request_id_conflict`. Expired keys are treated as
+new requests subject to current preconditions. Receipts contain no manifests or
+raw request bodies, and do not guarantee exactly-once Docker effects. Force is
+part of request identity: retrying a forced request replays its receipt instead of
+overwriting intervening changes again. A new forced command needs a new key.
+
+Rename accepts JSON `{ "name": "new-name", "expected_generation": 3 }` and returns
+200 with `RenamedApplication`. It rejects pending/running operations and deletion
+intent with 409 `application_busy`, and occupied names with 409
+`application_name_collision`. It preserves the stable ID, runtime resources, and
+operation identity; a changed name advances generation and records an event.
+Update the manifest's name before subsequent name-based apply.
+
+Operations have kind `apply`, `refresh`, or `delete` and state `requested`,
+`running`, `succeeded`, `failed`, `cancelled`, or `superseded`. New intent marks
+pending/running older operations `superseded`, separately from cancellation.
+The CLI treats supersession as success with an explicit outcome and stops waiting
+immediately, without following the replacement. Each execution increments
+`attempt`. Previous outcomes remain in events even when the operation is reused.
+Deletion retains volumes and completes only after runtime absence is verified.
+
+Preview returns 200 with a `PlanView`, no durable changes, and no image pulls.
+The response includes the inspected generation (zero for an absent name), an
+`identical` flag, latest operation, redacted manifest field changes, and a runtime
+plan. Identical intent has an empty plan; this does not assert runtime health.
+Unchanged service image references reuse active digests for both preview and apply;
+new/changed references report resolution requirements. Runtime unavailability is
+an informational diagnostic, so manifest changes remain available. Environment,
+command, argument, and health-check values are redacted in previews, including
+runtime actions. Execution computes its own unredacted plan after preparation.
+Previews cannot freeze mutable tags or runtime state.
+
+Events accept optional `application_id`, `cursor`, and `limit` (1–100, default 50).
+They include history for deleted applications and survive operation pruning.
+Event retention is independently configured by `retention.event_days` (default
+30; zero disables pruning). Events contain safe diagnostics and identifiers,
+never manifests, environment values, or raw Docker errors. Failure events preserve
+`error_code`, `phase`, and `resource`; operation reads expose the current phase and
+resource. Significant resource mutations and active-target repairs are recorded,
+while unchanged observations and timer ticks are omitted.
+
+The unauthenticated TCP API accepts only loopback hosts. The read-only dashboard
+is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
+The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
+[the generated contract](openapi-v1.json).

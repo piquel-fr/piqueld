@@ -9,9 +9,9 @@
             "type": "string"
           },
           "generation": {
-            "description": "Generation created by the mutation.",
+            "description": "Accepted intent revision.",
             "format": "int64",
-            "minimum": 1,
+            "minimum": 0,
             "type": "integer"
           },
           "operation_id": {
@@ -334,22 +334,12 @@
           }
         ]
       },
-      "ActionRisk": {
-        "description": "Risk classification for a plan action.",
-        "enum": [
-          "none",
-          "availability",
-          "data_adjacent",
-          "destructive"
-        ],
-        "type": "string"
-      },
       "ApplicationDetailView": {
         "description": "Read-only application detail composed at the API boundary.",
         "properties": {
           "application": {
             "$ref": "#/components/schemas/ApplicationView",
-            "description": "Desired application and generation."
+            "description": "Desired application."
           },
           "diagnostics": {
             "description": "Bounded diagnostics from status, runtime, and the latest operation.",
@@ -364,7 +354,7 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/OperationView",
+                "$ref": "#/components/schemas/Operation",
                 "description": "Most recent durable operation, when one exists."
               }
             ]
@@ -403,11 +393,11 @@
             "type": "string"
           },
           "metadata": {
-            "$ref": "#/components/schemas/MetadataInput",
+            "$ref": "#/components/schemas/Metadata",
             "description": "User-provided metadata."
           },
           "spec": {
-            "$ref": "#/components/schemas/ApplicationSpecInput",
+            "$ref": "#/components/schemas/ApplicationSpec",
             "description": "Desired application resources."
           }
         },
@@ -420,30 +410,6 @@
         "type": "object"
       },
       "ApplicationSpec": {
-        "description": "Canonical resource specification.",
-        "properties": {
-          "services": {
-            "description": "Canonical services.",
-            "items": {
-              "$ref": "#/components/schemas/Service"
-            },
-            "type": "array"
-          },
-          "volumes": {
-            "description": "Canonical named volumes.",
-            "items": {
-              "$ref": "#/components/schemas/Volume"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "services",
-          "volumes"
-        ],
-        "type": "object"
-      },
-      "ApplicationSpecInput": {
         "additionalProperties": false,
         "description": "User-provided application resource lists.",
         "properties": {
@@ -451,7 +417,7 @@
             "default": [],
             "description": "Declared services.",
             "items": {
-              "$ref": "#/components/schemas/ServiceInput"
+              "$ref": "#/components/schemas/Service"
             },
             "type": "array"
           },
@@ -459,12 +425,24 @@
             "default": [],
             "description": "Declared named volumes.",
             "items": {
-              "$ref": "#/components/schemas/VolumeInput"
+              "$ref": "#/components/schemas/Volume"
             },
             "type": "array"
           }
         },
         "type": "object"
+      },
+      "ApplicationState": {
+        "description": "Current application reconciliation status.",
+        "enum": [
+          "pending",
+          "deploying",
+          "ready",
+          "degraded",
+          "deleting",
+          "failed"
+        ],
+        "type": "string"
       },
       "ApplicationStatusView": {
         "description": "Current application reconciliation status.",
@@ -480,18 +458,16 @@
               "null"
             ]
           },
-          "observed_generation": {
-            "description": "Last observed application generation.",
-            "format": "int64",
-            "minimum": 1,
+          "runtime_health": {
+            "description": "Observed runtime health, independent of operation progress.",
             "type": [
-              "integer",
+              "string",
               "null"
             ]
           },
           "state": {
-            "description": "Machine-readable lifecycle state.",
-            "type": "string"
+            "$ref": "#/components/schemas/ApplicationState",
+            "description": "Machine-readable lifecycle state."
           },
           "updated_at_ms": {
             "description": "Last update timestamp in Unix milliseconds.",
@@ -523,10 +499,19 @@
             "type": "boolean"
           },
           "generation": {
-            "description": "Monotonic application generation.",
+            "description": "Current manifest or deletion-intent revision.",
             "format": "int64",
-            "minimum": 1,
+            "minimum": 0,
             "type": "integer"
+          },
+          "resolved_generation": {
+            "description": "Revision of the last completely resolved target, not a convergence guarantee.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "spec_hash": {
             "description": "Hash of the normalized desired specification.",
@@ -548,10 +533,26 @@
         ],
         "type": "object"
       },
-      "CreateApplicationRequest": {
+      "ApplyApplicationRequest": {
         "additionalProperties": false,
-        "description": "Request to create an application.",
+        "description": "Desired application state to apply or preview.",
         "properties": {
+          "expected_application_id": {
+            "description": "Required for non-forced updates by name; protects against name reuse.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected_generation": {
+            "description": "Required for apply unless forced; optional for preview. Zero requires an absent name.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "manifest": {
             "$ref": "#/components/schemas/ApplicationManifest",
             "description": "Application manifest to store and reconcile."
@@ -562,21 +563,15 @@
         ],
         "type": "object"
       },
-      "DeleteApplicationRequest": {
-        "additionalProperties": false,
-        "description": "Request to mark an application for deletion.",
-        "properties": {
-          "expected_generation": {
-            "description": "Generation that must still be current.",
-            "format": "int64",
-            "minimum": 1,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "expected_generation"
+      "Convergence": {
+        "description": "Aggregate health state derived from observed tasks.",
+        "enum": [
+          "converged",
+          "updating",
+          "degraded",
+          "failed"
         ],
-        "type": "object"
+        "type": "string"
       },
       "DesiredMount": {
         "additionalProperties": false,
@@ -807,9 +802,9 @@
                 "type": "string"
               },
               "generation": {
-                "description": "Generation created by the mutation.",
+                "description": "Accepted intent revision.",
                 "format": "int64",
-                "minimum": 1,
+                "minimum": 0,
                 "type": "integer"
               },
               "operation_id": {
@@ -838,7 +833,7 @@
             "properties": {
               "application": {
                 "$ref": "#/components/schemas/ApplicationView",
-                "description": "Desired application and generation."
+                "description": "Desired application."
               },
               "diagnostics": {
                 "description": "Bounded diagnostics from status, runtime, and the latest operation.",
@@ -853,7 +848,7 @@
                     "type": "null"
                   },
                   {
-                    "$ref": "#/components/schemas/OperationView",
+                    "$ref": "#/components/schemas/Operation",
                     "description": "Most recent durable operation, when one exists."
                   }
                 ]
@@ -898,18 +893,16 @@
                   "null"
                 ]
               },
-              "observed_generation": {
-                "description": "Last observed application generation.",
-                "format": "int64",
-                "minimum": 1,
+              "runtime_health": {
+                "description": "Observed runtime health, independent of operation progress.",
                 "type": [
-                  "integer",
+                  "string",
                   "null"
                 ]
               },
               "state": {
-                "description": "Machine-readable lifecycle state.",
-                "type": "string"
+                "$ref": "#/components/schemas/ApplicationState",
+                "description": "Machine-readable lifecycle state."
               },
               "updated_at_ms": {
                 "description": "Last update timestamp in Unix milliseconds.",
@@ -950,10 +943,19 @@
                 "type": "boolean"
               },
               "generation": {
-                "description": "Monotonic application generation.",
+                "description": "Current manifest or deletion-intent revision.",
                 "format": "int64",
-                "minimum": 1,
+                "minimum": 0,
                 "type": "integer"
+              },
+              "resolved_generation": {
+                "description": "Revision of the last completely resolved target, not a convergence guarantee.",
+                "format": "int64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "spec_hash": {
                 "description": "Hash of the normalized desired specification.",
@@ -981,15 +983,27 @@
         ],
         "type": "object"
       },
-      "Envelope_OperationView": {
+      "Envelope_Operation": {
         "description": "Successful API response envelope.",
         "properties": {
           "data": {
-            "description": "Asynchronous operation and its execution steps.",
+            "description": "Durable asynchronous operation returned by the API.",
             "properties": {
               "application_id": {
-                "description": "Stable application identifier.",
-                "type": "string"
+                "$ref": "#/components/schemas/ApplicationId",
+                "description": "Stable application identifier."
+              },
+              "attempt": {
+                "description": "Number of execution attempts started, including interrupted attempts.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "consecutive_failures": {
+                "description": "Consecutive failed attempts since the last successful execution.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
               },
               "created_at_ms": {
                 "description": "Creation timestamp in Unix milliseconds.",
@@ -1019,9 +1033,9 @@
                 ]
               },
               "generation": {
-                "description": "Application generation associated with the operation.",
+                "description": "Intent revision this operation targets.",
                 "format": "int64",
-                "minimum": 1,
+                "minimum": 0,
                 "type": "integer"
               },
               "id": {
@@ -1029,8 +1043,22 @@
                 "type": "string"
               },
               "kind": {
-                "description": "Machine-readable operation kind.",
-                "type": "string"
+                "$ref": "#/components/schemas/OperationKind",
+                "description": "Requested change."
+              },
+              "phase": {
+                "description": "Current execution phase, retained on failure.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resource": {
+                "description": "Logical or Docker resource currently being processed.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "started_at_ms": {
                 "description": "Start timestamp in Unix milliseconds.",
@@ -1041,15 +1069,8 @@
                 ]
               },
               "state": {
-                "description": "Machine-readable operation state.",
-                "type": "string"
-              },
-              "steps": {
-                "description": "Ordered operation steps.",
-                "items": {
-                  "$ref": "#/components/schemas/OperationStepView"
-                },
-                "type": "array"
+                "$ref": "#/components/schemas/OperationState",
+                "description": "Current lifecycle state."
               },
               "updated_at_ms": {
                 "description": "Last update timestamp in Unix milliseconds.",
@@ -1060,12 +1081,12 @@
             "required": [
               "id",
               "application_id",
-              "generation",
               "kind",
+              "generation",
+              "attempt",
               "state",
               "created_at_ms",
-              "updated_at_ms",
-              "steps"
+              "updated_at_ms"
             ],
             "type": "object"
           }
@@ -1100,10 +1121,19 @@
                       "type": "boolean"
                     },
                     "generation": {
-                      "description": "Monotonic application generation.",
+                      "description": "Current manifest or deletion-intent revision.",
                       "format": "int64",
-                      "minimum": 1,
+                      "minimum": 0,
                       "type": "integer"
+                    },
+                    "resolved_generation": {
+                      "description": "Revision of the last completely resolved target, not a convergence guarantee.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
                     },
                     "spec_hash": {
                       "description": "Hash of the normalized desired specification.",
@@ -1146,6 +1176,124 @@
         ],
         "type": "object"
       },
+      "Envelope_Page_Event": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Cursor-paginated API response.",
+            "properties": {
+              "items": {
+                "description": "Items in this page.",
+                "items": {
+                  "description": "One immutable, sanitized fact about control-plane activity.",
+                  "properties": {
+                    "application_id": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/ApplicationId",
+                          "description": "Related application, when applicable."
+                        }
+                      ]
+                    },
+                    "attempt": {
+                      "description": "Execution attempt for attempt-related events.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "created_at_ms": {
+                      "description": "Unix timestamp in milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "error_code": {
+                      "description": "Stable failure classification, when this event records failure.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "generation": {
+                      "description": "Intent generation, when applicable.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "id": {
+                      "description": "Monotonic event identity used for pagination.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "description": "Stable event category, such as `operation_failed` or `health_changed`.",
+                      "type": "string"
+                    },
+                    "message": {
+                      "description": "Sanitized diagnostic or state description.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "operation_id": {
+                      "description": "Related operation, retained even if that operation is pruned.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "phase": {
+                      "description": "Execution phase at the time of the event.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "resource": {
+                      "description": "Related logical or Docker resource.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind",
+                    "created_at_ms"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_PlanView": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -1156,21 +1304,79 @@
                 "description": "Stable application identifier.",
                 "type": "string"
               },
+              "changes": {
+                "description": "Safe changes to accepted manifest fields, independent of Docker availability.",
+                "items": {
+                  "$ref": "#/components/schemas/ManifestChange"
+                },
+                "type": "array"
+              },
+              "generation": {
+                "description": "Current intent revision; zero means the name is absent.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "identical": {
+                "description": "Whether this manifest already matches accepted intent (excluding deletion).",
+                "type": "boolean"
+              },
+              "operation": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/Operation",
+                    "description": "Latest operation at the time of comparison."
+                  }
+                ]
+              },
               "plan": {
                 "$ref": "#/components/schemas/Plan",
-                "description": "Ordered runtime plan."
-              },
-              "proposed_generation": {
-                "description": "Generation that would be created.",
-                "format": "int64",
-                "minimum": 1,
-                "type": "integer"
+                "description": "Ordered runtime plan; unresolved images are explicit actions."
               }
             },
             "required": [
               "application_id",
-              "proposed_generation",
+              "generation",
+              "identical",
+              "changes",
               "plan"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_RenamedApplication": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Completed metadata-only rename.",
+            "properties": {
+              "application_id": {
+                "description": "Unchanged application identity.",
+                "type": "string"
+              },
+              "generation": {
+                "description": "Revision after renaming.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "description": "Current application name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "application_id",
+              "name",
+              "generation"
             ],
             "type": "object"
           }
@@ -1243,106 +1449,96 @@
         ],
         "type": "object"
       },
-      "ExpectedGeneration": {
-        "additionalProperties": false,
-        "description": "Request carrying an optimistic-concurrency generation.",
+      "Event": {
+        "description": "One immutable, sanitized fact about control-plane activity.",
         "properties": {
-          "expected_generation": {
-            "description": "Generation that must still be current.",
+          "application_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ApplicationId",
+                "description": "Related application, when applicable."
+              }
+            ]
+          },
+          "attempt": {
+            "description": "Execution attempt for attempt-related events.",
             "format": "int64",
-            "minimum": 1,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at_ms": {
+            "description": "Unix timestamp in milliseconds.",
+            "format": "int64",
             "type": "integer"
+          },
+          "error_code": {
+            "description": "Stable failure classification, when this event records failure.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generation": {
+            "description": "Intent generation, when applicable.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Monotonic event identity used for pagination.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "description": "Stable event category, such as `operation_failed` or `health_changed`.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Sanitized diagnostic or state description.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "description": "Related operation, retained even if that operation is pruned.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phase": {
+            "description": "Execution phase at the time of the event.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource": {
+            "description": "Related logical or Docker resource.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "expected_generation"
+          "id",
+          "kind",
+          "created_at_ms"
         ],
         "type": "object"
       },
       "HealthCheck": {
-        "description": "Canonical service health check.",
-        "oneOf": [
-          {
-            "description": "HTTP health endpoint check.",
-            "properties": {
-              "interval_seconds": {
-                "description": "Probe interval in seconds.",
-                "format": "int32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "path": {
-                "description": "HTTP path to probe.",
-                "type": "string"
-              },
-              "port": {
-                "description": "Container port to probe.",
-                "format": "int32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "timeout_seconds": {
-                "description": "Probe timeout in seconds.",
-                "format": "int32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": {
-                "enum": [
-                  "http"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "port",
-              "path",
-              "interval_seconds",
-              "timeout_seconds",
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "Executable command health check.",
-            "properties": {
-              "command": {
-                "description": "Command and arguments to execute.",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "interval_seconds": {
-                "description": "Probe interval in seconds.",
-                "format": "int32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "timeout_seconds": {
-                "description": "Probe timeout in seconds.",
-                "format": "int32",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": {
-                "enum": [
-                  "command"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "command",
-              "interval_seconds",
-              "timeout_seconds",
-              "type"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "HealthCheckInput": {
         "description": "User-declared container health check.",
         "oneOf": [
           {
@@ -1420,20 +1616,34 @@
           }
         ]
       },
-      "Metadata": {
-        "description": "Canonical application metadata.",
+      "ManifestChange": {
+        "description": "A change to a manifest field. Environment and process values are redacted.",
         "properties": {
-          "name": {
-            "description": "User-facing application name.",
+          "after": {
+            "description": "Safe proposed value; absent for removals.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "before": {
+            "description": "Safe previous value; absent for additions.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field": {
+            "description": "Logical manifest path.",
             "type": "string"
           }
         },
         "required": [
-          "name"
+          "field"
         ],
         "type": "object"
       },
-      "MetadataInput": {
+      "Metadata": {
         "additionalProperties": false,
         "description": "User-provided application metadata.",
         "properties": {
@@ -1448,29 +1658,6 @@
         "type": "object"
       },
       "Mount": {
-        "description": "Canonical persistent volume mount.",
-        "properties": {
-          "read_only": {
-            "description": "Whether the mount is read-only.",
-            "type": "boolean"
-          },
-          "target": {
-            "description": "Container target path.",
-            "type": "string"
-          },
-          "volume": {
-            "description": "Referenced logical volume name.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "volume",
-          "target",
-          "read_only"
-        ],
-        "type": "object"
-      },
-      "MountInput": {
         "additionalProperties": false,
         "description": "A persistent volume mount in a service.",
         "properties": {
@@ -1560,8 +1747,8 @@
         "description": "Observed service state summarized for browser and operator clients.",
         "properties": {
           "convergence": {
-            "description": "Runtime convergence category.",
-            "type": "string"
+            "$ref": "#/components/schemas/Convergence",
+            "description": "Runtime convergence category."
           },
           "desired_replicas": {
             "description": "Desired replica count from the application manifest.",
@@ -1610,69 +1797,24 @@
         ],
         "type": "object"
       },
-      "OperationStepView": {
-        "description": "One step in an asynchronous operation.",
-        "properties": {
-          "action": {
-            "description": "Stable action name.",
-            "type": "string"
-          },
-          "attempt": {
-            "description": "Number of execution attempts.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "error_code": {
-            "description": "Stable failure code, when present.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "error_message": {
-            "description": "Safe failure message, when present.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "description": "Stable step identifier.",
-            "type": "string"
-          },
-          "position": {
-            "description": "Position in the operation plan.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "state": {
-            "description": "Machine-readable step state.",
-            "type": "string"
-          },
-          "updated_at_ms": {
-            "description": "Last update timestamp in Unix milliseconds.",
-            "format": "int64",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "position",
-          "action",
-          "state",
-          "attempt",
-          "updated_at_ms"
-        ],
-        "type": "object"
-      },
-      "OperationView": {
-        "description": "Asynchronous operation and its execution steps.",
+      "Operation": {
+        "description": "Durable asynchronous operation returned by the API.",
         "properties": {
           "application_id": {
-            "description": "Stable application identifier.",
-            "type": "string"
+            "$ref": "#/components/schemas/ApplicationId",
+            "description": "Stable application identifier."
+          },
+          "attempt": {
+            "description": "Number of execution attempts started, including interrupted attempts.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "consecutive_failures": {
+            "description": "Consecutive failed attempts since the last successful execution.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
           },
           "created_at_ms": {
             "description": "Creation timestamp in Unix milliseconds.",
@@ -1702,9 +1844,9 @@
             ]
           },
           "generation": {
-            "description": "Application generation associated with the operation.",
+            "description": "Intent revision this operation targets.",
             "format": "int64",
-            "minimum": 1,
+            "minimum": 0,
             "type": "integer"
           },
           "id": {
@@ -1712,8 +1854,22 @@
             "type": "string"
           },
           "kind": {
-            "description": "Machine-readable operation kind.",
-            "type": "string"
+            "$ref": "#/components/schemas/OperationKind",
+            "description": "Requested change."
+          },
+          "phase": {
+            "description": "Current execution phase, retained on failure.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resource": {
+            "description": "Logical or Docker resource currently being processed.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "started_at_ms": {
             "description": "Start timestamp in Unix milliseconds.",
@@ -1724,15 +1880,8 @@
             ]
           },
           "state": {
-            "description": "Machine-readable operation state.",
-            "type": "string"
-          },
-          "steps": {
-            "description": "Ordered operation steps.",
-            "items": {
-              "$ref": "#/components/schemas/OperationStepView"
-            },
-            "type": "array"
+            "$ref": "#/components/schemas/OperationState",
+            "description": "Current lifecycle state."
           },
           "updated_at_ms": {
             "description": "Last update timestamp in Unix milliseconds.",
@@ -1743,14 +1892,35 @@
         "required": [
           "id",
           "application_id",
-          "generation",
           "kind",
+          "generation",
+          "attempt",
           "state",
           "created_at_ms",
-          "updated_at_ms",
-          "steps"
+          "updated_at_ms"
         ],
         "type": "object"
+      },
+      "OperationKind": {
+        "description": "Application change being reconciled.",
+        "enum": [
+          "apply",
+          "refresh",
+          "delete"
+        ],
+        "type": "string"
+      },
+      "OperationState": {
+        "description": "Lifecycle of one desired-state operation.",
+        "enum": [
+          "requested",
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled",
+          "superseded"
+        ],
+        "type": "string"
       },
       "Plan": {
         "additionalProperties": false,
@@ -1769,70 +1939,30 @@
               "$ref": "#/components/schemas/PlanDiagnostic"
             },
             "type": "array"
-          },
-          "summary": {
-            "$ref": "#/components/schemas/PlanSummary",
-            "description": "Aggregate action counts."
           }
         },
         "required": [
           "actions",
-          "diagnostics",
-          "summary"
+          "diagnostics"
         ],
         "type": "object"
       },
       "PlanAction": {
-        "description": "One ordered action in a runtime plan.",
+        "additionalProperties": false,
+        "description": "One action and its explanation in a runtime plan.",
         "properties": {
-          "destructive": {
-            "description": "Whether the action is destructive.",
-            "type": "boolean"
-          },
           "kind": {
             "$ref": "#/components/schemas/ActionKind",
             "description": "Action details."
           },
-          "mutates_runtime": {
-            "description": "Whether the action mutates runtime state.",
-            "type": "boolean"
-          },
           "reason": {
             "$ref": "#/components/schemas/ActionReason",
             "description": "Why the action is present."
-          },
-          "risk": {
-            "$ref": "#/components/schemas/ActionRisk",
-            "description": "Risk classification."
-          },
-          "sequence": {
-            "description": "Stable action sequence number.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
           }
         },
         "required": [
-          "sequence",
           "kind",
-          "reason",
-          "risk",
-          "mutates_runtime",
-          "destructive"
-        ],
-        "type": "object"
-      },
-      "PlanApplicationRequest": {
-        "additionalProperties": false,
-        "description": "Request to preview creation of an application.",
-        "properties": {
-          "manifest": {
-            "$ref": "#/components/schemas/ApplicationManifest",
-            "description": "Application manifest to plan."
-          }
-        },
-        "required": [
-          "manifest"
+          "reason"
         ],
         "type": "object"
       },
@@ -1870,51 +2000,6 @@
         ],
         "type": "object"
       },
-      "PlanSummary": {
-        "additionalProperties": false,
-        "description": "Aggregate counts for a generated plan.",
-        "properties": {
-          "action_count": {
-            "description": "Total action count.",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "blocking_conflicts": {
-            "description": "Count of blocking ownership conflicts.",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "by_action": {
-            "additionalProperties": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "description": "Action counts grouped by stable action name.",
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "destructive_count": {
-            "description": "Count of destructive actions.",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "mutation_count": {
-            "description": "Count of runtime mutations.",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "action_count",
-          "mutation_count",
-          "destructive_count",
-          "blocking_conflicts",
-          "by_action"
-        ],
-        "type": "object"
-      },
       "PlanView": {
         "description": "Dry-run plan returned by the API.",
         "properties": {
@@ -1922,63 +2007,93 @@
             "description": "Stable application identifier.",
             "type": "string"
           },
+          "changes": {
+            "description": "Safe changes to accepted manifest fields, independent of Docker availability.",
+            "items": {
+              "$ref": "#/components/schemas/ManifestChange"
+            },
+            "type": "array"
+          },
+          "generation": {
+            "description": "Current intent revision; zero means the name is absent.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "identical": {
+            "description": "Whether this manifest already matches accepted intent (excluding deletion).",
+            "type": "boolean"
+          },
+          "operation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Operation",
+                "description": "Latest operation at the time of comparison."
+              }
+            ]
+          },
           "plan": {
             "$ref": "#/components/schemas/Plan",
-            "description": "Ordered runtime plan."
-          },
-          "proposed_generation": {
-            "description": "Generation that would be created.",
-            "format": "int64",
-            "minimum": 1,
-            "type": "integer"
+            "description": "Ordered runtime plan; unresolved images are explicit actions."
           }
         },
         "required": [
           "application_id",
-          "proposed_generation",
+          "generation",
+          "identical",
+          "changes",
           "plan"
         ],
         "type": "object"
       },
-      "ReplaceApplicationRequest": {
+      "RenameApplicationRequest": {
         "additionalProperties": false,
-        "description": "Request to replace an application at an expected generation.",
+        "description": "Metadata-only rename, conditioned on the inspected intent revision.",
         "properties": {
           "expected_generation": {
-            "description": "Generation that must still be current.",
+            "description": "Current intent revision, required unless explicitly forced.",
             "format": "int64",
-            "minimum": 1,
-            "type": "integer"
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
-          "manifest": {
-            "$ref": "#/components/schemas/ApplicationManifest",
-            "description": "Replacement application manifest."
+          "name": {
+            "description": "New unique application name.",
+            "type": "string"
           }
         },
         "required": [
-          "expected_generation",
-          "manifest"
+          "name"
         ],
         "type": "object"
       },
-      "ReplacePlanRequest": {
-        "additionalProperties": false,
-        "description": "Request to preview replacing an application.",
+      "RenamedApplication": {
+        "description": "Completed metadata-only rename.",
         "properties": {
-          "expected_generation": {
-            "description": "Generation that the plan is based on.",
+          "application_id": {
+            "description": "Unchanged application identity.",
+            "type": "string"
+          },
+          "generation": {
+            "description": "Revision after renaming.",
             "format": "int64",
-            "minimum": 1,
+            "minimum": 0,
             "type": "integer"
           },
-          "manifest": {
-            "$ref": "#/components/schemas/ApplicationManifest",
-            "description": "Replacement application manifest."
+          "name": {
+            "description": "Current application name.",
+            "type": "string"
           }
         },
         "required": [
-          "expected_generation",
-          "manifest"
+          "application_id",
+          "name",
+          "generation"
         ],
         "type": "object"
       },
@@ -2013,31 +2128,6 @@
         ]
       },
       "ResourceLimits": {
-        "description": "Canonical CPU and memory limits.",
-        "properties": {
-          "cpu_millis": {
-            "description": "CPU limit in millicores.",
-            "format": "int32",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "memory_bytes": {
-            "description": "Memory limit in bytes.",
-            "format": "int64",
-            "maximum": 9223372036854775807,
-            "minimum": 1,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "ResourceLimitsInput": {
         "additionalProperties": false,
         "description": "Optional CPU and memory limits for a service.",
         "properties": {
@@ -2064,88 +2154,6 @@
         "type": "object"
       },
       "Service": {
-        "description": "Canonical service definition.",
-        "properties": {
-          "arguments": {
-            "description": "Arguments passed to the command.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "command": {
-            "description": "Container entrypoint command.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "environment": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "Environment variables keyed by name.",
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "healthcheck": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/HealthCheck",
-                "description": "Optional health check."
-              }
-            ]
-          },
-          "mounts": {
-            "description": "Persistent volume mounts.",
-            "items": {
-              "$ref": "#/components/schemas/Mount"
-            },
-            "type": "array"
-          },
-          "name": {
-            "description": "Logical service name.",
-            "type": "string"
-          },
-          "replicas": {
-            "description": "Desired replica count.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "resources": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ResourceLimits",
-                "description": "Optional CPU and memory limits."
-              }
-            ]
-          },
-          "source": {
-            "$ref": "#/components/schemas/Source",
-            "description": "Prebuilt image source."
-          }
-        },
-        "required": [
-          "name",
-          "source",
-          "replicas",
-          "environment",
-          "command",
-          "arguments",
-          "mounts"
-        ],
-        "type": "object"
-      },
-      "ServiceInput": {
         "additionalProperties": false,
         "description": "User-declared application service.",
         "properties": {
@@ -2179,7 +2187,7 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/HealthCheckInput",
+                "$ref": "#/components/schemas/HealthCheck",
                 "description": "Optional container health check."
               }
             ]
@@ -2187,7 +2195,7 @@
           "mounts": {
             "description": "Persistent volume mounts.",
             "items": {
-              "$ref": "#/components/schemas/MountInput"
+              "$ref": "#/components/schemas/Mount"
             },
             "type": "array"
           },
@@ -2207,13 +2215,13 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/ResourceLimitsInput",
+                "$ref": "#/components/schemas/ResourceLimits",
                 "description": "Optional CPU and memory limits."
               }
             ]
           },
           "source": {
-            "$ref": "#/components/schemas/SourceInput",
+            "$ref": "#/components/schemas/Source",
             "description": "Prebuilt container image source."
           }
         },
@@ -2224,31 +2232,6 @@
         "type": "object"
       },
       "Source": {
-        "description": "Canonical prebuilt image source.",
-        "oneOf": [
-          {
-            "description": "An image reference resolved by the Docker adapter before persistence.",
-            "properties": {
-              "image": {
-                "description": "Image reference requested by the user.",
-                "type": "string"
-              },
-              "type": {
-                "enum": [
-                  "image"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "image",
-              "type"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "SourceInput": {
         "description": "The exhaustive set of deployable service sources.",
         "oneOf": [
           {
@@ -2302,19 +2285,6 @@
         "type": "object"
       },
       "Volume": {
-        "description": "Canonical named volume.",
-        "properties": {
-          "name": {
-            "description": "Logical volume name.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "type": "object"
-      },
-      "VolumeInput": {
         "additionalProperties": false,
         "description": "User-declared named volume.",
         "properties": {
@@ -2408,18 +2378,56 @@
           }
         },
         "summary": "List applications"
-      },
+      }
+    },
+    "/api/v1/applications/apply": {
       "post": {
-        "operationId": "createApplication",
+        "operationId": "applyApplication",
         "parameters": [
+          {
+            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "TOML only: required unless forced; zero requires absence. JSON uses expected_generation in the request body.",
+            "in": "header",
+            "name": "X-Expected-Generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "TOML only: inspected application identity. JSON uses expected_application_id in the request body.",
+            "in": "header",
+            "name": "X-Expected-Application-Id",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           {
             "in": "header",
             "name": "Idempotency-Key",
-            "required": true,
+            "required": false,
             "schema": {
-              "maxLength": 128,
-              "minLength": 1,
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -2427,7 +2435,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateApplicationRequest"
+                "$ref": "#/components/schemas/ApplyApplicationRequest"
               }
             },
             "application/toml": {
@@ -2452,7 +2460,7 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Accepted or unchanged target"
           },
           "400": {
             "content": {
@@ -2535,17 +2543,45 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Create an application"
+        "summary": "Apply an application manifest"
       }
     },
     "/api/v1/applications/plan": {
       "post": {
-        "operationId": "planApplicationCreate",
+        "operationId": "planApplication",
+        "parameters": [
+          {
+            "description": "TOML only: inspected intent revision; zero requires absence. JSON uses expected_generation in the request body.",
+            "in": "header",
+            "name": "X-Expected-Generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          {
+            "description": "TOML only: inspected application identity. JSON uses expected_application_id in the request body.",
+            "in": "header",
+            "name": "X-Expected-Application-Id",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PlanApplicationRequest"
+                "$ref": "#/components/schemas/ApplyApplicationRequest"
               }
             },
             "application/toml": {
@@ -2570,7 +2606,7 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Preview"
           },
           "400": {
             "content": {
@@ -2632,6 +2668,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
           "503": {
             "content": {
               "application/json": {
@@ -2643,7 +2689,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Preview application creation"
+        "summary": "Preview an application manifest"
       }
     },
     "/api/v1/applications/{id}": {
@@ -2661,13 +2707,30 @@
             }
           },
           {
-            "description": "Binds a retry-safe mutation to one request.",
+            "description": "Current intent revision; optional for reconcile and refresh, required for deletion unless forced.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "in": "header",
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
-              "maxLength": 128,
-              "minLength": 1,
               "type": [
                 "string",
                 "null"
@@ -2675,16 +2738,6 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeleteApplicationRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "202": {
             "content": {
@@ -2694,7 +2747,7 @@
                 }
               }
             },
-            "description": "Success"
+            "description": "Deletion operation"
           },
           "400": {
             "content": {
@@ -2726,37 +2779,7 @@
             },
             "description": "Structured, sanitized error"
           },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
           "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "502": {
             "content": {
               "application/json": {
                 "schema": {
@@ -2777,7 +2800,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Request application deletion"
+        "summary": "Delete services and networks, retaining volumes"
       },
       "get": {
         "operationId": "getApplication",
@@ -2846,169 +2869,6 @@
           }
         },
         "summary": "Get an application"
-      },
-      "put": {
-        "operationId": "replaceApplication",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 8,
-              "type": "string"
-            }
-          },
-          {
-            "description": "Required for application/toml replacement and replacement planning.",
-            "in": "header",
-            "name": "X-Expected-Generation",
-            "required": false,
-            "schema": {
-              "format": "uint64",
-              "minimum": 1,
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Binds a retry-safe mutation to one request.",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "maxLength": 128,
-              "minLength": 1,
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ReplaceApplicationRequest"
-              }
-            },
-            "application/toml": {
-              "schema": {
-                "type": "string"
-              }
-            },
-            "text/toml": {
-              "schema": {
-                "type": "string"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "502": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Replace an application"
       }
     },
     "/api/v1/applications/{id}/detail": {
@@ -3091,29 +2951,252 @@
         "summary": "Get desired and observed application state"
       }
     },
-    "/api/v1/applications/{id}/plan": {
+    "/api/v1/applications/{id}/reconcile": {
       "post": {
-        "operationId": "planApplicationReplace",
+        "operationId": "reconcileApplication",
         "parameters": [
           {
             "in": "path",
             "name": "id",
             "required": true,
             "schema": {
-              "maxLength": 64,
-              "minLength": 8,
               "type": "string"
             }
           },
           {
-            "description": "Required for application/toml replacement and replacement planning.",
-            "in": "header",
-            "name": "X-Expected-Generation",
+            "description": "Current intent revision; optional for reconcile and refresh, required for deletion unless forced.",
+            "in": "query",
+            "name": "expected_generation",
             "required": false,
             "schema": {
-              "format": "uint64",
-              "minimum": 1,
+              "format": "int64",
+              "minimum": 0,
               "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Reconciliation accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/refresh": {
+      "post": {
+        "operationId": "refreshApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Current intent revision; optional for reconcile and refresh, required for deletion unless forced.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Image refresh accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/rename": {
+      "post": {
+        "operationId": "renameApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -3121,17 +3204,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ReplacePlanRequest"
-              }
-            },
-            "application/toml": {
-              "schema": {
-                "type": "string"
-              }
-            },
-            "text/toml": {
-              "schema": {
-                "type": "string"
+                "$ref": "#/components/schemas/RenameApplicationRequest"
               }
             }
           },
@@ -3142,11 +3215,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Envelope_PlanView"
+                  "$ref": "#/components/schemas/Envelope_RenamedApplication"
                 }
               }
             },
-            "description": "Success"
+            "description": "Application renamed without redeployment"
           },
           "400": {
             "content": {
@@ -3178,47 +3251,7 @@
             },
             "description": "Structured, sanitized error"
           },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
           "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "502": {
             "content": {
               "application/json": {
                 "schema": {
@@ -3238,128 +3271,7 @@
             },
             "description": "Structured, sanitized error"
           }
-        },
-        "summary": "Preview application replacement"
-      }
-    },
-    "/api/v1/applications/{id}/reconcile": {
-      "post": {
-        "operationId": "reconcileApplication",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "maxLength": 64,
-              "minLength": 8,
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ExpectedGeneration"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
-                }
-              }
-            },
-            "description": "Success"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "502": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        },
-        "summary": "Request application reconciliation"
+        }
       }
     },
     "/api/v1/applications/{id}/status": {
@@ -3432,6 +3344,71 @@
         "summary": "Get application status"
       }
     },
+    "/api/v1/events": {
+      "get": {
+        "operationId": "listEvents",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "application_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_Event"
+                }
+              }
+            },
+            "description": "Informational history, oldest first"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "operationId": "openApiDocument",
@@ -3470,7 +3447,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Envelope_OperationView"
+                  "$ref": "#/components/schemas/Envelope_Operation"
                 }
               }
             },
