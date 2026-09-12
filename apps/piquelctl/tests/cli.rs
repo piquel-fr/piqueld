@@ -815,7 +815,7 @@ fn fifo_manifest_is_rejected_before_opening() {
 
 #[test]
 fn human_output_reports_a_closed_pipe_without_panicking() {
-    let server = start_server(false, 1, |_| Reply::json(operation("pending")));
+    let server = start_server(false, 1, |_| Reply::json(operation("requested")));
     let Endpoint::Tcp(url) = &server.endpoint else {
         panic!("TCP fixture")
     };
@@ -828,7 +828,7 @@ fn human_output_reports_a_closed_pipe_without_panicking() {
         .expect("CLI reports output failure");
     assert_eq!(output.status.code(), Some(1));
     let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("could not write output"));
+    assert!(error.contains("could not write output"), "stderr: {error}");
     assert!(!error.contains("panicked"));
     server.finish();
 }
