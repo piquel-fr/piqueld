@@ -292,6 +292,11 @@ async fn event_history_survives_operation_pruning_and_has_independent_retention(
         Err(StoreError::NotFound)
     ));
     assert!(store.operation(&second.id).await.is_ok());
+    assert!(matches!(
+        store.prepared_target(&first.id).await,
+        Err(StoreError::NotFound)
+    ));
+    assert!(store.prepared_target(&second.id).await.unwrap().is_none());
     let events = store.events(Some(&app.id), None, 100).await.unwrap();
     assert!(
         events

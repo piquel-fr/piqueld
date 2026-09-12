@@ -151,7 +151,7 @@ pub(super) async fn detail(
 #[utoipa::path(
     post, path = "/api/v1/applications/apply", operation_id = "applyApplication",
     summary = "Apply an application manifest",
-    params(ForceQuery,("X-Expected-Generation"=Option<u64>,Header,description="Required unless forced; zero requires absence"),("X-Expected-Application-Id"=Option<String>,Header),("Idempotency-Key"=Option<String>,Header)),
+    params(ForceQuery,("X-Expected-Generation"=Option<u64>,Header,description="TOML only: required unless forced; zero requires absence. JSON uses expected_generation in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses expected_application_id in the request body."),("Idempotency-Key"=Option<String>,Header)),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 202, description = "Accepted or unchanged target", body = Envelope<AcceptedOperation>),
@@ -217,7 +217,7 @@ pub(super) async fn delete(
 #[utoipa::path(
     post, path = "/api/v1/applications/plan", operation_id = "planApplication",
     summary = "Preview an application manifest",
-    params(("X-Expected-Generation"=Option<u64>,Header),("X-Expected-Application-Id"=Option<String>,Header)),
+    params(("X-Expected-Generation"=Option<u64>,Header,description="TOML only: inspected intent revision; zero requires absence. JSON uses expected_generation in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses expected_application_id in the request body.")),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 200, description = "Preview", body = Envelope<PlanView>),
@@ -283,29 +283,22 @@ async fn preview_plan(
     app: &NormalizedApplication,
     current: Option<&StoredApplication>,
 ) -> Result<piqueld_core::Plan, ApiError> {
+    let observed = if let Some(current) = current {
+        state.runtime.observe(current).await?
+    } else {
+        state.runtime.check_available().await?;
+        ObservedApplication::default()
+    };
     if current.is_some_and(|current| !current.delete_intent && current.application == *app) {
         return Ok(Plan::default());
     }
-    let mut unavailable = false;
-    let observed = if let Some(current) = current {
-        match state.runtime.observe(current).await {
-            Ok(observed) => observed,
-            Err(error) => {
-                tracing::warn!(?error, "preview runtime observation unavailable");
-                unavailable = true;
-                ObservedApplication::default()
-            }
-        }
-    } else {
-        ObservedApplication::default()
-    };
     let resolutions = current
         .and_then(|app| app.resolved.as_ref())
         .map_or_else(ResolutionSet::default, |target| {
             target.reusable_resolutions(app)
         });
     let unresolved = preview_resolution(app, &resolutions);
-    let desired = if unresolved.is_empty() && !unavailable {
+    let desired = if unresolved.is_empty() {
         Some(
             compile_application(
                 app,
@@ -325,13 +318,6 @@ async fn preview_plan(
         },
         &observed,
     );
-    if unavailable {
-        plan.diagnostics.push(piqueld_core::PlanDiagnostic {
-            severity:piqueld_core::DiagnosticSeverity::Warning,
-            code:"runtime_unavailable".into(),resource:app.metadata.name.clone(),
-            message:"Runtime observation is unavailable; only manifest changes and resolution requirements are shown".into(),blocking:false,
-        });
-    }
     plan.redact_configuration();
     Ok(plan)
 }
@@ -639,7 +625,7 @@ mod tests {
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(super) struct GenerationQuery {
-    /// Current intent revision; required for deletion unless forced.
+    /// Current intent revision; optional for reconcile and refresh, required for deletion unless forced.
     expected_generation: Option<u64>,
     /// Explicitly bypass intent preconditions.
     #[serde(default)]
@@ -779,7 +765,7 @@ pub(super) async fn rename(
 #[serde(default, deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(super) struct ForceQuery {
-    /// Explicitly bypass intent revision and name-based identity preconditions.
+    /// Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
     force: bool,
 }
 impl ForceQuery {

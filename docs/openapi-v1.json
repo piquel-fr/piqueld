@@ -2385,7 +2385,7 @@
         "operationId": "applyApplication",
         "parameters": [
           {
-            "description": "Explicitly bypass intent revision and name-based identity preconditions.",
+            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
             "in": "query",
             "name": "force",
             "required": false,
@@ -2394,7 +2394,7 @@
             }
           },
           {
-            "description": "Required unless forced; zero requires absence",
+            "description": "TOML only: required unless forced; zero requires absence. JSON uses expected_generation in the request body.",
             "in": "header",
             "name": "X-Expected-Generation",
             "required": false,
@@ -2408,6 +2408,7 @@
             }
           },
           {
+            "description": "TOML only: inspected application identity. JSON uses expected_application_id in the request body.",
             "in": "header",
             "name": "X-Expected-Application-Id",
             "required": false,
@@ -2550,6 +2551,7 @@
         "operationId": "planApplication",
         "parameters": [
           {
+            "description": "TOML only: inspected intent revision; zero requires absence. JSON uses expected_generation in the request body.",
             "in": "header",
             "name": "X-Expected-Generation",
             "required": false,
@@ -2563,6 +2565,7 @@
             }
           },
           {
+            "description": "TOML only: inspected application identity. JSON uses expected_application_id in the request body.",
             "in": "header",
             "name": "X-Expected-Application-Id",
             "required": false,
@@ -2704,7 +2707,7 @@
             }
           },
           {
-            "description": "Current intent revision; required for deletion unless forced.",
+            "description": "Current intent revision; optional for reconcile and refresh, required for deletion unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -2961,7 +2964,7 @@
             }
           },
           {
-            "description": "Current intent revision; required for deletion unless forced.",
+            "description": "Current intent revision; optional for reconcile and refresh, required for deletion unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -3069,7 +3072,7 @@
             }
           },
           {
-            "description": "Current intent revision; required for deletion unless forced.",
+            "description": "Current intent revision; optional for reconcile and refresh, required for deletion unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -3177,7 +3180,7 @@
             }
           },
           {
-            "description": "Explicitly bypass intent revision and name-based identity preconditions.",
+            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
             "in": "query",
             "name": "force",
             "required": false,

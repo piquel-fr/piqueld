@@ -39,6 +39,8 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
         application: &NormalizedApplication,
         resolutions: &piqueld_core::ResolutionSet,
     ) -> Result<ResolvedApplication, BoundaryError>;
+    /// Checks Docker availability without preparing images or changing runtime resources.
+    async fn check_available(&self) -> Result<(), BoundaryError>;
     /// Captures current runtime state for a stored application.
     async fn observe(
         &self,
@@ -119,7 +121,12 @@ impl Mutation {
     }
 }
 
-/// Validates application commands and delegates atomic acceptance to SQLite.
+/// Entry point for mutations from the HTTP API and direct callers.
+///
+/// This service validates request IDs and names, commits intent and the replay
+/// receipt atomically through the store, then wakes reconciliation. Keeping this
+/// here makes those callers share the same acceptance rules without requiring
+/// the database layer to know about the controller.
 #[derive(Clone)]
 pub struct Applications {
     pub(crate) store: Arc<SqliteStore>,
@@ -134,13 +141,17 @@ impl Applications {
     }
 
     /// Accepts a mutation and records its receipt in the same transaction.
-    /// An explicit force override bypasses revision and name-based identity checks.
+    /// `expected_generation` is the last inspected intent revision: zero requires
+    /// absence and `None` skips the revision check. An explicit force override
+    /// bypasses revision and name-based identity checks.
+    /// `request_id` is the caller's idempotency key, not an operation ID: replay
+    /// returns the original response, including for rename which has no operation.
     /// # Errors
     /// Returns validation, conflict, or persistence errors.
     pub async fn accept(
         &self,
         mutation: Mutation,
-        expected: Option<u64>,
+        expected_generation: Option<u64>,
         force: bool,
         request_id: Option<&str>,
     ) -> Result<MutationResponse, ApplicationError> {
@@ -158,9 +169,20 @@ impl Applications {
         {
             return Err(StoreError::InvalidInput.into());
         }
+        if matches!(mutation, Mutation::Apply { .. }) {
+            // A replay returns an already committed response, even during an outage.
+            if let Some(response) = self
+                .store
+                .replay(&mutation, expected_generation, force, request_id)
+                .await?
+            {
+                return Ok(response);
+            }
+            self.runtime.check_available().await?;
+        }
         let (response, wake) = self
             .store
-            .accept(mutation, expected, force, request_id)
+            .accept(mutation, expected_generation, force, request_id)
             .await?;
         if wake {
             self.runtime.trigger_reconciliation();
@@ -168,15 +190,15 @@ impl Applications {
         Ok(response)
     }
 
-    /// Accepts normalized intent without waiting for Docker.
+    /// Accepts normalized intent after checking Docker availability, without waiting for image preparation.
     /// # Errors
     /// Returns storage or generation errors.
     pub async fn apply(
         &self,
         manifest: ValidatedApplication,
-        expected: Option<u64>,
+        expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        self.operation(Mutation::apply(manifest, None), expected)
+        self.operation(Mutation::apply(manifest, None), expected_generation)
             .await
     }
 
@@ -186,9 +208,9 @@ impl Applications {
     pub async fn delete(
         &self,
         id: &ApplicationId,
-        expected: Option<u64>,
+        expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        self.operation(Mutation::Delete { id: id.clone() }, expected)
+        self.operation(Mutation::Delete { id: id.clone() }, expected_generation)
             .await
     }
 
@@ -198,9 +220,9 @@ impl Applications {
     pub async fn reconcile(
         &self,
         id: &ApplicationId,
-        expected: Option<u64>,
+        expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        self.operation(Mutation::Reconcile { id: id.clone() }, expected)
+        self.operation(Mutation::Reconcile { id: id.clone() }, expected_generation)
             .await
     }
 
@@ -210,19 +232,20 @@ impl Applications {
     pub async fn refresh(
         &self,
         id: &ApplicationId,
-        expected: Option<u64>,
+        expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        self.operation(Mutation::Refresh { id: id.clone() }, expected)
+        self.operation(Mutation::Refresh { id: id.clone() }, expected_generation)
             .await
     }
 
     async fn operation(
         &self,
         mutation: Mutation,
-        expected: Option<u64>,
+        expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        let MutationResponse::Operation(accepted) =
-            self.accept(mutation, expected, false, None).await?
+        let MutationResponse::Operation(accepted) = self
+            .accept(mutation, expected_generation, false, None)
+            .await?
         else {
             return Err(StoreError::Corrupt.into());
         };

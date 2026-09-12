@@ -33,6 +33,7 @@ async fn status() -> Json<Envelope<SystemStatus>> {
 #[derive(Clone, Debug)]
 struct CapturedRequest {
     content_type: Option<String>,
+    expected_generation: Option<String>,
     body: String,
 }
 
@@ -48,6 +49,7 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
 async fn capture_toml_apply(headers: HeaderMap, body: String) -> Json<Envelope<AcceptedOperation>> {
     *CAPTURED.lock().unwrap() = Some(CapturedRequest {
         content_type: header_value(&headers, "content-type"),
+        expected_generation: header_value(&headers, "x-expected-generation"),
         body,
     });
     Json(Envelope {
@@ -378,6 +380,7 @@ async fn toml_mutation_headers_are_forwarded() {
         .clone()
         .expect("the mutation request must be captured");
     assert_eq!(captured.content_type.as_deref(), Some("application/toml"));
+    assert_eq!(captured.expected_generation.as_deref(), Some("0"));
     assert_eq!(captured.body, manifest);
 }
 

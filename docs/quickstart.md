@@ -36,9 +36,13 @@ just run --socket /run/user/1000/piqueld/piqueld.sock show notes
 result as the public API. `apply` waits for the durable operation by default;
 `--no-wait` returns immediately with its operation identifier. Apply the same
 manifest to update an existing application by name. Identical manifests schedule no new work, but still wait for their existing
-operation by default; failed attempts require explicit retry. Use `piquelctl reconcile notes --yes` for repair or retry and
-`piquelctl refresh notes --yes` to resolve mutable image tags again.
-`piquelctl events --application <application-id>` reads informational history.
+operation by default; failed attempts require explicit retry. Use the same development socket for repair, image refresh, and informational history:
+
+```console
+just run --socket /run/user/1000/piqueld/piqueld.sock reconcile notes --yes
+just run --socket /run/user/1000/piqueld/piqueld.sock refresh notes --yes
+just run --socket /run/user/1000/piqueld/piqueld.sock events --application <application-id>
+```
 
 ## Dashboard and cleanup
 

@@ -5,40 +5,30 @@ use crate::application::{Mutation, MutationResponse};
 use piqueld_core::ApplicationId;
 use piqueld_core::api::{AcceptedOperation, RenamedApplication};
 use sha2::{Digest, Sha256};
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 impl SqliteStore {
+    /// Commits a mutation and its optional replay receipt in one transaction.
+    /// `expected_generation` compares the inspected intent revision; zero means
+    /// the application must be absent, and `None` omits the revision check.
+    /// `request_id` is a validated caller-supplied idempotency key, distinct from
+    /// the server-generated operation ID (rename does not create an operation).
     pub(crate) async fn accept(
         &self,
         mut mutation: Mutation,
-        mut expected: Option<u64>,
+        mut expected_generation: Option<u64>,
         force: bool,
         request_id: Option<&str>,
     ) -> Result<(MutationResponse, bool), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
-        let fingerprint = format!(
-            "{:x}",
-            Sha256::digest(
-                serde_json::to_vec(&(&mutation, expected, force)).map_err(StoreError::corrupt)?
-            )
-        );
-        if let Some(request_id) = request_id {
-            let receipt = sqlx::query!("SELECT fingerprint,response_json FROM request_receipts WHERE request_id=?1 AND expires_at_ms>?2",request_id,now)
-                .fetch_optional(&mut *tx).await.map_err(StoreError::database)?;
-            if let Some(receipt) = receipt {
-                if receipt.fingerprint != fingerprint {
-                    return Err(StoreError::ReplayConflict);
-                }
-                return Ok((
-                    serde_json::from_str(&receipt.response_json).map_err(StoreError::corrupt)?,
-                    false,
-                ));
-            }
+        let fingerprint = Self::mutation_fingerprint(&mutation, expected_generation, force)?;
+        if let Some(response) = Self::replay_on(&mut tx, request_id, &fingerprint, now).await? {
+            return Ok((response, false));
         }
         // Replay the original acceptance before applying an override to current intent.
         if force {
-            expected = None;
+            expected_generation = None;
             if let Mutation::Apply {
                 expected_application_id,
                 ..
@@ -49,7 +39,8 @@ impl SqliteStore {
         }
         let (current, latest) = Self::mutation_snapshot(&mut tx, &mutation).await?;
         let (response, wake) =
-            Self::execute_mutation(&mut tx, mutation, current, latest, expected, now).await?;
+            Self::execute_mutation(&mut tx, mutation, current, latest, expected_generation, now)
+                .await?;
         if let Some(request_id) = request_id {
             let response_json = serde_json::to_string(&response).map_err(StoreError::corrupt)?;
             let expires = now.saturating_add(86_400_000);
@@ -60,12 +51,69 @@ impl SqliteStore {
         Ok((response, wake))
     }
 
+    // Read before Docker preflight without holding the writer lock. Acceptance
+    // checks again inside its transaction to cover concurrent matching requests.
+    pub(crate) async fn replay(
+        &self,
+        mutation: &Mutation,
+        expected_generation: Option<u64>,
+        force: bool,
+        request_id: Option<&str>,
+    ) -> Result<Option<MutationResponse>, StoreError> {
+        if request_id.is_none() {
+            return Ok(None);
+        }
+        let fingerprint = Self::mutation_fingerprint(mutation, expected_generation, force)?;
+        Self::replay_on(
+            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
+            request_id,
+            &fingerprint,
+            now_ms(),
+        )
+        .await
+    }
+
+    fn mutation_fingerprint(
+        mutation: &Mutation,
+        expected_generation: Option<u64>,
+        force: bool,
+    ) -> Result<String, StoreError> {
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(mutation, expected_generation, force))
+                    .map_err(StoreError::corrupt)?
+            )
+        ))
+    }
+
+    async fn replay_on(
+        connection: &mut SqliteConnection,
+        request_id: Option<&str>,
+        fingerprint: &str,
+        now: i64,
+    ) -> Result<Option<MutationResponse>, StoreError> {
+        let Some(request_id) = request_id else {
+            return Ok(None);
+        };
+        let receipt = sqlx::query!("SELECT fingerprint,response_json FROM request_receipts WHERE request_id=?1 AND expires_at_ms>?2",request_id,now)
+            .fetch_optional(connection).await.map_err(StoreError::database)?;
+        receipt
+            .map(|receipt| {
+                if receipt.fingerprint != fingerprint {
+                    return Err(StoreError::ReplayConflict);
+                }
+                serde_json::from_str(&receipt.response_json).map_err(StoreError::corrupt)
+            })
+            .transpose()
+    }
+
     async fn execute_mutation(
         tx: &mut Transaction<'_, Sqlite>,
         mutation: Mutation,
         current: Option<StoredApplication>,
         latest: Option<Operation>,
-        expected: Option<u64>,
+        expected_generation: Option<u64>,
         now: i64,
     ) -> Result<(MutationResponse, bool), StoreError> {
         let actual = current.as_ref().map_or_else(
@@ -80,7 +128,7 @@ impl SqliteStore {
             },
             |app| app.generation,
         );
-        Self::check_generation(expected, actual)?;
+        Self::check_generation(expected_generation, actual)?;
         Ok(match mutation {
             Mutation::Apply {
                 application,
@@ -92,7 +140,7 @@ impl SqliteStore {
                     expected_application_id,
                     current,
                     latest,
-                    expected,
+                    expected_generation,
                 )
                 .await?
             }
@@ -101,7 +149,7 @@ impl SqliteStore {
                     if let Some(op) = latest.filter(|op| op.kind == OperationKind::Delete) {
                         op
                     } else {
-                        Self::request_delete_on(tx, &id, expected).await?
+                        Self::request_delete_on(tx, &id, expected_generation).await?
                     };
                 (
                     MutationResponse::Operation(AcceptedOperation::from(&operation)),
@@ -135,7 +183,7 @@ impl SqliteStore {
                         op
                     }
                 } else {
-                    Self::request_refresh_on(tx, &id, expected).await?
+                    Self::request_refresh_on(tx, &id, expected_generation).await?
                 };
                 (
                     MutationResponse::Operation(AcceptedOperation::from(&operation)),
@@ -162,7 +210,7 @@ impl SqliteStore {
         expected_application_id: Option<String>,
         current: Option<StoredApplication>,
         latest: Option<Operation>,
-        expected: Option<u64>,
+        expected_generation: Option<u64>,
     ) -> Result<(MutationResponse, bool), StoreError> {
         if let Some(expected_id) = expected_application_id
             && current
@@ -184,7 +232,7 @@ impl SqliteStore {
         let operation = if identical {
             latest.ok_or(StoreError::Corrupt)?
         } else {
-            Self::save_application_on(tx, &application, None, expected).await?
+            Self::save_application_on(tx, &application, None, expected_generation).await?
         };
         let mut accepted = AcceptedOperation::from(&operation);
         if identical {

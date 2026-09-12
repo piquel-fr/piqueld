@@ -8,7 +8,7 @@
 [server]
 # Replace 1000 with your account's UID (`id -u`); the runtime directory is
 # per-user and only exists for your own UID.
-data_dir = "/tmp/piqueld"
+data_dir = "/run/user/1000/piqueld"
 http_listen = "127.0.0.1:7845"
 
 [docker]

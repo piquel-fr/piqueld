@@ -1,4 +1,10 @@
-//! Shared bounds for slow reads and image resolution, including API observations.
+//! Process-wide concurrency limits shared by reconciliation and API previews.
+//!
+//! Applications reconcile concurrently, so per-application limits alone would
+//! allow an unbounded number of Docker pulls and observations. This adapter puts
+//! those two limits around the shared Docker implementation (including test
+//! fakes). Mutations pass through unchanged: the controller serializes them.
+//! Cancelling a request drops its permit, allowing the next waiter to proceed.
 use super::{DockerApi, DockerError, SwarmState};
 use async_trait::async_trait;
 use piqueld_core::{

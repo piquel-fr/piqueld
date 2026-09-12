@@ -22,6 +22,14 @@ Clients poll for progress.
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
 
+Plan and new apply acceptance require Docker availability. Existing-application
+previews also require successful runtime observation. An unreachable
+Docker Engine returns 503 `docker_unavailable`; the response contains a safe
+message and the daemon logs the underlying diagnostic. No new intent is stored.
+A matching, unexpired idempotency receipt still replays its previously accepted
+response during an outage. Image resolution and reconciliation remain asynchronous;
+an outage after acceptance is reported by the operation.
+
 Apply and plan accept JSON `{ "manifest": ..., "expected_generation": 3,
 "expected_application_id": "app-..." }`, or complete TOML with
 `Content-Type: application/toml` or `text/toml`. TOML preconditions use

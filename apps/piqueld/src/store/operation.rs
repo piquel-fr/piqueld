@@ -261,9 +261,10 @@ impl SqliteStore {
     pub(crate) async fn is_promoted(&self, id: &str) -> Result<bool, StoreError> {
         Ok(
             sqlx::query_scalar!("SELECT promoted FROM operations WHERE id=?1", id)
-                .fetch_one(&self.pool)
+                .fetch_optional(&self.pool)
                 .await
                 .map_err(StoreError::database)?
+                .ok_or(StoreError::NotFound)?
                 != 0,
         )
     }

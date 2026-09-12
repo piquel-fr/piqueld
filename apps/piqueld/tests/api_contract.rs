@@ -20,6 +20,7 @@ use tower::ServiceExt;
 
 struct FakeRuntime {
     instance: InstanceId,
+    unavailable: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
@@ -56,10 +57,18 @@ impl RuntimeBoundary for FakeRuntime {
         Ok(resolved)
     }
 
+    async fn check_available(&self) -> Result<(), BoundaryError> {
+        if self.unavailable.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(piqueld::docker::DockerError::Unavailable("observe application").into());
+        }
+        Ok(())
+    }
+
     async fn observe(
         &self,
         _application: &StoredApplication,
     ) -> Result<ObservedApplication, BoundaryError> {
+        self.check_available().await?;
         Ok(ObservedApplication::default())
     }
 }
@@ -84,7 +93,13 @@ async fn state(temp: &TempDir) -> ApiState {
             .expect("fresh database opens"),
     );
     let instance = InstanceId::parse(store.instance_id().to_owned()).expect("valid instance ID");
-    ApiState::new(Arc::clone(&store), Arc::new(FakeRuntime { instance }))
+    ApiState::new(
+        Arc::clone(&store),
+        Arc::new(FakeRuntime {
+            instance,
+            unavailable: std::sync::atomic::AtomicBool::new(false),
+        }),
+    )
 }
 
 /// Stand-in for the compile-time bundle: a shell, unhashed assets (including
@@ -1158,6 +1173,7 @@ async fn generations_refresh_reconcile_and_event_pagination_share_the_http_contr
 
 struct AcceptanceApi {
     client: Client,
+    runtime: Arc<FakeRuntime>,
     store: Arc<SqliteStore>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
 }
@@ -1170,12 +1186,17 @@ impl AcceptanceApi {
                 .unwrap(),
         );
         let instance = InstanceId::parse(store.instance_id()).unwrap();
-        let state = ApiState::new(Arc::clone(&store), Arc::new(FakeRuntime { instance }));
+        let runtime = Arc::new(FakeRuntime {
+            instance,
+            unavailable: std::sync::atomic::AtomicBool::new(false),
+        });
+        let state = ApiState::new(Arc::clone(&store), runtime.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client = Client::tcp(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
         let task = tokio::spawn(serve(listener, router(state)).into_future());
         Self {
             client,
+            runtime,
             store,
             task,
         }
@@ -1386,6 +1407,7 @@ async fn preview_reuses_active_digests_and_redacts_manifest_and_runtime_configur
         .normalize(piqueld_core::ApplicationId::parse("app-preview-01").unwrap());
     let runtime = FakeRuntime {
         instance: InstanceId::parse(api.store.instance_id()).unwrap(),
+        unavailable: std::sync::atomic::AtomicBool::new(false),
     };
     let target = runtime
         .prepare(&normalized, &ResolutionSet::default())
@@ -1711,4 +1733,51 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
             .unwrap_err(),
         "application_name_collision",
     );
+}
+
+#[tokio::test]
+async fn docker_outage_rejects_previews_and_new_apply_but_preserves_receipt_replay() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let request = AcceptanceApi::request();
+    let keyed = api.client.clone().with_request_id("outage-replay");
+    let accepted = keyed.apply_application(&request).await.unwrap();
+    api.runtime
+        .unavailable
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let replay = keyed.apply_application(&request).await.unwrap();
+    assert_eq!(replay.operation_id, accepted.operation_id);
+    let mut existing = request.clone();
+    existing.expected_generation = Some(accepted.generation);
+    existing.expected_application_id = Some(accepted.application_id.clone());
+    let mut changed = existing.clone();
+    changed.manifest.spec.services[0].replicas = 2;
+    let mut fresh = request.clone();
+    fresh.manifest.metadata.name = "new-application".into();
+    for proposed in [&existing, &changed, &fresh] {
+        for error in [
+            api.client.plan_application(proposed).await.unwrap_err(),
+            api.client.apply_application(proposed).await.unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, piqueld_client::ClientError::Api { status, error, .. }
+                if status == axum::http::StatusCode::SERVICE_UNAVAILABLE && error.code == "docker_unavailable")
+            );
+        }
+    }
+    let mismatch = keyed.apply_application(&changed).await.unwrap_err();
+    assert!(
+        matches!(mismatch, piqueld_client::ClientError::Api { error, .. } if error.code == "request_id_conflict")
+    );
+    assert!(
+        api.store
+            .find_by_name("new-application")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let stored = api.store.find_by_name("notes").await.unwrap().unwrap();
+    assert_eq!(stored.generation, accepted.generation);
+    assert_eq!(stored.application.spec.services[0].replicas, 1);
 }

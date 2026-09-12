@@ -89,9 +89,10 @@ service image references; `refresh` explicitly resolves them again and is reject
 during deletion. Reconcile and refresh accept `--yes` and `--no-wait`; they do not
 require a revision and have no `--force` flag.
 
-Previews are computed by the daemon. They describe manifest changes even when
-Docker observation is unavailable, redact sensitive configuration values, and
-identify unresolved images separately from known runtime actions.
+Previews are computed by the daemon. They redact sensitive configuration values
+and identify unresolved images separately from known runtime actions. If Docker
+observation is unavailable, the daemon returns `503 docker_unavailable` and
+`plan`/`apply` stop without submitting new intent.
 
 For apply, delete, and rename, the CLI automatically sends the revision it
 inspected before confirmation. Apply also sends the inspected application ID,

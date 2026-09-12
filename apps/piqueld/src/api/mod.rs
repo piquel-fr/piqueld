@@ -149,6 +149,14 @@ impl From<BoundaryError> for ApiError {
         tracing::error!(error = ?value, "runtime boundary request failed");
         match value {
             BoundaryError::Store(error) => error.into(),
+            BoundaryError::Runtime(
+                crate::docker::DockerError::Unavailable(_)
+                | crate::docker::DockerError::UnavailableSource { .. },
+            ) => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "docker_unavailable",
+                "Docker Engine is unavailable",
+            ),
             BoundaryError::Runtime(_) => Self::new(
                 StatusCode::BAD_GATEWAY,
                 "runtime_request_failed",

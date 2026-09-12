@@ -75,6 +75,7 @@ CREATE TABLE events (
     created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX event_application ON events(application_id,id);
+CREATE INDEX event_created_at ON events(created_at_ms);
 
 -- Acceptance receipts outlive operation pruning and contain no manifest values.
 CREATE TABLE request_receipts (

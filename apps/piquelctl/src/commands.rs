@@ -60,7 +60,9 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
                     event.created_at_ms,
                     event.kind,
                     event.operation_id.as_deref().unwrap_or("-"),
-                    event.attempt.unwrap_or(0),
+                    event
+                        .attempt
+                        .map_or_else(|| "-".into(), |attempt| attempt.to_string()),
                     format_args!(
                         "{} {} {} {}",
                         event.phase.as_deref().unwrap_or(""),

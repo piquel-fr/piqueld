@@ -23,6 +23,9 @@ pub struct DockerRuntime<D> {
     instance_id: InstanceId,
     wake: Arc<Notify>,
     prepare_timeout: Duration,
+    // Set only for execution, never API previews. Records the image-resolution
+    // phase and service names in the existing operation row so polling/events
+    // can explain a slow or failed pull; it is not an execution journal.
     progress: Option<(Arc<crate::store::SqliteStore>, String)>,
 }
 
@@ -43,6 +46,7 @@ impl<D> DockerRuntime<D> {
             progress: None,
         }
     }
+    /// Associates image preparation with the operation whose status is reported.
     pub(crate) fn with_progress(
         mut self,
         store: Arc<crate::store::SqliteStore>,
@@ -123,6 +127,15 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         })
         .await
         .map_err(|_| BoundaryError::Runtime(DockerError::Unavailable("prepare application")))?
+    }
+
+    async fn check_available(&self) -> Result<(), BoundaryError> {
+        tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, self.docker.ensure_swarm(false))
+            .await
+            .map_err(|_| {
+                BoundaryError::Runtime(DockerError::Unavailable("check Docker availability"))
+            })??;
+        Ok(())
     }
 
     async fn observe(

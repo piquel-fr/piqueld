@@ -180,15 +180,16 @@ impl SqliteStore {
 
     /// Reads an operation's immutable prepared target, if preparation completed.
     /// # Errors
-    /// Returns a storage or decoding error.
+    /// Returns a storage or decoding error, or `NotFound` for a missing operation.
     pub async fn prepared_target(
         &self,
         id: &str,
     ) -> Result<Option<ResolvedApplication>, StoreError> {
         let json = sqlx::query_scalar!("SELECT target_json FROM operations WHERE id=?1", id)
-            .fetch_one(&self.pool)
+            .fetch_optional(&self.pool)
             .await
-            .map_err(StoreError::database)?;
+            .map_err(StoreError::database)?
+            .ok_or(StoreError::NotFound)?;
         json.as_deref()
             .map(serde_json::from_str)
             .transpose()
