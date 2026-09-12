@@ -1606,7 +1606,7 @@ fn collect_unresolved_refs(value: &serde_json::Value, document: &str, out: &mut 
 
 #[tokio::test]
 async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
-    let temp = tempfile::tempdir().expect("temporary directory");
+    let temp = tempfile::tempdir_in(".").expect("temporary directory");
     let data_dir = temp.path().join("state");
     std::fs::create_dir(&data_dir).expect("data dir exists");
     #[cfg(unix)]
@@ -1615,7 +1615,9 @@ async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
         std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))
             .expect("data dir is private");
     }
-    piqueld::prepare_data_dir(&data_dir)
+    // The fixture is owned by this process; Nix's synthetic root is not.
+    let cwd = std::env::current_dir().expect("working directory");
+    piqueld::prepare_data_dir(data_dir.strip_prefix(&cwd).expect("fixture is below cwd"))
         .await
         .expect("data dir prepares");
     let socket_path = data_dir.join("contract.sock");

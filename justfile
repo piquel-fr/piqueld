@@ -6,8 +6,11 @@ validate: fmt-check lint check test doc-test deny openapi-check boundary check-w
 build:
     @cargo build --workspace --locked
 
-run:
-    @cargo run --package piqueld
+run *ARGS:
+    @cargo run --package piquelctl -- {{ARGS}}
+
+daemon *ARGS:
+    @cargo run --package piqueld --bin piqueld -- {{ARGS}}
 
 fmt:
     @cargo fmt --all
@@ -16,10 +19,10 @@ fmt-check:
     @cargo fmt --all -- --check
 
 lint:
-    @cargo clippy --workspace --all-targets --all-features -- -D warnings
+    @cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
 check:
-    @cargo check --workspace --all-targets
+    @cargo check --locked --workspace --all-targets
 
 # Compiles the browser transport, which no host-target recipe reaches.
 check-wasm:
@@ -33,10 +36,10 @@ test-wasm:
     @WASM_BINDGEN_TEST_ONLY_WEB=1 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --locked --package piqueld-client --lib --target wasm32-unknown-unknown
 
 test:
-    @cargo test --workspace
+    @cargo nextest run --locked --workspace
 
 doc-test:
-    @cargo test --doc --workspace
+    @cargo test --locked --doc --workspace
 
 deny:
     @cargo deny check
@@ -46,6 +49,24 @@ openapi-check:
 
 boundary:
     @./scripts/check-dependency-boundaries.sh
+
+# Browser UI development checks and the embedded-dashboard build are explicit
+# because they require the wasm target, Trunk, wasm-bindgen-cli, binaryen, and
+# Tailwind. They do not change the default validation.
+ui-check:
+    @cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
+
+# Release daemon with the dashboard bundle compiled in; the build script
+# invokes Tailwind and Trunk itself.
+build-embedded:
+    @cargo build --release --package piqueld --features embedded-ui --locked
+
+daemon-embedded *ARGS:
+    @cargo run --package piqueld --bin piqueld --features embedded-ui -- {{ARGS}}
+
+# Full local development: daemon, Tailwind, and Trunk are cleaned up together.
+dev:
+    @bash ./scripts/dev.sh
 
 # Explicitly mutating generation command.
 generate-openapi:
