@@ -1,7 +1,7 @@
-use axum::{extract::State, response::IntoResponse};
+use axum::{extract::State, http::StatusCode, response::IntoResponse};
 use piqueld_client::{Envelope, SystemStatus};
 
-use super::{ApiState, ok, openapi::ApiErrorResponse};
+use super::{ApiState, ok};
 
 #[utoipa::path(
     get,
@@ -10,8 +10,6 @@ use super::{ApiState, ok, openapi::ApiErrorResponse};
     summary = "Get daemon status",
     responses(
         (status = 200, description = "Success", body = Envelope<SystemStatus>),
-        (status = 500, response = inline(ApiErrorResponse)),
-        (status = 503, response = inline(ApiErrorResponse)),
     )
 )]
 pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
@@ -21,4 +19,13 @@ pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
         daemon_version: env!("CARGO_PKG_VERSION").into(),
         instance_id: state.instance_id,
     })
+}
+
+#[derive(serde::Serialize)]
+struct HealthResponse {
+    status: &'static str,
+}
+
+pub(super) async fn health() -> impl IntoResponse {
+    (StatusCode::OK, axum::Json(HealthResponse { status: "ok" }))
 }

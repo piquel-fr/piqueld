@@ -2,7 +2,7 @@ use super::blocked_plan_error;
 use super::coordinator::plan_requires_execution;
 use super::{
     ApplicationState, CancellationToken, DockerApi, Operation, OperationError, OperationHandler,
-    OperationKind, Plan, PlanRequest, ReconcileHandler, StepState, StoredApplication,
+    OperationKind, Plan, PlanAction, PlanRequest, ReconcileHandler, StepState, StoredApplication,
 };
 use async_trait::async_trait;
 
@@ -46,7 +46,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
             // A newer generation owns the application now. The newer operation will
             // re-plan against the current runtime; this operation must not mutate it.
             self.skip_superseded_steps(operation).await?;
-            return Ok(());
+            return Err(OperationError::Superseded);
         }
 
         self.start_deployment(operation).await?;
@@ -61,9 +61,20 @@ impl<D: DockerApi> ReconcileHandler<D> {
             .await?;
         if operation.kind != OperationKind::Delete && !self.operation_is_current(operation).await? {
             self.skip_superseded_steps(operation).await?;
-            return Ok(());
+            return Err(OperationError::Superseded);
         }
-        self.mark_ready(operation).await?;
+        self.execute_fresh_plans(operation, &request, &ownership, cancellation)
+            .await?;
+        if operation.kind != OperationKind::Delete
+            && !self
+                .store
+                .mark_ready_if_current(&operation.application_id, operation.generation)
+                .await
+                .map_err(journal_error)?
+        {
+            self.skip_superseded_steps(operation).await?;
+            return Err(OperationError::Superseded);
+        }
         if operation.kind == OperationKind::Delete {
             return self.finish_delete(operation, &request, cancellation).await;
         }
@@ -97,8 +108,9 @@ impl<D: DockerApi> ReconcileHandler<D> {
         match self.store.get(&operation.application_id).await {
             Ok(application) => Ok(Some(application)),
             Err(crate::store::StoreError::NotFound) if operation.kind == OperationKind::Delete => {
-                // Finalization tombstones the application before the scheduler marks the
-                // operation successful. A crash in that tiny window resumes here safely.
+                // Delete finalization commits the operation success and the
+                // tombstone atomically, so a missing application means the
+                // deletion already completed durably.
                 Ok(None)
             }
             Err(error) => {
@@ -145,7 +157,7 @@ impl<D: DockerApi> ReconcileHandler<D> {
                 && !self.operation_is_current(operation).await?
             {
                 self.skip_superseded_steps(operation).await?;
-                return Ok(());
+                return Err(OperationError::Superseded);
             }
             if cancellation.is_cancelled() {
                 return Err(OperationError::Cancelled);
@@ -154,6 +166,47 @@ impl<D: DockerApi> ReconcileHandler<D> {
                 .await?;
         }
         Ok(())
+    }
+
+    async fn execute_fresh_plans(
+        &self,
+        operation: &Operation,
+        request: &PlanRequest,
+        ownership: &std::collections::BTreeMap<String, String>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        // Runtime state can change after the original plan was journaled. Keep
+        // planning until no executable action remains, appending newly required
+        // actions so crash recovery retains an accurate audit trail.
+        for _ in 0..16 {
+            let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+            let observed = self
+                .observe_with_retry(&operation.application_id, cancellation, deadline)
+                .await?;
+            let current = Plan::from_request(request, &observed);
+            if current.is_blocked() {
+                return Err(blocked_plan_error(&current));
+            }
+            let actions = current
+                .actions
+                .iter()
+                .filter(|action| {
+                    !matches!(action.kind, piqueld_core::ActionKind::RetainVolume { .. })
+                })
+                .map(PlanAction::operation_step)
+                .collect::<Vec<_>>();
+            if actions.is_empty() {
+                return Ok(());
+            }
+            let steps = self
+                .store
+                .append_operation_steps(&operation.id, &actions)
+                .await
+                .map_err(journal_error)?;
+            self.execute_steps(operation, request, steps, ownership, cancellation)
+                .await?;
+        }
+        Err(OperationError::ConvergenceTimeout)
     }
 
     async fn execute_step(
@@ -311,21 +364,6 @@ impl<D: DockerApi> ReconcileHandler<D> {
             Err(OperationError::Superseded)
         } else {
             Ok(())
-        }
-    }
-
-    async fn mark_ready(&self, operation: &Operation) -> Result<(), OperationError> {
-        if operation.kind == OperationKind::Delete {
-            return Ok(());
-        }
-        match self
-            .store
-            .mark_ready_if_current(&operation.application_id, operation.generation)
-            .await
-        {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(OperationError::Superseded),
-            Err(error) => Err(journal_error(error)),
         }
     }
 

@@ -4,7 +4,10 @@ use piqueld_core::{NormalizedApplication, Plan};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{Client, ClientError, OperationView, Page, client::path_segment};
+use crate::{
+    Client, ClientError, OperationView, Page,
+    client::{invalid_request, path_segment},
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Public application state returned by the API.
@@ -179,9 +182,11 @@ pub struct ApplicationDetailView {
 pub struct ListApplicationsOptions {
     /// Cursor returned by a previous page.
     pub cursor: Option<String>,
-    /// Maximum number of items to return.
+    /// Maximum number of items to return, from 1 through 3.
     pub limit: Option<u16>,
 }
+
+const APPLICATION_PAGE_SIZE: u16 = 3;
 
 impl Client {
     /// Lists the first page of applications.
@@ -201,6 +206,14 @@ impl Client {
         &self,
         options: &ListApplicationsOptions,
     ) -> Result<Page<ApplicationView>, ClientError> {
+        if options
+            .limit
+            .is_some_and(|limit| !(1..=APPLICATION_PAGE_SIZE).contains(&limit))
+        {
+            return Err(invalid_request(format!(
+                "application list limit must be between 1 and {APPLICATION_PAGE_SIZE}"
+            )));
+        }
         let mut query = url::form_urlencoded::Serializer::new(String::new());
         if let Some(cursor) = &options.cursor {
             query.append_pair("cursor", cursor);

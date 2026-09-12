@@ -1,25 +1,62 @@
 use super::{
-    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, INSTANCE_LABEL, MANAGED_LABEL,
-    ResourceKind, SERVICE_LABEL, SPEC_HASH_LABEL, docker_resource_name, valid_logical_name,
+    APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder, Docker,
+    DockerError, HashMap, INSTANCE_LABEL, ImageSource, MANAGED_LABEL, ResourceKind, SERVICE_LABEL,
+    SPEC_HASH_LABEL, TryStreamExt, docker_resource_name, docker_resource_readable_prefix,
+    valid_logical_name,
 };
 
 impl BollardDocker {
-    /// Returns whether a Docker resource belongs to this application.
+    /// Builds the Docker label filter selecting one application's resources.
+    pub(super) fn application_label_filter(
+        application: &ApplicationId,
+    ) -> HashMap<String, Vec<String>> {
+        HashMap::from([(
+            "label".to_owned(),
+            vec![format!("{APPLICATION_LABEL}={application}")],
+        )])
+    }
+
+    /// Builds the complementary name filter used to detect canonical resources
+    /// whose ownership labels are missing or belong to another application.
+    pub(super) fn application_name_filter(
+        application: &ApplicationId,
+    ) -> HashMap<String, Vec<String>> {
+        HashMap::from([(
+            "name".to_owned(),
+            vec![docker_resource_readable_prefix(application)],
+        )])
+    }
+
+    /// Returns whether a Docker resource can belong to this application.
     ///
-    /// An existing application label is authoritative: resources labeled for
-    /// another application are never relevant, even when their names collide.
-    /// Unlabeled resources qualify only through an exact canonical name match
-    /// against this application's private network, the one resource name
-    /// derivable from the application identity alone.
+    /// Resource names are truncated for Docker, so ownership labels remain the
+    /// authoritative fallback when the readable name prefix is ambiguous.
     pub(super) fn relevant(
         name: &str,
         labels: &BTreeMap<String, String>,
         app: &ApplicationId,
     ) -> bool {
-        match labels.get(APPLICATION_LABEL) {
-            Some(owner) => owner == app.as_str(),
-            None => name == docker_resource_name(app, ResourceKind::Network, None),
+        if let Some(owner) = labels.get(APPLICATION_LABEL) {
+            if owner == app.as_str() {
+                return true;
+            }
+            if let Ok(owner) = ApplicationId::parse(owner.clone()) {
+                let kind = if labels.contains_key(SERVICE_LABEL) {
+                    ResourceKind::Service
+                } else {
+                    ResourceKind::Network
+                };
+                let logical_name = labels.get(SERVICE_LABEL).map(String::as_str);
+                if name == docker_resource_name(&owner, kind, logical_name)
+                    && name != docker_resource_name(app, kind, logical_name)
+                {
+                    return false;
+                }
+            }
         }
+        // Unlabelled resources and volumes with truncated logical names cannot
+        // be disambiguated from an application ID alone. Keep them fail-closed.
+        name.starts_with(&docker_resource_readable_prefix(app))
     }
 
     /// Checks the immutable overlay-network settings supported by piqueld.
@@ -126,5 +163,64 @@ impl BollardDocker {
                 && d.bytes()
                     .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl ImageSource for Docker {
+    async fn repo_digests(&self, reference: &str) -> Result<Option<Vec<String>>, DockerError> {
+        match self.inspect_image(reference).await {
+            Ok(image) => Ok(Some(image.repo_digests.unwrap_or_default())),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
+            Err(error) => Err(DockerError::image_resolution("inspect image", error)),
+        }
+    }
+
+    async fn pull(&self, reference: &str) -> Result<(), DockerError> {
+        self.create_image(
+            Some(
+                CreateImageOptionsBuilder::default()
+                    .from_image(reference)
+                    .build(),
+            ),
+            None,
+            None,
+        )
+        .try_collect::<Vec<_>>()
+        .await
+        .map(|_| ())
+        .map_err(|error| DockerError::image_resolution("pull image", error))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_prefix_does_not_include_foreign_canonical_resources() {
+        let prefix = "a".repeat(42);
+        let app = ApplicationId::parse(format!("{prefix}-one")).unwrap();
+        let foreign = ApplicationId::parse(format!("{prefix}-two")).unwrap();
+        assert_eq!(
+            docker_resource_readable_prefix(&app),
+            docker_resource_readable_prefix(&foreign)
+        );
+        for (kind, logical_name) in [
+            (ResourceKind::Network, None),
+            (ResourceKind::Service, Some("web")),
+        ] {
+            let mut labels = BTreeMap::from([(APPLICATION_LABEL.into(), foreign.to_string())]);
+            if let Some(logical_name) = logical_name {
+                labels.insert(SERVICE_LABEL.into(), logical_name.into());
+            }
+            let foreign_name = docker_resource_name(&foreign, kind, logical_name);
+            assert!(!BollardDocker::relevant(&foreign_name, &labels, &app));
+            let own_name = docker_resource_name(&app, kind, logical_name);
+            assert!(BollardDocker::relevant(&own_name, &labels, &app));
+            assert!(BollardDocker::relevant(&own_name, &BTreeMap::new(), &app));
+        }
     }
 }

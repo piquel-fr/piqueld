@@ -1,8 +1,9 @@
 //! Process entry point for the piqueld daemon.
 
 use anyhow::{Context, Result};
-use piqueld::api::ApiState;
-use piqueld::config::DaemonConfig;
+use clap::Parser;
+use piqueld::api::{ApiState, UiAssets};
+use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::operations::OperationScheduler;
 use piqueld::reconcile::{DockerRuntime, ReconcileHandler, run_coordinator};
@@ -15,43 +16,49 @@ use std::{
 };
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
+use tracing::info;
+
+const DEFAULT_CONFIG_PATH: &str = "/etc/piqueld/config.toml";
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "piqueld",
+    version,
+    about = "Run the piqueld single-node Docker control plane"
+)]
+struct Args {
+    /// Read daemon configuration from this TOML file.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    if std::env::args_os().any(|argument| argument == "--version") {
-        println!("piqueld {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-
-    let config = {
-        let config_path = std::env::var_os("PIQUELD_CONFIG")
-            .map_or_else(|| PathBuf::from("/etc/piqueld/config.toml"), PathBuf::from);
-        DaemonConfig::load(&config_path).with_context(|| {
-            format!(
-                "failed to load configuration from {}",
-                config_path.display()
-            )
-        })?
-    };
+    let args = Args::parse();
+    let config = load_config(args.config.as_deref())?;
     piqueld::config::init_tracing().context("failed to initialize tracing")?;
 
+    piqueld::prepare_data_dir(&config.server.data_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to prepare data directory {}",
+                config.server.data_dir.display()
+            )
+        })?;
+
     let store = Arc::new(
-        SqliteStore::open(&config.database.path)
+        SqliteStore::open(config.server.database_path())
             .await
             .context("failed to open control-plane state")?,
     );
+    info!(
+        path = %config.server.database_path().display(),
+        "opened control-plane state"
+    );
 
-    let docker = {
-        let docker = Arc::new(
-            BollardDocker::connect(&config.docker.socket)
-                .context("failed to connect to Docker Engine")?,
-        );
-        docker
-            .ensure_swarm(config.docker.auto_initialize_swarm)
-            .await
-            .context("Docker Engine is not an active single-node Swarm manager")?;
-        docker
-    };
+    let docker = connect_docker(&config.docker).await?;
 
     let instance = InstanceId::parse(store.instance_id().to_owned())
         .context("stored instance identity is invalid")?;
@@ -62,12 +69,19 @@ async fn main() -> Result<()> {
         Arc::clone(&docker),
         instance,
         Arc::clone(&wake),
+        std::time::Duration::from_secs(config.reconciliation.prepare_timeout_seconds),
     ));
 
-    let handler = Arc::new(ReconcileHandler::new(
-        Arc::clone(&docker),
-        Arc::clone(&store),
-    ));
+    let handler = Arc::new(
+        ReconcileHandler::new(Arc::clone(&docker), Arc::clone(&store)).with_retry_policy(
+            piqueld::reconcile::RetryPolicy {
+                convergence_timeout: std::time::Duration::from_secs(
+                    config.reconciliation.convergence_timeout_seconds,
+                ),
+                ..piqueld::reconcile::RetryPolicy::default()
+            },
+        ),
+    );
 
     let scheduler = Arc::new(OperationScheduler::new(
         Arc::clone(&store),
@@ -75,6 +89,8 @@ async fn main() -> Result<()> {
         config.reconciliation.max_parallel_operations,
     ));
 
+    let ui_assets = UiAssets::resolve();
+    log_ui_status(&ui_assets);
     let state = ApiState::new(Arc::clone(&store), runtime);
 
     // cancellation token for workers
@@ -84,6 +100,7 @@ async fn main() -> Result<()> {
     let controller_token = cancellation.child_token();
     let controller_cancellation = cancellation.clone();
     let scan_interval = std::time::Duration::from_secs(config.reconciliation.scan_interval_seconds);
+    let finished_operation_days = config.retention.finished_operation_days;
     let controller = tokio::spawn(async move {
         let result = run_coordinator(
             scheduler,
@@ -91,6 +108,7 @@ async fn main() -> Result<()> {
             Arc::clone(&docker),
             Arc::clone(&wake),
             scan_interval,
+            finished_operation_days,
             controller_token,
         )
         .await;
@@ -106,21 +124,25 @@ async fn main() -> Result<()> {
         result
     });
 
-    let tcp_api = spawn_tcp_api(
-        config.server.http_listen,
-        state.clone(),
-        cancellation.clone(),
-    )
-    .await?;
-    let unix_api = spawn_unix_api(config.server.unix_socket, state, cancellation.clone()).await?;
+    let tcp_api = match config.server.http_listen {
+        Some(address) => Some(
+            spawn_tcp_api(address, state.clone(), ui_assets, cancellation.clone())
+                .await
+                .with_context(|| format!("failed to bind HTTP API on {address}"))?,
+        ),
+        None => None,
+    };
+    let unix_api = spawn_unix_api(config.server.socket_path(), state, cancellation.clone()).await?;
 
     piqueld::run_until_cancelled(cancellation).await?;
 
     signal_task.await.context("shutdown task failed")??;
-    tcp_api
-        .await
-        .context("TCP API task failed")?
-        .context("TCP API failed")?;
+    if let Some(tcp_api) = tcp_api {
+        tcp_api
+            .await
+            .context("TCP API task failed")?
+            .context("TCP API failed")?;
+    }
     unix_api
         .await
         .context("Unix API task failed")?
@@ -132,21 +154,100 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn connect_docker(config: &piqueld::config::DockerConfig) -> Result<Arc<BollardDocker>> {
+    let docker = Arc::new(
+        BollardDocker::connect(&config.socket).context("failed to connect to Docker Engine")?,
+    );
+    docker
+        .ensure_swarm(config.auto_initialize_swarm)
+        .await
+        .context("Docker Engine is not an active single-node Swarm manager")?;
+    info!(
+        socket = %config.socket.display(),
+        auto_initialize_swarm = config.auto_initialize_swarm,
+        "connected to Docker Engine as a single-node Swarm manager"
+    );
+    Ok(docker)
+}
+
+/// Reports dashboard availability once at startup so a binary without the
+/// embedded bundle is identifiable in the log without probing `/dashboard`.
+fn log_ui_status(ui_assets: &UiAssets) {
+    match ui_assets {
+        UiAssets::Disabled => info!("dashboard disabled: built without the embedded-ui feature"),
+        UiAssets::Embedded(bundle) => {
+            info!(
+                assets = bundle.len(),
+                "dashboard enabled: bundle is embedded"
+            );
+        }
+    }
+}
+
+fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> {
+    if let Some(path) = explicit_path {
+        return DaemonConfig::load(path).with_context(|| {
+            format!(
+                "failed to load explicitly supplied configuration from {}",
+                path.display()
+            )
+        });
+    }
+
+    let default_path = PathBuf::from(DEFAULT_CONFIG_PATH);
+    match DaemonConfig::load(&default_path) {
+        Ok(config) => Ok(config),
+        Err(ConfigError::Read(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "{} is absent; using validated built-in defaults. Developers can select the shipped example with --config config/piqueld.example.toml",
+                default_path.display()
+            );
+            DaemonConfig::validated_default().context("validated built-in defaults are invalid")
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to load default configuration from {}",
+                default_path.display()
+            )
+        }),
+    }
+}
+
 async fn spawn_tcp_api(
     address: std::net::SocketAddr,
     state: ApiState,
+    ui_assets: UiAssets,
     cancellation: CancellationToken,
 ) -> Result<tokio::task::JoinHandle<Result<(), std::io::Error>>> {
     let listener = TcpListener::bind(address)
         .await
         .context("failed to bind HTTP API")?;
+    info!(%address, "HTTP API listening");
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
-        let result = axum::serve(listener, piqueld::api::router(state))
-            .with_graceful_shutdown(async move { shutdown.cancelled().await })
-            .await;
+        let serve = std::future::IntoFuture::into_future(
+            axum::serve(listener, piqueld::api::web_router(state, ui_assets))
+                .with_graceful_shutdown(async move { shutdown.cancelled().await }),
+        );
+        tokio::pin!(serve);
+        // The grace period starts only once shutdown has been requested; a
+        // healthy server must never be torn down by an elapsed deadline.
+        let grace = async {
+            cancellation.cancelled().await;
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        };
+        tokio::pin!(grace);
+        let served = tokio::select! {
+            result = &mut serve => result,
+            () = &mut grace => {
+                tracing::warn!(
+                    "HTTP graceful shutdown grace elapsed; closing remaining connections"
+                );
+                Ok(())
+            }
+        };
         cancellation.cancel();
-        result
+        served
     }))
 }
 
@@ -155,24 +256,6 @@ async fn spawn_unix_api(
     state: ApiState,
     cancellation: CancellationToken,
 ) -> Result<tokio::task::JoinHandle<Result<(), std::io::Error>>> {
-    if let Some(parent) = path.parent() {
-        if parent == std::path::Path::new("/") {
-            anyhow::bail!("Unix API socket must be inside a private directory");
-        }
-        let parent_missing = match tokio::fs::symlink_metadata(parent).await {
-            Ok(_) => false,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-            Err(error) => return Err(error).context("failed to inspect Unix socket directory"),
-        };
-        tokio::fs::create_dir_all(parent)
-            .await
-            .context("failed to create Unix socket directory")?;
-        if parent_missing {
-            tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                .await
-                .context("failed to restrict Unix socket directory permissions")?;
-        }
-    }
     match tokio::fs::symlink_metadata(&path).await {
         Ok(metadata) if metadata.file_type().is_socket() => {
             tokio::fs::remove_file(&path)
@@ -183,16 +266,42 @@ async fn spawn_unix_api(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).context("failed to inspect Unix API path"),
     }
-    let listener = UnixListener::bind(&path).context("failed to bind Unix API")?;
-    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))
+    // The bind creates the socket inode under the process umask, so tighten
+    // the umask for the bind itself; the explicit chmod below remains as
+    // defense in depth. Other threads already run at this point, but they only
+    // create files inside the private data directory, so a briefly restrictive
+    // umask cannot make anything unexpectedly world-visible.
+    let previous_umask = rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
+    let bound = UnixListener::bind(&path).context("failed to bind Unix API");
+    rustix::process::umask(previous_umask);
+    let listener = bound?;
+    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
         .await
         .context("failed to restrict Unix API socket permissions")?;
+    info!(socket = %path.display(), "Unix API socket listening");
     Ok(tokio::spawn(async move {
         let shutdown = cancellation.clone();
-        let result = axum::serve(listener, piqueld::api::router(state))
-            .with_graceful_shutdown(async move { shutdown.cancelled().await })
-            .await;
+        let serve = std::future::IntoFuture::into_future(
+            axum::serve(listener, piqueld::api::api_router(state))
+                .with_graceful_shutdown(async move { shutdown.cancelled().await }),
+        );
+        tokio::pin!(serve);
+        // Same shutdown-only grace as the TCP API.
+        let grace = async {
+            cancellation.cancelled().await;
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        };
+        tokio::pin!(grace);
+        let served = tokio::select! {
+            result = &mut serve => result,
+            () = &mut grace => {
+                tracing::warn!(
+                    "Unix socket graceful shutdown grace elapsed; closing remaining connections"
+                );
+                Ok(())
+            }
+        };
         cancellation.cancel();
-        result
+        served
     }))
 }

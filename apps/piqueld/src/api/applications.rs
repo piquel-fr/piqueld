@@ -8,32 +8,42 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use piqueld_client::{
-    AcceptedOperation, ApplicationStatusView, ApplicationView, CreateApplicationRequest,
-    DeleteApplicationRequest, Envelope, ExpectedGeneration, Page, PlanApplicationRequest, PlanView,
-    ReplaceApplicationRequest, ReplacePlanRequest,
+    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
+    CreateApplicationRequest, DeleteApplicationRequest, DiagnosticView, Envelope,
+    ExpectedGeneration, ObservedApplicationView, ObservedServiceView, Page, PlanApplicationRequest,
+    PlanView, ReplaceApplicationRequest, ReplacePlanRequest,
 };
 use piqueld_core::{
     ApplicationId, InstanceId, NormalizedApplication, ObservedApplication, Plan, PlanAction,
     PlanRequest, ResolutionSet, compile_application, preview_resolution,
-    resource::{ResolvedApplication, ResolvedSource},
+    resource::{
+        Convergence, ObservedService, ResolvedApplication, ResolvedSource, TaskDiagnostic,
+        TaskState,
+    },
 };
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use super::operations;
 use super::{
-    ApiError, ApiState, BoundaryError, RequestShape, accepted, decode_json, generation,
-    header_text, hex, idempotency_key_hash, idempotent_application_id, ok,
-    openapi::ApiErrorResponse, parse_manifest, parse_update, require_json,
-    valid_expected_generation,
+    ApiError, ApiState, BoundaryError, RequestShape, accepted, decode_json, generation, hex,
+    idempotency_key_hash, idempotent_application_id, mutation_request_hash, ok,
+    openapi::ApiErrorResponse, optional_idempotency_key, parse_manifest, parse_update,
+    require_json, valid_expected_generation,
 };
-use crate::store::{ApplicationStatus, DEFAULT_PAGE_SIZE, StoreError, StoredApplication};
+use crate::store::{ApplicationStatus, OperationKind, StoreError, StoredApplication};
+
+// A manifest can approach the 2 MiB request limit and JSON escaping can
+// approximately double textual fields. Three entries stay below the clients'
+// 16 MiB response budget with envelope overhead.
+const APPLICATION_PAGE_SIZE: usize = 3;
 
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(super) struct ListQuery {
     cursor: Option<String>,
-    #[param(minimum = 1, maximum = 100, default = 50)]
+    #[param(minimum = 1, maximum = 3, default = 3)]
     limit: Option<usize>,
 }
 
@@ -61,7 +71,14 @@ pub(super) async fn list(
             "pagination parameters are invalid",
         )
     })?;
-    let limit = query.limit.unwrap_or(DEFAULT_PAGE_SIZE);
+    let limit = query.limit.unwrap_or(APPLICATION_PAGE_SIZE);
+    if !(1..=APPLICATION_PAGE_SIZE).contains(&limit) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "pagination_invalid",
+            "pagination parameters are invalid",
+        ));
+    }
     let page = state
         .store
         .list(query.cursor.as_deref(), limit)
@@ -103,6 +120,47 @@ pub(super) async fn get(
 }
 
 #[utoipa::path(
+    get,
+    path = "/api/v1/applications/{id}/detail",
+    operation_id = "getApplicationDetail",
+    summary = "Get desired and observed application state",
+    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    responses(
+        (status = 200, description = "Success", body = Envelope<ApplicationDetailView>),
+        (status = 400, response = inline(ApiErrorResponse)),
+        (status = 404, response = inline(ApiErrorResponse)),
+        (status = 502, response = inline(ApiErrorResponse)),
+        (status = 500, response = inline(ApiErrorResponse)),
+        (status = 503, response = inline(ApiErrorResponse)),
+    )
+)]
+pub(super) async fn detail(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let id = ApplicationId::parse(&id)?;
+    let stored = state.store.get(&id).await?;
+    let status = state.store.status(&id).await?;
+    let observed_generation = status.observed_generation;
+    let observed = state.runtime.observe(&stored).await?;
+    let observed_view = observed_view(&stored, &observed, observed_generation);
+    let status = status_view(status);
+    let latest_operation = state
+        .store
+        .latest_operation_for_application(&id)
+        .await?
+        .map(|(operation, steps)| operations::view(operation, steps));
+    let diagnostics = detail_diagnostics(&status, &observed_view, latest_operation.as_ref());
+    Ok(ok(ApplicationDetailView {
+        application: application_view(stored),
+        status,
+        observed: observed_view,
+        latest_operation,
+        diagnostics,
+    }))
+}
+
+#[utoipa::path(
     post,
     path = "/api/v1/applications",
     operation_id = "createApplication",
@@ -133,29 +191,19 @@ pub(super) async fn create(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
     let body = request_body(body)?;
-    let key = header_text(&headers, "idempotency-key").ok_or_else(|| {
+    let key = optional_idempotency_key(&headers)?.ok_or_else(|| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
             "idempotency_key_required",
             "Idempotency-Key is required for application creation",
         )
     })?;
-    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "idempotency_key_invalid",
-            "Idempotency-Key is invalid",
-        ));
-    }
     let validated = parse_manifest(&headers, &body, RequestShape::Create)?;
     let id = idempotent_application_id(key);
     let app = validated.normalize(id.clone());
     let key_hash = idempotency_key_hash(key);
     let request_hash = app.spec_hash();
-    // There is exactly one active daemon in the prototype. Serializing create
-    // preparation prevents concurrent retries from duplicating image-resolution
-    // work before the durable binding can be committed.
-    let _create_guard = state.create_lock.lock().await;
+    // Fast replay path without serializing behind other mutations.
     if let Some(mutation) = state
         .store
         .create_idempotency(&id, &key_hash, &request_hash)
@@ -168,6 +216,9 @@ pub(super) async fn create(
         }));
     }
     reject_name_collision(&state, &app, None).await?;
+    // Input resolution can take minutes on slow registries and must not stall
+    // unrelated mutations, so it runs outside the mutation lock. The keyed
+    // commit below re-checks the binding under the lock.
     let prepared = state.runtime.prepare(&app).await?;
     let plan = Plan::from_request(
         &PlanRequest::Reconcile {
@@ -188,6 +239,18 @@ pub(super) async fn create(
         .iter()
         .map(PlanAction::operation_step)
         .collect::<Vec<_>>();
+    let _mutation_guard = state.mutation_guard().await;
+    if let Some(mutation) = state
+        .store
+        .create_idempotency(&id, &key_hash, &request_hash)
+        .await?
+    {
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
     let mutation = state
         .store
         .create_idempotent(&app, &prepared.resolved, &steps, &key_hash, &request_hash)
@@ -208,6 +271,7 @@ pub(super) async fn create(
     params(
         ("id" = String, Path, min_length = 8, max_length = 64),
         ("X-Expected-Generation" = Option<u64>, Header, nullable = false, format = "uint64", minimum = 1, description = "Required for application/toml replacement and replacement planning."),
+        ("Idempotency-Key" = Option<String>, Header, min_length = 1, max_length = 128, description = "Binds a retry-safe mutation to one request."),
     ),
     request_body(
         content(
@@ -236,12 +300,35 @@ pub(super) async fn replace(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
     let body = request_body(body)?;
+    let key = optional_idempotency_key(&headers)?;
     let id = ApplicationId::parse(&id)?;
     let (validated, expected) = parse_update(&headers, &body)?;
-    let current = state.store.get(&id).await?;
-    generation(expected, current.generation)?;
     let app = validated.normalize(id.clone());
+    let spec_hash = app.spec_hash();
+    let key_binding = key.map(|key| {
+        (
+            idempotency_key_hash(key),
+            mutation_request_hash("replace", &id, expected, Some(&spec_hash)),
+        )
+    });
+    if let Some((key_hash, request_hash)) = &key_binding
+        && let Some(mutation) = state
+            .store
+            .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Replace)
+            .await?
+    {
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
+    let current = state.store.get(&id).await?;
+    if key_binding.is_none() {
+        generation(expected, current.generation)?;
+    }
     reject_name_collision(&state, &app, Some(&id)).await?;
+    // Input resolution runs outside the mutation lock; see the create handler.
     let prepared = state.runtime.prepare(&app).await?;
     let plan = Plan::from_request(
         &PlanRequest::Reconcile {
@@ -254,13 +341,34 @@ pub(super) async fn replace(
             StatusCode::CONFLICT,
             "plan_blocked",
             "runtime plan contains blocking conflicts",
-        ));
+        )
+        .details(json!({"diagnostics": plan.diagnostics})));
     }
     let steps = plan
         .actions
         .iter()
         .map(PlanAction::operation_step)
         .collect::<Vec<_>>();
+    let _mutation_guard = state.mutation_guard().await;
+    if let Some((key_hash, request_hash)) = &key_binding {
+        let mutation = state
+            .store
+            .replace_idempotent(
+                &app,
+                &prepared.resolved,
+                expected,
+                &steps,
+                key_hash,
+                request_hash,
+            )
+            .await?;
+        state.runtime.trigger_reconciliation();
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
     let mutation = state
         .store
         .replace(&app, &prepared.resolved, expected, &steps)
@@ -278,7 +386,10 @@ pub(super) async fn replace(
     path = "/api/v1/applications/{id}",
     operation_id = "deleteApplication",
     summary = "Request application deletion",
-    params(("id" = String, Path, min_length = 8, max_length = 64)),
+    params(
+        ("id" = String, Path, min_length = 8, max_length = 64),
+        ("Idempotency-Key" = Option<String>, Header, min_length = 1, max_length = 128, description = "Binds a retry-safe mutation to one request."),
+    ),
     request_body = DeleteApplicationRequest,
     responses(
         (status = 202, description = "Success", body = Envelope<AcceptedOperation>),
@@ -302,9 +413,30 @@ pub(super) async fn delete(
     require_json(&headers)?;
     let request: DeleteApplicationRequest = decode_json(&body)?;
     valid_expected_generation(request.expected_generation)?;
+    let key = optional_idempotency_key(&headers)?;
     let id = ApplicationId::parse(&id)?;
+    let key_binding = key.map(|key| {
+        (
+            idempotency_key_hash(key),
+            mutation_request_hash("delete", &id, request.expected_generation, None),
+        )
+    });
+    if let Some((key_hash, request_hash)) = &key_binding
+        && let Some(mutation) = state
+            .store
+            .mutation_idempotency(&id, key_hash, request_hash, OperationKind::Delete)
+            .await?
+    {
+        return Ok(accepted(AcceptedOperation {
+            operation_id: mutation.operation_id,
+            application_id: id.to_string(),
+            generation: mutation.generation,
+        }));
+    }
     let current = state.store.get(&id).await?;
-    generation(request.expected_generation, current.generation)?;
+    if key_binding.is_none() {
+        generation(request.expected_generation, current.generation)?;
+    }
     let observed = state.runtime.observe(&current).await?;
     let instance = InstanceId::parse(&state.instance_id).map_err(StoreError::corrupt)?;
     let plan = Plan::from_request(
@@ -327,10 +459,26 @@ pub(super) async fn delete(
         .iter()
         .map(PlanAction::operation_step)
         .collect::<Vec<_>>();
-    let mutation = state
-        .store
-        .request_delete(&id, request.expected_generation, &steps)
-        .await?;
+    // Keep Docker I/O outside the short mutation critical section. The store
+    // transaction revalidates generation and idempotency before committing.
+    let _mutation_guard = state.mutation_guard().await;
+    let mutation = if let Some((key_hash, request_hash)) = &key_binding {
+        state
+            .store
+            .request_delete_idempotent(
+                &id,
+                request.expected_generation,
+                &steps,
+                key_hash,
+                request_hash,
+            )
+            .await?
+    } else {
+        state
+            .store
+            .request_delete(&id, request.expected_generation, &steps)
+            .await?
+    };
     state.runtime.trigger_reconciliation();
     Ok(accepted(AcceptedOperation {
         operation_id: mutation.operation_id,
@@ -370,6 +518,8 @@ pub(super) async fn plan_create(
     let body = request_body(body)?;
     let validated = parse_manifest(&headers, &body, RequestShape::PlanCreate)?;
     let hash = Sha256::digest(validated.name().as_bytes());
+    // The preview identifier intentionally aliases on name-hash collisions;
+    // previews are stateless and never persisted.
     let id = ApplicationId::parse(format!("preview-{}", hex(&hash[..8])))
         .map_err(StoreError::corrupt)?;
     let app = validated.normalize(id.clone());
@@ -425,9 +575,16 @@ pub(super) async fn plan_replace(
     let app = validated.normalize(id.clone());
     reject_name_collision(&state, &app, Some(&id)).await?;
     let plan = preview_plan(&state, &app, Some(&current)).await?;
+    let proposed_generation = expected.checked_add(1).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "expected_generation_invalid",
+            "expected generation is too large",
+        )
+    })?;
     Ok(ok(PlanView {
         application_id: id.to_string(),
-        proposed_generation: expected + 1,
+        proposed_generation,
         plan,
     }))
 }
@@ -642,5 +799,227 @@ fn status_view(status: ApplicationStatus) -> ApplicationStatusView {
         observed_generation: status.observed_generation,
         message: status.message,
         updated_at_ms: status.updated_at_ms,
+    }
+}
+
+const MAX_DETAIL_DIAGNOSTICS: usize = 24;
+const MAX_SERVICE_DIAGNOSTICS: usize = 8;
+
+fn observed_view(
+    stored: &StoredApplication,
+    observed: &ObservedApplication,
+    observed_generation: Option<u64>,
+) -> ObservedApplicationView {
+    let reconciled = observed_generation.is_some_and(|generation| generation >= stored.generation);
+    let services = stored
+        .resolved
+        .services
+        .iter()
+        .map(|desired| {
+            let runtime = observed
+                .services
+                .iter()
+                .find(|service| service.name == desired.name);
+            let (image, observed_replicas, healthy_replicas, convergence, diagnostics) = runtime
+                .map_or_else(
+                    || {
+                        let diagnostics = if reconciled {
+                            vec![DiagnosticView {
+                                code: "service_missing".into(),
+                                message:
+                                    "the desired service was not found in the runtime observation"
+                                        .into(),
+                            }]
+                        } else {
+                            Vec::new()
+                        };
+                        (
+                            None,
+                            0,
+                            0,
+                            if reconciled { "failed" } else { "pending" }.into(),
+                            diagnostics,
+                        )
+                    },
+                    |service| {
+                        (
+                            Some(service.image.clone()),
+                            service.replicas,
+                            healthy_replicas(service),
+                            convergence_name(&service.convergence).into(),
+                            service_diagnostics(service),
+                        )
+                    },
+                );
+            ObservedServiceView {
+                name: desired.logical_name.clone(),
+                image,
+                desired_replicas: desired.replicas,
+                observed_replicas,
+                healthy_replicas,
+                convergence,
+                diagnostics,
+            }
+        })
+        .collect();
+    ObservedApplicationView {
+        services,
+        network_count: u32::try_from(observed.networks.len()).unwrap_or(u32::MAX),
+        volume_count: u32::try_from(observed.volumes.len()).unwrap_or(u32::MAX),
+    }
+}
+
+fn healthy_replicas(service: &ObservedService) -> u16 {
+    let healthcheck_configured = service.healthcheck.is_some();
+    u16::try_from(
+        service
+            .tasks
+            .iter()
+            .filter(|task| {
+                task.desired_running
+                    && task.state == TaskState::Running
+                    && if healthcheck_configured {
+                        task.healthy == Some(true)
+                    } else {
+                        task.healthy != Some(false)
+                    }
+            })
+            .count(),
+    )
+    .unwrap_or(u16::MAX)
+}
+
+fn convergence_name(convergence: &Convergence) -> &'static str {
+    match convergence {
+        Convergence::Converged => "converged",
+        Convergence::Updating => "updating",
+        Convergence::Degraded => "degraded",
+        Convergence::Failed => "failed",
+    }
+}
+
+fn service_diagnostics(service: &ObservedService) -> Vec<DiagnosticView> {
+    let mut diagnostics = Vec::new();
+    if matches!(
+        service.convergence,
+        Convergence::Degraded | Convergence::Failed
+    ) {
+        let healthy_replicas = healthy_replicas(service);
+        diagnostics.push(DiagnosticView {
+            code: "service_not_converged".into(),
+            message: format!(
+                "{} of {} observed replicas are healthy",
+                healthy_replicas, service.replicas
+            ),
+        });
+    }
+    diagnostics.extend(
+        service
+            .tasks
+            .iter()
+            .filter(|task| task.desired_running)
+            .filter_map(|task| task.diagnostic.as_ref())
+            .map(|diagnostic| match diagnostic {
+                TaskDiagnostic::Failed { exit_code } => DiagnosticView {
+                    code: "task_failed".into(),
+                    message: exit_code.map_or_else(
+                        || "a desired task exited unsuccessfully".into(),
+                        |code| format!("a desired task exited with status code {code}"),
+                    ),
+                },
+                TaskDiagnostic::Rejected => DiagnosticView {
+                    code: "task_rejected".into(),
+                    message: "the runtime rejected a desired task before it started".into(),
+                },
+            }),
+    );
+    diagnostics.truncate(MAX_SERVICE_DIAGNOSTICS);
+    diagnostics
+}
+
+fn detail_diagnostics(
+    status: &ApplicationStatusView,
+    observed: &ObservedApplicationView,
+    operation: Option<&piqueld_client::OperationView>,
+) -> Vec<DiagnosticView> {
+    let mut diagnostics = Vec::new();
+    if let Some(message) = &status.message {
+        diagnostics.push(DiagnosticView {
+            code: "application_status".into(),
+            message: message.clone(),
+        });
+    }
+    if let Some(operation) = operation {
+        if let (Some(code), Some(message)) = (&operation.error_code, &operation.error_message) {
+            diagnostics.push(DiagnosticView {
+                code: code.clone(),
+                message: message.clone(),
+            });
+        }
+        diagnostics.extend(operation.steps.iter().filter_map(|step| {
+            let message = step.error_message.as_ref()?;
+            Some(DiagnosticView {
+                code: step
+                    .error_code
+                    .clone()
+                    .unwrap_or_else(|| "operation_step_failed".into()),
+                message: message.clone(),
+            })
+        }));
+    }
+    diagnostics.extend(
+        observed
+            .services
+            .iter()
+            .flat_map(|service| service.diagnostics.iter().cloned()),
+    );
+    diagnostics.truncate(MAX_DETAIL_DIAGNOSTICS);
+    diagnostics
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use piqueld_core::resource::{ObservedTask, TaskDiagnostic};
+
+    use super::*;
+
+    #[test]
+    fn service_diagnostics_ignore_historical_tasks() {
+        let service = ObservedService {
+            name: "web".into(),
+            image: "example/web@sha256:digest".into(),
+            replicas: 1,
+            environment: BTreeMap::new(),
+            command: Vec::new(),
+            arguments: Vec::new(),
+            mounts: Vec::new(),
+            healthcheck: None,
+            resources: None,
+            networks: Vec::new(),
+            labels: BTreeMap::new(),
+            runtime_configuration_matches: true,
+            tasks: vec![
+                ObservedTask {
+                    state: TaskState::Failed,
+                    healthy: None,
+                    desired_running: false,
+                    diagnostic: Some(TaskDiagnostic::Failed { exit_code: Some(1) }),
+                },
+                ObservedTask {
+                    state: TaskState::Rejected,
+                    healthy: None,
+                    desired_running: true,
+                    diagnostic: Some(TaskDiagnostic::Rejected),
+                },
+            ],
+            convergence: Convergence::Converged,
+        };
+
+        let diagnostics = service_diagnostics(&service);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "task_rejected");
     }
 }

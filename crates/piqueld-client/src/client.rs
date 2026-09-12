@@ -27,7 +27,7 @@ fn timed_out() -> ClientError {
 }
 
 /// Builds [`ClientError::Endpoint`] with the reason construction failed.
-fn invalid_request(message: impl std::fmt::Display) -> ClientError {
+pub(crate) fn invalid_request(message: impl std::fmt::Display) -> ClientError {
     ClientError::Endpoint {
         message: message.to_string(),
     }

@@ -1,29 +1,36 @@
 use super::{
-    Arc, BoundaryError, DockerApi, DockerError, InstanceId, NormalizedApplication, Notify,
-    PreparedApplication, ResolutionSet, ResolvedSource, RuntimeBoundary, Source, StoredApplication,
-    compile_application,
+    Arc, BoundaryError, DockerApi, DockerError, IMAGE_RESOLVE_TIMEOUT, InstanceId,
+    NormalizedApplication, Notify, PreparedApplication, ResolutionSet, ResolvedSource,
+    RuntimeBoundary, Source, StoredApplication, compile_application,
 };
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use std::time::Duration;
 
-const PREPARE_TIMEOUT: Duration = Duration::from_mins(5);
+const DOCKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runtime boundary backed by Docker.
 pub struct DockerRuntime<D> {
     docker: Arc<D>,
     instance_id: InstanceId,
     wake: Arc<Notify>,
+    prepare_timeout: Duration,
 }
 
 impl<D> DockerRuntime<D> {
-    /// Creates a Docker runtime adapter.
+    /// Creates a Docker runtime adapter with the supplied input-resolution budget.
     #[must_use]
-    pub fn new(docker: Arc<D>, instance_id: InstanceId, wake: Arc<Notify>) -> Self {
+    pub fn new(
+        docker: Arc<D>,
+        instance_id: InstanceId,
+        wake: Arc<Notify>,
+        prepare_timeout: Duration,
+    ) -> Self {
         Self {
             docker,
             instance_id,
             wake,
+            prepare_timeout,
         }
     }
 }
@@ -38,7 +45,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         &self,
         application: &NormalizedApplication,
     ) -> Result<PreparedApplication, BoundaryError> {
-        tokio::time::timeout(PREPARE_TIMEOUT, async {
+        tokio::time::timeout(self.prepare_timeout, async {
             let docker = Arc::clone(&self.docker);
             let jobs = application
                 .spec
@@ -50,7 +57,14 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                 let docker = Arc::clone(&docker);
                 async move {
                     let Source::Image { image } = source;
-                    let digest_reference = docker.resolve_image(&image).await?;
+                    // Resolution includes pulls, so it uses the dedicated
+                    // image budget rather than the per-request deadline.
+                    let digest_reference =
+                        tokio::time::timeout(IMAGE_RESOLVE_TIMEOUT, docker.resolve_image(&image))
+                            .await
+                            .map_err(|_| {
+                                BoundaryError::Runtime(DockerError::Unavailable("resolve image"))
+                            })??;
                     Ok::<_, BoundaryError>((
                         name,
                         ResolvedSource::Image {
@@ -68,7 +82,12 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             };
             let resolved = compile_application(application, self.instance_id.clone(), &resolutions)
                 .map_err(BoundaryError::Compilation)?;
-            let observed = self.docker.observe(&application.id).await?;
+            let observed =
+                tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, self.docker.observe(&application.id))
+                    .await
+                    .map_err(|_| {
+                        BoundaryError::Runtime(DockerError::Unavailable("observe application"))
+                    })??;
             Ok(PreparedApplication { resolved, observed })
         })
         .await
@@ -79,6 +98,12 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         &self,
         application: &StoredApplication,
     ) -> Result<piqueld_core::ObservedApplication, BoundaryError> {
-        Ok(self.docker.observe(&application.application.id).await?)
+        tokio::time::timeout(
+            DOCKER_REQUEST_TIMEOUT,
+            self.docker.observe(&application.application.id),
+        )
+        .await
+        .map_err(|_| BoundaryError::Runtime(DockerError::Unavailable("observe application")))?
+        .map_err(BoundaryError::from)
     }
 }
