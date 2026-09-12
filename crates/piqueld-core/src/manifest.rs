@@ -454,6 +454,8 @@ fn valid_path_indices(mut value: &str) -> bool {
 fn validate(input: ApplicationManifest) -> Result<ValidatedApplication, ValidationErrors> {
     let mut errors = Vec::new();
     validate_header(&input, &mut errors);
+    // Bound validation work before walking attacker-controlled collections.
+    // Oversized manifests must shrink before individual entries are validated.
     if !validate_budgets(&input, &mut errors) {
         errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
         return Err(ValidationErrors(errors));

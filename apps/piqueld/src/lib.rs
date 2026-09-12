@@ -111,8 +111,8 @@ pub async fn prepare_data_dir(path: &Path) -> std::io::Result<()> {
         } else {
             let mode = metadata.permissions().mode();
             let sticky = mode & 0o1000 != 0;
-            if !sticky
-                && (mode & 0o022 != 0 || (metadata.uid() != 0 && metadata.uid() != expected_uid))
+            if (!sticky && mode & 0o022 != 0)
+                || (metadata.uid() != 0 && metadata.uid() != expected_uid)
             {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,

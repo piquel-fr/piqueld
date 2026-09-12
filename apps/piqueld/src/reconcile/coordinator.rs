@@ -146,6 +146,7 @@ async fn scan_and_run<D: DockerApi>(
 ) -> Result<(), SchedulerError> {
     scheduler.run_until_idle(cancellation.child_token()).await?;
     let mut cursor = None;
+    let mut scan_error = None;
     loop {
         let page = store.list(cursor.as_deref(), MAX_PAGE_SIZE).await?;
         for application in page.items {
@@ -158,6 +159,7 @@ async fn scan_and_run<D: DockerApi>(
                     %error,
                     "application scan failed; continuing with the remaining applications"
                 );
+                scan_error = Some(error);
             }
         }
         let Some(next_cursor) = page.next_cursor else {
@@ -168,7 +170,11 @@ async fn scan_and_run<D: DockerApi>(
             return Ok(());
         }
     }
-    scheduler.run_until_idle(cancellation.child_token()).await
+    scheduler.run_until_idle(cancellation.child_token()).await?;
+    if let Some(error) = scan_error {
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 async fn scan_application<D: DockerApi>(
