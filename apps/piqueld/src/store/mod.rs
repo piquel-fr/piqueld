@@ -460,6 +460,15 @@ pub struct MutationResult {
     pub operation_id: String,
 }
 
+/// Existing idempotency binding matched by a mutation request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MutationReplay {
+    /// The bound operation remains replayable as-is.
+    Replay(MutationResult),
+    /// The bound operation failed or was cancelled and may be retried.
+    Retry,
+}
+
 /// Rows removed by one retention pruning pass.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PrunedCounts {

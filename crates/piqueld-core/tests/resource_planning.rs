@@ -66,6 +66,7 @@ fn observed(desired: &piqueld_core::resource::DesiredApplication) -> ObservedApp
                 arguments: service.arguments.clone(),
                 mounts: service.mounts.clone(),
                 healthcheck: service.healthcheck.clone(),
+                healthcheck_configured: service.healthcheck.is_some(),
                 resources: service.resources.clone(),
                 networks: service.networks.clone(),
                 labels: service.labels.clone(),
@@ -173,6 +174,17 @@ fn converged_services_need_no_work_and_delete_retains_volumes() {
         matches!(action.kind, ActionKind::RemoveService { .. }) && action.destructive
     }));
     assert!(deletion.summary.destructive_count > 0);
+
+    let mut unexpected_healthcheck = observed.clone();
+    assert!(unexpected_healthcheck.services[0].healthcheck.is_none());
+    unexpected_healthcheck.services[0].healthcheck_configured = true;
+    let health_plan = Plan::from_request(
+        &PlanRequest::Reconcile {
+            desired: desired.clone(),
+        },
+        &unexpected_healthcheck,
+    );
+    assert!(health_plan.has_mutations());
 
     let mut drifted = observed.clone();
     drifted.services[0].runtime_configuration_matches = false;

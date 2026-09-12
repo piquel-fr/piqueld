@@ -789,6 +789,8 @@ pub struct ObservedService {
     pub mounts: Vec<DesiredMount>,
     /// Observed health check.
     pub healthcheck: Option<HealthCheck>,
+    /// Whether Docker has a health check, including an unsupported one.
+    pub healthcheck_configured: bool,
     /// Observed resource limits.
     pub resources: Option<ResourceLimits>,
     /// Networks attached to the service.
@@ -814,6 +816,7 @@ impl ObservedService {
             && self.arguments == desired.arguments
             && unordered_eq(&self.mounts, &desired.mounts)
             && self.healthcheck == desired.healthcheck
+            && self.healthcheck_configured == desired.healthcheck.is_some()
             && self.resources == desired.resources
             && unordered_eq(&self.networks, &desired.networks)
             && owned_label_subset(&self.labels, &desired.labels)
