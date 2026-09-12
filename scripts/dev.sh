@@ -54,7 +54,7 @@ setsid cargo watch \
     --watch apps/piqueld --watch apps/piqueld-ui --watch crates \
     --watch Cargo.toml --watch Cargo.lock \
     --ignore 'apps/piqueld-ui/generated' \
-    --exec 'run --package piqueld --bin piqueld --features embedded-ui -- --config config/piqueld.example.toml' &
+    --exec 'run --package piqueld --bin piqueld --features embedded-ui -- --config examples/piqueld.toml' &
 child_pids+=("$!")
 
 set +e

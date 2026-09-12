@@ -1,0 +1,20 @@
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+
+[metadata]
+name = "basic-website"
+
+[[spec.services]]
+name = "web"
+replicas = 1
+
+[spec.services.source]
+type = "image"
+image = "nginx:alpine"
+
+[spec.services.healthcheck]
+type = "http"
+port = 80
+path = "/"
+interval_seconds = 10
+timeout_seconds = 3
