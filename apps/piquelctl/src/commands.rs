@@ -263,7 +263,7 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     // Configuration inspection does not depend on Docker availability.
     let current = find_by_name(client, &name).await?;
     let generation = current.as_ref().map_or(0, |app| app.generation);
-    let id = current.as_ref().map(|app| app.application.id.as_str());
+    let id = current.as_ref().map(|app| app.id.as_str());
     let action = if args.deployment.deploy {
         "Save and deploy"
     } else {

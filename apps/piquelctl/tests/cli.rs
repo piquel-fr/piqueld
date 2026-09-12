@@ -536,7 +536,7 @@ fn apply_deploy_confirmation_and_transport_retry_are_exercised() {
         let manifest = write_manifest(&directory);
         let mut mutation_requests = Vec::new();
         let server = start_server(unix, 3, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=3" => Reply::json(json!({"items":[],"next_cursor":null})),
+            "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
             "/api/v1/applications/apply?deploy=true" => {
                 mutation_requests.push(request.clone());
                 assert_eq!(request.body, MANIFEST.as_bytes());
@@ -598,7 +598,7 @@ fn noninteractive_apply_stops_after_inspection() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 1, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
         path => panic!("mutation must not be sent; got {path}"),
     });
     let output = run(
@@ -621,7 +621,7 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
         "/api/v1/applications/apply?deploy=true" => Reply::accepted(accepted("app-notes-01")),
         "/api/v1/operations/operation-01" => Reply::json(operation("failed")),
         path => panic!("unexpected path {path}"),
@@ -764,12 +764,16 @@ fn manifest_input_is_missing_or_oversized_before_network_use() {
 #[test]
 fn delete_reports_named_volume_retention_and_operation_completion() {
     for unix in [false, true] {
+        let mut deleting = false;
         let server = start_server(unix, 4, move |request| match request.path.as_str() {
             "/api/v1/applications?limit=100" => {
                 Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
             }
-            "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+            "/api/v1/applications/app-notes-01" if !deleting => {
+                Reply::json(app_view("app-notes-01", "notes"))
+            }
             "/api/v1/applications/app-notes-01?expected_generation=1" => {
+                deleting = true;
                 Reply::accepted(accepted("app-notes-01"))
             }
             "/api/v1/applications/app-notes-01" => {
@@ -1032,8 +1036,8 @@ fn apply_defaults_to_saving_without_preview_or_operation_polling() {
     let directory = tempdir().unwrap();
     let manifest = write_manifest(&directory);
     let server = start_server(false, 2, |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => {
-            Reply::json(json!({"items":[app_view("app-notes-01","notes")],"next_cursor":null}))
+        "/api/v1/applications?limit=100" => {
+            Reply::json(json!({"items":[app_summary("app-notes-01","notes")],"next_cursor":null}))
         }
         "/api/v1/applications/apply?deploy=false" => {
             assert_eq!(
@@ -1062,8 +1066,8 @@ fn apply_protects_the_inspected_identity_and_revision_with_confirmation_skipped(
     let directory = tempdir().unwrap();
     let manifest = write_manifest(&directory);
     let server = start_server(false, 2, move |request| {
-        if request.path == "/api/v1/applications?limit=3" {
-            let mut app = app_view("app-notes-01", "notes");
+        if request.path == "/api/v1/applications?limit=100" {
+            let mut app = app_summary("app-notes-01", "notes");
             app["generation"] = json!(7);
             return Reply::json(json!({"items":[app],"next_cursor":null}));
         }
@@ -1133,7 +1137,7 @@ fn force_does_not_skip_confirmation_and_explicit_force_is_sent_to_the_endpoint()
         let manifest = write_manifest(&directory);
         let mut mutations = 0;
         let server = start_server(false, if yes { 3 } else { 1 }, move |request| {
-            if request.path == "/api/v1/applications?limit=3" {
+            if request.path == "/api/v1/applications?limit=100" {
                 return Reply::json(json!({"items":[],"next_cursor":null}));
             }
             assert_eq!(
@@ -1182,7 +1186,7 @@ fn apply_returns_superseded_success_without_following_the_replacement() {
     let directory = tempdir().unwrap();
     let manifest = write_manifest(&directory);
     let server = start_server(false, 3, |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
         "/api/v1/applications/apply?deploy=true" => Reply::accepted(accepted("app-notes-01")),
         "/api/v1/operations/operation-01" => Reply::json(operation("superseded")),
         _ => panic!("unexpected request {}", request.path),

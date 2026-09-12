@@ -932,7 +932,16 @@ image = ""
     .await;
     unknown.assert_error(StatusCode::BAD_REQUEST, "json_malformed");
 
-    // TOML creation shares the JSON normalization pipeline.
+    server.abort();
+}
+
+#[tokio::test]
+async fn toml_save_exposes_summary_and_full_configuration() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+
     let valid_toml = r#"
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
