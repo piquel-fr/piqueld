@@ -469,6 +469,32 @@ async fn keyed_replace_replay_after_failure_resets_the_failed_operation() {
         .await
         .expect("resurrected binding replays");
     assert_eq!(replay, retried);
+    let mut connection =
+        SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", database.display()))
+            .await
+            .expect("database opens");
+    sqlx::query("UPDATE operations SET state='failed',finished_at_ms=created_at_ms WHERE id=?1")
+        .bind(&retried.operation_id)
+        .execute(&mut connection)
+        .await
+        .expect("retry fails");
+    store
+        .replace(&application, &resolved, 2, &["ensure_network".into()])
+        .await
+        .expect("later replacement advances generation");
+    assert!(matches!(
+        store
+            .replace_idempotent(
+                &application,
+                &resolved,
+                1,
+                &["ensure_network".into()],
+                &key_hash,
+                &request_hash
+            )
+            .await,
+        Err(StoreError::GenerationConflict)
+    ));
 }
 
 #[tokio::test]

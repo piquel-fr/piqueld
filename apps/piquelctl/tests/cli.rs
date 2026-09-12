@@ -9,7 +9,10 @@ use std::{
     os::unix::net::UnixListener,
     path::PathBuf,
     process::{Command, Output, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -102,9 +105,15 @@ struct TestServer {
     records: Arc<Mutex<Vec<Request>>>,
     _directory: TempDir,
     join: Option<thread::JoinHandle<()>>,
+    stop: Arc<AtomicBool>,
 }
 
 impl TestServer {
+    fn stop(self) -> Vec<Request> {
+        self.stop.store(true, Ordering::Relaxed);
+        self.finish()
+    }
+
     fn finish(mut self) -> Vec<Request> {
         self.join
             .take()
@@ -123,6 +132,8 @@ where
 {
     let directory = tempdir().expect("temporary server directory");
     let records = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_for_thread = Arc::clone(&stop);
     let handler = Arc::new(Mutex::new(handler));
     let records_for_thread = Arc::clone(&records);
     let handler_for_thread = Arc::clone(&handler);
@@ -136,7 +147,7 @@ where
         let join = thread::spawn(move || {
             let mut deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
             let mut served = 0;
-            while served < expected_requests {
+            while served < expected_requests && !stop_for_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         served += 1;
@@ -164,7 +175,7 @@ where
         let join = thread::spawn(move || {
             let mut deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
             let mut served = 0;
-            while served < expected_requests {
+            while served < expected_requests && !stop_for_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         served += 1;
@@ -189,6 +200,7 @@ where
         records,
         _directory: directory,
         join: Some(join),
+        stop,
     }
 }
 
@@ -768,7 +780,7 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("timed out"));
     let _ = timeout_server.finish();
 
-    let interrupt_server = start_server(false, 1, move |request| {
+    let interrupt_server = start_server(false, usize::MAX, move |request| {
         assert_eq!(request.path, "/api/v1/operations/operation-01");
         Reply::json(operation("pending"))
     });
@@ -797,7 +809,7 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
         let attempt = child.wait_with_output().expect("interrupted child");
         // A signal death before the handler was installed is a startup race;
         // retry instead of failing the test.
-        if attempt.status.code().is_some() {
+        if attempt.status.code() == Some(130) {
             output = Some(attempt);
             break;
         }
@@ -806,7 +818,7 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     assert_eq!(output.status.code(), Some(130));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("was not cancelled"));
-    let _ = interrupt_server.finish();
+    let _ = interrupt_server.stop();
 }
 
 #[test]
@@ -841,4 +853,37 @@ fn ambiguous_names_report_the_match_count() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("matched 2 applications"));
     let _ = server.finish();
+}
+
+#[test]
+fn read_request_uses_the_full_command_timeout() {
+    let server = start_server(false, 1, |_| {
+        thread::sleep(Duration::from_millis(650));
+        Reply::json(
+            json!({"status": "ok", "daemon_version": "test", "api_version": "v1", "instance_id": "test"}),
+        )
+    });
+    let output = run_with_timeout(&server, &["status"], "1s");
+    assert_json_success(&output);
+    server.finish();
+}
+
+#[test]
+fn fifo_manifest_is_rejected_before_opening() {
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("manifest.fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo")
+            .success()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_piquelctl"))
+        .args(["--timeout", "100ms", "plan", "--file"])
+        .arg(path)
+        .output()
+        .expect("CLI rejects FIFO");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
 }

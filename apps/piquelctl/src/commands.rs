@@ -16,7 +16,12 @@ use piqueld_client::{
     Source,
 };
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, fmt::Write as _, io, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    fmt::Write as _,
+    io::{self, Write as _},
+    path::PathBuf,
+};
 use tokio::{signal, time};
 
 use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
@@ -44,9 +49,7 @@ fn build_client(cli: &Cli) -> Result<Client> {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET)),
         )
     };
-    // Leave room inside the complete command deadline for a second transport
-    // attempt when an idempotent mutation fails promptly.
-    Ok(client.with_timeout(cli.timeout / 2))
+    Ok(client.with_timeout(cli.timeout))
 }
 
 async fn status(cli: &Cli, client: &Client) -> Result<()> {
@@ -54,11 +57,19 @@ async fn status(cli: &Cli, client: &Client) -> Result<()> {
     if cli.json {
         return emit_json(&status);
     }
-    println!(
+    writeln!(
+        io::stdout().lock(),
         "daemon {} (version {}, API {}, instance {})",
-        status.status, status.daemon_version, status.api_version, status.instance_id
-    );
-    println!("transport: {}", transport_description(cli));
+        status.status,
+        status.daemon_version,
+        status.api_version,
+        status.instance_id
+    )?;
+    writeln!(
+        io::stdout().lock(),
+        "transport: {}",
+        transport_description(cli)
+    )?;
     Ok(())
 }
 
@@ -100,20 +111,21 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
         return emit_json(&json!({"items": items, "next_cursor": Value::Null}));
     }
     if rows.is_empty() {
-        println!("No applications.");
+        writeln!(io::stdout().lock(), "No applications.")?;
     } else {
         for (application, status) in rows {
             let state = status
                 .as_ref()
                 .map_or_else(|| "unavailable".to_owned(), |status| status.state.clone());
-            println!(
+            writeln!(
+                io::stdout().lock(),
                 "{}\t{}\tgeneration {}\tdesired replicas {}\t{}",
                 application.application.metadata.name,
                 application.application.id,
                 application.generation,
                 desired_replicas(&application),
                 state,
-            );
+            )?;
             if let Some(status) = status
                 && let Some(message) = &status.message
             {
@@ -132,27 +144,36 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
     if cli.json {
         return emit_json(&json!({"application": application, "status": status}));
     }
-    println!(
+    writeln!(
+        io::stdout().lock(),
         "{} ({})",
-        application.application.metadata.name, application.application.id
-    );
-    println!(
+        application.application.metadata.name,
+        application.application.id
+    )?;
+    writeln!(
+        io::stdout().lock(),
         "generation {} (observed {})\tstate {}",
         application.generation,
         status
             .observed_generation
             .map_or_else(|| "none".to_owned(), |generation| generation.to_string()),
         status.state,
-    );
-    println!("desired replicas: {}", desired_replicas(&application));
+    )?;
+    writeln!(
+        io::stdout().lock(),
+        "desired replicas: {}",
+        desired_replicas(&application)
+    )?;
     for service in &application.application.spec.services {
         let image = match &service.source {
             Source::Image { image } => image,
         };
-        println!(
+        writeln!(
+            io::stdout().lock(),
             "service {}: {} replica(s), image {image}",
-            service.name, service.replicas
-        );
+            service.name,
+            service.replicas
+        )?;
     }
     if !application.application.spec.volumes.is_empty() {
         let volumes = application
@@ -163,7 +184,10 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
             .map(|volume| volume.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        println!("named volumes: {volumes} (retained on deletion)");
+        writeln!(
+            io::stdout().lock(),
+            "named volumes: {volumes} (retained on deletion)"
+        )?;
     }
     if let Some(message) = status.message {
         eprintln!("diagnostic: {message}");
@@ -225,17 +249,24 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
         if cli.json {
             return emit_json(&accepted);
         }
-        println!(
+        writeln!(
+            io::stdout().lock(),
             "accepted operation {} for application {}",
-            accepted.operation_id, accepted.application_id
-        );
+            accepted.operation_id,
+            accepted.application_id
+        )?;
         return Ok(());
     }
     let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
     if cli.json {
         return emit_json(&json!({"accepted": accepted, "operation": operation}));
     }
-    println!("operation {} {}", operation.id, operation.state);
+    writeln!(
+        io::stdout().lock(),
+        "operation {} {}",
+        operation.id,
+        operation.state
+    )?;
     Ok(())
 }
 
@@ -272,10 +303,11 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
         if cli.json {
             return emit_json(&json!({"accepted": accepted, "volumes_retained": true}));
         }
-        println!(
+        writeln!(
+            io::stdout().lock(),
             "accepted operation {} (named volumes retained)",
             accepted.operation_id
-        );
+        )?;
         return Ok(());
     }
     let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
@@ -286,20 +318,22 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
             "volumes_retained": true,
         }));
     }
-    println!(
+    writeln!(
+        io::stdout().lock(),
         "operation {} {} (named volumes retained)",
-        operation.id, operation.state
-    );
+        operation.id,
+        operation.state
+    )?;
     Ok(())
 }
 
 async fn operation(cli: &Cli, client: &Client, args: &OperationArgs) -> Result<()> {
-    let initial = client.operation(&args.operation_id).await?;
     if args.no_wait {
+        let initial = client.operation(&args.operation_id).await?;
         render_operation(cli, &initial)?;
         return Ok(());
     }
-    let operation = wait_for_operation(client, &args.operation_id, Some(initial)).await?;
+    let operation = wait_for_operation(client, &args.operation_id, None).await?;
     render_operation(cli, &operation)
 }
 
@@ -406,25 +440,31 @@ async fn wait_for_operation(
     operation_id: &str,
     initial: Option<OperationView>,
 ) -> Result<OperationView> {
-    let mut current = initial;
-    loop {
-        let operation = match current.take() {
-            Some(operation) => operation,
-            None => client.operation(operation_id).await?,
-        };
-        report_operation(&operation);
-        if terminal_operation(&operation.state) {
-            return finish_operation(operation);
-        }
-        tokio::select! {
-            result = signal::ctrl_c() => {
-                result.map_err(|_| CliError::new(ErrorKind::General, "could not install Ctrl-C handler"))?;
-                return Err(CliError::new(
-                    ErrorKind::Interrupted,
-                    "wait interrupted; the server-side operation was not cancelled",
-                ));
+    let wait = async {
+        let mut current = initial;
+        loop {
+            let operation = match current.take() {
+                Some(operation) => operation,
+                None => client.operation(operation_id).await?,
+            };
+            report_operation(&operation);
+            if terminal_operation(&operation.state) {
+                return finish_operation(operation);
             }
-            () = time::sleep(POLL_INTERVAL) => {}
+            time::sleep(POLL_INTERVAL).await;
+        }
+    };
+    tokio::select! {
+        result = wait => result,
+        result = signal::ctrl_c() => {
+            result.map_err(|error| CliError::new(
+                ErrorKind::General,
+                format!("could not install Ctrl-C handler: {error}"),
+            ))?;
+            Err(CliError::new(
+                ErrorKind::Interrupted,
+                "wait interrupted; the server-side operation was not cancelled",
+            ))
         }
     }
 }

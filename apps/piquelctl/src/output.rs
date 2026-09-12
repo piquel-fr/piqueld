@@ -24,18 +24,29 @@ pub(crate) fn render_operation(cli: &Cli, operation: &OperationView) -> Result<(
     if cli.json {
         return emit_json(operation);
     }
-    println!("operation {}: {}", operation.id, operation.state);
-    println!(
+    writeln!(
+        io::stdout().lock(),
+        "operation {}: {}",
+        operation.id,
+        operation.state
+    )?;
+    writeln!(
+        io::stdout().lock(),
         "application {} generation {}",
-        operation.application_id, operation.generation
-    );
+        operation.application_id,
+        operation.generation
+    )?;
     for step in &operation.steps {
-        println!(
+        writeln!(
+            io::stdout().lock(),
             "  {} {}: {} (attempt {})",
-            step.position, step.action, step.state, step.attempt
-        );
+            step.position,
+            step.action,
+            step.state,
+            step.attempt
+        )?;
         if let Some(message) = &step.error_message {
-            println!("      {message}");
+            writeln!(io::stdout().lock(), "      {message}")?;
         }
     }
     if let Some(message) = &operation.error_message {

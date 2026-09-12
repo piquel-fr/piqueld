@@ -100,6 +100,18 @@ pub(crate) async fn read_manifest(path: &Path) -> Result<String> {
     let path = path.to_owned();
     let display_path = path.display().to_string();
     tokio::task::spawn_blocking(move || {
+        let metadata = std::fs::metadata(&path).map_err(|error| {
+            CliError::new(
+                ErrorKind::Input,
+                format!("could not read manifest {}: {error}", path.display()),
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                format!("manifest path {} is not a regular file", path.display()),
+            ));
+        }
         let file = std::fs::File::open(&path).map_err(|error| {
             CliError::new(
                 ErrorKind::Input,

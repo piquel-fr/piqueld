@@ -59,7 +59,8 @@ Create, replace, and plan accept structured JSON or a complete TOML manifest wit
 image resolution requirements when the runtime cannot yet produce a concrete
 desired plan. Successful preview requests answer 200 with a `PlanView`; callers
 still handle the documented API errors and inspect blocking diagnostics before
-deciding whether to mutate.
+deciding whether to mutate. In particular, create previews return HTTP 409 with
+collision diagnostics when the application name is already in use.
 
 The public client contracts live in `piqueld-client`; persistence uses internal
 store rows and converts them to these DTOs at the API boundary. The detail DTO

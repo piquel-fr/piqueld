@@ -330,8 +330,7 @@ impl SqliteStore {
                     .await
                     .map_err(StoreError::database)?;
                     if current != 1 {
-                        tx.commit().await.map_err(StoreError::database)?;
-                        return Ok(replay.mutation);
+                        return Err(StoreError::GenerationConflict);
                     }
                     let result = Self::reset_failed_operation(
                         &mut tx,

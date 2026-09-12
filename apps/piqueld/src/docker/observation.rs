@@ -121,7 +121,9 @@ impl BollardDocker {
             .into_iter()
             .collect();
         let runtime_configuration_matches = ServiceRuntimePolicy::matches(spec);
-        let healthcheck_configured = container.health_check.is_some();
+        let healthcheck_configured = container.health_check.as_ref().is_some_and(
+            |health| !matches!(health.test.as_deref(), Some([test]) if test == "NONE"),
+        );
         let convergence =
             BollardDocker::convergence(&tasks, replicas, update, healthcheck_configured);
         Ok(ObservedService {
@@ -266,6 +268,10 @@ impl BollardDocker {
     }
 
     /// Converts Docker's supported health-check syntax into the core model.
+    fn healthcheck_configured(health: &HealthConfig) -> bool {
+        !matches!(health.test.as_deref(), Some([test]) if test == "NONE")
+    }
+
     pub(super) fn observed_health(config: &HealthConfig) -> Option<HealthCheck> {
         let test = config.test.as_ref()?;
         let interval = u32::try_from(config.interval? / NANOSECONDS_PER_SECOND).ok()?;
@@ -353,6 +359,20 @@ mod tests {
             desired_running: true,
             diagnostic: None,
         }
+    }
+
+    #[test]
+    fn disabled_healthcheck_counts_running_tasks_as_healthy() {
+        let health = HealthConfig {
+            test: Some(vec!["NONE".into()]),
+            ..Default::default()
+        };
+        let configured = BollardDocker::healthcheck_configured(&health);
+        assert!(!configured);
+        assert_eq!(
+            BollardDocker::convergence(&[running(None)], 1, None, configured),
+            Convergence::Converged
+        );
     }
 
     #[test]

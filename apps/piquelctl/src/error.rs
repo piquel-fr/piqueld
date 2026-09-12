@@ -67,6 +67,15 @@ impl fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
+impl From<std::io::Error> for CliError {
+    fn from(error: std::io::Error) -> Self {
+        Self::new(
+            ErrorKind::General,
+            format!("could not write output: {error}"),
+        )
+    }
+}
+
 impl From<ClientError> for CliError {
     fn from(error: ClientError) -> Self {
         match error {
