@@ -18,6 +18,7 @@ pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
     ok(SystemStatus {
         status: "running".into(),
         api_version: "v1".into(),
+        daemon_version: env!("CARGO_PKG_VERSION").into(),
         instance_id: state.instance_id,
     })
 }

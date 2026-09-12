@@ -4,7 +4,7 @@ use piqueld_core::{NormalizedApplication, Plan};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::{Client, ClientError, Page, path_segment};
+use crate::{Client, ClientError, OperationView, Page, client::path_segment};
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 /// Public application state returned by the API.
@@ -120,6 +120,60 @@ pub struct ApplicationStatusView {
     pub updated_at_ms: i64,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Sanitized runtime diagnostic shown by the read-only dashboard.
+pub struct DiagnosticView {
+    /// Stable diagnostic category.
+    pub code: String,
+    /// Bounded, actionable message safe for a browser.
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Observed service state summarized for browser and operator clients.
+pub struct ObservedServiceView {
+    /// Logical service name from the desired application.
+    pub name: String,
+    /// Observed immutable image reference, when the service exists.
+    pub image: Option<String>,
+    /// Desired replica count from the application manifest.
+    pub desired_replicas: u16,
+    /// Replicas currently reported by the runtime.
+    pub observed_replicas: u16,
+    /// Replicas that are running and healthy enough to serve traffic.
+    pub healthy_replicas: u16,
+    /// Runtime convergence category.
+    pub convergence: String,
+    /// Sanitized task and service diagnostics.
+    pub diagnostics: Vec<DiagnosticView>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
+/// Bounded observed runtime state for one application.
+pub struct ObservedApplicationView {
+    /// Observed services in desired service order.
+    pub services: Vec<ObservedServiceView>,
+    /// Number of owned networks observed.
+    pub network_count: u32,
+    /// Number of owned volumes observed.
+    pub volume_count: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Read-only application detail composed at the API boundary.
+pub struct ApplicationDetailView {
+    /// Desired application and generation.
+    pub application: ApplicationView,
+    /// Durable application lifecycle status.
+    pub status: ApplicationStatusView,
+    /// Sanitized runtime observation.
+    pub observed: ObservedApplicationView,
+    /// Most recent durable operation, when one exists.
+    pub latest_operation: Option<OperationView>,
+    /// Bounded diagnostics from status, runtime, and the latest operation.
+    pub diagnostics: Vec<DiagnosticView>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// Cursor and page-size options for listing applications.
 pub struct ListApplicationsOptions {
@@ -156,9 +210,9 @@ impl Client {
         }
         let query = query.finish();
         let path = if query.is_empty() {
-            "/api/v1/applications".to_owned()
+            format!("{}/applications", crate::API_PREFIX)
         } else {
-            format!("/api/v1/applications?{query}")
+            format!("{}/applications?{query}", crate::API_PREFIX)
         };
         self.send::<_, ()>(Method::GET, &path, None, &[]).await
     }
@@ -170,7 +224,25 @@ impl Client {
     pub async fn application(&self, id: &str) -> Result<ApplicationView, ClientError> {
         self.send::<_, ()>(
             Method::GET,
-            &format!("/api/v1/applications/{}", path_segment(id)),
+            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
+            None,
+            &[],
+        )
+        .await
+    }
+
+    /// Fetches desired, observed, operation, and diagnostic state for an application.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn application_detail(&self, id: &str) -> Result<ApplicationDetailView, ClientError> {
+        self.send::<_, ()>(
+            Method::GET,
+            &format!(
+                "{}/applications/{}/detail",
+                crate::API_PREFIX,
+                path_segment(id)
+            ),
             None,
             &[],
         )
@@ -188,7 +260,7 @@ impl Client {
     ) -> Result<AcceptedOperation, ClientError> {
         self.send(
             Method::POST,
-            "/api/v1/applications",
+            &format!("{}/applications", crate::API_PREFIX),
             Some(request),
             &[("idempotency-key", idempotency_key)],
         )
@@ -204,11 +276,28 @@ impl Client {
         id: &str,
         request: &ReplaceApplicationRequest,
     ) -> Result<AcceptedOperation, ClientError> {
+        self.replace_application_with_key(id, request, None).await
+    }
+
+    /// Replaces an application and optionally binds the mutation to an
+    /// idempotency key for safe transport retries.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn replace_application_with_key(
+        &self,
+        id: &str,
+        request: &ReplaceApplicationRequest,
+        idempotency_key: Option<&str>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        let headers = idempotency_key
+            .map(|key| vec![("idempotency-key", key)])
+            .unwrap_or_default();
         self.send(
             Method::PUT,
-            &format!("/api/v1/applications/{}", path_segment(id)),
+            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
             Some(request),
-            &[],
+            &headers,
         )
         .await
     }
@@ -222,11 +311,28 @@ impl Client {
         id: &str,
         request: &DeleteApplicationRequest,
     ) -> Result<AcceptedOperation, ClientError> {
+        self.delete_application_with_key(id, request, None).await
+    }
+
+    /// Marks an application for deletion and optionally binds the mutation to
+    /// an idempotency key for safe transport retries.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn delete_application_with_key(
+        &self,
+        id: &str,
+        request: &DeleteApplicationRequest,
+        idempotency_key: Option<&str>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        let headers = idempotency_key
+            .map(|key| vec![("idempotency-key", key)])
+            .unwrap_or_default();
         self.send(
             Method::DELETE,
-            &format!("/api/v1/applications/{}", path_segment(id)),
+            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
             Some(request),
-            &[],
+            &headers,
         )
         .await
     }
@@ -241,7 +347,7 @@ impl Client {
     ) -> Result<PlanView, ClientError> {
         self.send(
             Method::POST,
-            "/api/v1/applications/plan",
+            &format!("{}/applications/plan", crate::API_PREFIX),
             Some(request),
             &[],
         )
@@ -259,7 +365,11 @@ impl Client {
     ) -> Result<PlanView, ClientError> {
         self.send(
             Method::POST,
-            &format!("/api/v1/applications/{}/plan", path_segment(id)),
+            &format!(
+                "{}/applications/{}/plan",
+                crate::API_PREFIX,
+                path_segment(id)
+            ),
             Some(request),
             &[],
         )
@@ -277,7 +387,11 @@ impl Client {
     ) -> Result<AcceptedOperation, ClientError> {
         self.send(
             Method::POST,
-            &format!("/api/v1/applications/{}/reconcile", path_segment(id)),
+            &format!(
+                "{}/applications/{}/reconcile",
+                crate::API_PREFIX,
+                path_segment(id)
+            ),
             Some(&ExpectedGeneration {
                 expected_generation,
             }),
@@ -293,7 +407,11 @@ impl Client {
     pub async fn application_status(&self, id: &str) -> Result<ApplicationStatusView, ClientError> {
         self.send::<_, ()>(
             Method::GET,
-            &format!("/api/v1/applications/{}/status", path_segment(id)),
+            &format!(
+                "{}/applications/{}/status",
+                crate::API_PREFIX,
+                path_segment(id)
+            ),
             None,
             &[],
         )
@@ -311,7 +429,7 @@ impl Client {
     ) -> Result<AcceptedOperation, ClientError> {
         self.send_text(
             Method::POST,
-            "/api/v1/applications",
+            &format!("{}/applications", crate::API_PREFIX),
             manifest,
             &[
                 ("content-type", "application/toml"),
@@ -331,15 +449,35 @@ impl Client {
         manifest: &str,
         expected_generation: u64,
     ) -> Result<AcceptedOperation, ClientError> {
+        self.replace_application_toml_with_key(id, manifest, expected_generation, None)
+            .await
+    }
+
+    /// Replaces an application from TOML and optionally binds the mutation to
+    /// an idempotency key for safe transport retries.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn replace_application_toml_with_key(
+        &self,
+        id: &str,
+        manifest: &str,
+        expected_generation: u64,
+        idempotency_key: Option<&str>,
+    ) -> Result<AcceptedOperation, ClientError> {
         let generation = expected_generation.to_string();
+        let mut headers = vec![
+            ("content-type", "application/toml"),
+            ("x-expected-generation", generation.as_str()),
+        ];
+        if let Some(key) = idempotency_key {
+            headers.push(("idempotency-key", key));
+        }
         self.send_text(
             Method::PUT,
-            &format!("/api/v1/applications/{}", path_segment(id)),
+            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
             manifest,
-            &[
-                ("content-type", "application/toml"),
-                ("x-expected-generation", &generation),
-            ],
+            &headers,
         )
         .await
     }
@@ -351,7 +489,7 @@ impl Client {
     pub async fn plan_create_toml(&self, manifest: &str) -> Result<PlanView, ClientError> {
         self.send_text(
             Method::POST,
-            "/api/v1/applications/plan",
+            &format!("{}/applications/plan", crate::API_PREFIX),
             manifest,
             &[("content-type", "application/toml")],
         )
@@ -371,7 +509,11 @@ impl Client {
         let generation = expected_generation.to_string();
         self.send_text(
             Method::POST,
-            &format!("/api/v1/applications/{}/plan", path_segment(id)),
+            &format!(
+                "{}/applications/{}/plan",
+                crate::API_PREFIX,
+                path_segment(id)
+            ),
             manifest,
             &[
                 ("content-type", "application/toml"),
