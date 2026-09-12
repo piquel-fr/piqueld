@@ -175,6 +175,17 @@ fn converged_services_need_no_work_and_delete_retains_volumes() {
     }));
     assert!(deletion.summary.destructive_count > 0);
 
+    let mut unexpected_healthcheck = observed.clone();
+    assert!(unexpected_healthcheck.services[0].healthcheck.is_none());
+    unexpected_healthcheck.services[0].healthcheck_configured = true;
+    let health_plan = Plan::from_request(
+        &PlanRequest::Reconcile {
+            desired: desired.clone(),
+        },
+        &unexpected_healthcheck,
+    );
+    assert!(health_plan.has_mutations());
+
     let mut drifted = observed.clone();
     drifted.services[0].runtime_configuration_matches = false;
     let drift_plan = Plan::from_request(
