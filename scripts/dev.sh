@@ -4,7 +4,7 @@ set -Eeuo pipefail
 declare -a child_pids=()
 
 cleanup() {
-    local child
+    local child deadline
 
     trap - EXIT INT TERM
 
@@ -14,13 +14,26 @@ cleanup() {
         pkill -TERM --session "$child" 2>/dev/null || true
     done
 
-    wait 2>/dev/null || true
+    # The daemon allows ten seconds to finish in-flight requests. Watch may
+    # exit first, so check the entire session and bound the grace period.
+    deadline=$((SECONDS + 11))
+    while ((SECONDS < deadline)); do
+        local running=false
+        for child in "${child_pids[@]}"; do
+            if pgrep --session "$child" >/dev/null; then
+                running=true
+                break
+            fi
+        done
+        "$running" || break
+        sleep 0.1
+    done
 
-    # A failed cargo-watch command can exit before its cargo child does.
-    # Ensure those detached children cannot keep the API port occupied.
+    # Reap supervisors only after terminating any unresponsive descendants.
     for child in "${child_pids[@]}"; do
         pkill -KILL --session "$child" 2>/dev/null || true
     done
+    wait 2>/dev/null || true
 }
 
 handle_signal() {
@@ -28,7 +41,7 @@ handle_signal() {
     exit 0
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
 trap handle_signal INT TERM
 
 mkdir -p apps/piqueld-ui/generated

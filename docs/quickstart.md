@@ -13,8 +13,8 @@ just daemon --config config/piqueld.example.toml
 
 The example keeps its state under a user-owned runtime directory,
 `/run/user/<uid>/piqueld`, so it does not require root-owned `/run` or
-`/var/lib` directories; replace `1000` with your own UID (`id -u`) in the
-socket paths below. The daemon's production default is
+`/var/lib` directories; before starting the daemon, replace `1000` with your
+own UID (`id -u`) in `config/piqueld.example.toml` and the socket paths below. The daemon's production default is
 `/etc/piqueld/config.toml`; use `--config` when running as a non-root
 developer.
 

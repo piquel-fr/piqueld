@@ -33,14 +33,15 @@
               # Only the combined package compiles the workspace UI crate: its
               # daemon enables the embedded dashboard feature and points the
               # daemon build script at a prebuilt Trunk distribution.
-              cargoBuildFlags = lib.concatMap (binary: [
-                "--package"
-                binary
-              ]) binaries
-              ++ lib.optionals withUi [
-                "--features"
-                "embedded-ui"
-              ];
+              cargoBuildFlags =
+                lib.concatMap (binary: [
+                  "--package"
+                  binary
+                ]) binaries
+                ++ lib.optionals withUi [
+                  "--features"
+                  "embedded-ui"
+                ];
               cargoTestFlags = lib.concatMap (binary: [
                 "--package"
                 binary
@@ -140,21 +141,28 @@
                 cargo fmt --check
                 touch "$out"
               '';
-          dependency-boundary =
-            pkgs.runCommand "piqueld-dependency-boundary"
-              {
-                nativeBuildInputs = [
-                  pkgs.cargo
-                ];
-                src = pkgs.lib.cleanSource self;
-              }
-              ''
-                cp -R "$src" source
-                chmod -R u+w source
-                cd source
-                bash scripts/check-dependency-boundaries.sh
-                touch "$out"
-              '';
+          # cargo tree must resolve the crates.io dependency graph, so the
+          # check vendors all sources up front and stays sandbox-safe.
+          dependency-boundary = pkgs.stdenv.mkDerivation {
+            name = "piqueld-dependency-boundary";
+            src = pkgs.lib.cleanSource self;
+            nativeBuildInputs = [
+              pkgs.cargo
+              pkgs.rustPlatform.cargoSetupHook
+            ];
+            cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+              name = "piqueld-dependency-boundary-deps";
+              src = pkgs.lib.cleanSource self;
+              hash = "sha256-xfYZnFA/cUlyVgyZCSI31UTycmcRN0fxDfQVJ//rqAs=";
+            };
+            dontConfigure = true;
+            buildPhase = ''
+              bash scripts/check-dependency-boundaries.sh
+            '';
+            installPhase = ''
+              touch "$out"
+            '';
+          };
         }
       );
 
@@ -170,6 +178,7 @@
             packages = with pkgs; [
               cargo
               cargo-deny
+              cargo-nextest
               cargo-watch
               binaryen
               clippy
@@ -177,6 +186,8 @@
               cmake
               lld
               pkg-config
+              procps
+              util-linux
               rustc
               rustfmt
               tailwindcss_4
