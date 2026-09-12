@@ -8,6 +8,27 @@ use super::{
     async_trait, bounded, resolve_image_digest, stream,
 };
 
+impl BollardDocker {
+    /// List responses can omit immutable network fields, so reconciliation
+    /// decisions must use a complete inspection of the selected resource.
+    async fn inspect_network_complete(
+        &self,
+        identifier: &str,
+    ) -> Result<Option<bollard::models::Network>, DockerError> {
+        match self
+            .docker
+            .inspect_network(identifier, None::<InspectNetworkOptions>)
+            .await
+        {
+            Ok(network) => Ok(Some(network)),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
+            Err(error) => Err(DockerError::request("inspect network", error)),
+        }
+    }
+}
+
 #[async_trait]
 impl DockerApi for BollardDocker {
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError> {
@@ -105,6 +126,26 @@ impl DockerApi for BollardDocker {
             raw_networks.extend(named_networks.into_iter().filter(|network| {
                 seen_networks.insert((network.id.clone(), network.name.clone()))
             }));
+            let mut inspections = stream::iter(
+                raw_networks
+                    .into_iter()
+                    .filter_map(|network| network.id.or(network.name)),
+            )
+            .map(|id| async {
+                let inspected = self.inspect_network_complete(&id).await;
+                (id, inspected)
+            })
+            .buffer_unordered(OBSERVATION_INSPECT_CONCURRENCY);
+            let mut raw_networks = Vec::new();
+            while let Some((id, inspected)) = inspections.next().await {
+                match inspected {
+                    Ok(Some(network)) => raw_networks.push(network),
+                    Ok(None) => {
+                        tracing::debug!(network_id = %id, "network vanished during observation");
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
             let network_names = raw_networks
                 .iter()
                 .filter_map(|network| Some((network.id.clone()?, network.name.clone()?)))
@@ -313,6 +354,12 @@ impl DockerApi for BollardDocker {
                 .into_iter()
                 .find(|n| n.name.as_deref() == Some(&desired.name))
             {
+                let Some(network) = self
+                    .inspect_network_complete(network.id.as_deref().unwrap_or(&desired.name))
+                    .await?
+                else {
+                    return Err(DockerError::Request("inspect existing network"));
+                };
                 let runtime_configuration_matches = Self::network_configuration_matches(&network);
                 let labels = network
                     .labels
