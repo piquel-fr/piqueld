@@ -20,7 +20,6 @@ use piqueld_client::{
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
-    fmt::Write as _,
     io::{self, Write as _},
     path::PathBuf,
 };
@@ -479,12 +478,22 @@ async fn wait_for_operation(
 ) -> Result<Operation> {
     let wait = async {
         let mut current = initial;
+        let mut last_progress = None;
+        eprintln!("\nProgress: {operation_id}");
         loop {
             let operation = match current.take() {
                 Some(operation) => operation,
                 None => client.operation(operation_id).await?,
             };
-            report_operation(&operation);
+            let progress = (
+                operation.state,
+                operation.phase.clone(),
+                operation.resource.clone(),
+            );
+            if last_progress.as_ref() != Some(&progress) {
+                report_operation(&operation);
+                last_progress = Some(progress);
+            }
             if operation.state.terminal() {
                 return finish_operation(operation);
             }
@@ -513,18 +522,7 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
     ) {
         Ok(operation)
     } else {
-        let mut message = format!(
-            "operation {} ended in state {}",
-            operation.id, operation.state
-        );
-        if let Some(code) = &operation.error_code {
-            let _ = write!(message, " ({code})");
-        }
-        if let Some(error) = &operation.error_message {
-            message.push_str(": ");
-            message.push_str(error);
-        }
-        message.push_str("; use piquelctl reconcile to retry current intent");
+        let message = format!("operation ended in state {}", operation.state);
         Err(CliError::new(ErrorKind::Operation, message)
             .with_details(json!({"operation": operation})))
     }

@@ -126,17 +126,52 @@ pub(crate) fn finish_error(cli: &Cli, error: CliError) -> ExitCode {
                 .as_ref()
                 .map_or_else(String::new, |details| format!("; details {details}")),
         );
+        if let Some(application) = error
+            .details
+            .as_ref()
+            .and_then(|details| details.get("operation"))
+            .and_then(|operation| operation.get("application_id"))
+            .and_then(Value::as_str)
+        {
+            eprintln!("hint: retry with `piquelctl reconcile {application}`");
+        }
     } else {
-        eprintln!("piquelctl: {}", error.message);
+        eprintln!("Error: {}", error.message);
         if let Some(code) = error.api_code {
-            eprintln!("API code: {code}");
+            eprintln!("  API code:   {code}");
         }
         if let Some(request_id) = error.request_id {
-            eprintln!("request ID: {request_id}");
+            eprintln!("  Request ID: {request_id}");
         }
         if let Some(details) = error.details {
-            eprintln!("details: {details}");
+            render_details(&details);
         }
     }
     ExitCode::from(error.kind.exit_code())
+}
+
+fn render_details(details: &Value) {
+    let Some(operation) = details.get("operation") else {
+        if let Ok(details) = serde_json::to_string_pretty(details) {
+            eprintln!("\nDetails:\n{details}");
+        }
+        return;
+    };
+
+    eprintln!("\nContext:");
+    for (label, field) in [
+        ("Operation", "id"),
+        ("Application", "application_id"),
+        ("Phase", "phase"),
+        ("Resource", "resource"),
+        ("Code", "error_code"),
+        ("Message", "error_message"),
+    ] {
+        if let Some(value) = operation.get(field).and_then(Value::as_str) {
+            eprintln!("  {label:<12} {value}");
+        }
+    }
+    if let Some(application) = operation.get("application_id").and_then(Value::as_str) {
+        eprintln!("\nHint: retry with `piquelctl reconcile {application}`");
+    }
 }

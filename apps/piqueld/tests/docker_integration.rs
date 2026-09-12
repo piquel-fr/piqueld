@@ -74,6 +74,11 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
         labels: labels.clone(),
     };
     docker.ensure_network(&network).await.unwrap();
+    let observed = docker.observe(&app).await.unwrap();
+    assert!(
+        observed.networks[0].runtime_configuration_matches,
+        "a network created by piqueld must match Docker's inspected representation"
+    );
     docker.ensure_volume(&volume).await.unwrap();
     let image = docker.resolve_image("alpine:3.20").await.unwrap();
     let mut service_labels = labels.clone();

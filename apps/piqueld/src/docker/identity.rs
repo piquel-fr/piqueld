@@ -69,7 +69,13 @@ impl BollardDocker {
             && network.attachable.unwrap_or(false)
             && !network.enable_ipv6.unwrap_or(false)
             && !network.config_only.unwrap_or(false)
-            && network.config_from.is_none()
+            // Docker serializes an unused ConfigFrom as either null or an
+            // object whose Network field is empty, depending on Engine/API
+            // version. Both mean that this is not a config-derived network.
+            && network
+                .config_from
+                .as_ref()
+                .is_none_or(|config| config.network.as_deref().is_none_or(str::is_empty))
             && !network.ingress.unwrap_or(false)
             && network.options.as_ref().is_none_or(|options| {
                 options
@@ -198,6 +204,28 @@ impl ImageSource for Docker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_overlay_network_accepts_docker_empty_config_reference() {
+        let mut network = bollard::models::Network {
+            driver: Some("overlay".into()),
+            internal: Some(false),
+            attachable: Some(true),
+            enable_ipv6: Some(false),
+            config_only: Some(false),
+            ingress: Some(false),
+            config_from: Some(bollard::models::ConfigReference {
+                network: Some(String::new()),
+            }),
+            ..Default::default()
+        };
+
+        assert!(BollardDocker::network_configuration_matches(&network));
+        network.config_from = Some(bollard::models::ConfigReference {
+            network: Some("shared-config".into()),
+        });
+        assert!(!BollardDocker::network_configuration_matches(&network));
+    }
 
     #[test]
     fn shared_prefix_does_not_include_foreign_canonical_resources() {

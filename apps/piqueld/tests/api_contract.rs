@@ -612,6 +612,11 @@ struct RawResponse {
 }
 
 impl RawResponse {
+    fn assert_error(&self, status: StatusCode, code: &str) {
+        assert_eq!(self.status, status);
+        assert_eq!(self.code(), code);
+    }
+
     fn code(&self) -> &str {
         self.body
             .get("code")
@@ -688,6 +693,26 @@ async fn send_raw(
         headers,
         body,
     }
+}
+
+async fn create_toml_application(address: std::net::SocketAddr, manifest: &str) -> String {
+    let created = send_raw(
+        Target::Tcp(address),
+        Method::POST,
+        "/api/v1/applications/apply",
+        &[
+            ("content-type", "application/toml"),
+            ("x-expected-generation", "0"),
+        ],
+        manifest.as_bytes().to_vec(),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::ACCEPTED);
+    assert!(created.body["data"]["operation_id"].is_string());
+    created.body["data"]["application_id"]
+        .as_str()
+        .expect("accepted application ID")
+        .to_owned()
 }
 
 enum Target<'a> {
@@ -880,9 +905,10 @@ image = ""
         invalid_manifest.as_bytes().to_vec(),
     )
     .await;
-    assert_eq!(validation.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(validation.code(), "manifest_validation_failed");
-
+    validation.assert_error(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "manifest_validation_failed",
+    );
     let malformed_toml = send_raw(
         Target::Tcp(address),
         Method::POST,
@@ -891,9 +917,7 @@ image = ""
         b"api_version = ".to_vec(),
     )
     .await;
-    assert_eq!(malformed_toml.status, StatusCode::BAD_REQUEST);
-    assert_eq!(malformed_toml.code(), "toml_malformed");
-
+    malformed_toml.assert_error(StatusCode::BAD_REQUEST, "toml_malformed");
     let unknown_field = serde_json::json!({
         "manifest": manifest(),
         "surprise": true
@@ -906,8 +930,7 @@ image = ""
         serde_json::to_vec(&unknown_field).expect("serializes"),
     )
     .await;
-    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
-    assert_eq!(unknown.code(), "json_malformed");
+    unknown.assert_error(StatusCode::BAD_REQUEST, "json_malformed");
 
     // TOML creation shares the JSON normalization pipeline.
     let valid_toml = r#"
@@ -922,22 +945,7 @@ replicas = 2
 type = "image"
 image = "ghcr.io/example/notes:1"
 "#;
-    let created = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/api/v1/applications/apply",
-        &[
-            ("content-type", "application/toml"),
-            ("x-expected-generation", "0"),
-        ],
-        valid_toml.as_bytes().to_vec(),
-    )
-    .await;
-    assert_eq!(created.status, StatusCode::ACCEPTED);
-    assert!(created.body["data"]["operation_id"].is_string());
-    let application_id = created.body["data"]["application_id"]
-        .as_str()
-        .expect("accepted application ID");
+    let application_id = create_toml_application(address, valid_toml).await;
 
     let listed = send_raw(
         Target::Tcp(address),
