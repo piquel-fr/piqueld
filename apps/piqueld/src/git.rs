@@ -70,8 +70,11 @@ impl Checkout {
 
     fn command() -> Command {
         let mut command = Command::new("git");
-        // Inherit host credentials, but never hang waiting for a password prompt.
+        // Inherit host credentials while excluding executable transport helpers, even
+        // when host configuration enables them or rewrites a URL to use one.
+        // Never hang waiting for a password prompt.
         command
+            .env("GIT_ALLOW_PROTOCOL", "file:git:http:https:ssh")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GCM_INTERACTIVE", "never");
         command.args(["-c", "core.hooksPath=/dev/null"]);
@@ -192,6 +195,39 @@ mod tests {
             .await
             .unwrap();
         String::from_utf8(output.stdout).unwrap().trim().into()
+    }
+
+    #[tokio::test]
+    async fn checkout_rejects_executable_transports_even_when_host_allows_them() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("executed");
+        let helper = format!("ext::touch {}", marker.display());
+        for rewritten in [false, true] {
+            let mut command = Checkout::command();
+            command.args(["-c", "protocol.ext.allow=always"]);
+            if rewritten {
+                command.args([
+                    "-c",
+                    &format!("url.{helper}.insteadOf=https://example.com/repo"),
+                ]);
+            }
+            command
+                .args(["clone", "--"])
+                .arg(if rewritten {
+                    "https://example.com/repo"
+                } else {
+                    &helper
+                })
+                .arg(root.path().join("checkout"));
+            let error = Checkout::run(&mut command, "clone fixture")
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("transport 'ext' not allowed"),
+                "{error:#}"
+            );
+            assert!(!marker.exists());
+        }
     }
 
     #[tokio::test]

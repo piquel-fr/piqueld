@@ -118,3 +118,6 @@ ID. All service sources are prepared before any application rollout. A failed
 checkout or build preserves the existing running deployment. Normal reconciliation
 reuses prepared images; explicit refresh resolves and builds sources again.
 Local images are supported only on the existing single-node Swarm topology.
+
+Git checkout permits file, Git, HTTP(S), and SSH transports. Executable remote
+helpers such as `ext::` are disabled, including through host URL rewrites.
