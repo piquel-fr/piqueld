@@ -16,7 +16,10 @@ use piqueld_client::{
     ApplicationDetailView, ApplicationStatusView, ApplicationView, Client, ClientError,
     DiagnosticView, ListApplicationsOptions, ObservedServiceView, Page, Source, SystemStatus,
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 use web_sys::window as browser_window;
 
 #[derive(Clone, Debug)]
@@ -146,7 +149,9 @@ fn DashboardLayout() -> impl IntoView {
     on_cleanup(move || visibility_listener.remove());
 
     start_refresh(client.clone(), signals, Rc::clone(&controller), true);
-    spawn_poll_loop(client, signals, controller);
+    let active = Rc::new(Cell::new(true));
+    spawn_poll_loop(client, signals, controller, Rc::clone(&active));
+    on_cleanup(move || active.set(false));
 
     view! {
         <a class="skip-link" href="#dashboard-main">"Skip to main content"</a>
@@ -580,7 +585,11 @@ fn start_refresh(
     }
     signals.refreshing.set(true);
     spawn_local(async move {
-        match fetch_snapshot(&client).await {
+        let result = fetch_snapshot(&client).await;
+        if signals.system.try_get_untracked().is_none() {
+            return;
+        }
+        match result {
             Ok(snapshot) => {
                 controller.borrow_mut().record_success();
                 signals.system.set(Some(snapshot.system));
@@ -604,9 +613,10 @@ fn start_refresh(
                         .any(|row| row.application.application.id.to_string() == id)
                     {
                         load_detail(client.clone(), signals, id);
-                    } else {
+                    } else if !signals.pagination_incomplete.get_untracked() {
                         signals.selected_id.set(None);
                         signals.detail.set(None);
+                        signals.detail_loading.set(false);
                     }
                 }
             }
@@ -624,6 +634,9 @@ fn start_refresh(
                 signals.refreshing.set(false);
             }
         }
+        if controller.borrow().manual_pending() {
+            start_refresh(client, signals, Rc::clone(&controller), false);
+        }
     });
 }
 
@@ -634,7 +647,7 @@ fn load_detail(client: Client, signals: DashboardSignals, id: String) {
     signals.detail_error.set(None);
     spawn_local(async move {
         let result = client.application_detail(&id).await;
-        if signals.detail_request.get_untracked() != request
+        if signals.detail_request.try_get_untracked() != Some(request)
             || signals.selected_id.get_untracked().as_deref() != Some(id.as_str())
         {
             return;
@@ -651,12 +664,16 @@ fn spawn_poll_loop(
     client: Client,
     signals: DashboardSignals,
     controller: Rc<RefCell<PollController>>,
+    active: Rc<Cell<bool>>,
 ) {
     spawn_local(async move {
-        loop {
+        while active.get() {
             let delay = controller.borrow().delay();
             let milliseconds = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
             TimeoutFuture::new(milliseconds).await;
+            if !active.get() {
+                return;
+            }
             start_refresh(client.clone(), signals, Rc::clone(&controller), false);
         }
     });
@@ -722,10 +739,12 @@ fn load_failure(error: &ClientError) -> LoadFailure {
 
 fn client_error_message(error: &ClientError) -> String {
     match error {
-        ClientError::Endpoint => "The dashboard endpoint is invalid.".into(),
+        ClientError::Endpoint { message } => {
+            format!("The dashboard endpoint is invalid: {message}")
+        }
         ClientError::Transport { message } => format!("Could not reach piqueld: {message}"),
         ClientError::Api { error, .. } => error.message.clone(),
-        ClientError::Decode => "The daemon returned an invalid public API response.".into(),
+        ClientError::Decode { .. } => "The daemon returned an invalid public API response.".into(),
     }
 }
 
@@ -772,7 +791,7 @@ fn row_health(row: &ApplicationRow) -> ApplicationHealth {
                     ApplicationHealth::from_server_state(&status.state)
                 })
         },
-        |_| ApplicationHealth::Failed,
+        |_| ApplicationHealth::Pending,
     )
 }
 

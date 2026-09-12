@@ -14,32 +14,23 @@ binding.
 
 ## Development
 
-Install the WASM target, Docker, and the UI tools once, or use the
-corresponding tools from `nix develop`:
+Install the WASM target and the UI build tools (`trunk`, `wasm-bindgen-cli`,
+`binaryen`, and `tailwindcss`). Docker must be running as a single-node Swarm
+for the daemon to reconcile applications.
 
 ```console
 rustup target add wasm32-unknown-unknown
-cargo install trunk --locked
+cargo run --package piqueld --features embedded-ui -- --config config/piqueld.example.toml
 ```
 
-Docker is required because the development daemon connects to the real Docker
-Engine and reconciles a single-node Swarm. Start the complete development
-toolchain with one command:
-
-```console
-just dev
-```
-
-This starts `piqueld` from `config/piqueld.example.toml` with the embedded-ui
-feature enabled. The dashboard sources are watched too: every Rust, HTML,
-CSS, or Leptos change re-runs the daemon build script (Tailwind and Trunk) and
-restarts the daemon with a fresh bundle at
-`http://127.0.0.1:7845/dashboard/`; refresh the browser after a rebuild.
+The build script runs Tailwind and Trunk and embeds the dashboard. Open
+`http://127.0.0.1:7845/dashboard/`. Re-run the command after editing UI sources
+to rebuild the bundle, then refresh the browser.
 
 A direct transport compile is available with:
 
 ```console
-just ui-check
+cargo check --package piqueld-ui --target wasm32-unknown-unknown
 ```
 
 ## Production assets
@@ -51,7 +42,7 @@ HTML/WASM/JavaScript loader assets are build outputs and are not committed.
 The release dashboard ships inside the daemon binary itself. Building with the
 feature embeds the bundle; the daemon's build script runs Tailwind and Trunk,
 so `trunk`, `wasm-bindgen-cli`, `binaryen`, and `tailwindcss` must be on the
-path (or use `nix develop`):
+path:
 
 ```console
 cargo build --release --package piqueld --features embedded-ui --locked

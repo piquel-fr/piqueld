@@ -255,6 +255,12 @@ impl PollController {
         self.delay = Duration::from_secs(seconds.min(MAX_POLL_INTERVAL.as_secs()));
     }
 
+    /// Returns whether a manual refresh should run after the current request.
+    #[must_use]
+    pub const fn manual_pending(&self) -> bool {
+        self.manual_pending
+    }
+
     /// Returns whether a background request may start now.
     #[must_use]
     pub const fn can_poll(&self) -> bool {
@@ -277,6 +283,21 @@ impl PollController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_refresh_queued_during_request_is_consumed_once() {
+        let mut controller = PollController::new();
+        assert!(controller.begin_request());
+        controller.request_manual_refresh();
+        assert!(!controller.begin_request());
+        controller.record_success();
+        assert!(controller.manual_pending());
+        assert!(controller.begin_request());
+        assert!(!controller.manual_pending());
+        controller.record_success();
+        controller.set_hidden(true);
+        assert!(!controller.begin_request());
+    }
 
     #[test]
     fn application_health_covers_terminal_and_pending_states() {
