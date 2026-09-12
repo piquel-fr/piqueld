@@ -218,7 +218,7 @@ impl SqliteStore {
             let previous = latest.as_ref().ok_or(StoreError::NotFound)?;
             let previous_id = previous.id.clone();
             let op = Self::request_refresh_on(tx, id, expected_generation).await?;
-            sqlx::query!("UPDATE deployments SET manifest_json=(SELECT manifest_json FROM deployments WHERE id=?1),generation=(SELECT generation FROM deployments WHERE id=?1) WHERE id=?2",previous_id,op.id).execute(&mut **tx).await.map_err(StoreError::database)?;
+            sqlx::query!("UPDATE deployments SET manifest_json=json_set((SELECT manifest_json FROM deployments WHERE id=?1),'$.metadata.name',?3),generation=(SELECT generation FROM deployments WHERE id=?1) WHERE id=?2",previous_id,op.id,app.application.metadata.name).execute(&mut **tx).await.map_err(StoreError::database)?;
             sqlx::query!("UPDATE operations SET generation=(SELECT generation FROM deployments WHERE id=?1) WHERE id=?1",op.id).execute(&mut **tx).await.map_err(StoreError::database)?;
             Self::operation_on(tx, &op.id).await?
         };

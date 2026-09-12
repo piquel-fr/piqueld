@@ -231,11 +231,16 @@ impl<D: DockerApi> Controller<D> {
             self.prepare_timeout,
         )
         .with_progress(Arc::clone(&self.store), operation.id.clone());
-        let manifest = self
+        let mut manifest = self
             .store
             .deployment_manifest(&operation.id)
             .await
             .map_err(OperationError::from)?;
+        // A rename changes display metadata without rewriting deployment history.
+        manifest
+            .metadata
+            .name
+            .clone_from(&application.application.metadata.name);
         let reusable = if operation.kind == OperationKind::Refresh {
             piqueld_core::ResolutionSet::default()
         } else {

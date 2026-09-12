@@ -152,7 +152,7 @@ pub(super) async fn detail(
     let observed_view = observed_view(
         &stored,
         &observed,
-        status.state == piqueld_core::ApplicationState::Ready,
+        observation_error.is_none() && status.state == piqueld_core::ApplicationState::Ready,
     );
     let status = status_view(status);
     let latest_operation = state.store.latest_operation_for_application(&id).await?;
@@ -666,7 +666,7 @@ mod tests {
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(super) struct GenerationQuery {
-    /// Current intent revision; optional for reconcile and refresh, required for deletion unless forced.
+    /// Current intent revision; optional for reconcile and refresh, required for deployment and deletion unless forced.
     pub(super) expected_generation: Option<u64>,
     /// Explicitly bypass intent preconditions.
     #[serde(default)]

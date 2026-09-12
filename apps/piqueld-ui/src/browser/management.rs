@@ -242,6 +242,7 @@ fn ApplicationEditor(initial: ApplicationView) -> impl IntoView {
     guard_navigation(context.dirty);
     let signals = dashboard_context().signals;
     let client = dashboard_context().client;
+    let retry = move |_| context.dashboard.with_value(|d| (d.refresh)());
     view! {
         <header class="application-heading"><div><p class="eyebrow">"APPLICATION"</p><h2>{move ||context.saved.with(|a|a.application.metadata.name.clone())}</h2><p class="help">{move ||format!("Configuration revision {}",context.saved.get().generation)}</p></div><DeploymentActions/></header>
         <p class="help">{move ||context.latest_deployment.get().map_or_else(||"Not deployed yet".to_string(),|deployment|if deployment.application.spec==context.saved.get().application.spec{"Saved configuration matches the latest deployment".into()}else{"Saved changes awaiting deployment".into()})}</p>
@@ -251,7 +252,7 @@ fn ApplicationEditor(initial: ApplicationView) -> impl IntoView {
         <nav class="tabs" aria-label="Application sections">{["Configuration","Deployments","Runtime"].into_iter().map(|tab|view!{<button class:active=move ||context.tab.get()==tab aria-current=move ||if context.tab.get()==tab{"page"}else{"false"} on:click=move |_|context.tab.set(tab)>{tab}</button>}).collect_view()}</nav>
         <div hidden=move ||context.tab.get()!="Configuration"><MetadataSettings/><VolumeSettings/><ServiceSettings/><NewService/><DeleteApplication/></div>
         <div hidden=move ||context.tab.get()!="Deployments"><DeploymentHistory/></div>
-        <div hidden=move ||context.tab.get()!="Runtime">{move ||signals.detail.get().map(|detail|detail_view(&detail,signals,client.clone()))}</div>
+        <div hidden=move ||context.tab.get()!="Runtime"><Show when=move ||signals.detail.get().is_none()><p role="status">{move ||signals.detail_error.get().map_or_else(||"Loading runtime detail…".into(),|error|format!("Detail unavailable: {error}"))}</p><button disabled=move ||signals.detail_loading.get() on:click=retry>"Retry runtime detail"</button></Show>{move ||signals.detail.get().map(|detail|detail_view(&detail,signals,client.clone()))}</div>
     }
 }
 
@@ -263,6 +264,40 @@ fn guard_navigation(dirty: RwSignal<BTreeSet<String>>) {
         }
     });
     on_cleanup(move || listener.remove());
+    // Capture history navigation before the router can unmount the editor.
+    let location = window().location().href().unwrap_or_default();
+    let history_state = window()
+        .history()
+        .and_then(|h| h.state())
+        .unwrap_or_default();
+    let popstate = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        if !dirty.get_untracked().is_empty()
+            && !window()
+                .confirm_with_message("Leave this application and discard unsaved form edits?")
+                .unwrap_or(false)
+        {
+            event.stop_immediate_propagation();
+            if let Ok(history) = window().history() {
+                let _ = history.push_state_with_url(&history_state, "", Some(&location));
+            }
+        }
+    });
+    if window()
+        .add_event_listener_with_callback_and_bool(
+            "popstate",
+            popstate.as_ref().unchecked_ref(),
+            true,
+        )
+        .is_ok()
+    {
+        on_cleanup(move || {
+            let _ = window().remove_event_listener_with_callback_and_bool(
+                "popstate",
+                popstate.as_ref().unchecked_ref(),
+                true,
+            );
+        });
+    }
     let callback = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
         if dirty.get_untracked().is_empty() {
             return;
@@ -581,6 +616,7 @@ fn DeploymentActions() -> impl IntoView {
 fn DeploymentHistory() -> impl IntoView {
     let context = editor();
     let history = create_rw_signal(Vec::<DeploymentView>::new());
+    let paginated = create_rw_signal(false);
     let cursor = create_rw_signal(None::<String>);
     let error = create_rw_signal(None::<String>);
     let loading = create_rw_signal(false);
@@ -600,7 +636,7 @@ fn DeploymentHistory() -> impl IntoView {
                             break;
                         }
                         context.latest_deployment.set(page.items.first().cloned());
-                        merge_history(history, cursor, page);
+                        merge_history(history, cursor, paginated, page);
                         error.set(None);
                     }
                     Err(e) => {
@@ -620,6 +656,8 @@ fn DeploymentHistory() -> impl IntoView {
         spawn_local(async move {
             match Client::browser().deployments(&id, next.as_deref()).await {
                 Ok(page) => {
+                    error.set(None);
+                    paginated.set(true);
                     cursor.set(page.next_cursor);
                     history.update(|items| {
                         for item in page.items {
@@ -642,10 +680,11 @@ fn DeploymentHistory() -> impl IntoView {
 fn merge_history(
     history: RwSignal<Vec<DeploymentView>>,
     cursor: RwSignal<Option<String>>,
+    paginated: RwSignal<bool>,
     page: Page<DeploymentView>,
 ) {
     history.update(|items| {
-        if items.len() <= 3 {
+        if !paginated.get_untracked() {
             *items = page.items;
             cursor.set(page.next_cursor);
         } else {
@@ -696,6 +735,7 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
                 .await
             {
                 Ok(page) => {
+                    failure.set(None);
                     if next.is_none() {
                         errors.set(page.items);
                     } else {

@@ -605,7 +605,12 @@ async fn wait_for_deletion(client: &Client, id: &str, operation_id: &str) -> Res
                 Ok(_) => {}
             }
             match client.operation(operation_id).await {
-                Ok(operation) => report_operation(&operation),
+                Ok(operation) => {
+                    report_operation(&operation);
+                    if operation.state.terminal() {
+                        finish_operation(operation)?;
+                    }
+                }
                 Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {}
                 Err(error) => return Err(error.into()),
             }

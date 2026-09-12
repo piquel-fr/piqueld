@@ -797,6 +797,35 @@ fn delete_reports_named_volume_retention_and_operation_completion() {
 }
 
 #[test]
+fn delete_stops_on_failed_or_cancelled_operation() {
+    for state in ["failed", "cancelled"] {
+        let server = start_server(false, 5, move |request| match request.path.as_str() {
+            "/api/v1/applications?limit=100" => {
+                Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
+            }
+            "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+            "/api/v1/applications/app-notes-01?expected_generation=1" => {
+                Reply::accepted(accepted("app-notes-01"))
+            }
+            "/api/v1/operations/operation-01" => Reply::json(operation(state)),
+            path => panic!("unexpected path {path}"),
+        });
+        let output = run(&server, &["delete", "notes", "--yes"]);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(if state == "failed" {
+                "runtime reconciliation failed"
+            } else {
+                "cancelled"
+            }),
+            "{stderr}"
+        );
+        let _ = server.finish();
+    }
+}
+
+#[test]
 fn operation_polls_by_default_and_no_wait_fetches_once() {
     let mut calls = 0;
     let server = start_server(false, 2, move |request| {

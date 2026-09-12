@@ -1933,3 +1933,101 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     assert!(!preview.identical);
     assert!(!preview.changes.is_empty());
 }
+
+#[tokio::test]
+async fn refresh_after_rename_preserves_name_and_deployed_spec() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let accepted = api
+        .client
+        .apply_and_deploy(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    api.finish_operation(&accepted.operation_id, None).await;
+    api.client
+        .rename_application(
+            &accepted.application_id,
+            &piqueld_client::RenameApplicationRequest {
+                name: "renamed".into(),
+                expected_generation: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    let mut edited = AcceptanceApi::request();
+    edited.manifest.metadata.name = "renamed".into();
+    edited.manifest.spec.services[0].replicas = 2;
+    edited.expected_generation = Some(2);
+    edited.expected_application_id = Some(accepted.application_id.clone());
+    api.client.apply_application(&edited).await.unwrap();
+    let refreshed = api
+        .client
+        .refresh_application(&accepted.application_id, Some(3))
+        .await
+        .unwrap();
+    let snapshot = api
+        .store
+        .deployment_manifest(&refreshed.operation_id)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.metadata.name, "renamed");
+    assert_eq!(snapshot.spec.services[0].replicas, 1);
+    assert_eq!(
+        api.store
+            .deployment_manifest(&accepted.operation_id)
+            .await
+            .unwrap()
+            .metadata
+            .name,
+        "notes"
+    );
+}
+
+#[tokio::test]
+async fn unavailable_observation_does_not_claim_services_are_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let accepted = api
+        .client
+        .apply_and_deploy(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let id = piqueld_core::ApplicationId::parse(&accepted.application_id).unwrap();
+    let app = api.store.get(&id).await.unwrap();
+    let target = api
+        .runtime
+        .prepare(&app.application, &ResolutionSet::default())
+        .await
+        .unwrap();
+    api.store
+        .transition_operation(
+            &accepted.operation_id,
+            piqueld_core::OperationState::Requested,
+            piqueld_core::OperationState::Running,
+            None,
+        )
+        .await
+        .unwrap();
+    let op = api.store.operation(&accepted.operation_id).await.unwrap();
+    api.store.save_prepared(&op, &target).await.unwrap();
+    api.store.publish_prepared(&op).await.unwrap();
+    api.store
+        .set_status_for_operation(&op.id, piqueld_core::ApplicationState::Ready, None)
+        .await
+        .unwrap();
+    api.runtime
+        .unavailable
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let detail = api
+        .client
+        .application_detail(&accepted.application_id)
+        .await
+        .unwrap();
+    assert!(
+        detail
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "runtime_unavailable")
+    );
+    assert!(detail.observed.services.iter().all(|s| s.diagnostics.is_empty() && s.convergence != piqueld_core::Convergence::Failed));
+}
