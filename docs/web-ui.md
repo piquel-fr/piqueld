@@ -14,20 +14,23 @@ binding.
 
 ## Development
 
-Install the WASM target and the UI build tools (`trunk`, `wasm-bindgen-cli`,
-`binaryen`, and `tailwindcss`). Docker must be running as a single-node Swarm
-for the daemon to reconcile applications.
+Use `nix develop` for the Rust/WASM toolchain, Nextest, Cargo Watch, Trunk,
+wasm-bindgen, Binaryen, and Tailwind. Alternatively install those tools and
+add the WASM target with `rustup target add wasm32-unknown-unknown`.
+Docker must be accessible to your user and support a single-node Swarm.
+Replace the example configuration's UID with your own before starting:
 
 ```console
-rustup target add wasm32-unknown-unknown
-cargo run --package piqueld --features embedded-ui -- --config config/piqueld.example.toml
+just dev
 ```
 
-The build script runs Tailwind and Trunk and embeds the dashboard. Open
-`http://127.0.0.1:7845/dashboard/`. Re-run the command after editing UI sources
-to rebuild the bundle, then refresh the browser.
+This watches the daemon and dashboard sources, builds the embedded bundle
+with Tailwind and Trunk, and runs the daemon using
+`config/piqueld.example.toml`. Open `http://127.0.0.1:7845/dashboard/` and
+refresh the browser after a rebuild. Stopping the command allows the daemon
+its graceful shutdown period before terminating any remaining processes.
 
-A direct transport compile is available with:
+Compile the browser client and dashboard without building assets with:
 
 ```console
 cargo check --package piqueld-ui --target wasm32-unknown-unknown
@@ -46,13 +49,17 @@ path:
 
 ```console
 cargo build --release --package piqueld --features embedded-ui --locked
+# or: just build-embedded
 ```
 
 There is no runtime UI configuration: the dashboard exists exactly when the
 binary was built with the feature, and binaries built without it are API-only.
-Packagers can provide a prebuilt distribution through `PIQUELD_UI_DIST`,
-which skips the build script's UI tool invocation. The current default Nix
-package builds without the embedded dashboard feature.
+The combined Nix package (`.#`) includes `piquelctl` and a daemon with the
+release dashboard embedded. It builds the bundle hermetically in `preBuild` and
+hands it to the build script through `PIQUELD_UI_DIST`, which skips tool
+invocation for packagers that supply their own distribution directory. The
+`.#daemon` output contains only the daemon without the feature, and the
+`.#cli` output contains only `piquelctl`.
 
 The TCP router serves bundle files below `/dashboard/` and uses `index.html`
 only for extensionless dashboard paths. API, health, and unknown paths never
