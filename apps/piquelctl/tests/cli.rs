@@ -281,6 +281,14 @@ fn run(server: &TestServer, arguments: &[&str]) -> Output {
 }
 
 fn run_with_timeout(server: &TestServer, arguments: &[&str], timeout: &str) -> Output {
+    run_with_format(server, arguments, timeout, true)
+}
+
+fn run_human(server: &TestServer, arguments: &[&str]) -> Output {
+    run_with_format(server, arguments, "2s", false)
+}
+
+fn run_with_format(server: &TestServer, arguments: &[&str], timeout: &str, json: bool) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_piquelctl"));
     match &server.endpoint {
         Endpoint::Tcp(url) => {
@@ -290,8 +298,11 @@ fn run_with_timeout(server: &TestServer, arguments: &[&str], timeout: &str) -> O
             command.args(["--socket", path.to_str().expect("socket path")]);
         }
     }
+    if json {
+        command.arg("--json");
+    }
     command
-        .args(["--json", "--timeout", timeout])
+        .args(["--timeout", timeout])
         .args(arguments)
         .output()
         .expect("piquelctl process")
@@ -626,6 +637,97 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("runtime_failed"));
     assert!(stderr.contains("runtime reconciliation failed"));
+    let _ = server.finish();
+}
+
+#[test]
+fn human_plan_has_scannable_sections() {
+    let directory = tempdir().expect("manifest directory");
+    let manifest = write_manifest(&directory);
+    let server = start_server(true, 1, move |_| {
+        let mut preview = plan("preview-00000001");
+        preview["changes"] = json!([{
+            "field": "services.web.replicas",
+            "before": null,
+            "after": "1"
+        }]);
+        preview["plan"]["actions"] = json!([{
+            "kind": {"action": "resolve_image", "service": "web", "reference": "nginx:alpine"},
+            "reason": {"reason": "resolution_required"}
+        }]);
+        Reply::json(preview)
+    });
+
+    let output = run_human(
+        &server,
+        &["plan", "--file", manifest.to_str().expect("manifest path")],
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Application: preview-00000001\n\nChanges:"));
+    assert!(stdout.contains("+ services.web.replicas"));
+    assert!(stdout.contains("Actions: 1 total"));
+    assert!(stdout.contains("1. Resolve image web\n      no risk · resolution required"));
+    let _ = server.finish();
+}
+
+#[test]
+fn human_operation_progress_omits_duplicate_poll_results() {
+    let mut calls = 0;
+    let server = start_server(true, 3, move |_| {
+        calls += 1;
+        let mut value = operation(if calls < 3 { "running" } else { "succeeded" });
+        value["phase"] = json!(if calls < 3 {
+            "resolving_image"
+        } else {
+            "planning"
+        });
+        value["resource"] = json!("web");
+        Reply::json(value)
+    });
+
+    let output = run_human(&server, &["operation", "operation-01"]);
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.matches("Resolving image · web").count(), 1);
+    assert!(stderr.contains("succeeded"));
+    assert!(stderr.contains("Planning · web"));
+    let _ = server.finish();
+}
+
+#[test]
+fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
+    let directory = tempdir().expect("manifest directory");
+    let manifest = write_manifest(&directory);
+    let server = start_server(true, 3, move |request| match request.path.as_str() {
+        "/api/v1/applications/plan" => Reply::json(plan("preview-00000001")),
+        "/api/v1/applications/apply" => Reply::accepted(accepted("app-notes-01")),
+        "/api/v1/operations/operation-01" => {
+            let mut value = operation("failed");
+            value["phase"] = json!("ensure_network");
+            value["resource"] = json!("app-notes-network");
+            Reply::json(value)
+        }
+        path => panic!("unexpected path {path}"),
+    });
+
+    let output = run_human(
+        &server,
+        &[
+            "apply",
+            "--file",
+            manifest.to_str().expect("manifest path"),
+            "--yes",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(5));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Context:"));
+    assert!(stderr.contains("Resource     app-notes-network"));
+    assert!(stderr.contains("Code         runtime_failed"));
+    assert!(stderr.contains("Message      runtime reconciliation failed"));
+    assert!(stderr.contains("Hint: retry with `piquelctl reconcile app-notes-01`"));
+    assert!(!stderr.contains("created_at_ms"));
     let _ = server.finish();
 }
 

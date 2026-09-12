@@ -8,55 +8,61 @@ use serde_json::json;
 use std::io::{self, Write};
 
 pub(crate) fn report_operation(operation: &Operation) {
-    eprintln!(
-        "operation {}: {}{}{}",
-        operation.id,
-        operation.state,
-        operation
-            .phase
-            .as_ref()
-            .map_or_else(String::new, |phase| format!("; {phase}")),
-        operation
-            .resource
-            .as_ref()
-            .map_or_else(String::new, |resource| format!("; {resource}"))
-    );
+    let phase = operation.phase.as_deref().map(humanize).unwrap_or_default();
+    match (phase.is_empty(), operation.resource.as_deref()) {
+        (true, None) => eprintln!("  {}", operation.state),
+        (false, None) => eprintln!("  {:<10} · {phase}", operation.state),
+        (true, Some(resource)) => eprintln!("  {:<10} · {resource}", operation.state),
+        (false, Some(resource)) => {
+            eprintln!("  {:<10} · {phase} · {resource}", operation.state);
+        }
+    }
 }
 
 pub(crate) fn render_operation(cli: &Cli, operation: &Operation) -> Result<()> {
     if cli.json {
         return emit_json(operation);
     }
-    report_operation(operation);
     writeln!(
         io::stdout().lock(),
-        "application {}",
+        "Operation: {}\n  State:       {}\n  Application: {}",
+        operation.id,
+        operation.state,
         operation.application_id
     )?;
+    if let Some(phase) = operation.phase.as_deref() {
+        writeln!(io::stdout().lock(), "  Phase:       {}", humanize(phase))?;
+    }
+    if let Some(resource) = operation.resource.as_deref() {
+        writeln!(io::stdout().lock(), "  Resource:    {resource}")?;
+    }
     if let Some(message) = &operation.error_message {
-        eprintln!("diagnostic: {message}");
+        eprintln!("\nDiagnostic: {message}");
     }
     Ok(())
 }
 
 pub(crate) fn render_plan(plan: &PlanView, output: &mut impl Write) -> io::Result<()> {
-    writeln!(output, "application {}", plan.application_id)?;
+    writeln!(output, "Application: {}", plan.application_id)?;
     if plan.identical {
-        return writeln!(output, "This is identical to the existing manifest.");
+        return writeln!(output, "\nNo changes. The manifest is already current.");
     }
-    for change in &plan.changes {
-        writeln!(
-            output,
-            "  {}: {} -> {}",
-            change.field,
-            change.before.as_deref().unwrap_or("absent"),
-            change.after.as_deref().unwrap_or("absent")
-        )?;
+    if !plan.changes.is_empty() {
+        writeln!(output, "\nChanges:")?;
+        for change in &plan.changes {
+            let (marker, value) = match (&change.before, &change.after) {
+                (None, Some(after)) => ('+', after.clone()),
+                (Some(before), None) => ('-', before.clone()),
+                (Some(before), Some(after)) => ('~', format!("{before} → {after}")),
+                (None, None) => ('~', "absent".into()),
+            };
+            writeln!(output, "  {marker} {:<32} {}", change.field, value)?;
+        }
     }
     let summary = plan.plan.summary();
     writeln!(
         output,
-        "{} action(s), {} mutation(s), {} destructive action(s), {} blocking conflict(s)",
+        "\nActions: {} total · {} runtime mutations · {} destructive · {} blocking",
         summary.action_count,
         summary.mutation_count,
         summary.destructive_count,
@@ -65,17 +71,17 @@ pub(crate) fn render_plan(plan: &PlanView, output: &mut impl Write) -> io::Resul
     for (index, action) in plan.plan.actions.iter().enumerate() {
         writeln!(
             output,
-            "  {:>3} [{}] {} ({})",
+            "  {:>2}. {}\n      {} · {}",
             index + 1,
+            sentence_case(&action.human_description()),
             risk_text(action.kind.risk()),
-            action.human_description(),
             reason_text(&action.reason),
         )?;
     }
     for diagnostic in &plan.plan.diagnostics {
         writeln!(
             output,
-            "  diagnostic {} [{}]: {}{}",
+            "\nDiagnostic: {} [{}]\n  {}{}",
             diagnostic.code,
             diagnostic.resource,
             diagnostic.message,
@@ -125,6 +131,30 @@ fn risk_text(risk: ActionRisk) -> &'static str {
         ActionRisk::DataAdjacent => "data-adjacent",
         ActionRisk::Destructive => "destructive",
     }
+}
+
+fn humanize(value: &str) -> String {
+    let mut words = value.split('_');
+    let Some(first) = words.next() else {
+        return String::new();
+    };
+    let mut text = first.to_owned();
+    for word in words {
+        text.push(' ');
+        text.push_str(word);
+    }
+    if let Some(first) = text.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    text
+}
+
+fn sentence_case(value: &str) -> String {
+    let mut text = value.to_ascii_lowercase();
+    if let Some(first) = text.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    text
 }
 
 fn reason_text(reason: &ActionReason) -> String {
