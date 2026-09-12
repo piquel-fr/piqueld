@@ -46,17 +46,13 @@ path:
 
 ```console
 cargo build --release --package piqueld --features embedded-ui --locked
-# or: just build-embedded
 ```
 
 There is no runtime UI configuration: the dashboard exists exactly when the
 binary was built with the feature, and binaries built without it are API-only.
-The combined Nix package (`.#`) embeds the same release bundle into both
-operator binaries' daemon; it builds the bundle hermetically in `preBuild` and
-hands it to the build script through `PIQUELD_UI_DIST`, which skips tool
-invocation for packagers that supply their own distribution directory. The
-`.#daemon` output contains only the daemon without the feature, and the
-`.#cli` output contains only `piquelctl`.
+Packagers can provide a prebuilt distribution through `PIQUELD_UI_DIST`,
+which skips the build script's UI tool invocation. The current default Nix
+package builds without the embedded dashboard feature.
 
 The TCP router serves bundle files below `/dashboard/` and uses `index.html`
 only for extensionless dashboard paths. API, health, and unknown paths never
