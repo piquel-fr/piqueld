@@ -704,8 +704,8 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(true, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications/plan" => Reply::json(plan("preview-00000001")),
-        "/api/v1/applications/apply" => Reply::accepted(accepted("app-notes-01")),
+        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications/apply?deploy=true" => Reply::accepted(accepted("app-notes-01")),
         "/api/v1/operations/operation-01" => {
             let mut value = operation("failed");
             value["phase"] = json!("ensure_network");
@@ -719,6 +719,7 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
         &server,
         &[
             "apply",
+            "--deploy",
             "--file",
             manifest.to_str().expect("manifest path"),
             "--yes",

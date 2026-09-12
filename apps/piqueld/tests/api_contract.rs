@@ -695,26 +695,6 @@ async fn send_raw(
     }
 }
 
-async fn create_toml_application(address: std::net::SocketAddr, manifest: &str) -> String {
-    let created = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/api/v1/applications/apply",
-        &[
-            ("content-type", "application/toml"),
-            ("x-expected-generation", "0"),
-        ],
-        manifest.as_bytes().to_vec(),
-    )
-    .await;
-    assert_eq!(created.status, StatusCode::ACCEPTED);
-    assert!(created.body["data"]["operation_id"].is_string());
-    created.body["data"]["application_id"]
-        .as_str()
-        .expect("accepted application ID")
-        .to_owned()
-}
-
 enum Target<'a> {
     Tcp(std::net::SocketAddr),
     #[allow(dead_code)]
