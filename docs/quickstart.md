@@ -28,15 +28,15 @@ just run --url http://127.0.0.1:7845 status
 just run --socket /tmp/piqueld-dev/piqueld.sock plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
 just run --socket /tmp/piqueld-dev/piqueld.sock apply \
-  --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --yes
+  --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --deploy --yes
 just run --socket /tmp/piqueld-dev/piqueld.sock show notes
 ```
 
 `status` reports the daemon version and `--json` produces the same structured
-result as the public API. `apply` waits for the durable operation by default;
-`--no-wait` returns immediately with its operation identifier. Apply the same
-manifest to update an existing application by name. Identical manifests schedule no new work, but still wait for their existing
-operation by default; failed attempts require explicit retry. Use the same development socket for repair, image refresh, and informational history:
+result as the public API. `apply` saves configuration; `apply --deploy` also
+creates a deployment and waits for its operation. Add `--no-wait` to return after
+acceptance. Each explicit deployment prepares sources again and supersedes pending
+work. Use the same development socket for repair, source refresh, and history:
 
 ```console
 just run --socket /tmp/piqueld-dev/piqueld.sock reconcile notes --yes
