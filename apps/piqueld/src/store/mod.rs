@@ -67,8 +67,8 @@ pub enum StoreError {
     /// A request ID was already used for different input.
     #[error("request ID was already used for different input")]
     ReplayConflict,
-    /// Rename cannot run during pending work or deletion.
-    #[error("application is busy; wait for its operation before renaming")]
+    /// Mutation cannot run during pending work or deletion.
+    #[error("application is busy; wait for its current operation to finish")]
     Busy,
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]

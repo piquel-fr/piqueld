@@ -88,6 +88,11 @@ pub enum Mutation {
         /// Stable application ID.
         id: ApplicationId,
     },
+    /// Deploy with fresh source resolution, rejecting concurrent work.
+    Deploy {
+        /// Stable application ID.
+        id: ApplicationId,
+    },
     /// Change only the user-facing name.
     Rename {
         /// Stable application ID.

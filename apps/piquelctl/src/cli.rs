@@ -52,6 +52,8 @@ pub(crate) enum Command {
     Reconcile(ReconcileArgs),
     /// Resolve current image references again and deploy the resulting target.
     Refresh(ReconcileArgs),
+    /// Deploy with fresh source resolution; reject concurrent deployment.
+    Deploy(ReconcileArgs),
     /// Rename an idle application without redeploying it.
     Rename(RenameArgs),
     /// Read one page of informational events, oldest first.

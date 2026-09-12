@@ -159,6 +159,15 @@ pub enum ResolvedSource {
         #[serde(deserialize_with = "deserialize_digest_reference")]
         digest_reference: String,
     },
+    /// A Git revision built into an immutable local image.
+    Git {
+        /// Exact source and build inputs requested.
+        requested: Source,
+        /// Resolved full commit hash.
+        commit: String,
+        /// Docker's content-addressed local image ID.
+        image_id: Sha256Digest,
+    },
 }
 
 fn deserialize_digest_reference<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -183,6 +192,7 @@ impl ResolvedSource {
             Self::Image {
                 digest_reference, ..
             } => digest_reference,
+            Self::Git { image_id, .. } => image_id.as_str(),
         }
     }
 }
@@ -206,6 +216,13 @@ pub enum ResolutionRequirement {
         /// Requested image reference.
         reference: String,
     },
+    /// Resolve a Git revision and build its image.
+    BuildGit {
+        /// Logical service requesting a build.
+        service: String,
+        /// Explicit Git source configuration.
+        source: Source,
+    },
 }
 
 /// Returns the image resolutions still needed before compilation.
@@ -221,10 +238,15 @@ pub fn preview_resolution(
             if resolutions.sources.contains_key(&service.name) {
                 None
             } else {
-                let Source::Image { image } = &service.source;
-                Some(ResolutionRequirement::ResolveImage {
-                    service: service.name.clone(),
-                    reference: image.clone(),
+                Some(match &service.source {
+                    Source::Image { image } => ResolutionRequirement::ResolveImage {
+                        service: service.name.clone(),
+                        reference: image.clone(),
+                    },
+                    Source::Git { .. } => ResolutionRequirement::BuildGit {
+                        service: service.name.clone(),
+                        source: service.source.clone(),
+                    },
                 })
             }
         })
@@ -411,9 +433,8 @@ impl ResolvedApplication {
                         .services
                         .iter()
                         .find(|prior| prior.logical_name == service.name)?;
-                    let crate::Source::Image { image } = &service.source;
-                    let ResolvedSource::Image { requested, .. } = &prior.source;
-                    (requested == image).then(|| (service.name.clone(), prior.source.clone()))
+                    resolved_source_matches(&service.source, &prior.source)
+                        .then(|| (service.name.clone(), prior.source.clone()))
                 })
                 .collect(),
         }
@@ -551,7 +572,8 @@ fn unresolved_errors(
     preview_resolution(app, resolutions)
         .into_iter()
         .map(|requirement| match requirement {
-            ResolutionRequirement::ResolveImage { service, .. } => CompileError {
+            ResolutionRequirement::ResolveImage { service, .. }
+            | ResolutionRequirement::BuildGit { service, .. } => CompileError {
                 code: crate::codes::SOURCE_UNRESOLVED.into(),
                 resource: service,
                 message: "service image has not been resolved to an immutable digest".into(),
@@ -573,6 +595,20 @@ fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
                 && immutable_digest_reference(digest_reference)
                 && same_image_repository(image, digest_reference)
         }
+        (
+            Source::Git { repository, .. },
+            ResolvedSource::Git {
+                requested, commit, ..
+            },
+        ) => {
+            source == requested
+                && crate::manifest::valid_git_commit(commit)
+                && repository
+                    .commit
+                    .as_ref()
+                    .is_none_or(|pinned| pinned == commit)
+        }
+        _ => false,
     }
 }
 

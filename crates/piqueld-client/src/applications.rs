@@ -326,6 +326,23 @@ impl Client {
         .await
     }
 
+    /// Deploys with fresh source resolution, rejecting concurrent work.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn deploy_application(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        self.send::<_, ()>(
+            Method::POST,
+            &Self::mutation_path(id, "/deploy", expected),
+            None,
+            &[],
+        )
+        .await
+    }
+
     /// Renames an idle application without touching its runtime resources.
     /// # Errors
     /// Returns transport, API, decoding, name, busy, or generation errors.

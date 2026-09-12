@@ -30,6 +30,26 @@
         "description": "Concrete action that can appear in a runtime plan.",
         "oneOf": [
           {
+            "description": "Resolve and build a Git source before rollout.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "build_git"
+                ],
+                "type": "string"
+              },
+              "service": {
+                "description": "Logical service requesting a build.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "service",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
             "description": "Resolve an image source.",
             "properties": {
               "action": {
@@ -562,6 +582,35 @@
           "manifest"
         ],
         "type": "object"
+      },
+      "Build": {
+        "description": "Explicit build backend, extensible independently from source selection.",
+        "oneOf": [
+          {
+            "description": "Build a local container image using Docker.",
+            "properties": {
+              "context": {
+                "description": "Build context relative to the repository root.",
+                "type": "string"
+              },
+              "dockerfile": {
+                "description": "Dockerfile path relative to the repository root.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "docker"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "dockerfile",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "Convergence": {
         "description": "Aggregate health state derived from observed tasks.",
@@ -1538,6 +1587,32 @@
         ],
         "type": "object"
       },
+      "GitRepository": {
+        "additionalProperties": false,
+        "description": "Git checkout configuration. Credentials come from the host's Git configuration.",
+        "properties": {
+          "branch": {
+            "description": "Branch to fetch when no commit is pinned.",
+            "type": "string"
+          },
+          "commit": {
+            "description": "Optional full commit hash.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "Git clone URL or local repository path.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "branch"
+        ],
+        "type": "object"
+      },
       "HealthCheck": {
         "description": "User-declared container health check.",
         "oneOf": [
@@ -2124,6 +2199,36 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "A Git revision built into an immutable local image.",
+            "properties": {
+              "commit": {
+                "description": "Resolved full commit hash.",
+                "type": "string"
+              },
+              "image_id": {
+                "$ref": "#/components/schemas/Sha256Digest",
+                "description": "Docker's content-addressed local image ID."
+              },
+              "requested": {
+                "$ref": "#/components/schemas/Source",
+                "description": "Exact source and build inputs requested."
+              },
+              "type": {
+                "enum": [
+                  "git"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "requested",
+              "commit",
+              "image_id",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -2222,7 +2327,7 @@
           },
           "source": {
             "$ref": "#/components/schemas/Source",
-            "description": "Prebuilt container image source."
+            "description": "Explicit image or build source."
           }
         },
         "required": [
@@ -2230,6 +2335,10 @@
           "source"
         ],
         "type": "object"
+      },
+      "Sha256Digest": {
+        "description": "Explicitly tagged lowercase SHA-256 digest.",
+        "type": "string"
       },
       "Source": {
         "description": "The exhaustive set of deployable service sources.",
@@ -2250,6 +2359,31 @@
             },
             "required": [
               "image",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Build a checked-out Git revision.",
+            "properties": {
+              "build": {
+                "$ref": "#/components/schemas/Build",
+                "description": "Explicit build instructions."
+              },
+              "repository": {
+                "$ref": "#/components/schemas/GitRepository",
+                "description": "Repository and revision to resolve."
+              },
+              "type": {
+                "enum": [
+                  "git"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository",
+              "build",
               "type"
             ],
             "type": "object"
@@ -2869,6 +3003,114 @@
           }
         },
         "summary": "Get an application"
+      }
+    },
+    "/api/v1/applications/{id}/deploy": {
+      "post": {
+        "operationId": "deployApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Current intent revision; optional for reconcile and refresh, required for deletion unless forced.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
       }
     },
     "/api/v1/applications/{id}/detail": {

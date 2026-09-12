@@ -53,6 +53,23 @@ impl DockerApi for BollardDocker {
         .await
     }
 
+    async fn build_git(
+        &self,
+        repository: &piqueld_core::manifest::GitRepository,
+        build: &piqueld_core::manifest::Build,
+    ) -> Result<(String, piqueld_core::resource::Sha256Digest), DockerError> {
+        let result = async {
+            let checkout = crate::git::Checkout::clone(repository).await?;
+            let image = checkout.build(self.socket.as_ref(), build).await?;
+            Ok::<_, anyhow::Error>((checkout.commit, image))
+        }
+        .await;
+        result.map_err(|source| DockerError::RequestDiagnostic {
+            operation: "prepare Git source",
+            source: source.into(),
+        })
+    }
+
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         // Pulling through the Engine records RepoDigests, and resolution
         // verifies the tag was not re-pointed while the pull ran. Stream

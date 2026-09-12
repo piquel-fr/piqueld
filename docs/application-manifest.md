@@ -80,3 +80,42 @@ new/changed image references. Unchanged service image references reuse active
 digests. Explicit refresh resolves unchanged image references again; reconciliation
 reuses the prepared target. Resolved runtime state remains separate from portable
 manifest DTOs. Generations advance only for changed manifests or deletion intent.
+
+## Git build sources
+
+A service may explicitly build from Git instead of pulling a prebuilt image:
+
+```toml
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "git"
+[spec.services.source.repository]
+url = "https://example.com/team/application.git"
+branch = "main"
+# commit = "0123456789012345678901234567890123456789"
+[spec.services.source.build]
+type = "docker"
+dockerfile = "services/web/Dockerfile"
+context = "."
+```
+
+The daemon requires Git and the Docker CLI in its PATH. Git inherits the host's
+credentials; piqueld does not store credentials or prompt for them. Only trusted
+repositories are supported: Dockerfiles execute build instructions on the host's
+Docker Engine. Builds are serialized across applications, and the existing
+`reconciliation.prepare_timeout_seconds` bounds preparation (default: 300 seconds).
+Increase that budget for longer builds.
+
+Each preparation gets an isolated checkout. A full configured commit hash is
+used directly; otherwise the branch head is resolved once. Dockerfile and context
+paths are relative to the repository root, must stay within it, and default build
+context is `.`. There is no automatic build backend detection, submodule or LFS
+setup, registry publishing, or automatic image cleanup. Docker's build cache is
+reused and base images are refreshed with `--pull`.
+
+The resolved source records the full Git commit and content-addressed local image
+ID. All service sources are prepared before any application rollout. A failed
+checkout or build preserves the existing running deployment. Normal reconciliation
+reuses prepared images; explicit refresh resolves and builds sources again.
+Local images are supported only on the existing single-node Swarm topology.

@@ -189,6 +189,20 @@ impl DockerApi for FakeDocker {
         Ok(SwarmState::Ready)
     }
 
+    async fn build_git(
+        &self,
+        repository: &piqueld_core::manifest::GitRepository,
+        _build: &piqueld_core::manifest::Build,
+    ) -> Result<(String, Sha256Digest), DockerError> {
+        if repository.url == "build-fails" {
+            return Err(DockerError::Request("build Git source"));
+        }
+        self.registry.lock().await.pull("git-build");
+        Ok((
+            repository.commit.clone().unwrap_or_else(|| "a".repeat(40)),
+            Sha256Digest::parse(format!("sha256:{}", "b".repeat(64))).unwrap(),
+        ))
+    }
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         let _probe = self.images.enter().await;
         if reference.contains("/slow:")
@@ -1324,7 +1338,9 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
         .unwrap();
     harness.finish(&first).await;
     let pulls = harness.pulls().await;
-    let piqueld_core::Source::Image { image } = &input.spec.services[0].source;
+    let piqueld_core::Source::Image { image } = &input.spec.services[0].source else {
+        panic!("expected image fixture")
+    };
     harness
         .docker
         .registry
@@ -1460,4 +1476,97 @@ async fn failed_preparation_preserves_active_repair_and_identical_apply_does_not
     assert!(events.iter().any(|event| event.kind == "operation_failed"
         && event.error_code.as_deref() == Some("image_resolution_failed")
         && event.resource.as_deref() == Some("web")));
+}
+
+#[tokio::test]
+async fn git_deploy_prepares_before_rollout_and_rejects_concurrent_requests() {
+    use piqueld::application::{Mutation, MutationResponse};
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let mut input = manifest();
+    input.spec.services[0].source = piqueld_core::Source::Git {
+        repository: piqueld_core::manifest::GitRepository {
+            url: "fixture".into(),
+            branch: "main".into(),
+            commit: None,
+        },
+        build: piqueld_core::manifest::Build::Docker {
+            dockerfile: "Dockerfile".into(),
+            context: ".".into(),
+        },
+    };
+    let first = applications
+        .apply(input.clone().validate().unwrap(), Some(0))
+        .await
+        .unwrap();
+    let deploy = || Mutation::Deploy {
+        id: first.application_id.clone(),
+    };
+    assert!(matches!(
+        applications.accept(deploy(), None, false, None).await,
+        Err(piqueld::application::ApplicationError::Store(
+            piqueld::store::StoreError::Busy
+        ))
+    ));
+    harness.finish(&first).await;
+    let active = harness
+        .store
+        .get(&first.application_id)
+        .await
+        .unwrap()
+        .resolved
+        .unwrap();
+    assert!(
+        matches!(&active.services[0].source, ResolvedSource::Git { commit, .. } if commit == &"a".repeat(40))
+    );
+    let pulls = harness.pulls().await;
+    let MutationResponse::Operation(accepted) = applications
+        .accept(deploy(), None, false, Some("git-deploy"))
+        .await
+        .unwrap()
+    else {
+        panic!("expected operation")
+    };
+    let MutationResponse::Operation(replay) = applications
+        .accept(deploy(), None, false, Some("git-deploy"))
+        .await
+        .unwrap()
+    else {
+        panic!("expected operation")
+    };
+    assert_eq!(accepted.operation_id, replay.operation_id);
+    let operation = harness
+        .store
+        .operation(&accepted.operation_id)
+        .await
+        .unwrap();
+    harness.finish(&operation).await;
+    assert!(harness.pulls().await > pulls);
+    let piqueld_core::Source::Git { repository, .. } = &mut input.spec.services[0].source else {
+        unreachable!()
+    };
+    repository.url = "build-fails".into();
+    let failed = applications
+        .apply(input.validate().unwrap(), Some(1))
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.store.operation(&failed.id).await.unwrap().state,
+        OperationState::Failed
+    );
+    assert_eq!(
+        harness
+            .store
+            .get(&first.application_id)
+            .await
+            .unwrap()
+            .resolved
+            .unwrap(),
+        active
+    );
 }
