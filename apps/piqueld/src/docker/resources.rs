@@ -8,6 +8,9 @@ use super::{
     async_trait, bounded, resolve_image_digest, stream,
 };
 
+const NETWORK_INSPECT_ATTEMPTS: usize = 10;
+const NETWORK_INSPECT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
 impl BollardDocker {
     /// List responses can omit immutable network fields, so reconciliation
     /// decisions must use a complete inspection of the selected resource.
@@ -15,16 +18,34 @@ impl BollardDocker {
         &self,
         identifier: &str,
     ) -> Result<Option<bollard::models::Network>, DockerError> {
-        match self
-            .docker
-            .inspect_network(identifier, None::<InspectNetworkOptions>)
-            .await
-        {
-            Ok(network) => Ok(Some(network)),
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => Ok(None),
-            Err(error) => Err(DockerError::request("inspect network", error)),
+        let mut attempt = 1;
+        loop {
+            match self
+                .docker
+                .inspect_network(identifier, None::<InspectNetworkOptions>)
+                .await
+            {
+                Ok(network)
+                    if network
+                        .driver
+                        .as_deref()
+                        .is_some_and(|driver| !driver.is_empty())
+                        && network.attachable.is_some() =>
+                {
+                    return Ok(Some(network));
+                }
+                Ok(_) if attempt == NETWORK_INSPECT_ATTEMPTS => {
+                    return Err(DockerError::Request("read complete network inspection"));
+                }
+                Ok(_) => {
+                    attempt += 1;
+                    tokio::time::sleep(NETWORK_INSPECT_RETRY_DELAY).await;
+                }
+                Err(bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => return Ok(None),
+                Err(error) => return Err(DockerError::request("inspect network", error)),
+            }
         }
     }
 }
