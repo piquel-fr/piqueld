@@ -35,7 +35,9 @@ impl RuntimeBoundary for FakeRuntime {
             .services
             .iter()
             .map(|service| {
-                let Source::Image { image } = &service.source;
+                let Source::Image { image } = &service.source else {
+                    panic!("expected image fixture")
+                };
                 let repository = image
                     .rsplit_once(':')
                     .map_or(image.as_str(), |value| value.0);

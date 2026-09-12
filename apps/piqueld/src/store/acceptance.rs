@@ -169,6 +169,17 @@ impl SqliteStore {
                     true,
                 )
             }
+            Mutation::Deploy { id } => {
+                let app = current.ok_or(StoreError::NotFound)?;
+                if app.delete_intent || latest.as_ref().is_some_and(|op| !op.state.terminal()) {
+                    return Err(StoreError::Busy);
+                }
+                let operation = Self::request_refresh_on(tx, &id, expected_generation).await?;
+                (
+                    MutationResponse::Operation(AcceptedOperation::from(&operation)),
+                    true,
+                )
+            }
             Mutation::Refresh { id } => {
                 let app = current.ok_or(StoreError::NotFound)?;
                 if app.delete_intent {
@@ -249,6 +260,7 @@ impl SqliteStore {
             Mutation::Apply { application, .. } => (None, Some(application.metadata.name.as_str())),
             Mutation::Delete { id }
             | Mutation::Reconcile { id }
+            | Mutation::Deploy { id }
             | Mutation::Refresh { id }
             | Mutation::Rename { id, .. } => (Some(id.as_str()), None),
         };

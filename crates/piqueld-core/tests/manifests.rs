@@ -248,6 +248,7 @@ fn registry_host_case_is_canonicalized_and_ipv6_is_rejected() {
             piqueld_core::manifest::Source::Image { image } => {
                 assert_eq!(image, canonical);
             }
+            piqueld_core::Source::Git { .. } => panic!("expected image source"),
         }
     }
 

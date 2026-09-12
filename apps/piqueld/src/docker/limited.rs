@@ -16,6 +16,7 @@ use tokio::sync::Semaphore;
 pub(crate) struct LimitedDocker<D> {
     inner: Arc<D>,
     images: Semaphore,
+    builds: Semaphore,
     observations: Semaphore,
 }
 impl<D> LimitedDocker<D> {
@@ -23,6 +24,7 @@ impl<D> LimitedDocker<D> {
         Self {
             inner,
             images: Semaphore::new(2),
+            builds: Semaphore::new(1),
             observations: Semaphore::new(8),
         }
     }
@@ -39,6 +41,18 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
             .await
             .expect("semaphore is never closed");
         self.inner.resolve_image(reference).await
+    }
+    async fn build_git(
+        &self,
+        repository: &piqueld_core::manifest::GitRepository,
+        build: &piqueld_core::manifest::Build,
+    ) -> Result<(String, piqueld_core::resource::Sha256Digest), DockerError> {
+        let _permit = self
+            .builds
+            .acquire()
+            .await
+            .expect("semaphore is never closed");
+        self.inner.build_git(repository, build).await
     }
     async fn observe(&self, id: &ApplicationId) -> Result<ObservedApplication, DockerError> {
         let _permit = self

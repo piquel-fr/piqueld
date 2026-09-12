@@ -290,3 +290,101 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires an isolated privileged Docker Engine"]
+async fn git_build_runs_as_a_local_swarm_image() {
+    assert_eq!(std::env::var("PIQUELD_DOCKER_ISOLATED").as_deref(), Ok("1"));
+    let socket = std::env::var("PIQUELD_DOCKER_SOCKET").unwrap();
+    let socket = std::fs::canonicalize(socket).unwrap();
+    assert_ne!(
+        socket,
+        std::fs::canonicalize("/var/run/docker.sock").unwrap()
+    );
+    let docker = BollardDocker::connect(&socket).unwrap();
+    docker.ensure_swarm(true).await.unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::write(
+        repo.path().join("Dockerfile"),
+        "FROM alpine:3.20\nCMD [\"sleep\", \"3600\"]\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "--initial-branch=main"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let source = piqueld_core::Source::Git {
+        repository: piqueld_core::manifest::GitRepository {
+            url: repo.path().display().to_string(),
+            branch: "main".into(),
+            commit: None,
+        },
+        build: piqueld_core::manifest::Build::Docker {
+            dockerfile: "Dockerfile".into(),
+            context: ".".into(),
+        },
+    };
+    let piqueld_core::Source::Git { repository, build } = &source else {
+        unreachable!()
+    };
+    let (commit, image_id) = docker.build_git(repository, build).await.unwrap();
+    let manifest = serde_json::json!({"api_version":"piqueld.dev/v1alpha1", "kind":"Application", "metadata":{"name":"git-local"}, "spec":{"services":[{"name":"web", "source":source}]}});
+    let app = piqueld_core::parse_json(&manifest.to_string())
+        .unwrap()
+        .normalize(ApplicationId::parse("git-local-build").unwrap());
+    let resolutions = piqueld_core::ResolutionSet {
+        sources: BTreeMap::from([(
+            "web".into(),
+            ResolvedSource::Git {
+                requested: source,
+                commit,
+                image_id,
+            },
+        )]),
+    };
+    let target = piqueld_core::compile_application(
+        &app,
+        InstanceId::parse("git-build-test").unwrap(),
+        &resolutions,
+    )
+    .unwrap();
+    docker.ensure_network(&target.networks[0]).await.unwrap();
+    docker.ensure_service(&target.services[0]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let observed = docker.observe(&app.id).await.unwrap();
+            if observed
+                .services
+                .iter()
+                .any(|service| service.convergence == piqueld_core::Convergence::Converged)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("local Git-built image must converge in Swarm");
+    docker
+        .remove_service(&target.services[0].name, &target.services[0].labels)
+        .await
+        .unwrap();
+}

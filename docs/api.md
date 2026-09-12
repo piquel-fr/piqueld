@@ -121,3 +121,9 @@ The unauthenticated TCP API accepts only loopback hosts. The read-only dashboard
 is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
 The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
 [the generated contract](openapi-v1.json).
+
+`POST /api/v1/applications/{id}/deploy` explicitly resolves current sources again
+and starts a deployment. It accepts the same generation query and idempotency
+header as refresh, but returns `409 application_busy` when another operation is
+pending. An identical idempotency-key replay returns the original acceptance.
+Use `piquelctl deploy NAME --yes` to request and wait for deployment.

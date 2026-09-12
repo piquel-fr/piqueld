@@ -71,7 +71,7 @@ pub struct ApplicationSpec {
 pub struct Service {
     /// Logical service name.
     pub name: String,
-    /// Prebuilt container image source.
+    /// Explicit image or build source.
     pub source: Source,
     /// Desired replica count.
     #[serde(default = "default_replicas")]
@@ -107,6 +107,117 @@ pub enum Source {
         /// Image reference.
         image: String,
     },
+    /// Build a checked-out Git revision.
+    Git {
+        /// Repository and revision to resolve.
+        repository: GitRepository,
+        /// Explicit build instructions.
+        build: Build,
+    },
+}
+
+/// Git checkout configuration. Credentials come from the host's Git configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GitRepository {
+    /// Git clone URL or local repository path.
+    pub url: String,
+    /// Branch to fetch when no commit is pinned.
+    pub branch: String,
+    /// Optional full commit hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+}
+
+impl GitRepository {
+    /// Validates Git arguments without executing Git.
+    pub fn validate(&self, path: &str, errors: &mut Vec<ValidationError>) {
+        if self.url.is_empty()
+            || self.url.len() > 4096
+            || self.url.starts_with('-')
+            || self.url.chars().any(char::is_control)
+        {
+            error(
+                errors,
+                "git_repository_invalid",
+                path,
+                "repository URL must be a nonempty Git location",
+            );
+        }
+        if self.branch.is_empty()
+            || self.branch.len() > 255
+            || self.branch.starts_with(['-', '.'])
+            || self.branch.ends_with(['/', '.'])
+            || self.branch.contains("..")
+            || self.branch.contains("@{")
+            || self.branch.contains("//")
+            || self.branch.split('/').any(|component| {
+                component.starts_with('.') || component.strip_suffix(".lock").is_some()
+            })
+            || self
+                .branch
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\".contains(c))
+        {
+            error(
+                errors,
+                "git_branch_invalid",
+                path,
+                "branch must be a valid Git branch name",
+            );
+        }
+        if self
+            .commit
+            .as_ref()
+            .is_some_and(|value| !valid_git_commit(value))
+        {
+            error(
+                errors,
+                "git_commit_invalid",
+                path,
+                "commit must be a full lowercase hexadecimal Git hash",
+            );
+        }
+    }
+}
+
+/// Whether a value is a full Git object hash.
+#[must_use]
+pub fn valid_git_commit(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Whether a path stays lexically inside a checkout. Symlinks are checked at runtime.
+#[must_use]
+pub fn valid_repository_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 4096
+        && !value.chars().any(char::is_control)
+        && !value.contains('\\')
+        && !value.contains(':')
+        && !value.starts_with('/')
+        && value.split('/').all(|part| part != ".." && part != ".git")
+}
+
+/// Explicit build backend, extensible independently from source selection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+pub enum Build {
+    /// Build a local container image using Docker.
+    Docker {
+        /// Dockerfile path relative to the repository root.
+        dockerfile: String,
+        /// Build context relative to the repository root.
+        #[serde(default = "default_build_context")]
+        context: String,
+    },
+}
+
+fn default_build_context() -> String {
+    ".".into()
 }
 
 /// User-declared named volume.
@@ -300,6 +411,13 @@ pub fn safe_decode_path(path: &str) -> String {
         "resources",
         "type",
         "image",
+        "repository",
+        "url",
+        "branch",
+        "commit",
+        "build",
+        "dockerfile",
+        "context",
         "volume",
         "target",
         "read_only",
@@ -379,8 +497,9 @@ impl ApplicationManifest {
             return Err(ValidationErrors(errors));
         }
         for service in &mut self.spec.services {
-            let Source::Image { image } = &mut service.source;
-            *image = canonicalize_image_reference(image);
+            if let Source::Image { image } = &mut service.source {
+                *image = canonicalize_image_reference(image);
+            }
         }
         Ok(ValidatedApplication {
             name: self.metadata.name,
@@ -465,6 +584,27 @@ fn validate_services(
                 &format!("{base}.source.image"),
                 "image must be a valid registry reference without credentials or a URL scheme",
             );
+        }
+        if let Source::Git {
+            repository,
+            build:
+                Build::Docker {
+                    dockerfile,
+                    context,
+                },
+        } = &service.source
+        {
+            repository.validate(&format!("{base}.source.repository"), errors);
+            for (field, value) in [("dockerfile", dockerfile), ("context", context)] {
+                if !valid_repository_path(value) {
+                    error(
+                        errors,
+                        "repository_path_invalid",
+                        &format!("{base}.source.build.{field}"),
+                        "path must be relative to the repository root and remain within it",
+                    );
+                }
+            }
         }
         validate_environment(&service.environment, &base, errors);
         validate_mounts(&service.mounts, &base, volume_names, errors);

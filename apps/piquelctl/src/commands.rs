@@ -40,7 +40,9 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
         Command::Operation(args) => operation(cli, &client, args).await,
         Command::Reconcile(args) => reconcile_or_refresh(cli, &client, args, false).await,
         Command::Rename(args) => rename(cli, &client, args).await,
-        Command::Refresh(args) => reconcile_or_refresh(cli, &client, args, true).await,
+        Command::Refresh(args) | Command::Deploy(args) => {
+            reconcile_or_refresh(cli, &client, args, true).await
+        }
         Command::Events {
             application,
             cursor,
@@ -215,6 +217,7 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
     for service in &application.application.spec.services {
         let image = match &service.source {
             Source::Image { image } => image,
+            Source::Git { repository, .. } => &repository.url,
         };
         writeln!(
             io::stdout().lock(),
@@ -539,8 +542,10 @@ async fn reconcile_or_refresh(
     refresh: bool,
 ) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
-    let action = if refresh {
-        "Refresh images for"
+    let action = if matches!(cli.command, Command::Deploy(_)) {
+        "Deploy"
+    } else if refresh {
+        "Refresh sources for"
     } else {
         "Reconcile current intent for"
     };
@@ -554,7 +559,11 @@ async fn reconcile_or_refresh(
     .await?;
     let id = application.application.id.as_str();
     let accepted = retry_transport(|| async {
-        if refresh {
+        if matches!(cli.command, Command::Deploy(_)) {
+            client
+                .deploy_application(id, args.expected_generation)
+                .await
+        } else if refresh {
             client
                 .refresh_application(id, args.expected_generation)
                 .await

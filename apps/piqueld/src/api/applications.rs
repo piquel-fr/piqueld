@@ -693,6 +693,30 @@ pub(super) async fn refresh(
     .await
 }
 
+#[utoipa::path(post,path="/api/v1/applications/{id}/deploy",operation_id="deployApplication",
+    params(("id"=String,Path),GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
+    responses((status=202,description="Deployment accepted",body=Envelope<AcceptedOperation>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn deploy(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Response, ApiError> {
+    let query = GenerationQuery::decode(query)?;
+    accept_mutation(
+        &state,
+        Mutation::Deploy {
+            id: ApplicationId::parse(id)?,
+        },
+        query.expected_generation,
+        query.force,
+        &headers,
+    )
+    .await
+}
+
 async fn accept_mutation(
     state: &ApiState,
     mutation: Mutation,
@@ -707,7 +731,9 @@ async fn accept_mutation(
                 ..
             } => expected.is_none() || (expected != Some(0) && expected_application_id.is_none()),
             Mutation::Delete { .. } | Mutation::Rename { .. } => expected.is_none(),
-            Mutation::Reconcile { .. } | Mutation::Refresh { .. } => false,
+            Mutation::Reconcile { .. } | Mutation::Refresh { .. } | Mutation::Deploy { .. } => {
+                false
+            }
         };
         if missing {
             return Err(ApiError::new(
