@@ -121,9 +121,10 @@ impl BollardDocker {
             .into_iter()
             .collect();
         let runtime_configuration_matches = ServiceRuntimePolicy::matches(spec);
-        let healthcheck_configured = container.health_check.as_ref().is_some_and(
-            |health| !matches!(health.test.as_deref(), Some([test]) if test == "NONE"),
-        );
+        let healthcheck_configured = container
+            .health_check
+            .as_ref()
+            .is_some_and(Self::healthcheck_configured);
         let convergence =
             BollardDocker::convergence(&tasks, replicas, update, healthcheck_configured);
         Ok(ObservedService {
