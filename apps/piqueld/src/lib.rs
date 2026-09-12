@@ -8,6 +8,7 @@ pub mod operations;
 pub mod reconcile;
 pub mod store;
 
+mod git;
 mod ui_bundle;
 
 use std::{

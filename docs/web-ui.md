@@ -106,3 +106,8 @@ older browsers without those primitives are outside the support target.
 Secrets, logs and streams, state transfer, and authentication remain outside the
 current dashboard scope. Event history is available through the API and CLI.
 Deployment history polls every two seconds while the page is visible.
+
+Service source settings explicitly select a container image or Git with a
+Dockerfile build. Git settings include repository, branch, optional commit,
+Dockerfile path, and build context relative to the repository root. Saving
+scaling or other service settings preserves the selected source.

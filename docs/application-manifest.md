@@ -2,7 +2,7 @@
 
 The supported document is a strict TOML or JSON
 `piqueld.dev/v1alpha1` `Application`. Unknown fields and unsupported source
-types are errors. The only service source is a prebuilt Docker/OCI image.
+types are errors. Services explicitly select a prebuilt Docker/OCI image or a Git build source.
 
 ```toml
 api_version = "piqueld.dev/v1alpha1"
@@ -33,8 +33,7 @@ name = "data"
 Services support replicas, environment variables, command and argument arrays,
 health checks, CPU/memory limits, and mounts of declared named volumes. Named
 volumes are retained when an application is deleted. There are no manifest
-fields for builds, source repositories, credentials, secrets, routes, or
-published ports.
+fields for managed credentials, secrets, routes, or published ports.
 
 Names are 1–63 lowercase ASCII letters, digits, or hyphens; they start with a
 letter and cannot end with a hyphen. Applications may be empty. Deploying an empty application removes its services and network, retaining volume data.
@@ -73,9 +72,49 @@ spec. The application name selects which application an apply targets; changing
 it targets a different application. Use the explicit rename action to retain
 identity and resources, then update the manifest name.
 
-The parser is pure. Apply saves configuration and advances its generation without
-starting runtime work. Explicit Deploy captures the saved configuration and resolves
-image references; saving with `--deploy` performs both actions. Refresh resolves the
-latest deployment's references again, while reconcile retries its prepared target.
-Neither action deploys later saved edits. Resolved runtime state remains separate
-from portable manifest DTOs. Deletion intent also advances the generation.
+The parser is pure. Apply saves the complete normalized configuration without
+starting a deployment unless explicitly requested. Deploy captures that saved
+revision and prepares every source again. Reconciliation and retries reuse the
+captured deployment and its prepared target, so later saved edits cannot enter
+an existing deployment. Refresh prepares the last deployment's sources again.
+Resolved runtime state remains separate from portable manifests. Generations
+advance on saves, changed names, and deletion intent.
+
+## Git build sources
+
+A service may explicitly build from Git instead of pulling a prebuilt image:
+
+```toml
+[[spec.services]]
+name = "web"
+[spec.services.source]
+type = "git"
+[spec.services.source.repository]
+url = "https://example.com/team/application.git"
+branch = "main"
+# commit = "0123456789012345678901234567890123456789"
+[spec.services.source.build]
+type = "docker"
+dockerfile = "services/web/Dockerfile"
+context = "."
+```
+
+The daemon requires Git and the Docker CLI in its PATH. Git inherits the host's
+credentials; piqueld does not store credentials or prompt for them. Only trusted
+repositories are supported: Dockerfiles execute build instructions on the host's
+Docker Engine. Builds are serialized across applications, and the existing
+`reconciliation.prepare_timeout_seconds` bounds preparation (default: 300 seconds).
+Increase that budget for longer builds.
+
+Each preparation gets an isolated checkout. A full configured commit hash is
+used directly; otherwise the branch head is resolved once. Dockerfile and context
+paths are relative to the repository root, must stay within it, and default build
+context is `.`. There is no automatic build backend detection, submodule or LFS
+setup, registry publishing, or automatic image cleanup. Docker's build cache is
+reused and base images are refreshed with `--pull`.
+
+The resolved source records the full Git commit and content-addressed local image
+ID. All service sources are prepared before any application rollout. A failed
+checkout or build preserves the existing running deployment. Normal reconciliation
+reuses prepared images; explicit refresh resolves and builds sources again.
+Local images are supported only on the existing single-node Swarm topology.

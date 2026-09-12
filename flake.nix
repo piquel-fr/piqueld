@@ -58,6 +58,7 @@
                 pkgs.trunk
                 pkgs.wasm-bindgen-cli_0_2_126
               ];
+              nativeCheckInputs = [ pkgs.git ];
               # Compile SQLx SQLite query macros against a disposable database
               # provisioned by the daemon build script.
               DATABASE_URL = "sqlite::memory:";
@@ -182,6 +183,8 @@
               cargo-watch
               binaryen
               clippy
+              docker-client
+              git
               just
               cmake
               lld

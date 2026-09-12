@@ -76,6 +76,14 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                 .filter(|service| !reusable.sources.contains_key(&service.name))
                 .map(|service| (service.name.clone(), service.source.clone()))
                 .collect::<Vec<_>>();
+            let phase = if pending
+                .iter()
+                .any(|(_, source)| matches!(source, Source::Git { .. }))
+            {
+                "preparing_sources"
+            } else {
+                "resolving_image"
+            };
             if let Some((store, id)) = &self.progress
                 && !pending.is_empty()
             {
@@ -84,25 +92,39 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                     .map(|(name, _)| name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                store.progress(id, "resolving_image", Some(&names)).await?;
+                store.progress(id, phase, Some(&names)).await?;
             }
             let docker = Arc::clone(&self.docker);
             let sources = stream::iter(pending.into_iter().map(move |(name, source)| {
                 let docker = Arc::clone(&docker);
                 async move {
-                    let Source::Image { image } = source;
-                    let digest_reference =
-                        tokio::time::timeout(IMAGE_RESOLVE_TIMEOUT, docker.resolve_image(&image))
+                    let resolved = match &source {
+                        Source::Image { image } => {
+                            let digest_reference = tokio::time::timeout(
+                                IMAGE_RESOLVE_TIMEOUT,
+                                docker.resolve_image(image),
+                            )
                             .await
                             .unwrap_or_else(|_| Err(DockerError::Unavailable("resolve image")))
-                            .map_err(|error| (name.clone(), error))?;
-                    Ok::<_, (String, DockerError)>((
-                        name,
-                        ResolvedSource::Image {
-                            requested: image,
-                            digest_reference,
-                        },
-                    ))
+                            .map_err(|error| (name.clone(), "resolving_image", error))?;
+                            ResolvedSource::Image {
+                                requested: image.clone(),
+                                digest_reference,
+                            }
+                        }
+                        Source::Git { repository, build } => {
+                            let (commit, image_id) = docker
+                                .build_git(repository, build)
+                                .await
+                                .map_err(|error| (name.clone(), "building_git", error))?;
+                            ResolvedSource::Git {
+                                requested: source,
+                                commit,
+                                image_id,
+                            }
+                        }
+                    };
+                    Ok::<_, (String, &'static str, DockerError)>((name, resolved))
                 }
             }))
             .buffer_unordered(4)
@@ -110,11 +132,9 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             .await;
             let sources = match sources {
                 Ok(sources) => sources,
-                Err((service, error)) => {
+                Err((service, phase, error)) => {
                     if let Some((store, id)) = &self.progress {
-                        store
-                            .progress(id, "resolving_image", Some(&service))
-                            .await?;
+                        store.progress(id, phase, Some(&service)).await?;
                     }
                     return Err(BoundaryError::Runtime(error));
                 }

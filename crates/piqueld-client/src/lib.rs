@@ -27,8 +27,8 @@ pub use applications::{
 };
 pub use client::Client;
 pub use piqueld_core::manifest::{
-    ApplicationManifest, ApplicationSpec, HealthCheck, Metadata, Mount, ResourceLimits, Service,
-    Source, Volume,
+    ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, Metadata, Mount,
+    ResourceLimits, Service, Source, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{ApplicationId, ValidatedApplication, ValidationError, ValidationErrors};

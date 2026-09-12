@@ -104,7 +104,7 @@ impl From<StoreError> for ApiError {
             StoreError::Busy => Self::new(
                 StatusCode::CONFLICT,
                 "application_busy",
-                "application is busy; wait for its operation before renaming",
+                "application is busy; wait for its current operation to finish",
             ),
             StoreError::NotFound => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")

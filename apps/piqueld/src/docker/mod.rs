@@ -102,6 +102,16 @@ pub trait DockerApi: Send + Sync + 'static {
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError>;
     /// Pulls an image reference and returns its immutable repository digest.
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError>;
+    /// Builds a Git source into an immutable local image.
+    async fn build_git(
+        &self,
+        _repository: &piqueld_core::manifest::GitRepository,
+        _build: &piqueld_core::manifest::Build,
+    ) -> Result<(String, piqueld_core::resource::Sha256Digest), DockerError> {
+        Err(DockerError::Validation(
+            "Git builds are unsupported by this runtime",
+        ))
+    }
     /// Reads the resources managed for one application.
     async fn observe(
         &self,

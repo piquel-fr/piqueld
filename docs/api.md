@@ -26,6 +26,7 @@ normalized manifest is needed.
 | DELETE | `/api/v1/applications/{id}` | Request deletion; no body |
 | POST | `/api/v1/applications/{id}/reconcile` | Repair latest intent without refreshing prepared digests |
 | POST | `/api/v1/applications/{id}/refresh` | Explicitly refresh image references |
+| POST | `/api/v1/applications/{id}/deploy` | Deploy with fresh source resolution; reject concurrent work |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
@@ -133,3 +134,8 @@ The unauthenticated TCP API accepts only loopback hosts. The dashboard
 is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
 The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
 [the generated contract](openapi-v1.json).
+
+`POST /api/v1/applications/{id}/deploy` prepares all sources again, including
+Git builds. It requires the inspected generation unless forced and supersedes
+pending work. An identical idempotency-key replay returns the original acceptance.
+Use `piquelctl deploy NAME --yes` to request and wait for deployment.

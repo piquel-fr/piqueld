@@ -1,10 +1,10 @@
 //! Form drafts and section patches. Each save changes only its own settings group.
-use piqueld_client::{HealthCheck, Mount, ResourceLimits, Service, Source};
+use piqueld_client::{Build, GitRepository, HealthCheck, Mount, ResourceLimits, Service, Source};
 
 /// Independently saved service settings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Section {
-    /// Image and scaling.
+    /// Source and scaling.
     General,
     /// Environment entries.
     Environment,
@@ -31,7 +31,7 @@ impl Section {
     #[must_use]
     pub const fn title(self) -> &'static str {
         match self {
-            Self::General => "Image & scaling",
+            Self::General => "Source & scaling",
             Self::Environment => "Environment",
             Self::Process => "Command & arguments",
             Self::Storage => "Volume mounts",
@@ -44,8 +44,20 @@ impl Section {
 /// Form state retains incomplete text until explicit validation and saving.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServiceForm {
+    /// Explicit source kind, image or git.
+    pub source_kind: String,
     /// Container image.
     pub image: String,
+    /// Git repository URL or host path.
+    pub repository: String,
+    /// Git branch.
+    pub branch: String,
+    /// Optional pinned commit.
+    pub commit: String,
+    /// Dockerfile relative to the repository root.
+    pub dockerfile: String,
+    /// Build context relative to the repository root.
+    pub context: String,
     /// Replica count, before numeric validation.
     pub replicas: String,
     /// Environment rows; duplicate keys are rejected.
@@ -75,9 +87,14 @@ pub struct ServiceForm {
 }
 impl From<&Service> for ServiceForm {
     fn from(service: &Service) -> Self {
-        let Source::Image { image } = &service.source;
         let mut form = Self {
-            image: image.clone(),
+            source_kind: "image".into(),
+            image: String::new(),
+            repository: String::new(),
+            branch: "main".into(),
+            commit: String::new(),
+            dockerfile: "Dockerfile".into(),
+            context: ".".into(),
             replicas: service.replicas.to_string(),
             environment: service
                 .environment
@@ -104,6 +121,24 @@ impl From<&Service> for ServiceForm {
                 .and_then(|r| r.memory_bytes)
                 .map_or_else(String::new, |v| v.to_string()),
         };
+        match &service.source {
+            Source::Image { image } => form.image.clone_from(image),
+            Source::Git {
+                repository,
+                build:
+                    Build::Docker {
+                        dockerfile,
+                        context,
+                    },
+            } => {
+                form.source_kind = "git".into();
+                form.repository.clone_from(&repository.url);
+                form.branch.clone_from(&repository.branch);
+                form.commit = repository.commit.clone().unwrap_or_default();
+                form.dockerfile.clone_from(dockerfile);
+                form.context.clone_from(context);
+            }
+        }
         match &service.healthcheck {
             None => {}
             Some(HealthCheck::Http {
@@ -139,8 +174,22 @@ impl ServiceForm {
     pub fn patch(&self, section: Section, service: &mut Service) -> Result<(), String> {
         match section {
             Section::General => {
-                service.source = Source::Image {
-                    image: self.image.clone(),
+                service.source = match self.source_kind.as_str() {
+                    "image" => Source::Image {
+                        image: self.image.clone(),
+                    },
+                    "git" => Source::Git {
+                        repository: GitRepository {
+                            url: self.repository.clone(),
+                            branch: self.branch.clone(),
+                            commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
+                        },
+                        build: Build::Docker {
+                            dockerfile: self.dockerfile.clone(),
+                            context: self.context.clone(),
+                        },
+                    },
+                    _ => return Err("Choose image or Git as the source.".into()),
                 };
                 service.replicas = self
                     .replicas
@@ -281,6 +330,27 @@ mod tests {
             draft.patch(Section::Health, &mut saved).unwrap();
             assert_eq!(saved.healthcheck, Some(check));
         }
+    }
+    #[test]
+    fn git_source_round_trips_when_scaling_changes() {
+        let mut saved = service();
+        saved.source = Source::Git {
+            repository: GitRepository {
+                url: "https://example.com/app.git".into(),
+                branch: "release".into(),
+                commit: Some("a".repeat(40)),
+            },
+            build: Build::Docker {
+                dockerfile: "infra/Dockerfile".into(),
+                context: "app".into(),
+            },
+        };
+        let source = saved.source.clone();
+        let mut draft = ServiceForm::from(&saved);
+        draft.replicas = "3".into();
+        draft.patch(Section::General, &mut saved).unwrap();
+        assert_eq!(saved.source, source);
+        assert_eq!(saved.replicas, 3);
     }
     #[test]
     fn invalid_text_and_duplicate_keys_are_not_silently_discarded() {
