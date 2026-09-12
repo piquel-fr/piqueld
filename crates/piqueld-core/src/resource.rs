@@ -500,10 +500,14 @@ pub fn compile_application(
         name: app.metadata.name.clone(),
         instance_id,
         spec_hash,
-        networks: vec![DesiredNetwork {
-            name: private_network.clone(),
-            labels: ownership.labels(),
-        }],
+        networks: if app.spec.services.is_empty() {
+            Vec::new()
+        } else {
+            vec![DesiredNetwork {
+                name: private_network.clone(),
+                labels: ownership.labels(),
+            }]
+        },
         volumes: app
             .spec
             .volumes

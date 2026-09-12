@@ -713,8 +713,14 @@ async fn accept_mutation(
             Mutation::Apply {
                 expected_application_id,
                 ..
+            }
+            | Mutation::Save {
+                expected_application_id,
+                ..
             } => expected.is_none() || (expected != Some(0) && expected_application_id.is_none()),
-            Mutation::Delete { .. } | Mutation::Rename { .. } => expected.is_none(),
+            Mutation::Deploy { .. } | Mutation::Delete { .. } | Mutation::Rename { .. } => {
+                expected.is_none()
+            }
             Mutation::Reconcile { .. } | Mutation::Refresh { .. } => false,
         };
         if missing {
@@ -731,6 +737,7 @@ async fn accept_mutation(
         .await?
     {
         MutationResponse::Operation(operation) => Ok(accepted(operation)),
+        MutationResponse::Saved(saved) => Ok(ok(saved).into_response()),
         MutationResponse::Rename(renamed) => Ok(ok(renamed).into_response()),
     }
 }

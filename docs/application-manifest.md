@@ -37,7 +37,7 @@ fields for builds, source repositories, credentials, secrets, routes, or
 published ports.
 
 Names are 1–63 lowercase ASCII letters, digits, or hyphens; they start with a
-letter and cannot end with a hyphen. Every application has at least one service.
+letter and cannot end with a hyphen. Applications may be empty. Deploying an empty application removes its services and network, retaining volume data.
 Image references reject URL schemes, credentials, malformed tags, and malformed
 digests; registry hostnames are validated case-insensitively and canonicalized
 to lowercase (IPv6 literal hosts are not accepted). Mount targets are normalized

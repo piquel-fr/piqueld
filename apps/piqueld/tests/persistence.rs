@@ -109,9 +109,17 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
         reopened.get(&application.id).await,
         Err(StoreError::NotFound)
     ));
-    assert_eq!(
-        reopened.operation(&deleted.id).await.unwrap().state,
-        OperationState::Succeeded
+    assert!(matches!(
+        reopened.operation(&deleted.id).await,
+        Err(StoreError::NotFound)
+    ));
+    assert!(
+        reopened
+            .events(Some(&application.id), None, 100)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
     );
 }
 
@@ -282,7 +290,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
 }
 
 #[tokio::test]
-async fn event_history_survives_operation_pruning_and_has_independent_retention() {
+async fn deployment_history_survives_pruning_and_events_have_independent_retention() {
     let directory = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(directory.path().join("state.db"))
         .await
@@ -295,15 +303,9 @@ async fn event_history_survives_operation_pruning_and_has_independent_retention(
         .unwrap();
     let second = store.request_refresh(&app.id, Some(1)).await.unwrap();
     store.prune_finished_operations(i64::MAX).await.unwrap();
-    assert!(matches!(
-        store.operation(&first.id).await,
-        Err(StoreError::NotFound)
-    ));
+    assert!(store.operation(&first.id).await.is_ok());
     assert!(store.operation(&second.id).await.is_ok());
-    assert!(matches!(
-        store.prepared_target(&first.id).await,
-        Err(StoreError::NotFound)
-    ));
+    assert!(store.prepared_target(&first.id).await.unwrap().is_some());
     assert!(store.prepared_target(&second.id).await.unwrap().is_none());
     let events = store.events(Some(&app.id), None, 100).await.unwrap();
     assert!(

@@ -73,6 +73,20 @@ pub enum Mutation {
         /// Previously inspected stable ID.
         expected_application_id: Option<String>,
     },
+    /// Save configuration, optionally deploying its snapshot atomically.
+    Save {
+        /// Normalized configuration.
+        application: NormalizedApplication,
+        /// Inspected application identity.
+        expected_application_id: Option<String>,
+        /// Whether to create a deployment after saving.
+        deploy: bool,
+    },
+    /// Deploy the latest saved configuration.
+    Deploy {
+        /// Stable application identity.
+        id: ApplicationId,
+    },
     /// Request resource deletion.
     Delete {
         /// Stable application ID.
@@ -100,6 +114,8 @@ pub enum Mutation {
 /// Small acceptance response stored for request replay, without manifest contents.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum MutationResponse {
+    /// Configuration persisted without implicit deployment.
+    Saved(piqueld_core::api::SavedApplication),
     /// Accepted runtime operation.
     Operation(piqueld_core::api::AcceptedOperation),
     /// Completed metadata mutation.
@@ -168,17 +184,6 @@ impl Applications {
             && !piqueld_core::valid_logical_name(name)
         {
             return Err(StoreError::InvalidInput.into());
-        }
-        if matches!(mutation, Mutation::Apply { .. }) {
-            // A replay returns an already committed response, even during an outage.
-            if let Some(response) = self
-                .store
-                .replay(&mutation, expected_generation, force, request_id)
-                .await?
-            {
-                return Ok(response);
-            }
-            self.runtime.check_available().await?;
         }
         let (response, wake) = self
             .store

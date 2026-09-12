@@ -246,3 +246,29 @@ impl From<&Operation> for AcceptedOperation {
         }
     }
 }
+
+/// Saved application configuration, optionally accompanied by a deployment.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct SavedApplication {
+    /// Stable application identity.
+    pub application_id: String,
+    /// Saved configuration revision.
+    pub generation: u64,
+    /// Deployment operation, only when explicitly requested.
+    pub operation_id: Option<String>,
+}
+
+/// Durable deployment snapshot and execution summary.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct DeploymentView {
+    /// Execution ID also identifies this deployment.
+    pub operation: Operation,
+    /// Configuration captured when deployment was accepted.
+    pub application: NormalizedApplication,
+    /// First successful convergence, retained during later drift repair.
+    pub succeeded_at_ms: Option<i64>,
+    /// Whether this is the currently promoted runtime target.
+    pub current_target: bool,
+    /// Whether this is the most recent deployment to converge successfully.
+    pub last_successful: bool,
+}
