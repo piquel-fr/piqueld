@@ -7,6 +7,9 @@ inputs:
   tailwindcss-version:
     description: Tailwind CSS standalone CLI release version to download.
     required: true
+  tailwindcss-sha256:
+    description: Trusted SHA-256 for the selected tailwindcss-linux-x64 release asset.
+    required: true
   binaryen-version:
     description: Binaryen release version providing wasm-opt. Ubuntu's package is too old for the flags Trunk passes.
     required: true
@@ -17,6 +20,8 @@ runs:
       run: rustup target add wasm32-unknown-unknown
       shell: bash
     - name: Download pinned tools
+      env:
+        TAILWINDCSS_SHA256: ${{ inputs.tailwindcss-sha256 }}
       run: |
         set -euo pipefail
         temp="${RUNNER_TEMP:?}"
@@ -42,6 +47,8 @@ runs:
           "$temp/wasm-bindgen.tar.gz.sha256sum"
         fetch "https://github.com/tailwindlabs/tailwindcss/releases/download/v${{ inputs.tailwindcss-version }}/tailwindcss-linux-x64" \
           "$bindir/tailwindcss"
+        printf '%s  %s\n' "$TAILWINDCSS_SHA256" "$bindir/tailwindcss" \
+          | sha256sum --check --strict -
 
         awk '{print $1 "  trunk.tar.gz"}' "$temp/trunk.tar.gz.sha256" \
           | (cd "$temp" && sha256sum --check --strict -)
