@@ -75,7 +75,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
         .expect("deletion saved");
     assert_eq!(
         store.operation(&created.id).await.unwrap().state,
-        OperationState::Cancelled
+        OperationState::Superseded
     );
     assert_eq!(deleted.state, OperationState::Requested);
     assert!(store.get(&application.id).await.unwrap().delete_intent);
@@ -144,7 +144,7 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
     assert_ne!(first.id, replaced.id);
     assert_eq!(
         store.operation(&first.id).await.unwrap().state,
-        OperationState::Cancelled
+        OperationState::Superseded
     );
     assert_eq!(
         store.get(&application.id).await.unwrap().application,
@@ -298,7 +298,7 @@ async fn event_history_survives_operation_pruning_and_has_independent_retention(
             .items
             .iter()
             .any(|event| event.operation_id.as_deref() == Some(&first.id)
-                && event.kind == "operation_cancelled")
+                && event.kind == "operation_superseded")
     );
     store.prune_events(i64::MAX).await.unwrap();
     assert!(

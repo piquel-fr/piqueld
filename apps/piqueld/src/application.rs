@@ -134,12 +134,14 @@ impl Applications {
     }
 
     /// Accepts a mutation and records its receipt in the same transaction.
+    /// An explicit force override bypasses revision and name-based identity checks.
     /// # Errors
     /// Returns validation, conflict, or persistence errors.
     pub async fn accept(
         &self,
         mutation: Mutation,
         expected: Option<u64>,
+        force: bool,
         request_id: Option<&str>,
     ) -> Result<MutationResponse, ApplicationError> {
         if request_id.is_some_and(|id| {
@@ -156,7 +158,10 @@ impl Applications {
         {
             return Err(StoreError::InvalidInput.into());
         }
-        let (response, wake) = self.store.accept(mutation, expected, request_id).await?;
+        let (response, wake) = self
+            .store
+            .accept(mutation, expected, force, request_id)
+            .await?;
         if wake {
             self.runtime.trigger_reconciliation();
         }
@@ -216,7 +221,8 @@ impl Applications {
         mutation: Mutation,
         expected: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        let MutationResponse::Operation(accepted) = self.accept(mutation, expected, None).await?
+        let MutationResponse::Operation(accepted) =
+            self.accept(mutation, expected, false, None).await?
         else {
             return Err(StoreError::Corrupt.into());
         };

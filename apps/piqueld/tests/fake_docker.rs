@@ -721,7 +721,7 @@ async fn superseded_operations_do_not_plan_stale_runtime_state() {
         .operation(&stale.id)
         .await
         .expect("superseded operation is readable");
-    assert_eq!(stale_operation.state, OperationState::Cancelled);
+    assert_eq!(stale_operation.state, OperationState::Superseded);
     let replacement_operation = harness
         .store
         .operation(&replacement.id)
@@ -1256,7 +1256,7 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     .expect("delete supersedes pending preparation without waiting for its pull");
     assert_eq!(
         store.operation(&accepted.id).await.unwrap().state,
-        OperationState::Cancelled
+        OperationState::Superseded
     );
     assert!(store.prepared_target(&accepted.id).await.unwrap().is_none());
     assert_eq!(docker.images.maximum.load(Ordering::SeqCst), 2);
@@ -1368,6 +1368,7 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
                 name: "renamed".into(),
             },
             Some(2),
+            false,
             Some("rename-resources"),
         )
         .await

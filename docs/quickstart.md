@@ -28,16 +28,16 @@ just run --url http://127.0.0.1:7845 status
 just run --socket /run/user/1000/piqueld/piqueld.sock plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
 just run --socket /run/user/1000/piqueld/piqueld.sock apply \
-  --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --force
+  --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --yes
 just run --socket /run/user/1000/piqueld/piqueld.sock show notes
 ```
 
 `status` reports the daemon version and `--json` produces the same structured
 result as the public API. `apply` waits for the durable operation by default;
 `--no-wait` returns immediately with its operation identifier. Apply the same
-manifest to update an existing application by name. Identical manifests do nothing,
-including after failure. Use `piquelctl reconcile notes --force` for repair or retry and
-`piquelctl refresh notes --force` to resolve mutable image tags again.
+manifest to update an existing application by name. Identical manifests schedule no new work, but still wait for their existing
+operation by default; failed attempts require explicit retry. Use `piquelctl reconcile notes --yes` for repair or retry and
+`piquelctl refresh notes --yes` to resolve mutable image tags again.
 `piquelctl events --application <application-id>` reads informational history.
 
 ## Dashboard and cleanup
@@ -55,7 +55,7 @@ When finished, delete the application and note that its named volumes are
 retained:
 
 ```console
-just run --socket /run/user/1000/piqueld/piqueld.sock delete notes --force
+just run --socket /run/user/1000/piqueld/piqueld.sock delete notes --yes
 ```
 
 The retained named volumes are deliberate so deleting an application does not

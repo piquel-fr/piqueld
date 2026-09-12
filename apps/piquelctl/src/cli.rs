@@ -49,9 +49,9 @@ pub(crate) enum Command {
     /// Inspect or wait for one asynchronous operation.
     Operation(OperationArgs),
     /// Repair latest intent without refreshing resolved images.
-    Reconcile(DeleteArgs),
+    Reconcile(ReconcileArgs),
     /// Resolve current image references again and deploy the resulting target.
-    Refresh(DeleteArgs),
+    Refresh(ReconcileArgs),
     /// Rename an idle application without redeploying it.
     Rename(RenameArgs),
     /// Read one page of informational events, oldest first.
@@ -89,6 +89,10 @@ pub(crate) struct ApplyArgs {
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]
+    pub(crate) yes: bool,
+
+    /// Override intent preconditions (does not skip confirmation).
+    #[arg(long, conflicts_with = "expected_generation")]
     pub(crate) force: bool,
 
     /// Return after the daemon accepts the operation.
@@ -106,6 +110,10 @@ pub(crate) struct DeleteArgs {
 
     /// Skip the interactive confirmation prompt.
     #[arg(long)]
+    pub(crate) yes: bool,
+
+    /// Override intent preconditions (does not skip confirmation).
+    #[arg(long, conflicts_with = "expected_generation")]
     pub(crate) force: bool,
 
     /// Return after the daemon accepts the operation.
@@ -171,7 +179,25 @@ pub(crate) struct RenameArgs {
     /// Require this intent generation.
     #[arg(long)]
     pub(crate) expected_generation: Option<u64>,
-    /// Skip confirmation while retaining generation protection.
+    /// Skip the interactive confirmation prompt.
     #[arg(long)]
+    pub(crate) yes: bool,
+    /// Override the revision precondition (does not skip confirmation).
+    #[arg(long, conflicts_with = "expected_generation")]
     pub(crate) force: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ReconcileArgs {
+    /// Application name or stable ID; acts on its latest accepted intent.
+    pub(crate) name_or_id: String,
+    /// Optionally require this intent generation.
+    #[arg(long)]
+    pub(crate) expected_generation: Option<u64>,
+    /// Skip the interactive confirmation prompt.
+    #[arg(long)]
+    pub(crate) yes: bool,
+    /// Return after the daemon accepts the operation.
+    #[arg(long)]
+    pub(crate) no_wait: bool,
 }

@@ -10,8 +10,9 @@ use sqlx::{Sqlite, Transaction};
 impl SqliteStore {
     pub(crate) async fn accept(
         &self,
-        mutation: Mutation,
-        expected: Option<u64>,
+        mut mutation: Mutation,
+        mut expected: Option<u64>,
+        force: bool,
         request_id: Option<&str>,
     ) -> Result<(MutationResponse, bool), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -19,7 +20,7 @@ impl SqliteStore {
         let fingerprint = format!(
             "{:x}",
             Sha256::digest(
-                serde_json::to_vec(&(&mutation, expected)).map_err(StoreError::corrupt)?
+                serde_json::to_vec(&(&mutation, expected, force)).map_err(StoreError::corrupt)?
             )
         );
         if let Some(request_id) = request_id {
@@ -33,6 +34,17 @@ impl SqliteStore {
                     serde_json::from_str(&receipt.response_json).map_err(StoreError::corrupt)?,
                     false,
                 ));
+            }
+        }
+        // Replay the original acceptance before applying an override to current intent.
+        if force {
+            expected = None;
+            if let Mutation::Apply {
+                expected_application_id,
+                ..
+            } = &mut mutation
+            {
+                *expected_application_id = None;
             }
         }
         let (current, latest) = Self::mutation_snapshot(&mut tx, &mutation).await?;

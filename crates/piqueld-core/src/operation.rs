@@ -47,8 +47,10 @@ pub enum OperationState {
     Succeeded,
     /// Reconciliation failed.
     Failed,
-    /// Cancelled or superseded by another operation.
+    /// Cancelled without a replacement operation.
     Cancelled,
+    /// Replaced by newer intent; callers may stop waiting successfully.
+    Superseded,
 }
 
 impl OperationState {
@@ -61,13 +63,17 @@ impl OperationState {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Superseded => "superseded",
         }
     }
 
     /// Whether this attempt has finished.
     #[must_use]
     pub const fn terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Superseded
+        )
     }
 
     /// Whether an operation can make the requested lifecycle transition.
@@ -76,15 +82,20 @@ impl OperationState {
         self == next
             || matches!(
                 (self, next),
-                (Self::Requested, Self::Running | Self::Cancelled)
-                    | (
-                        Self::Running,
-                        Self::Requested | Self::Succeeded | Self::Failed | Self::Cancelled
-                    )
-                    | (
-                        Self::Succeeded | Self::Failed | Self::Cancelled,
-                        Self::Requested
-                    )
+                (
+                    Self::Requested,
+                    Self::Running | Self::Cancelled | Self::Superseded
+                ) | (
+                    Self::Running,
+                    Self::Requested
+                        | Self::Succeeded
+                        | Self::Failed
+                        | Self::Cancelled
+                        | Self::Superseded
+                ) | (
+                    Self::Succeeded | Self::Failed | Self::Cancelled,
+                    Self::Requested
+                )
             )
     }
 }

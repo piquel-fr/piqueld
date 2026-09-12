@@ -48,7 +48,7 @@ pub(crate) async fn confirm(yes: bool, prompt: &str) -> Result<()> {
     if !io::stdin().is_terminal() {
         return Err(CliError::new(
             ErrorKind::Input,
-            "confirmation is required in a non-interactive terminal; pass --force",
+            "confirmation is required in a non-interactive terminal; pass --yes",
         ));
     }
     let prompt = prompt.to_owned();

@@ -151,7 +151,7 @@ pub(super) async fn detail(
 #[utoipa::path(
     post, path = "/api/v1/applications/apply", operation_id = "applyApplication",
     summary = "Apply an application manifest",
-    params(("X-Expected-Generation"=Option<u64>,Header,description="Optional revision for TOML requests; zero requires absence"),("X-Expected-Application-Id"=Option<String>,Header),("Idempotency-Key"=Option<String>,Header)),
+    params(ForceQuery,("X-Expected-Generation"=Option<u64>,Header,description="Required unless forced; zero requires absence"),("X-Expected-Application-Id"=Option<String>,Header),("Idempotency-Key"=Option<String>,Header)),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 202, description = "Accepted or unchanged target", body = Envelope<AcceptedOperation>),
@@ -167,6 +167,7 @@ pub(super) async fn detail(
 )]
 pub(super) async fn apply(
     State(state): State<ApiState>,
+    query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
@@ -175,6 +176,7 @@ pub(super) async fn apply(
         &state,
         Mutation::apply(manifest, expected_id),
         expected,
+        ForceQuery::decode(query)?.force,
         &headers,
     )
     .await
@@ -199,12 +201,14 @@ pub(super) async fn delete(
     headers: HeaderMap,
     query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
+    let query = GenerationQuery::decode(query)?;
     accept_mutation(
         &state,
         Mutation::Delete {
             id: ApplicationId::parse(id)?,
         },
-        GenerationQuery::decode(query)?,
+        query.expected_generation,
+        query.force,
         &headers,
     )
     .await
@@ -635,22 +639,23 @@ mod tests {
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(super) struct GenerationQuery {
-    /// Optional current intent revision.
+    /// Current intent revision; required for deletion unless forced.
     expected_generation: Option<u64>,
+    /// Explicitly bypass intent preconditions.
+    #[serde(default)]
+    force: bool,
 }
 impl GenerationQuery {
     fn decode(
         query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
-    ) -> Result<Option<u64>, ApiError> {
-        query
-            .map(|Query(value)| value.expected_generation)
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "generation_invalid",
-                    "invalid expected generation",
-                )
-            })
+    ) -> Result<Self, ApiError> {
+        query.map(|Query(value)| value).map_err(|_| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "generation_invalid",
+                "invalid expected generation",
+            )
+        })
     }
 }
 
@@ -665,12 +670,14 @@ pub(super) async fn reconcile(
     headers: HeaderMap,
     query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
+    let query = GenerationQuery::decode(query)?;
     accept_mutation(
         &state,
         Mutation::Reconcile {
             id: ApplicationId::parse(id)?,
         },
-        GenerationQuery::decode(query)?,
+        query.expected_generation,
+        query.force,
         &headers,
     )
     .await
@@ -687,12 +694,14 @@ pub(super) async fn refresh(
     headers: HeaderMap,
     query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
+    let query = GenerationQuery::decode(query)?;
     accept_mutation(
         &state,
         Mutation::Refresh {
             id: ApplicationId::parse(id)?,
         },
-        GenerationQuery::decode(query)?,
+        query.expected_generation,
+        query.force,
         &headers,
     )
     .await
@@ -702,11 +711,29 @@ async fn accept_mutation(
     state: &ApiState,
     mutation: Mutation,
     expected: Option<u64>,
+    force: bool,
     headers: &HeaderMap,
 ) -> Result<Response, ApiError> {
+    if !force {
+        let missing = match &mutation {
+            Mutation::Apply {
+                expected_application_id,
+                ..
+            } => expected.is_none() || (expected != Some(0) && expected_application_id.is_none()),
+            Mutation::Delete { .. } | Mutation::Rename { .. } => expected.is_none(),
+            Mutation::Reconcile { .. } | Mutation::Refresh { .. } => false,
+        };
+        if missing {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "precondition_required",
+                "Supply the inspected revision and application identity, or explicitly set force=true",
+            ));
+        }
+    }
     let request_id = super::optional_header(headers, "idempotency-key")?;
     match state
-        .accept(mutation, expected, request_id.as_deref())
+        .accept(mutation, expected, force, request_id.as_deref())
         .await?
     {
         MutationResponse::Operation(operation) => Ok(accepted(operation)),
@@ -715,13 +742,14 @@ async fn accept_mutation(
 }
 
 #[utoipa::path(post,path="/api/v1/applications/{id}/rename",operation_id="renameApplication",
-    params(("id"=String,Path),("Idempotency-Key"=Option<String>,Header)),
+    params(("id"=String,Path),ForceQuery,("Idempotency-Key"=Option<String>,Header)),
     request_body=RenameApplicationRequest,
     responses((status=200,description="Application renamed without redeployment",body=Envelope<RenamedApplication>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
     (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn rename(
     State(state): State<ApiState>,
+    query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
@@ -741,7 +769,29 @@ pub(super) async fn rename(
             name: request.name,
         },
         request.expected_generation,
+        ForceQuery::decode(query)?.force,
         &headers,
     )
     .await
+}
+
+#[derive(Default, Deserialize, utoipa::IntoParams)]
+#[serde(default, deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub(super) struct ForceQuery {
+    /// Explicitly bypass intent revision and name-based identity preconditions.
+    force: bool,
+}
+impl ForceQuery {
+    fn decode(
+        query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
+    ) -> Result<Self, ApiError> {
+        query.map(|Query(value)| value).map_err(|_| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "force_invalid",
+                "force must be true or false",
+            )
+        })
+    }
 }

@@ -125,6 +125,7 @@ impl SqliteStore {
                     "succeeded" => "operation_succeeded",
                     "failed" => "operation_failed",
                     "cancelled" => "operation_cancelled",
+                    "superseded" => "operation_superseded",
                     _ => "reconciliation_requested",
                 };
                 Self::operation_event(&mut tx, id, kind, message, now).await?;
@@ -213,7 +214,7 @@ impl SqliteStore {
         if changed != 1 {
             let current = Self::operation_on(tx, &operation.id).await?;
             // Another caller may already have requested or started this retry.
-            // Superseded operations remain cancelled and cannot be resurrected.
+            // Superseded operations remain terminal and cannot be resurrected.
             if matches!(
                 current.state,
                 OperationState::Requested | OperationState::Running
@@ -298,8 +299,8 @@ impl SqliteStore {
         now: i64,
     ) -> Result<Operation, StoreError> {
         let app_id = app.as_str();
-        sqlx::query!("INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT application_id,id,generation,attempt,'operation_cancelled','superseded by newer intent',error_code,phase,resource,?1 FROM operations WHERE application_id=?2 AND state IN ('requested','running')",now,app_id).execute(&mut **tx).await.map_err(StoreError::database)?;
-        sqlx::query!("UPDATE operations SET state='cancelled',error_code=NULL,error_message=NULL,finished_at_ms=?1,updated_at_ms=?1 WHERE application_id=?2 AND state IN ('requested','running')",now,app_id)
+        sqlx::query!("INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT application_id,id,generation,attempt,'operation_superseded','superseded by newer intent',error_code,phase,resource,?1 FROM operations WHERE application_id=?2 AND state IN ('requested','running')",now,app_id).execute(&mut **tx).await.map_err(StoreError::database)?;
+        sqlx::query!("UPDATE operations SET state='superseded',error_code=NULL,error_message=NULL,finished_at_ms=?1,updated_at_ms=?1 WHERE application_id=?2 AND state IN ('requested','running')",now,app_id)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         let id = new_id("operation");
         let kind = kind.as_str();

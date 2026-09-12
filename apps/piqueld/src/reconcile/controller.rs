@@ -65,7 +65,7 @@ impl<D: DockerApi> Controller<D> {
                     .await
             }
             Err(OperationError::Cancelled | OperationError::Superseded) => {
-                // A request may already have cancelled the operation while a Docker
+                // A request may already have superseded the operation while a Docker
                 // call was in flight. Its durable state takes precedence.
                 match self
                     .store

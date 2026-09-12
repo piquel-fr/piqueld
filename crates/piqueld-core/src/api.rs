@@ -66,10 +66,10 @@ pub struct ApplicationView {
 pub struct ApplyApplicationRequest {
     /// Application manifest to store and reconcile.
     pub manifest: ApplicationManifest,
-    /// Optional intent precondition; zero requires an absent application name.
+    /// Required for apply unless forced; optional for preview. Zero requires an absent name.
     #[serde(default)]
     pub expected_generation: Option<u64>,
-    /// Stable identity inspected by the caller, protecting name reuse.
+    /// Required for non-forced updates by name; protects against name reuse.
     #[serde(default)]
     pub expected_application_id: Option<String>,
 }
@@ -201,7 +201,7 @@ pub struct ManifestChange {
 pub struct RenameApplicationRequest {
     /// New unique application name.
     pub name: String,
-    /// Optional current intent revision.
+    /// Current intent revision, required unless explicitly forced.
     pub expected_generation: Option<u64>,
 }
 

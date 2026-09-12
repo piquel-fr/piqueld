@@ -538,14 +538,14 @@
         "description": "Desired application state to apply or preview.",
         "properties": {
           "expected_application_id": {
-            "description": "Stable identity inspected by the caller, protecting name reuse.",
+            "description": "Required for non-forced updates by name; protects against name reuse.",
             "type": [
               "string",
               "null"
             ]
           },
           "expected_generation": {
-            "description": "Optional intent precondition; zero requires an absent application name.",
+            "description": "Required for apply unless forced; optional for preview. Zero requires an absent name.",
             "format": "int64",
             "minimum": 0,
             "type": [
@@ -1917,7 +1917,8 @@
           "running",
           "succeeded",
           "failed",
-          "cancelled"
+          "cancelled",
+          "superseded"
         ],
         "type": "string"
       },
@@ -2053,7 +2054,7 @@
         "description": "Metadata-only rename, conditioned on the inspected intent revision.",
         "properties": {
           "expected_generation": {
-            "description": "Optional current intent revision.",
+            "description": "Current intent revision, required unless explicitly forced.",
             "format": "int64",
             "minimum": 0,
             "type": [
@@ -2384,7 +2385,16 @@
         "operationId": "applyApplication",
         "parameters": [
           {
-            "description": "Optional revision for TOML requests; zero requires absence",
+            "description": "Explicitly bypass intent revision and name-based identity preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Required unless forced; zero requires absence",
             "in": "header",
             "name": "X-Expected-Generation",
             "required": false,
@@ -2694,7 +2704,7 @@
             }
           },
           {
-            "description": "Optional current intent revision.",
+            "description": "Current intent revision; required for deletion unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -2702,6 +2712,15 @@
               "format": "int64",
               "minimum": 0,
               "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -2942,7 +2961,7 @@
             }
           },
           {
-            "description": "Optional current intent revision.",
+            "description": "Current intent revision; required for deletion unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -2950,6 +2969,15 @@
               "format": "int64",
               "minimum": 0,
               "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -3041,7 +3069,7 @@
             }
           },
           {
-            "description": "Optional current intent revision.",
+            "description": "Current intent revision; required for deletion unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -3049,6 +3077,15 @@
               "format": "int64",
               "minimum": 0,
               "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -3137,6 +3174,15 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent revision and name-based identity preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {

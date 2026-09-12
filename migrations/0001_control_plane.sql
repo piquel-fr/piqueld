@@ -38,7 +38,7 @@ CREATE TABLE operations (
     id TEXT PRIMARY KEY,
     application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
     kind TEXT NOT NULL CHECK (kind IN ('apply','refresh','delete')),
-    state TEXT NOT NULL CHECK (state IN ('requested','running','succeeded','failed','cancelled')),
+    state TEXT NOT NULL CHECK (state IN ('requested','running','succeeded','failed','cancelled','superseded')),
     generation INTEGER NOT NULL CHECK (generation > 0),
     attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
     consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
@@ -53,7 +53,7 @@ CREATE TABLE operations (
     started_at_ms INTEGER,
     finished_at_ms INTEGER,
     CHECK ((error_code IS NULL) = (error_message IS NULL)),
-    CHECK ((state IN ('succeeded','failed','cancelled')) = (finished_at_ms IS NOT NULL))
+    CHECK ((state IN ('succeeded','failed','cancelled','superseded')) = (finished_at_ms IS NOT NULL))
 );
 
 CREATE INDEX operation_application ON operations(application_id,created_at_ms DESC,id DESC);

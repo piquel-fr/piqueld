@@ -44,15 +44,15 @@ written to stderr, so stdout remains valid JSON.
 | `list` | `{ "items": [{ "application": ApplicationView, "status": ApplicationStatusView }], "next_cursor": null }` |
 | `show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
 | `plan` | `PlanView` |
-| identical `apply` | `{ "identical": true, "application_id": string, "operation": Operation or null }` |
+| identical `apply` | `{ "identical": true, "application_id": string, "outcome": OperationState, "operation": Operation }` |
 | `rename` | `RenamedApplication` |
 | `apply --no-wait` | `AcceptedOperation` |
-| `apply` | `{ "accepted": AcceptedOperation, "operation": Operation }` |
+| `apply` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
 | `delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
-| `delete` | `{ "accepted": AcceptedOperation, "operation": Operation, "volumes_retained": true }` |
+| `delete` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation, "volumes_retained": true }` |
 | `operation --no-wait` | `Operation` |
 | `operation` | `Operation` |
-| `reconcile` / `refresh` | `{ "accepted": AcceptedOperation, "operation": Operation }` |
+| `reconcile` / `refresh` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
 | `reconcile --no-wait` / `refresh --no-wait` | `AcceptedOperation` |
 | `events` | `{ "items": [Event], "next_cursor": string or null }` |
 
@@ -68,35 +68,45 @@ always previews first and stops when the plan is blocked or confirmation is
 declined. `show` and `delete` accept a name or ID; name lookup follows the
 paginated application list.
 
-Interactive `apply` and `delete` require a TTY confirmation unless `--force` is
-provided. `--force` is the explicit noninteractive confirmation for scripts.
+Mutating commands require a TTY confirmation unless `--yes` is supplied.
+Apply, delete, and rename also accept `--force` to override preconditions;
+force does not skip confirmation. Unattended forced commands need both
+`--force --yes`. `--force` and `--expected-generation` are mutually exclusive.
 Deleting an application retains its named volumes; the CLI prints that notice
 and includes `volumes_retained: true` in JSON output.
 
-Apply durably accepts intent before image preparation. Identical manifests print
-“This is identical to the existing manifest” and current operation status, then
-exit without confirmation, mutation, or waiting. Failed/cancelled operations exit
-with code 5 and guidance to use `reconcile`; pending operations report their ID and
-exit successfully. `reconcile` repairs or retries latest intent using stored
-digests. Apply reuses active digests for unchanged service image references;
-`refresh` explicitly resolves them again and is rejected during deletion. Both
-reconcile and refresh accept `--force` and `--no-wait` like apply/delete.
+Apply durably accepts intent before image preparation. An identical ordinary
+apply schedules no new work and needs no confirmation. It waits for the existing
+pending/running operation unless `--no-wait` is supplied. An existing success
+returns immediately and does not establish fresh runtime health. Failed/cancelled
+operations exit with code 5 and guidance to use `reconcile`. A forced apply always
+sends its request to the endpoint, even when the preview was identical, so the
+server can apply it to the name's current intent.
+
+`reconcile` repairs or retries latest intent using stored digests, including
+continuing an already-requested deletion. Apply reuses active digests for unchanged
+service image references; `refresh` explicitly resolves them again and is rejected
+during deletion. Reconcile and refresh accept `--yes` and `--no-wait`; they do not
+require a revision and have no `--force` flag.
 
 Previews are computed by the daemon. They describe manifest changes even when
 Docker observation is unavailable, redact sensitive configuration values, and
 identify unresolved images separately from known runtime actions.
 
-The CLI automatically sends the revision it inspected before confirmation. Apply
-also sends the inspected application ID, or generation zero for create-only.
-`--expected-generation N` supplies an explicit revision for scripts. Conflicts
-stop the command rather than adopting the newer revision. `--force` only skips
-confirmation; it never bypasses generation checks. `show` reports intent and
-active target generations and separate runtime health.
+For apply, delete, and rename, the CLI automatically sends the revision it
+inspected before confirmation. Apply also sends the inspected application ID,
+or generation zero for create-only. `--expected-generation N` supplies an explicit
+revision for scripts. Conflicts stop the command without adopting the newer
+revision. `--force` skips these preconditions: forced apply targets whichever
+application currently has the name, or creates it if absent. Validation, resource
+ownership, and rename busy/name-collision checks still apply. `show` reports intent
+and active target generations and separate runtime health.
 
 The CLI retains one automatic transport retry, using the same command UUID in
 `Idempotency-Key`. SQLite receipts replay the original acceptance response for
 24 hours across daemon restarts. Replays do not restart failed or superseded work;
-a separately invoked command gets a new UUID.
+a separately invoked command gets a new UUID. This includes forced requests:
+a transport retry cannot overwrite changes accepted after the original command.
 
 Rename checks the inspected generation and name availability. It rejects pending
 or running operations and deletion intent. It preserves identity, services,
@@ -109,12 +119,16 @@ stable ID, including deleted applications. Use `--cursor CURSOR` for subsequent
 pages and `--limit N` (1–100, default 50). JSON includes the next cursor.
 
 By default, apply, delete, reconcile, refresh, and operation poll every 250 ms
-until a terminal state. `--no-wait` returns immediately. For long image pulls,
+until a terminal state. Supersession returns immediately with exit code 0 and
+`outcome: "superseded"` in mutation command results (`state: "superseded"` on an
+operation record). It does not wait for the replacement to deploy. An observed
+failed attempt returns failure even if the controller will retry automatically.
+`--no-wait` returns immediately. For long image pulls,
 use a longer `--timeout` or return immediately and inspect the operation later.
 Pressing Ctrl-C ends only the local wait; it does not cancel the server-side
 operation, which can still be inspected with `piquelctl operation <id>`.
 
-The commonly useful exit codes are 0 for success, 1 for a general error, 2 for
+The commonly useful exit codes are 0 for success or supersession, 1 for a general error, 2 for
 usage or input errors, 3 for conflicts, 4 for unavailable or timed
 out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.

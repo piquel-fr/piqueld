@@ -104,24 +104,27 @@ impl Client {
         &self,
         request: &ApplyApplicationRequest,
     ) -> Result<AcceptedOperation, ClientError> {
+        self.apply_application_with_force(request, false).await
+    }
+
+    /// Applies a manifest, optionally overriding identity and revision preconditions.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn apply_application_with_force(
+        &self,
+        request: &ApplyApplicationRequest,
+        force: bool,
+    ) -> Result<AcceptedOperation, ClientError> {
         self.send(
             Method::POST,
-            &format!("{}/applications/apply", crate::API_PREFIX),
+            &Self::force_path(format!("{}/applications/apply", crate::API_PREFIX), force),
             Some(request),
             &[],
         )
         .await
     }
 
-    /// Marks an application for deletion.
-    ///
-    /// # Errors
-    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn delete_application(&self, id: &str) -> Result<AcceptedOperation, ClientError> {
-        self.delete_application_with_generation(id, None).await
-    }
-
-    /// Deletes only if the optional intent revision still matches.
+    /// Deletes only if the supplied intent revision still matches; absence is rejected.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn delete_application_with_generation(
@@ -129,9 +132,22 @@ impl Client {
         id: &str,
         expected: Option<u64>,
     ) -> Result<AcceptedOperation, ClientError> {
+        self.delete_application_with_preconditions(id, expected, false)
+            .await
+    }
+
+    /// Deletes with a revision precondition or an explicit force override.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn delete_application_with_preconditions(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+        force: bool,
+    ) -> Result<AcceptedOperation, ClientError> {
         self.send::<_, ()>(
             Method::DELETE,
-            &Self::mutation_path(id, "", expected),
+            &Self::force_path(Self::mutation_path(id, "", expected), force),
             None,
             &[],
         )
@@ -173,7 +189,7 @@ impl Client {
         .await
     }
 
-    /// Applies desired application state from a TOML manifest.
+    /// Creates an application from TOML, requiring its name to be absent.
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
@@ -181,11 +197,11 @@ impl Client {
         &self,
         manifest: &str,
     ) -> Result<AcceptedOperation, ClientError> {
-        self.apply_application_toml_with_generation(manifest, None)
+        self.apply_application_toml_with_generation(manifest, Some(0))
             .await
     }
 
-    /// Applies TOML with an optional intent revision precondition.
+    /// Applies TOML with a revision; existing names also require identity via the full method.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn apply_application_toml_with_generation(
@@ -193,11 +209,11 @@ impl Client {
         manifest: &str,
         expected: Option<u64>,
     ) -> Result<AcceptedOperation, ClientError> {
-        self.apply_application_toml_with_preconditions(manifest, expected, None)
+        self.apply_application_toml_with_preconditions(manifest, expected, None, false)
             .await
     }
 
-    /// Applies TOML only to the inspected identity and revision when supplied.
+    /// Applies TOML to the inspected identity and revision, unless explicitly forced.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn apply_application_toml_with_preconditions(
@@ -205,6 +221,7 @@ impl Client {
         manifest: &str,
         expected: Option<u64>,
         expected_id: Option<&str>,
+        force: bool,
     ) -> Result<AcceptedOperation, ClientError> {
         let generation = expected.map(|value| value.to_string());
         let mut headers = vec![("content-type", "application/toml")];
@@ -216,7 +233,7 @@ impl Client {
         }
         self.send_text(
             Method::POST,
-            &format!("{}/applications/apply", crate::API_PREFIX),
+            &Self::force_path(format!("{}/applications/apply", crate::API_PREFIX), force),
             manifest,
             &headers,
         )
@@ -252,6 +269,14 @@ impl Client {
             &headers,
         )
         .await
+    }
+
+    fn force_path(mut path: String, force: bool) -> String {
+        if force {
+            path.push(if path.contains('?') { '&' } else { '?' });
+            path.push_str("force=true");
+        }
+        path
     }
 
     fn mutation_path(id: &str, action: &str, expected: Option<u64>) -> String {
@@ -309,9 +334,21 @@ impl Client {
         id: &str,
         request: &RenameApplicationRequest,
     ) -> Result<RenamedApplication, ClientError> {
+        self.rename_application_with_force(id, request, false).await
+    }
+
+    /// Renames with an explicit override of the revision precondition.
+    /// # Errors
+    /// Returns transport, API, decoding, name, or busy errors.
+    pub async fn rename_application_with_force(
+        &self,
+        id: &str,
+        request: &RenameApplicationRequest,
+        force: bool,
+    ) -> Result<RenamedApplication, ClientError> {
         self.send(
             Method::POST,
-            &Self::mutation_path(id, "/rename", None),
+            &Self::force_path(Self::mutation_path(id, "/rename", None), force),
             Some(request),
             &[],
         )

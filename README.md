@@ -8,9 +8,10 @@ and reconciles a private network, named volumes, and replicated services.
 Applications are identified by name. Apply durably accepts the full normalized
 manifest and returns an operation ID before resolving images. Identical applies
 are no-ops, including after failure. Explicit reconcile repairs or retries stored targets;
-refresh explicitly resolves images again. The CLI automatically protects mutations
-with the inspected identity and generation, and reuses a request ID across transport
-retries. SQLite retains acceptance receipts for 24 hours.
+refresh explicitly resolves images again. Apply, delete, and rename require inspected preconditions by default;
+explicit force overrides them. The CLI separates `--force` from `--yes` confirmation
+and waits for existing operations on identical applies. Refresh and reconcile act
+on current intent. Request IDs are reused across transport retries. SQLite retains acceptance receipts for 24 hours.
 
 One async controller overlaps image pulls, observations, and timers while allowing
 one resource mutation request at a time. The active deployment remains maintained

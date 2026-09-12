@@ -14,8 +14,8 @@ Operation promotion is durable, so restart recovery knows whether to maintain th
 old target during preparation or continue the new rollout. SQLite writers queue
 asynchronously to avoid contention between concurrent application futures.
 Request receipts are committed with acceptance and expire after 24 hours,
-independently of operation and event retention. Earlier prototype schemas require
-a fresh database.
+independently of operation and event retention. Earlier prototype schemas, including those without the distinct `superseded`
+operation state, require a fresh database.
 
 Startup reads `PRAGMA user_version`, rejects an unsupported newer schema, and
 applies missing embedded migrations transactionally.

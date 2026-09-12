@@ -22,16 +22,30 @@ Clients poll for progress.
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
 
-Apply and plan accept JSON `{ "manifest": ..., "expected_generation": 3 }`,
-or complete TOML with `Content-Type: application/toml` or `text/toml`. The optional
-TOML precondition is `X-Expected-Generation`. Delete, reconcile, and refresh accept
-an optional `expected_generation` query parameter. A mismatch returns 409
-`generation_conflict`. Zero requires an absent name on apply. Without a supplied
-generation, a mutation targets current intent unconditionally. Apply and plan also
-accept `expected_application_id` in JSON or `X-Expected-Application-Id` with TOML.
-An identity mismatch returns 409 `identity_conflict`, protecting against a name
-being deleted/recreated or renamed between preview and apply. The CLI sends these
-preconditions automatically; `--force` skips confirmation only.
+Apply and plan accept JSON `{ "manifest": ..., "expected_generation": 3,
+"expected_application_id": "app-..." }`, or complete TOML with
+`Content-Type: application/toml` or `text/toml`. TOML preconditions use
+`X-Expected-Generation` and `X-Expected-Application-Id`.
+
+Apply, delete, and rename require preconditions unless the endpoint is explicitly
+called with the query parameter `force=true`. Missing preconditions return 400
+`precondition_required`. Apply requires generation zero to create an absent name,
+or both the inspected application ID and generation to update an existing name.
+Delete requires `expected_generation` in its query; rename takes it in JSON.
+Revision mismatches return 409 `generation_conflict`; identity mismatches return
+409 `identity_conflict`. Checks and acceptance are atomic.
+
+Force overrides both revision and name-based identity preconditions, even if stale
+values were supplied. Forced apply overwrites whichever application currently has
+the manifest name, or creates one if absent. ID-based mutations still target their
+URL's ID. Force never bypasses manifest validation, resource ownership, or rename
+busy/name-collision checks. There is no authorization logic for force yet.
+
+Refresh and reconcile act on the current intent without requiring preconditions;
+they accept an optional `expected_generation` query for callers that want one.
+Reconcile can continue an already-requested deletion. Preview preconditions are
+also optional. The CLI supplies apply/delete/rename preconditions automatically;
+`--yes` skips confirmation and `--force` requests the override independently.
 
 Generation starts at 1 and advances for a changed normalized manifest or deletion
 intent. Comments and ordering do not cause changes. Full apply replaces the
@@ -56,7 +70,9 @@ returns the original response before checking the current generation, even after
 restart, failure, or supersession. It never restarts the operation. Different input
 under the same key returns 409 `request_id_conflict`. Expired keys are treated as
 new requests subject to current preconditions. Receipts contain no manifests or
-raw request bodies, and do not guarantee exactly-once Docker effects.
+raw request bodies, and do not guarantee exactly-once Docker effects. Force is
+part of request identity: retrying a forced request replays its receipt instead of
+overwriting intervening changes again. A new forced command needs a new key.
 
 Rename accepts JSON `{ "name": "new-name", "expected_generation": 3 }` and returns
 200 with `RenamedApplication`. It rejects pending/running operations and deletion
@@ -66,7 +82,10 @@ operation identity; a changed name advances generation and records an event.
 Update the manifest's name before subsequent name-based apply.
 
 Operations have kind `apply`, `refresh`, or `delete` and state `requested`,
-`running`, `succeeded`, `failed`, or `cancelled`. Each execution increments
+`running`, `succeeded`, `failed`, `cancelled`, or `superseded`. New intent marks
+pending/running older operations `superseded`, separately from cancellation.
+The CLI treats supersession as success with an explicit outcome and stops waiting
+immediately, without following the replacement. Each execution increments
 `attempt`. Previous outcomes remain in events even when the operation is reused.
 Deletion retains volumes and completes only after runtime absence is verified.
 

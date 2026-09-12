@@ -1,5 +1,7 @@
 use crate::{
-    cli::{ApplyArgs, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs, RenameArgs},
+    cli::{
+        ApplyArgs, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs, ReconcileArgs, RenameArgs,
+    },
     error::{CliError, ErrorKind, Result},
     output::{
         blocked_plan_error, emit_json, render_operation, render_plan, render_plan_stderr,
@@ -266,29 +268,30 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     let plan = client
         .plan_application_toml_with_generation(&manifest, args.expected_generation)
         .await?;
-    if plan.identical {
-        if cli.json {
-            emit_json(
-                &json!({"identical":true,"application_id":plan.application_id,"operation":plan.operation}),
-            )?;
-        } else {
-            writeln!(
-                io::stdout().lock(),
-                "This is identical to the existing manifest."
-            )?;
-            if let Some(operation) = &plan.operation {
-                report_operation(operation);
+    if plan.identical && !args.force {
+        let operation = plan.operation.ok_or_else(|| {
+            CliError::new(ErrorKind::General, "identical application has no operation")
+        })?;
+        let operation = if args.no_wait {
+            if operation.state.terminal() {
+                finish_operation(operation)?
+            } else {
+                operation
             }
+        } else {
+            wait_for_operation(client, &operation.id.clone(), Some(operation)).await?
+        };
+        if cli.json {
+            return emit_json(&json!({
+                "identical": true, "application_id": plan.application_id,
+                "outcome": operation.state, "operation": operation,
+            }));
         }
-        if plan.operation.as_ref().is_some_and(|op| {
-            matches!(op.state, OperationState::Failed | OperationState::Cancelled)
-        }) {
-            return Err(CliError::new(
-                ErrorKind::Operation,
-                "Existing operation did not succeed; use piquelctl reconcile to retry",
-            ));
-        }
-        return Ok(());
+        writeln!(
+            io::stdout().lock(),
+            "This is identical to the existing manifest."
+        )?;
+        return render_operation(cli, &operation);
     }
     render_plan_stderr(&plan).map_err(|error| {
         CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
@@ -296,13 +299,14 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     if plan.plan.is_blocked() {
         return Err(blocked_plan_error(&plan, true));
     }
-    confirm(args.force, &format!("Apply application {name:?}? [y/N] ")).await?;
+    confirm(args.yes, &format!("Apply application {name:?}? [y/N] ")).await?;
 
     let accepted = retry_transport(|| {
         client.apply_application_toml_with_preconditions(
             &manifest,
-            Some(args.expected_generation.unwrap_or(plan.generation)),
-            (plan.generation > 0).then_some(plan.application_id.as_str()),
+            (!args.force).then_some(args.expected_generation.unwrap_or(plan.generation)),
+            (!args.force && plan.generation > 0).then_some(plan.application_id.as_str()),
+            args.force,
         )
     })
     .await?;
@@ -320,7 +324,9 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     }
     let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
     if cli.json {
-        return emit_json(&json!({"accepted": accepted, "operation": operation}));
+        return emit_json(
+            &json!({"accepted": accepted, "outcome": operation.state, "operation": operation}),
+        );
     }
     writeln!(
         io::stdout().lock(),
@@ -338,7 +344,7 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
         application.application.metadata.name, application.application.id
     );
     confirm(
-        args.force,
+        args.yes,
         &format!(
             "Delete application {:?}? Named volumes will be retained. [y/N] ",
             application.application.metadata.name
@@ -347,9 +353,10 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     .await?;
 
     let accepted = retry_transport(|| {
-        client.delete_application_with_generation(
+        client.delete_application_with_preconditions(
             application.application.id.as_str(),
-            Some(args.expected_generation.unwrap_or(application.generation)),
+            (!args.force).then_some(args.expected_generation.unwrap_or(application.generation)),
+            args.force,
         )
     })
     .await
@@ -369,6 +376,7 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     if cli.json {
         return emit_json(&json!({
             "accepted": accepted,
+            "outcome": operation.state,
             "operation": operation,
             "volumes_retained": true,
         }));
@@ -499,7 +507,10 @@ async fn wait_for_operation(
 }
 
 fn finish_operation(operation: Operation) -> Result<Operation> {
-    if operation.state == OperationState::Succeeded {
+    if matches!(
+        operation.state,
+        OperationState::Succeeded | OperationState::Superseded
+    ) {
         Ok(operation)
     } else {
         let mut message = format!(
@@ -513,6 +524,7 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
             message.push_str(": ");
             message.push_str(error);
         }
+        message.push_str("; use piquelctl reconcile to retry current intent");
         Err(CliError::new(ErrorKind::Operation, message)
             .with_details(json!({"operation": operation})))
     }
@@ -521,17 +533,17 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
 async fn reconcile_or_refresh(
     cli: &Cli,
     client: &Client,
-    args: &DeleteArgs,
+    args: &ReconcileArgs,
     refresh: bool,
 ) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
     let action = if refresh {
         "Refresh images for"
     } else {
-        "Reconcile"
+        "Reconcile current intent for"
     };
     confirm(
-        args.force,
+        args.yes,
         &format!(
             "{action} application {:?}? [y/N] ",
             application.application.metadata.name
@@ -542,17 +554,11 @@ async fn reconcile_or_refresh(
     let accepted = retry_transport(|| async {
         if refresh {
             client
-                .refresh_application(
-                    id,
-                    Some(args.expected_generation.unwrap_or(application.generation)),
-                )
+                .refresh_application(id, args.expected_generation)
                 .await
         } else {
             client
-                .reconcile_application(
-                    id,
-                    Some(args.expected_generation.unwrap_or(application.generation)),
-                )
+                .reconcile_application(id, args.expected_generation)
                 .await
         }
     })
@@ -571,7 +577,7 @@ async fn reconcile_or_refresh(
     }
     let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
     if cli.json {
-        emit_json(&json!({"accepted":accepted,"operation":operation}))
+        emit_json(&json!({"accepted":accepted,"outcome":operation.state,"operation":operation}))
     } else {
         render_operation(cli, &operation)
     }
@@ -580,7 +586,7 @@ async fn reconcile_or_refresh(
 async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
     confirm(
-        args.force,
+        args.yes,
         &format!(
             "Rename application {:?} to {:?}? [y/N] ",
             application.application.metadata.name, args.new_name
@@ -589,10 +595,15 @@ async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
     .await?;
     let request = piqueld_client::RenameApplicationRequest {
         name: args.new_name.clone(),
-        expected_generation: Some(args.expected_generation.unwrap_or(application.generation)),
+        expected_generation: (!args.force)
+            .then_some(args.expected_generation.unwrap_or(application.generation)),
     };
     let renamed = retry_transport(|| {
-        client.rename_application(application.application.id.as_str(), &request)
+        client.rename_application_with_force(
+            application.application.id.as_str(),
+            &request,
+            args.force,
+        )
     })
     .await?;
     if cli.json {

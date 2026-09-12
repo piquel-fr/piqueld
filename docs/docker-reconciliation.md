@@ -36,6 +36,9 @@ observations, and one resource mutation request globally. Timers consume no I/O
 slot. New intent cancels obsolete local preparation; dispatched Docker requests
 may finish, but obsolete results cannot authorize subsequent actions.
 
+New intent marks pending/running older operations superseded; the CLI stops waiting
+successfully with that explicit outcome rather than following the replacement.
+
 Every action is followed by observation and fresh planning. No action cursor or
 execution plan is stored. Interrupted attempts are recorded on startup, then
 requested again. Each started attempt increments its operation's attempt number.

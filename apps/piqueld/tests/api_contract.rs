@@ -115,7 +115,7 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
     let created = create_and_inspect(&client, &manifest).await;
     let replaced = replace_and_plan(&client, &created, manifest).await;
     assert_ne!(created.operation_id, replaced.operation_id);
-    delete(&client, &created).await;
+    delete(&client, &replaced).await;
 
     server.abort();
 }
@@ -136,8 +136,8 @@ async fn assert_create_plan(client: &Client, manifest: &ApplicationManifest) {
 }
 
 async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> AcceptedOperation {
-    let request = ApplyApplicationRequest {
-        expected_generation: None,
+    let mut request = ApplyApplicationRequest {
+        expected_generation: Some(0),
         expected_application_id: None,
         manifest: manifest.clone(),
     };
@@ -145,6 +145,8 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
         .apply_application(&request)
         .await
         .expect("apply succeeds");
+    request.expected_generation = Some(created.generation);
+    request.expected_application_id = Some(created.application_id.clone());
     let replay = client
         .apply_application(&request)
         .await
@@ -536,8 +538,8 @@ async fn replace_and_plan(
 ) -> AcceptedOperation {
     manifest.spec.services[0].replicas = 2;
     let request = ApplyApplicationRequest {
-        expected_generation: None,
-        expected_application_id: None,
+        expected_generation: Some(created.generation),
+        expected_application_id: Some(created.application_id.clone()),
         manifest,
     };
     let replaced = client
@@ -545,8 +547,10 @@ async fn replace_and_plan(
         .await
         .expect("replacement succeeds");
     assert_eq!(replaced.application_id, created.application_id);
+    let mut preview_request = request;
+    preview_request.expected_generation = Some(replaced.generation);
     client
-        .plan_application(&request)
+        .plan_application(&preview_request)
         .await
         .expect("preview succeeds");
     replaced
@@ -554,7 +558,7 @@ async fn replace_and_plan(
 
 async fn delete(client: &Client, created: &AcceptedOperation) {
     let deleted = client
-        .delete_application(&created.application_id)
+        .delete_application_with_generation(&created.application_id, Some(created.generation))
         .await
         .expect("delete succeeds");
     assert_eq!(
@@ -884,7 +888,10 @@ image = "ghcr.io/example/notes:1"
         Target::Tcp(address),
         Method::POST,
         "/api/v1/applications/apply",
-        &[("content-type", "application/toml")],
+        &[
+            ("content-type", "application/toml"),
+            ("x-expected-generation", "0"),
+        ],
         valid_toml.as_bytes().to_vec(),
     )
     .await;
@@ -1071,7 +1078,7 @@ async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
     let created = create_and_inspect(&client, &manifest()).await;
     let replaced = replace_and_plan(&client, &created, manifest()).await;
     assert_ne!(created.operation_id, replaced.operation_id);
-    delete(&client, &created).await;
+    delete(&client, &replaced).await;
 
     server.abort();
 }
@@ -1095,6 +1102,7 @@ async fn generations_refresh_reconcile_and_event_pagination_share_the_http_contr
         matches!(stale,piqueld_client::ClientError::Api {status,..} if status==axum::http::StatusCode::CONFLICT)
     );
     request.expected_generation = Some(1);
+    request.expected_application_id = Some(first.application_id.clone());
     request.manifest.spec.services[0].replicas = 2;
     let changed = client.apply_application(&request).await.unwrap();
     assert_eq!(changed.generation, 2);
@@ -1141,7 +1149,7 @@ async fn generations_refresh_reconcile_and_event_pagination_share_the_http_contr
             .is_err()
     );
     let repeated = client
-        .delete_application(&first.application_id)
+        .delete_application_with_generation(&first.application_id, Some(deletion.generation))
         .await
         .unwrap();
     assert_eq!(repeated.operation_id, deletion.operation_id);
@@ -1220,7 +1228,7 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
             .await
             .unwrap()
             .state,
-        piqueld_core::OperationState::Cancelled
+        piqueld_core::OperationState::Superseded
     );
     let error = keyed.apply_application(&replacement).await.unwrap_err();
     assert!(
@@ -1258,24 +1266,11 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     assert!(
         matches!(error,piqueld_client::ClientError::Api {error,..} if error.code=="application_busy")
     );
-    api.store
-        .transition_operation(
-            &accepted.operation_id,
-            piqueld_core::OperationState::Requested,
-            piqueld_core::OperationState::Running,
-            None,
-        )
-        .await
-        .unwrap();
-    api.store
-        .transition_operation(
-            &accepted.operation_id,
-            piqueld_core::OperationState::Running,
-            piqueld_core::OperationState::Failed,
-            Some(("image_resolution_rejected", "image unavailable")),
-        )
-        .await
-        .unwrap();
+    api.finish_operation(
+        &accepted.operation_id,
+        Some(("image_resolution_rejected", "image unavailable")),
+    )
+    .await;
     let renamed = keyed
         .rename_application(&accepted.application_id, &request)
         .await
@@ -1304,6 +1299,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     let mut identical = AcceptanceApi::request();
     identical.manifest.metadata.name = "renamed".into();
     identical.expected_generation = Some(2);
+    identical.expected_application_id = Some(accepted.application_id.clone());
     let no_op = api.client.apply_application(&identical).await.unwrap();
     assert_eq!(no_op.operation_id, accepted.operation_id);
     assert_eq!(no_op.generation, 2);
@@ -1436,5 +1432,283 @@ async fn preview_reuses_active_digests_and_redacts_manifest_and_runtime_configur
         api.store.get(&normalized.id).await.unwrap().generation,
         1,
         "preview is read-only"
+    );
+}
+
+impl AcceptanceApi {
+    fn assert_error(error: piqueld_client::ClientError, code: &str) {
+        assert!(
+            matches!(error, piqueld_client::ClientError::Api { error, .. } if error.code == code)
+        );
+    }
+
+    async fn finish_operation(&self, id: &str, error: Option<(&str, &str)>) {
+        use piqueld_core::OperationState;
+        self.store
+            .transition_operation(id, OperationState::Requested, OperationState::Running, None)
+            .await
+            .unwrap();
+        let state = if error.is_some() {
+            OperationState::Failed
+        } else {
+            OperationState::Succeeded
+        };
+        self.store
+            .transition_operation(id, OperationState::Running, state, error)
+            .await
+            .unwrap();
+    }
+
+    async fn finish_deletion(&self, deletion: &AcceptedOperation) {
+        self.store
+            .transition_operation(
+                &deletion.operation_id,
+                piqueld_core::OperationState::Requested,
+                piqueld_core::OperationState::Running,
+                None,
+            )
+            .await
+            .unwrap();
+        let operation = self.store.operation(&deletion.operation_id).await.unwrap();
+        self.store
+            .finish_delete_operation(&operation)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn mutations_require_preconditions_but_refresh_and_reconcile_use_current_intent() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let mut request = AcceptanceApi::request();
+    request.expected_generation = None;
+    AcceptanceApi::assert_error(
+        api.client.apply_application(&request).await.unwrap_err(),
+        "precondition_required",
+    );
+    request.expected_generation = Some(0);
+    let accepted = api.client.apply_application(&request).await.unwrap();
+    request.expected_generation = Some(1);
+    AcceptanceApi::assert_error(
+        api.client.apply_application(&request).await.unwrap_err(),
+        "precondition_required",
+    );
+    request.expected_application_id = Some(accepted.application_id.clone());
+    request.manifest.spec.services[0].replicas = 2;
+    let mut competing = request.clone();
+    competing.manifest.spec.services[0].replicas = 3;
+    let (first, second) = tokio::join!(
+        api.client.apply_application(&request),
+        api.client.apply_application(&competing)
+    );
+    assert_ne!(first.is_ok(), second.is_ok());
+    AcceptanceApi::assert_error(first.err().or(second.err()).unwrap(), "generation_conflict");
+    AcceptanceApi::assert_error(
+        api.client
+            .delete_application_with_generation(&accepted.application_id, None)
+            .await
+            .unwrap_err(),
+        "precondition_required",
+    );
+    AcceptanceApi::assert_error(
+        api.client
+            .delete_application_with_generation(&accepted.application_id, Some(1))
+            .await
+            .unwrap_err(),
+        "generation_conflict",
+    );
+    let refreshed = api
+        .client
+        .refresh_application(&accepted.application_id, None)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.generation, 2);
+    let deletion = api
+        .client
+        .delete_application_with_preconditions(&accepted.application_id, Some(1), true)
+        .await
+        .unwrap();
+    assert_eq!(deletion.generation, 3);
+    let reconciled = api
+        .client
+        .reconcile_application(&accepted.application_id, None)
+        .await
+        .unwrap();
+    assert_eq!(reconciled.operation_id, deletion.operation_id);
+    assert!(
+        api.client
+            .refresh_application(&accepted.application_id, None)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let mut request = AcceptanceApi::request();
+    request.expected_generation = None;
+    let original = api
+        .client
+        .apply_application_with_force(&request, true)
+        .await
+        .unwrap();
+    let deletion = api
+        .client
+        .delete_application_with_generation(&original.application_id, Some(1))
+        .await
+        .unwrap();
+    api.finish_deletion(&deletion).await;
+    let replacement = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    assert_ne!(replacement.application_id, original.application_id);
+    request.expected_generation = Some(1);
+    request.expected_application_id = Some(original.application_id);
+    request.manifest.spec.services[0].replicas = 4;
+    AcceptanceApi::assert_error(
+        api.client.apply_application(&request).await.unwrap_err(),
+        "identity_conflict",
+    );
+    let forced = api
+        .client
+        .apply_application_with_force(&request, true)
+        .await
+        .unwrap();
+    assert_eq!(forced.application_id, replacement.application_id);
+    assert_eq!(forced.generation, 2);
+    assert_eq!(
+        api.client
+            .application(&forced.application_id)
+            .await
+            .unwrap()
+            .application
+            .spec
+            .services[0]
+            .replicas,
+        4
+    );
+    request.manifest.spec.services[0].replicas = 0;
+    assert!(
+        api.client
+            .apply_application_with_force(&request, true)
+            .await
+            .is_err(),
+        "force must not bypass manifest validation"
+    );
+    assert_eq!(
+        api.client
+            .application(&forced.application_id)
+            .await
+            .unwrap()
+            .generation,
+        2
+    );
+}
+
+#[tokio::test]
+async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let request = AcceptanceApi::request();
+    let keyed = api.client.clone().with_request_id("forced-command");
+    let accepted = keyed
+        .apply_application_with_force(&request, true)
+        .await
+        .unwrap();
+    let mut changed = request.clone();
+    changed.manifest.spec.services[0].replicas = 3;
+    let newer = api
+        .client
+        .apply_application_with_force(&changed, true)
+        .await
+        .unwrap();
+    drop(api);
+    let api = AcceptanceApi::start(&temp).await;
+    let keyed = api.client.clone().with_request_id("forced-command");
+    let replay = keyed
+        .apply_application_with_force(&request, true)
+        .await
+        .unwrap();
+    assert_eq!(replay.operation_id, accepted.operation_id);
+    assert_eq!(replay.generation, accepted.generation);
+    assert_eq!(
+        api.client
+            .operation(&accepted.operation_id)
+            .await
+            .unwrap()
+            .state,
+        piqueld_core::OperationState::Superseded
+    );
+    let current = api
+        .client
+        .application(&accepted.application_id)
+        .await
+        .unwrap();
+    assert_eq!(current.generation, newer.generation);
+    assert_eq!(current.application.spec.services[0].replicas, 3);
+    AcceptanceApi::assert_error(
+        keyed.apply_application(&request).await.unwrap_err(),
+        "request_id_conflict",
+    );
+    let separately_invoked = api.client.clone().with_request_id("new-forced-command");
+    let reapplied = separately_invoked
+        .apply_application_with_force(&request, true)
+        .await
+        .unwrap();
+    assert_eq!(reapplied.generation, newer.generation + 1);
+}
+
+#[tokio::test]
+async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let accepted = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let mut rename = piqueld_client::RenameApplicationRequest {
+        name: "renamed".into(),
+        expected_generation: None,
+    };
+    AcceptanceApi::assert_error(
+        api.client
+            .rename_application(&accepted.application_id, &rename)
+            .await
+            .unwrap_err(),
+        "precondition_required",
+    );
+    AcceptanceApi::assert_error(
+        api.client
+            .rename_application_with_force(&accepted.application_id, &rename, true)
+            .await
+            .unwrap_err(),
+        "application_busy",
+    );
+    api.finish_operation(&accepted.operation_id, None).await;
+    rename.expected_generation = Some(99);
+    let renamed = api
+        .client
+        .rename_application_with_force(&accepted.application_id, &rename, true)
+        .await
+        .unwrap();
+    assert_eq!(renamed.generation, 2);
+    assert_eq!(renamed.application_id, accepted.application_id);
+    api.client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    rename.name = "notes".into();
+    AcceptanceApi::assert_error(
+        api.client
+            .rename_application_with_force(&accepted.application_id, &rename, true)
+            .await
+            .unwrap_err(),
+        "application_name_collision",
     );
 }
