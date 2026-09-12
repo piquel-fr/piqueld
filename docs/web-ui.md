@@ -1,10 +1,27 @@
-# Read-only web dashboard
+# Application dashboard
 
-piqueld ships a small client-side-rendered Leptos dashboard. It answers four
-questions: whether the daemon is reachable, which applications exist, what
-their desired and observed state is, and whether each application is converged,
-degraded, or failed. It has no mutation controls; the visible operator
-direction is to use `piquelctl` for plan, apply, and delete.
+The Leptos dashboard manages application configuration through forms. Create an
+empty application, add services and named volumes, and edit images, replicas,
+environment variables, commands, arguments, mounts, health checks, and resource
+limits. Each settings group has its own **Save Changes** button. Saving updates
+the database without changing running containers.
+
+**Preview** shows the planned changes. **Deploy** captures the saved configuration
+in a persisted deployment and applies it. Both buttons require all local edits
+to be saved or discarded. Every deployment supersedes its predecessor and
+refreshes image resolution, including when configuration has not changed.
+Retries use the captured deployment, not subsequent configuration edits.
+
+The Deployments tab lists deployment snapshots, progress, errors, and retry
+attempts. Current target, last successful deployment, and observed runtime health
+are distinct. History remains until the application is deleted. Deploying an
+empty application removes its runtime services and network. Removing volumes or
+deleting an application retains Docker volume data; deleting an application
+also deletes its configuration and all database history.
+
+Concurrent edits are rejected using configuration revisions; failed saves retain
+local form values. Navigation warns about unsaved edits. Host settings are
+read-only. There is no raw manifest editor or deployment restoration workflow.
 
 The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
@@ -86,11 +103,6 @@ Safari, or Edge release with WebAssembly, ES modules, Fetch, and standard CSS
 media-query support. Internet Explorer, JavaScript-disabled browsing, and
 older browsers without those primitives are outside the support target.
 
-The advanced UI remains deferred: forms, mutation workflows, secrets,
-logs and streams, state transfer, authentication, persistence, global state
-machinery, and richer navigation are intentionally not part of this dashboard.
-
-Application detail distinguishes requested generation, resolved target generation,
-and observed runtime health. Operation progress may report a pending or failed
-replacement while the existing deployment remains healthy. Event history is
-available through the API and CLI; dashboard event presentation is deferred.
+Secrets, logs and streams, state transfer, and authentication remain outside the
+current dashboard scope. Event history is available through the API and CLI.
+Deployment history polls every two seconds while the page is visible.

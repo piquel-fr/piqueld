@@ -1,5 +1,7 @@
 //! Leptos client-side-rendered dashboard routes and shared data services.
 
+mod management;
+
 use crate::state::{
     ApplicationHealth, ConnectionState, DataState, MAX_PAGES, PAGE_LIMIT, PaginationState,
     PollController,
@@ -99,11 +101,13 @@ fn App() -> impl IntoView {
                 <Route path="/" view=DashboardLayout>
                     <Route path="/" view=OverviewPage/>
                     <Route path="/applications" view=ApplicationsPage/>
+                    <Route path="/settings" view=management::HostPage/>
                     <Route path="/applications/:id" view=ApplicationDetailPage/>
                 </Route>
                 <Route path="/dashboard" view=DashboardLayout>
                     <Route path="" view=DashboardRedirect/>
                     <Route path="/applications" view=ApplicationsPage/>
+                    <Route path="/settings" view=management::HostPage/>
                     <Route path="/applications/:id" view=ApplicationDetailPage/>
                     <Route path="/*any" view=DashboardRouteFallback/>
                 </Route>
@@ -121,7 +125,7 @@ fn DashboardRedirect() -> impl IntoView {
 #[component]
 fn DashboardRouteFallback() -> impl IntoView {
     let params = use_params_map();
-    let is_overview = params.with(|params| params.get("any").map_or(true, |path| path.is_empty()));
+    let is_overview = params.with(|params| params.get("any").is_none_or(String::is_empty));
 
     if is_overview {
         view! { <OverviewPage/> }.into_view()
@@ -169,12 +173,6 @@ fn DashboardLayout() -> impl IntoView {
         {dashboard_header(&context)}
 
         <main id="dashboard-main" class="mx-auto w-[calc(100%-2rem)] max-w-[1180px] pb-8" tabindex="-1">
-            <section class="mb-4 rounded-xl border border-line border-l-4 border-l-accent bg-surface p-4 shadow-panel" aria-labelledby="read-only-title">
-                <h2 id="read-only-title" class="mb-1 text-lg font-bold">"Read-only view"</h2>
-                <p class="mb-0">"This dashboard shows daemon and application state. Use "<code>"piquelctl"</code>" for plan, apply, and delete operations."</p>
-            </section>
-
-            {system_summary(signals)}
             {refresh_error(&context)}
             {stale_notice(signals)}
 
@@ -194,11 +192,12 @@ fn dashboard_header(context: &DashboardContext) -> View {
     view! {
         <header class="site-header mx-auto flex w-[calc(100%-2rem)] max-w-[1180px] flex-col items-start justify-between gap-4 py-5 sm:flex-row sm:items-end sm:py-8">
             <div>
-                <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"PIQUELD CONTROL PLANE"</p>
-                <h1 class="mb-0 text-4xl font-extrabold tracking-[-.04em] sm:text-5xl">"Dashboard"</h1>
+                <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"INFRASTRUCTURE"</p>
+                <h1 class="mb-0 text-2xl font-extrabold tracking-[-.04em] sm:text-3xl">"piqueld"</h1>
                 <nav class="mt-3 flex flex-wrap gap-2" aria-label="Dashboard navigation">
                     <A class="rounded-md px-2 py-1 text-sm font-bold text-accent hover:bg-surface-muted" href="/dashboard/">"Overview"</A>
                     <A class="rounded-md px-2 py-1 text-sm font-bold text-accent hover:bg-surface-muted" href="/dashboard/applications">"Applications"</A>
+                    <A class="rounded-md px-2 py-1 text-sm font-bold text-accent hover:bg-surface-muted" href="/dashboard/settings">"Host settings"</A>
                 </nav>
             </div>
             <div class="header-actions flex flex-wrap items-center justify-start gap-3 sm:justify-end">
@@ -250,6 +249,7 @@ fn OverviewPage() -> impl IntoView {
                     <p class="mb-0 text-sm text-muted">"Current dashboard view"</p>
                 </div>
             </div>
+            {system_summary(signals)}
             {compact_applications(signals)}
         </section>
     }
@@ -258,7 +258,7 @@ fn OverviewPage() -> impl IntoView {
 #[component]
 fn ApplicationsPage() -> impl IntoView {
     let context = dashboard_context();
-    applications_panel(context.signals)
+    view! {<management::CreateApplication/>{applications_panel(context.signals)}}
 }
 
 #[component]
@@ -283,28 +283,7 @@ fn ApplicationDetailPage() -> impl IntoView {
         load_detail(client.clone(), signals, id);
     });
 
-    view! {
-        <section class="rounded-xl border border-line bg-surface p-5 shadow-panel" aria-labelledby="detail-title">
-            <div class="mb-4 flex items-start justify-between gap-3">
-                <div>
-                    <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"OBSERVED STATE"</p>
-                    <h2 id="detail-title" class="mb-0 text-2xl font-bold">"Application detail"</h2>
-                </div>
-                <A class="rounded-md px-2 py-1 text-sm font-bold text-accent hover:bg-surface-muted" href="/dashboard/applications">"Back to applications"</A>
-            </div>
-            {move || {
-                let detail = signals.detail.get();
-                if signals.detail_loading.get() && detail.is_none() {
-                    view! { <p class="rounded-lg border border-line bg-surface-muted p-5" role="status">"Loading application detail…"</p> }.into_view()
-                } else if let Some(detail) = detail {
-                    detail_view(&detail, signals, context.client.clone())
-                } else {
-                    let message = signals.detail_error.get().unwrap_or_else(|| "Application detail is unavailable.".into());
-                    view! { <div class="rounded-lg border border-line bg-surface-muted p-5" role="alert"><h3 class="mb-1 text-lg font-bold">"Detail unavailable"</h3><p class="mb-0">{message}</p></div> }.into_view()
-                }
-            }}
-        </section>
-    }
+    view! { <leptos::For each={move || params.with(|p|p.get("id").cloned()).into_iter().collect::<Vec<_>>()} key=|id|id.clone() children=move |id| view!{<management::ApplicationPage id=id/>}/> }
 }
 
 #[component]
@@ -380,7 +359,7 @@ fn compact_applications(signals: DashboardSignals) -> View {
                 DataState::Empty => view! { <p class="rounded-lg border border-line bg-surface-muted p-5">"No applications are configured yet."</p> }.into_view(),
                 DataState::Ready | DataState::Stale => view! {
                     <ul class="grid gap-3 sm:grid-cols-2" aria-label="Application summary">
-                        {move || signals.applications.get().into_iter().take(4).map(compact_application_card).collect_view()}
+                        {move || signals.applications.get().iter().take(4).map(compact_application_card).collect_view()}
                     </ul>
                 }.into_view(),
             }}
@@ -389,10 +368,10 @@ fn compact_applications(signals: DashboardSignals) -> View {
     .into_view()
 }
 
-fn compact_application_card(row: ApplicationRow) -> View {
+fn compact_application_card(row: &ApplicationRow) -> View {
     let id = row.application.id.to_string();
     let name = row.application.name.clone();
-    let health = row_health(&row);
+    let health = row_health(row);
     view! {
         <li class="rounded-lg border border-line bg-surface-muted p-3">
             <div class="flex items-start justify-between gap-3">
@@ -422,7 +401,7 @@ fn applications_panel(signals: DashboardSignals) -> View {
             })}
             {move || match signals.data_state.get() {
                 DataState::Loading => view! { <p class="rounded-lg border border-line bg-surface-muted p-5" role="status">"Loading applications…"</p> }.into_view(),
-                DataState::Empty => view! { <div class="rounded-lg border border-line bg-surface-muted p-5"><h3 class="mb-1 text-lg font-bold">"No applications"</h3><p class="mb-0">"The daemon has no desired applications yet. Use piquelctl to create one."</p></div> }.into_view(),
+                DataState::Empty => view! { <div class="rounded-lg border border-line bg-surface-muted p-5"><h3 class="mb-1 text-lg font-bold">"No applications"</h3><p class="mb-0">"Create an application above, add services, and deploy when ready."</p></div> }.into_view(),
                 DataState::Ready | DataState::Stale => ().into_view(),
             }}
             <ul class="application-list grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Application list">
@@ -825,7 +804,7 @@ fn health_class(health: ApplicationHealth) -> &'static str {
         ApplicationHealth::Failed => {
             "inline-flex w-fit items-center rounded-full bg-bad-bg px-2 py-1 text-xs font-extrabold text-bad"
         }
-        ApplicationHealth::Pending => {
+        ApplicationHealth::Pending | ApplicationHealth::NotDeployed => {
             "inline-flex w-fit items-center rounded-full bg-pending-bg px-2 py-1 text-xs font-extrabold text-pending"
         }
     }

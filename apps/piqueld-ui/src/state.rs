@@ -105,6 +105,8 @@ impl ViewState {
 /// A bounded application health label used by the view layer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationHealth {
+    /// Saved configuration has not been deployed.
+    NotDeployed,
     /// Desired and observed state agree.
     Converged,
     /// The application is reachable but not fully healthy yet.
@@ -120,6 +122,7 @@ impl ApplicationHealth {
     #[must_use]
     pub fn from_server_state(value: ApplicationState) -> Self {
         match value {
+            ApplicationState::NotDeployed => Self::NotDeployed,
             ApplicationState::Ready => Self::Converged,
             ApplicationState::Degraded => Self::Degraded,
             ApplicationState::Failed => Self::Failed,
@@ -142,6 +145,7 @@ impl ApplicationHealth {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::NotDeployed => "Not deployed",
             Self::Converged => "Converged",
             Self::Degraded => "Degraded",
             Self::Failed => "Failed",
