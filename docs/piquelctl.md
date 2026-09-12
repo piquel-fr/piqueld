@@ -123,3 +123,10 @@ interrupted.
 
 The dashboard provides application management forms. Logs, remote authentication, build logs,
 registry management, and advanced interactive CLI flows remain future work.
+
+`deploy` fetches repository-backed configuration when configured, then explicitly
+resolves image or Git build sources. It supersedes pending work for the selected
+application. Use `--yes` to skip interactive confirmation, `--no-wait` to return
+after acceptance, or a longer global `--timeout` for builds. The server continues
+deployment if the CLI wait times out. `refresh` resolves only the stored service
+sources; `reconcile` retries or repairs the latest deployment snapshot and prepared target.

@@ -42,6 +42,15 @@ pub enum OperationError {
     /// A local runtime value failed validation before a Docker request was made.
     #[error("Docker request validation failed while {0}")]
     ValidationFailed(&'static str),
+    /// The configured repository manifest is missing.
+    #[error("manifest not found")]
+    ManifestNotFound,
+    /// Repository access failed before reading its manifest.
+    #[error("could not fetch the manifest repository")]
+    ManifestFetchFailed,
+    /// The fetched manifest is invalid or selects another application.
+    #[error("repository manifest is invalid or its application name does not match")]
+    ManifestInvalid,
     /// A service update failed in Docker.
     #[error("service update paused after task failure; the previous healthy task is retained")]
     ServiceUpdateFailed,
@@ -71,6 +80,9 @@ impl OperationError {
             Self::ImageResolutionRejected(_) => "image_resolution_rejected",
             Self::DockerRequestFailed(_) => "docker_request_failed",
             Self::ValidationFailed(_) => "validation_failed",
+            Self::ManifestNotFound => "manifest_not_found",
+            Self::ManifestFetchFailed => "manifest_fetch_failed",
+            Self::ManifestInvalid => "manifest_invalid",
             Self::ServiceUpdateFailed => "service_update_failed",
             Self::PlanBlocked(_) => "plan_blocked",
             Self::ConvergenceTimeout => "convergence_timeout",

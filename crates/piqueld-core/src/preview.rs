@@ -29,6 +29,12 @@ impl ManifestChange {
 
     fn fields(application: &NormalizedApplication) -> BTreeMap<String, serde_json::Value> {
         let mut fields = BTreeMap::new();
+        if let Some(manifest) = &application.spec.manifest {
+            fields.insert(
+                "manifest".into(),
+                serde_json::to_value(manifest).expect("manifest configuration is serializable"),
+            );
+        }
         for service in &application.spec.services {
             let value = serde_json::to_value(service).expect("manifest service is serializable");
             if let serde_json::Value::Object(values) = value {

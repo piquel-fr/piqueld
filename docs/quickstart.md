@@ -46,7 +46,7 @@ just run --socket /tmp/piqueld-dev/piqueld.sock events --application <applicatio
 
 ## Dashboard and cleanup
 
-The development toolchain serves the read-only dashboard through the running
+The development toolchain serves the dashboard through the running
 daemon, exactly like a deployment: run `just dev` instead of the two commands
 above, give the first embedded build a moment to run Tailwind and Trunk, and
 open `http://127.0.0.1:7845/dashboard/` in a browser to inspect the overview,

@@ -12,7 +12,8 @@ use leptos::{
 use leptos_router::{A, NavigateOptions, use_navigate};
 use piqueld_client::{
     ApplicationManifest, ApplicationSpec, ApplicationView, ApplyApplicationRequest, Client,
-    ClientError, DeploymentView, Metadata, Mount, Page, Service, Source, Volume,
+    ClientError, DeploymentView, GitRepository, Metadata, Mount, Page, RepositoryManifest, Service,
+    Source, Volume,
 };
 use std::{
     cell::Cell,
@@ -250,7 +251,7 @@ fn ApplicationEditor(initial: ApplicationView) -> impl IntoView {
         {move ||context.error.get().map(|e|view!{<div class="form-error" role="alert"><p>{e}</p><p>"Your form edits have been kept. Reload to review the latest saved configuration."</p><button on:click=move |_|{let _=window().location().reload();}>"Reload saved configuration"</button></div>})}
         {move ||signals.detail.get().filter(|d|d.application.generation>context.saved.get().generation).map(|_|view!{<p class="conflict-notice">"Configuration changed elsewhere. Your edits are preserved; reload to review the latest version."</p>})}
         <nav class="tabs" aria-label="Application sections">{["Configuration","Deployments","Runtime"].into_iter().map(|tab|view!{<button class:active=move ||context.tab.get()==tab aria-current=move ||if context.tab.get()==tab{"page"}else{"false"} on:click=move |_|context.tab.set(tab)>{tab}</button>}).collect_view()}</nav>
-        <div hidden=move ||context.tab.get()!="Configuration"><MetadataSettings/><VolumeSettings/><ServiceSettings/><NewService/><DeleteApplication/></div>
+        <div hidden=move ||context.tab.get()!="Configuration"><RepositorySettings/>{move ||context.saved.get().application.spec.manifest.is_some().then(||view!{<p class="help">"Application settings are managed by the repository. Edit its manifest, or disconnect the repository to edit here."</p>})}<fieldset disabled=move ||context.saved.get().application.spec.manifest.is_some()><MetadataSettings/><VolumeSettings/><ServiceSettings/><NewService/></fieldset><DeleteApplication/></div>
         <div hidden=move ||context.tab.get()!="Deployments"><DeploymentHistory/></div>
         <div hidden=move ||context.tab.get()!="Runtime"><Show when=move ||signals.detail.get().is_none()><p role="status">{move ||signals.detail_error.get().map_or_else(||"Loading runtime detail…".into(),|error|format!("Detail unavailable: {error}"))}</p><button disabled=move ||signals.detail_loading.get() on:click=retry>"Retry runtime detail"</button></Show>{move ||signals.detail.get().map(|detail|detail_view(&detail,signals,client.clone()))}</div>
     }
@@ -330,6 +331,35 @@ fn guard_navigation(dirty: RwSignal<BTreeSet<String>>) {
             );
         });
     }
+}
+
+#[component]
+fn RepositorySettings() -> impl IntoView {
+    let context = editor();
+    let backing = context.saved.get_untracked().application.spec.manifest;
+    let draft = create_rw_signal((
+        backing.is_some(),
+        backing.map(|b| *b).unwrap_or(RepositoryManifest {
+            repository: GitRepository {
+                url: String::new(),
+                branch: "main".into(),
+                commit: None,
+            },
+            path: "infra/piqueld/app.toml".into(),
+        }),
+    ));
+    let baseline = create_rw_signal(draft.get_untracked());
+    dirty_group("repository".into(), draft, baseline);
+    let save = move |_| {
+        let value = draft.get_untracked();
+        let mut manifest = context.manifest();
+        manifest.spec.manifest = value.0.then(|| Box::new(value.1));
+        context.save(
+            manifest,
+            Callback::new(move |_| baseline.set(draft.get_untracked())),
+        );
+    };
+    view! {<section class="settings-card"><h3>"Repository manifest"</h3><fieldset disabled=move ||context.blocked()><label><input type="checkbox" prop:checked=move ||draft.get().0 on:change=move |ev|draft.update(|v|v.0=event_target_checked(&ev))/>"Load configuration from Git on Deploy"</label><div hidden=move ||!draft.get().0 class="form-grid">{text_input("Repository",draft,|v|v.1.repository.url.clone(),|v,s|v.1.repository.url=s)}{text_input("Branch",draft,|v|v.1.repository.branch.clone(),|v,s|v.1.repository.branch=s)}{text_input("Commit (optional)",draft,|v|v.1.repository.commit.clone().unwrap_or_default(),|v,s|v.1.repository.commit=(!s.is_empty()).then_some(s))}{text_input("Manifest path",draft,|v|v.1.path.clone(),|v,s|v.1.path=s)}</div><div class="form-actions"><button class="primary" disabled=move ||draft.get()==baseline.get() on:click=save>"Save Changes"</button><button on:click=move |_|draft.set(baseline.get_untracked())>"Discard edits"</button></div></fieldset></section>}
 }
 
 #[component]
@@ -757,7 +787,7 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
             loading.set(false);
         });
     };
-    view! {<article class="deployment-card">{move ||{let d=deployment.get();let op=d.operation;view!{<header><div><span class="deployment-state" data-state=op.state.as_str()>{op.state.as_str()}</span><strong>{format!("Configuration revision {}",op.generation)}</strong></div><div>{d.current_target.then(||view!{<span class="tag">"Current target"</span>})}{d.last_successful.then(||view!{<span class="tag">"Last successful"</span>})}</div></header><p class="help"><code>{op.id}</code></p><p>{format!("Attempt {} · {}",op.attempt,op.phase.unwrap_or_else(||"waiting".into()))}</p>{op.resource.map(|resource|view!{<p>{resource}</p>})}{op.error_message.map(|error|view!{<p class="form-error">{error}</p>})}}}}<details><summary>"Configuration snapshot"</summary>{initial.application.spec.services.into_iter().map(|service|{let source=match service.source {Source::Image{image}=>image,Source::Git{repository,build:piqueld_client::Build::Docker{dockerfile,context}}=>format!("Git: {} · {} · Dockerfile: {} · context: {}",repository.url,repository.commit.as_deref().unwrap_or(&repository.branch),dockerfile,context)};view!{<div class="snapshot-service"><h4>{service.name}</h4><dl><dt>"Source"</dt><dd>{source}</dd><dt>"Replicas"</dt><dd>{service.replicas}</dd><dt>"Environment"</dt><dd>{service.environment.into_iter().map(|(k,v)|view!{<p><code>{k}</code>" = "{v}</p>}).collect_view()}</dd><dt>"Command"</dt><dd>{service.command.join(" · ")}</dd><dt>"Arguments"</dt><dd>{service.arguments.join(" · ")}</dd><dt>"Mounts"</dt><dd>{service.mounts.into_iter().map(|m|view!{<p>{format!("{} → {}{}",m.volume,m.target,if m.read_only{" (read only)"}else{""})}</p>}).collect_view()}</dd><dt>"Health check"</dt><dd>{service.healthcheck.map_or_else(||"None".into(),|check|match check{piqueld_client::HealthCheck::Http{port,path,interval_seconds,timeout_seconds}=>format!("HTTP :{port}{path} · every {interval_seconds}s · timeout {timeout_seconds}s"),piqueld_client::HealthCheck::Command{command,interval_seconds,timeout_seconds}=>format!("{} · every {interval_seconds}s · timeout {timeout_seconds}s",command.join(" · "))})}</dd><dt>"Resource limits"</dt><dd>{service.resources.map_or_else(||"Runtime defaults".into(),|r|format!("CPU: {} · Memory: {}",r.cpu_millis.map_or_else(||"default".into(),|v|format!("{v} millicores")),r.memory_bytes.map_or_else(||"default".into(),|v|format!("{v} bytes"))))}</dd></dl></div>}}).collect_view()}<p>"Volumes: "{initial.application.spec.volumes.into_iter().map(|v|v.name).collect::<Vec<_>>().join(", ")}</p></details><button disabled=move ||loading.get() on:click=load>{move ||if !attempt_open.get(){"View attempt history"}else if cursor.get().is_some(){"Older attempts"}else{"Refresh attempts"}}</button>{move ||failure.get().map(|e|view!{<p class="form-error">{e}</p>})}{move ||errors.get().into_iter().map(|attempt|view!{<p class="attempt">{format!("Attempt {} · {} · {} {}",attempt.attempt,attempt.state,attempt.error_code.unwrap_or_default(),attempt.error_message.unwrap_or_default())}</p>}).collect_view()}</article>}
+    view! {<article class="deployment-card">{move ||{let d=deployment.get();let op=d.operation;view!{<header><div><span class="deployment-state" data-state=op.state.as_str()>{op.state.as_str()}</span><strong>{format!("Configuration revision {}",op.generation)}</strong></div><div>{d.current_target.then(||view!{<span class="tag">"Current target"</span>})}{d.last_successful.then(||view!{<span class="tag">"Last successful"</span>})}</div></header><p class="help"><code>{op.id}</code></p><p>{format!("Attempt {} · {}",op.attempt,op.phase.unwrap_or_else(||"waiting".into()))}</p>{op.resource.map(|resource|view!{<p>{resource}</p>})}{op.error_message.map(|error|view!{<p class="form-error">{error}</p>})}}}}<details><summary>"Configuration snapshot"</summary>{move ||deployment.get().application.spec.services.into_iter().map(|service|{let source=match service.source {Source::Image{image}=>image,Source::Git{repository,build:piqueld_client::Build::Docker{dockerfile,context}}=>format!("Git: {} · {} · Dockerfile: {} · context: {}",repository.url,repository.commit.as_deref().unwrap_or(&repository.branch),dockerfile,context)};view!{<div class="snapshot-service"><h4>{service.name}</h4><dl><dt>"Source"</dt><dd>{source}</dd><dt>"Replicas"</dt><dd>{service.replicas}</dd><dt>"Environment"</dt><dd>{service.environment.into_iter().map(|(k,v)|view!{<p><code>{k}</code>" = "{v}</p>}).collect_view()}</dd><dt>"Command"</dt><dd>{service.command.join(" · ")}</dd><dt>"Arguments"</dt><dd>{service.arguments.join(" · ")}</dd><dt>"Mounts"</dt><dd>{service.mounts.into_iter().map(|m|view!{<p>{format!("{} → {}{}",m.volume,m.target,if m.read_only{" (read only)"}else{""})}</p>}).collect_view()}</dd><dt>"Health check"</dt><dd>{service.healthcheck.map_or_else(||"None".into(),|check|match check{piqueld_client::HealthCheck::Http{port,path,interval_seconds,timeout_seconds}=>format!("HTTP :{port}{path} · every {interval_seconds}s · timeout {timeout_seconds}s"),piqueld_client::HealthCheck::Command{command,interval_seconds,timeout_seconds}=>format!("{} · every {interval_seconds}s · timeout {timeout_seconds}s",command.join(" · "))})}</dd><dt>"Resource limits"</dt><dd>{service.resources.map_or_else(||"Runtime defaults".into(),|r|format!("CPU: {} · Memory: {}",r.cpu_millis.map_or_else(||"default".into(),|v|format!("{v} millicores")),r.memory_bytes.map_or_else(||"default".into(),|v|format!("{v} bytes"))))}</dd></dl></div>}}).collect_view()}<p>"Volumes: "{move ||deployment.get().application.spec.volumes.into_iter().map(|v|v.name).collect::<Vec<_>>().join(", ")}</p></details><button disabled=move ||loading.get() on:click=load>{move ||if !attempt_open.get(){"View attempt history"}else if cursor.get().is_some(){"Older attempts"}else{"Refresh attempts"}}</button>{move ||failure.get().map(|e|view!{<p class="form-error">{e}</p>})}{move ||errors.get().into_iter().map(|attempt|view!{<p class="attempt">{format!("Attempt {} · {} · {} {}",attempt.attempt,attempt.state,attempt.error_code.unwrap_or_default(),attempt.error_message.unwrap_or_default())}</p>}).collect_view()}</article>}
 }
 
 #[component]

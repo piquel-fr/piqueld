@@ -222,6 +222,7 @@ impl SqliteStore {
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
+        Self::accept_deployment_on(&mut tx, operation).await?;
         Self::operation_event(&mut tx, &operation.id, "target_resolved", None, now_ms()).await?;
         tx.commit().await.map_err(StoreError::database)
     }

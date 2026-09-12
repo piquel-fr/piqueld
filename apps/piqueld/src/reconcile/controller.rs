@@ -126,7 +126,7 @@ impl<D: DockerApi> Controller<D> {
             PlanRequest::Reconcile {
                 desired: tokio::select! {
                     ()=cancellation.cancelled()=>return Err(OperationError::Cancelled),
-                    result=self.prepare_target(operation,&application)=>result?,
+                    result=tokio::time::timeout(self.prepare_timeout, self.prepare_target(operation,&application))=>result.map_err(|_| OperationError::ValidationFailed("preparation timed out"))??,
                 },
             }
         };
@@ -231,11 +231,8 @@ impl<D: DockerApi> Controller<D> {
             self.prepare_timeout,
         )
         .with_progress(Arc::clone(&self.store), operation.id.clone());
-        let mut manifest = self
-            .store
-            .deployment_manifest(&operation.id)
-            .await
-            .map_err(OperationError::from)?;
+        let snapshot = self.store.deployment_manifest(&operation.id).await?;
+        let mut manifest = self.deployment_manifest(operation, &snapshot).await?;
         // A rename changes display metadata without rewriting deployment history.
         manifest
             .metadata

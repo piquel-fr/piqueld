@@ -121,3 +121,46 @@ Local images are supported only on the existing single-node Swarm topology.
 
 Git checkout permits file, Git, HTTP(S), and SSH transports. Executable remote
 helpers such as `ext::` are disabled, including through host URL rewrites.
+
+## Repository-backed manifests
+
+Manifest retrieval is independent from service source selection. Add this to an
+application to read its next configuration from Git when Deploy is requested:
+
+```toml
+[spec.manifest]
+path = "infra/piqueld/application.toml"
+[spec.manifest.repository]
+url = "https://example.com/team/infrastructure.git"
+branch = "main"
+# commit = "0123456789012345678901234567890123456789"
+```
+
+Create the application manually with `piquelctl apply --file bootstrap.toml`.
+A bootstrap manifest may contain only its header, metadata, and `spec.manifest`;
+services can be supplied by the first fetched manifest. Then click **Deploy** in
+the dashboard or run `piquelctl deploy NAME --yes`.
+
+Deploy resolves the configured commit (or branch head), reads only the exact
+configured TOML/JSON file, and checks that its name matches the existing
+application. Empty manifests remove services and networks while retaining volume data. Other files in the
+repository are ignored. A missing file fails with `manifest_not_found`; no
+application is deleted. Invalid files and build failures preserve both accepted
+configuration and the existing running target.
+
+The fetched file must include `spec.manifest` to keep repository backing. Its
+new repository, branch, commit, and path become the settings for subsequent
+fetches after successful preparation, unless newer configuration was saved while
+the deployment was preparing. Those intervening edits are preserved; the deployment
+still uses its captured inputs. Omitting the section disconnects backing.
+The fetched manifest and its commit are persisted for restart/retry; a new Deploy
+fetches again. A manifest using a Git service source resolves that source's own
+repository and revision independently. Image sources are explicitly refreshed,
+even when the fetched manifest is unchanged.
+
+Git owns runtime configuration while backing is enabled: direct apply cannot
+change services or volumes, and rename is rejected with `repository_managed`.
+Connection settings alone remain editable through apply so an incorrect path
+can be repaired. Manifest connection settings do not change the runtime spec
+hash. Source builds, deployment, and rollback retain the behavior described above.
+Automatic synchronization and webhooks are not implemented.

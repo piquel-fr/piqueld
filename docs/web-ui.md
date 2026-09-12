@@ -112,3 +112,8 @@ Service source settings explicitly select a container image or Git with a
 Dockerfile build. Git settings include repository, branch, optional commit,
 Dockerfile path, and build context relative to the repository root. Saving
 scaling or other service settings preserves the selected source.
+
+Repository manifest settings select the repository, branch, optional commit, and
+exact manifest file. Deploy fetches that file before preparing service sources.
+While backing is enabled, edit runtime configuration in Git; connection settings
+remain editable here. Configuration saved during preparation is preserved.

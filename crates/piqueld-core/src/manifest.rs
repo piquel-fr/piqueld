@@ -59,10 +59,23 @@ pub struct Metadata {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ApplicationSpec {
+    /// Optional repository that supplies this application's manifest on Deploy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<Box<RepositoryManifest>>,
     /// Declared services.
     pub services: Vec<Service>,
     /// Declared named volumes.
     pub volumes: Vec<Volume>,
+}
+
+/// Independently selects the manifest used by a manual deployment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryManifest {
+    /// Repository and revision containing the manifest.
+    pub repository: GitRepository,
+    /// Exact TOML or JSON file path relative to the repository root.
+    pub path: String,
 }
 
 /// User-declared application service.
@@ -416,6 +429,7 @@ pub fn safe_decode_path(path: &str) -> String {
         "metadata",
         "name",
         "spec",
+        "manifest",
         "services",
         "volumes",
         "source",
@@ -489,6 +503,19 @@ impl ApplicationManifest {
     pub fn validate(mut self) -> Result<ValidatedApplication, ValidationErrors> {
         let mut errors = Vec::new();
         validate_header(&self, &mut errors);
+        if let Some(manifest) = &self.spec.manifest {
+            manifest
+                .repository
+                .validate("spec.manifest.repository", &mut errors);
+            if !valid_repository_path(&manifest.path) {
+                error(
+                    &mut errors,
+                    "repository_path_invalid",
+                    "spec.manifest.path",
+                    "manifest path must remain within the repository root",
+                );
+            }
+        }
         // Bound work before walking attacker-controlled collections.
         if !validate_budgets(&self, &mut errors) {
             errors
@@ -973,7 +1000,9 @@ impl NormalizedApplication {
             hash_version: &'static str,
             spec: &'a ApplicationSpec,
         }
-        let normalized = self.clone().normalize();
+        let mut normalized = self.clone().normalize();
+        // Manifest location does not change the desired runtime resources.
+        normalized.spec.manifest = None;
         let bytes = serde_json::to_vec(&HashEnvelope {
             hash_version: SPEC_HASH_VERSION,
             spec: &normalized.spec,

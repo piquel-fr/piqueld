@@ -42,6 +42,13 @@ impl SqliteStore {
             }
         }
         let (current, latest) = Self::mutation_snapshot(&mut tx, &mutation).await?;
+        if let Mutation::Apply { application, .. } | Mutation::Save { application, .. } = &mutation
+            && let Some(current) = &current
+            && current.application.spec.manifest.is_some()
+            && current.application.spec_hash() != application.spec_hash()
+        {
+            return Err(StoreError::RepositoryManaged);
+        }
         let (response, wake) =
             Self::execute_mutation(&mut tx, mutation, current, latest, expected_generation, now)
                 .await?;
@@ -140,13 +147,15 @@ impl SqliteStore {
                 if deploy {
                     let op = Self::request_deploy_on(tx, &application.id, Some(saved.generation))
                         .await?;
+                    Self::insert_deployment_on(tx, &op, &application).await?;
                     saved.operation_id = Some(op.id);
                 }
                 (MutationResponse::Saved(saved), deploy)
             }
             Mutation::Deploy { id } => {
-                current.ok_or(StoreError::NotFound)?;
+                let app = current.ok_or(StoreError::NotFound)?;
                 let op = Self::request_deploy_on(tx, &id, expected_generation).await?;
+                Self::insert_deployment_on(tx, &op, &app.application).await?;
                 (
                     MutationResponse::Operation(AcceptedOperation::from(&op)),
                     true,
@@ -266,6 +275,9 @@ impl SqliteStore {
         now: i64,
     ) -> Result<(MutationResponse, bool), StoreError> {
         let mut app = current;
+        if app.application.spec.manifest.is_some() {
+            return Err(StoreError::RepositoryManaged);
+        }
         if app.delete_intent || latest.as_ref().is_some_and(|op| !op.state.terminal()) {
             return Err(StoreError::Busy);
         }
