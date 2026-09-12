@@ -782,7 +782,10 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
 
     let interrupt_server = start_server(false, usize::MAX, move |request| {
         assert_eq!(request.path, "/api/v1/operations/operation-01");
-        Reply::json(operation("pending"))
+        // Keep the request pending when SIGINT arrives, rather than only
+        // testing interruption during the sleep between completed requests.
+        thread::sleep(Duration::from_millis(300));
+        Reply::dropped()
     });
     let mut output = None;
     for _ in 0..3 {
@@ -886,4 +889,24 @@ fn fifo_manifest_is_rejected_before_opening() {
         .expect("CLI rejects FIFO");
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
+}
+
+#[test]
+fn human_output_reports_a_closed_pipe_without_panicking() {
+    let server = start_server(false, 1, |_| Reply::json(operation("pending")));
+    let Endpoint::Tcp(url) = &server.endpoint else {
+        panic!("TCP fixture")
+    };
+    let (reader, writer) = std::os::unix::net::UnixStream::pair().expect("output pipe");
+    drop(reader);
+    let output = Command::new(env!("CARGO_BIN_EXE_piquelctl"))
+        .args(["--url", url, "operation", "operation-01", "--no-wait"])
+        .stdout(Stdio::from(std::os::fd::OwnedFd::from(writer)))
+        .output()
+        .expect("CLI reports output failure");
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("could not write output"));
+    assert!(!error.contains("panicked"));
+    server.finish();
 }
