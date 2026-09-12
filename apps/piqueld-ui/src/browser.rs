@@ -13,7 +13,7 @@ use leptos::{
 };
 use leptos_router::{A, Outlet, Redirect, Route, Router, Routes, TrailingSlash, use_params_map};
 use piqueld_client::{
-    ApplicationDetailView, ApplicationStatusView, ApplicationView, Client, ClientError,
+    ApplicationDetailView, ApplicationStatusView, ApplicationSummary, Client, ClientError,
     DiagnosticView, ListApplicationsOptions, ObservedServiceView, Page, Source, SystemStatus,
 };
 use std::{
@@ -24,7 +24,7 @@ use web_sys::window as browser_window;
 
 #[derive(Clone, Debug)]
 struct ApplicationRow {
-    application: ApplicationView,
+    application: ApplicationSummary,
     status: Option<ApplicationStatusView>,
     status_error: Option<String>,
 }
@@ -390,8 +390,8 @@ fn compact_applications(signals: DashboardSignals) -> View {
 }
 
 fn compact_application_card(row: ApplicationRow) -> View {
-    let id = row.application.application.id.to_string();
-    let name = row.application.application.metadata.name.clone();
+    let id = row.application.id.to_string();
+    let name = row.application.name.clone();
     let health = row_health(&row);
     view! {
         <li class="rounded-lg border border-line bg-surface-muted p-3">
@@ -434,14 +434,14 @@ fn applications_panel(signals: DashboardSignals) -> View {
 }
 
 fn application_card(row: &ApplicationRow, signals: DashboardSignals) -> View {
-    let id = row.application.application.id.to_string();
+    let id = row.application.id.to_string();
     let id_for_class = id.clone();
     let selected_id = signals.selected_id;
-    let name = row.application.application.metadata.name.clone();
+    let name = row.application.name.clone();
     let name_for_label = name.clone();
     let health = row_health(row);
     let status_text = row_status_text(row);
-    let desired_replicas = desired_replicas(&row.application);
+    let generation = row.application.generation;
     let href = format!("/dashboard/applications/{id}");
     view! {
         <li>
@@ -452,7 +452,7 @@ fn application_card(row: &ApplicationRow, signals: DashboardSignals) -> View {
                 <h3 class="mb-0 text-lg font-bold">{name}</h3>
                 <p class="mb-0 text-sm text-muted"><code>{short_id(&id)}</code></p>
                 <dl class="my-1 grid grid-cols-2 gap-3">
-                    <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Desired replicas"</dt><dd class="mt-1">{desired_replicas}</dd></div>
+                    <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Generation"</dt><dd class="mt-1">{generation}</dd></div>
                     <div><dt class="text-xs font-extrabold uppercase tracking-[.05em] text-muted">"Observed state"</dt><dd class="mt-1">{status_text}</dd></div>
                 </dl>
                 <A class="mt-auto block w-full rounded-md border border-line bg-surface px-3 py-2 text-center font-bold text-accent-strong hover:border-accent" href=href attr:aria-label=format!("View details for {name_for_label}")>"View details"</A>
@@ -621,7 +621,7 @@ fn start_refresh(
                         .applications
                         .get_untracked()
                         .iter()
-                        .any(|row| row.application.application.id.to_string() == id)
+                        .any(|row| row.application.id.to_string() == id)
                     {
                         load_detail(client.clone(), signals, id);
                     } else if !signals.pagination_incomplete.get_untracked() {
@@ -699,7 +699,7 @@ async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailur
     let mut cursor = None;
     let mut applications = Vec::new();
     loop {
-        let page: Page<ApplicationView> = client
+        let page: Page<ApplicationSummary> = client
             .applications_with(&ListApplicationsOptions {
                 cursor: cursor.clone(),
                 limit: Some(PAGE_LIMIT),
@@ -712,7 +712,7 @@ async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailur
         let statuses = futures_util::stream::iter(page.items.into_iter().map(|application| {
             let client = client.clone();
             async move {
-                let id = application.application.id.to_string();
+                let id = application.id.to_string();
                 let (status, status_error) = match client.application_status(&id).await {
                     Ok(status) => (Some(status), None),
                     Err(error) => (None, Some(client_error_message(&error))),
@@ -812,16 +812,6 @@ fn row_status_text(row: &ApplicationRow) -> String {
             .as_ref()
             .map_or_else(|| "Not observed".into(), |status| status.state.to_string())
     })
-}
-
-fn desired_replicas(application: &ApplicationView) -> u32 {
-    application
-        .application
-        .spec
-        .services
-        .iter()
-        .map(|service| u32::from(service.replicas))
-        .sum()
 }
 
 fn health_class(health: ApplicationHealth) -> &'static str {

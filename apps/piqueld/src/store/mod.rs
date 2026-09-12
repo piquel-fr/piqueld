@@ -131,6 +131,25 @@ pub struct StoredApplication {
     pub updated_at_ms: i64,
 }
 
+/// Persisted metadata used by application collection reads.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredApplicationSummary {
+    /// Stable application identifier.
+    pub id: ApplicationId,
+    /// Editable application name.
+    pub name: String,
+    /// Current intent revision.
+    pub generation: u64,
+    /// Revision associated with the last resolved target.
+    pub resolved_generation: Option<u64>,
+    /// Whether the target is absence of services and networks.
+    pub delete_intent: bool,
+    /// When this application was created.
+    pub created_at_ms: i64,
+    /// When its target last changed.
+    pub updated_at_ms: i64,
+}
+
 /// Default query page size.
 pub const DEFAULT_PAGE_SIZE: usize = 50;
 /// Maximum query page size.
@@ -156,6 +175,15 @@ pub struct ApplicationStatus {
 pub struct ApplicationPage {
     /// Applications in ID order.
     pub items: Vec<StoredApplication>,
+    /// Cursor for the next page.
+    pub next_cursor: Option<String>,
+}
+
+/// Page of live application metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationSummaryPage {
+    /// Application summaries in ID order.
+    pub items: Vec<StoredApplicationSummary>,
     /// Cursor for the next page.
     pub next_cursor: Option<String>,
 }
@@ -362,6 +390,36 @@ struct ApplicationRow {
     created_at_ms: i64,
     updated_at_ms: i64,
 }
+
+#[derive(Debug)]
+struct ApplicationSummaryRow {
+    id: String,
+    name: String,
+    generation: i64,
+    resolved_generation: Option<i64>,
+    delete_intent: i64,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+}
+
+impl ApplicationSummaryRow {
+    fn decode(self) -> Result<StoredApplicationSummary, StoreError> {
+        Ok(StoredApplicationSummary {
+            id: ApplicationId::parse(self.id).map_err(StoreError::corrupt)?,
+            name: self.name,
+            generation: u64::try_from(self.generation).map_err(StoreError::corrupt)?,
+            resolved_generation: self
+                .resolved_generation
+                .map(u64::try_from)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            delete_intent: self.delete_intent != 0,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+        })
+    }
+}
+
 impl ApplicationRow {
     fn decode(self) -> Result<StoredApplication, StoreError> {
         let application: NormalizedApplication =

@@ -8,6 +8,8 @@ use crate::{ApplicationState, Convergence, NormalizedApplication, Operation, Pla
 
 /// Versioned prefix used by all API endpoints.
 pub const API_PREFIX: &str = "/api/v1";
+/// Maximum number of application summaries returned in one page.
+pub const MAX_APPLICATION_PAGE_SIZE: u16 = 100;
 
 /// Successful API response envelope.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
@@ -39,6 +41,25 @@ pub struct ErrorBody {
     #[serde(default)]
     #[schema(required = true)]
     pub request_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Metadata returned when listing applications.
+pub struct ApplicationSummary {
+    /// Stable application identifier.
+    pub id: crate::ApplicationId,
+    /// Editable application name.
+    pub name: String,
+    /// Current manifest or deletion-intent revision.
+    pub generation: u64,
+    /// Revision of the last completely resolved target, not a convergence guarantee.
+    pub resolved_generation: Option<u64>,
+    /// Whether deletion has been requested.
+    pub delete_intent: bool,
+    /// Creation timestamp in Unix milliseconds.
+    pub created_at_ms: i64,
+    /// Last update timestamp in Unix milliseconds.
+    pub updated_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]

@@ -167,7 +167,20 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
         .await
         .expect("apply retry succeeds");
     assert_eq!(created.operation_id, replay.operation_id);
-    assert_eq!(client.applications().await.unwrap().items.len(), 1);
+    let summaries = client.applications().await.unwrap();
+    assert_eq!(summaries.items.len(), 1);
+    assert_eq!(
+        summaries.items[0].id,
+        created.application_id.parse().unwrap()
+    );
+    assert_eq!(summaries.items[0].name, "notes");
+    let summary_json = serde_json::to_value(&summaries.items[0]).unwrap();
+    assert!(summary_json.get("application").is_none());
+    let application = client
+        .application(&created.application_id)
+        .await
+        .expect("full application read succeeds");
+    assert_eq!(application.application.spec.services.len(), 1);
     let detail = client
         .application_detail(&created.application_id)
         .await
@@ -748,6 +761,16 @@ async fn transport_failures_are_structured_safe_and_request_ids_pair() {
     .await;
     assert_eq!(bad_limit.status, StatusCode::BAD_REQUEST);
 
+    let oversized_page = send_raw(
+        Target::Tcp(address),
+        Method::GET,
+        "/api/v1/applications?limit=101",
+        &[],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(oversized_page.status, StatusCode::BAD_REQUEST);
+
     let malformed = send_raw(
         Target::Tcp(address),
         Method::POST,
@@ -912,6 +935,37 @@ image = "ghcr.io/example/notes:1"
     .await;
     assert_eq!(created.status, StatusCode::ACCEPTED);
     assert!(created.body["data"]["operation_id"].is_string());
+    let application_id = created.body["data"]["application_id"]
+        .as_str()
+        .expect("accepted application ID");
+
+    let listed = send_raw(
+        Target::Tcp(address),
+        Method::GET,
+        "/api/v1/applications",
+        &[],
+        Vec::new(),
+    )
+    .await;
+    let summary = &listed.body["data"]["items"][0];
+    assert_eq!(summary["id"], application_id);
+    assert_eq!(summary["name"], "tomlnotes");
+    assert!(summary.get("application").is_none());
+
+    let full = send_raw(
+        Target::Tcp(address),
+        Method::GET,
+        &format!("/api/v1/applications/{application_id}"),
+        &[],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(full.status, StatusCode::OK);
+    assert_eq!(full.body["data"]["application"]["id"], application_id);
+    assert_eq!(
+        full.body["data"]["application"]["spec"]["services"][0]["name"],
+        "web"
+    );
 
     server.abort();
 }

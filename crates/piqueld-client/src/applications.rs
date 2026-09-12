@@ -1,9 +1,10 @@
 use http::Method;
 
 pub use piqueld_core::api::{
-    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
-    ApplyApplicationRequest, DiagnosticView, ObservedApplicationView, ObservedServiceView,
-    PlanView, RenameApplicationRequest, RenamedApplication,
+    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
+    ApplicationView, ApplyApplicationRequest, DiagnosticView, MAX_APPLICATION_PAGE_SIZE,
+    ObservedApplicationView, ObservedServiceView, PlanView, RenameApplicationRequest,
+    RenamedApplication,
 };
 
 use crate::{
@@ -16,18 +17,16 @@ use crate::{
 pub struct ListApplicationsOptions {
     /// Cursor returned by a previous page.
     pub cursor: Option<String>,
-    /// Maximum number of items to return, from 1 through 3.
+    /// Maximum number of items to return, from 1 through 100.
     pub limit: Option<u16>,
 }
-
-const APPLICATION_PAGE_SIZE: u16 = 3;
 
 impl Client {
     /// Lists the first page of applications.
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
-    pub async fn applications(&self) -> Result<Page<ApplicationView>, ClientError> {
+    pub async fn applications(&self) -> Result<Page<ApplicationSummary>, ClientError> {
         self.applications_with(&ListApplicationsOptions::default())
             .await
     }
@@ -39,13 +38,13 @@ impl Client {
     pub async fn applications_with(
         &self,
         options: &ListApplicationsOptions,
-    ) -> Result<Page<ApplicationView>, ClientError> {
+    ) -> Result<Page<ApplicationSummary>, ClientError> {
         if options
             .limit
-            .is_some_and(|limit| !(1..=APPLICATION_PAGE_SIZE).contains(&limit))
+            .is_some_and(|limit| !(1..=MAX_APPLICATION_PAGE_SIZE).contains(&limit))
         {
             return Err(invalid_request(format!(
-                "application list limit must be between 1 and {APPLICATION_PAGE_SIZE}"
+                "application list limit must be between 1 and {MAX_APPLICATION_PAGE_SIZE}"
             )));
         }
         let mut query = url::form_urlencoded::Serializer::new(String::new());

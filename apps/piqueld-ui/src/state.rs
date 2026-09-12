@@ -4,7 +4,7 @@ use piqueld_client::{ApplicationState, Convergence};
 use std::{collections::BTreeSet, time::Duration};
 
 /// Maximum number of applications requested per API page.
-pub const PAGE_LIMIT: u16 = 3;
+pub const PAGE_LIMIT: u16 = piqueld_client::MAX_APPLICATION_PAGE_SIZE;
 /// Maximum number of API pages the dashboard will load for one refresh.
 pub const MAX_PAGES: usize = 20;
 /// Normal delay between successful background refreshes.

@@ -332,6 +332,18 @@ fn app_view(id: &str, name: &str) -> Value {
     })
 }
 
+fn app_summary(id: &str, name: &str) -> Value {
+    json!({
+        "id": id,
+        "name": name,
+        "generation": 1,
+        "resolved_generation": 1,
+        "delete_intent": false,
+        "created_at_ms": 1,
+        "updated_at_ms": 1
+    })
+}
+
 fn page(items: Vec<Value>, next_cursor: Option<&str>) -> Value {
     let items = items.into_iter().collect::<Vec<_>>();
     json!({"items": items, "next_cursor": next_cursor})
@@ -417,16 +429,16 @@ fn list_paginates_and_includes_reconciliation_status() {
     for unix in [false, true] {
         let mut page_number = 0;
         let server = start_server(unix, 4, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=3"
-            | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=3" => {
+            "/api/v1/applications?limit=100"
+            | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=100" => {
                 page_number += 1;
                 if page_number == 1 {
                     Reply::json(page(
-                        vec![app_view("app-first-01", "first")],
+                        vec![app_summary("app-first-01", "first")],
                         Some("v1:app-first-01"),
                     ))
                 } else {
-                    Reply::json(page(vec![app_view("app-notes-01", "notes")], None))
+                    Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
                 }
             }
             "/api/v1/applications/app-first-01/status" => {
@@ -452,13 +464,13 @@ fn repeated_pagination_cursor_is_rejected() {
     let server = start_server(false, 2, move |request| {
         assert!(matches!(
             request.path.as_str(),
-            "/api/v1/applications?limit=3"
-                | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=3"
+            "/api/v1/applications?limit=100"
+                | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=100"
         ));
         page_number += 1;
         Reply::json(page(
             if page_number == 1 {
-                vec![app_view("app-first-01", "first")]
+                vec![app_summary("app-first-01", "first")]
             } else {
                 Vec::new()
             },
@@ -475,14 +487,15 @@ fn repeated_pagination_cursor_is_rejected() {
 
 #[test]
 fn show_resolves_name_across_pages_and_id_directly() {
-    let first_server = start_server(false, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => Reply::json(page(
-            vec![app_view("app-first-01", "first")],
+    let first_server = start_server(false, 4, move |request| match request.path.as_str() {
+        "/api/v1/applications?limit=100" => Reply::json(page(
+            vec![app_summary("app-first-01", "first")],
             Some("v1:app-first-01"),
         )),
-        "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=3" => {
-            Reply::json(page(vec![app_view("app-notes-01", "notes")], None))
+        "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=100" => {
+            Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
         }
+        "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
         "/api/v1/applications/app-notes-01/status" => Reply::json(status("app-notes-01", "ready")),
         path => panic!("unexpected path {path}"),
     });
@@ -645,10 +658,11 @@ fn manifest_input_is_missing_or_oversized_before_network_use() {
 #[test]
 fn delete_reports_named_volume_retention_and_operation_completion() {
     for unix in [false, true] {
-        let server = start_server(unix, 3, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=3" => {
-                Reply::json(page(vec![app_view("app-notes-01", "notes")], None))
+        let server = start_server(unix, 4, move |request| match request.path.as_str() {
+            "/api/v1/applications?limit=100" => {
+                Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
             }
+            "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
             "/api/v1/applications/app-notes-01?expected_generation=1" => {
                 Reply::accepted(accepted("app-notes-01"))
             }
@@ -749,7 +763,7 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
 #[test]
 fn unknown_names_exit_with_input_error_and_no_mutation() {
     let server = start_server(false, 1, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => Reply::json(page(Vec::new(), None)),
+        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
         path => panic!("unexpected path {path}"),
     });
     let output = run(&server, &["show", "missing"]);
@@ -763,10 +777,10 @@ fn unknown_names_exit_with_input_error_and_no_mutation() {
 #[test]
 fn ambiguous_names_report_the_match_count() {
     let server = start_server(false, 1, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=3" => Reply::json(page(
+        "/api/v1/applications?limit=100" => Reply::json(page(
             vec![
-                app_view("app-notes-01", "notes"),
-                app_view("app-notes-02", "notes"),
+                app_summary("app-notes-01", "notes"),
+                app_summary("app-notes-02", "notes"),
             ],
             None,
         )),

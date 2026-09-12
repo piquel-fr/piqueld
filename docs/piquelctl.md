@@ -41,7 +41,7 @@ written to stderr, so stdout remains valid JSON.
 | Command | JSON output |
 | --- | --- |
 | `status` | `SystemStatus` |
-| `list` | `{ "items": [{ "application": ApplicationView, "status": ApplicationStatusView }], "next_cursor": null }` |
+| `list` | `{ "items": [{ "application": ApplicationSummary, "status": ApplicationStatusView }], "next_cursor": null }` |
 | `show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
 | `plan` | `PlanView` |
 | identical `apply` | `{ "identical": true, "application_id": string, "outcome": OperationState, "operation": Operation }` |

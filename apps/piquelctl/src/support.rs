@@ -17,7 +17,7 @@ pub(crate) const DEFAULT_SOCKET: &str = "/var/lib/piqueld/piqueld.sock";
 /// Must not exceed the daemon's `REQUEST_BODY_LIMIT_BYTES`, or a locally
 /// accepted manifest would fail server-side with 413.
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
-pub(crate) const PAGE_SIZE: u16 = 3;
+pub(crate) const PAGE_SIZE: u16 = piqueld_client::MAX_APPLICATION_PAGE_SIZE;
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 static INTERACTION_ACTIVE: AtomicBool = AtomicBool::new(false);

@@ -13,9 +13,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use piqueld_core::api::{
-    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
-    ApplyApplicationRequest, DiagnosticView, Envelope, ManifestChange, ObservedApplicationView,
-    ObservedServiceView, Page, PlanView, RenameApplicationRequest, RenamedApplication,
+    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
+    ApplicationView, ApplyApplicationRequest, DiagnosticView, Envelope, MAX_APPLICATION_PAGE_SIZE,
+    ManifestChange, ObservedApplicationView, ObservedServiceView, Page, PlanView,
+    RenameApplicationRequest, RenamedApplication,
 };
 use piqueld_core::{
     ApplicationId, NormalizedApplication, ObservedApplication, Plan, PlanRequest, ResolutionSet,
@@ -24,17 +25,12 @@ use piqueld_core::{
 };
 use serde::Deserialize;
 
-// A manifest can approach the 2 MiB request limit and JSON escaping can
-// approximately double textual fields. Three entries stay below the clients'
-// 16 MiB response budget with envelope overhead.
-const APPLICATION_PAGE_SIZE: usize = 3;
-
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(super) struct ListQuery {
     cursor: Option<String>,
-    #[param(minimum = 1, maximum = 3, default = 3)]
-    limit: Option<usize>,
+    #[param(minimum = 1, maximum = 100, default = 100)]
+    limit: Option<u16>,
 }
 
 #[utoipa::path(
@@ -44,7 +40,7 @@ pub(super) struct ListQuery {
     summary = "List applications",
     params(ListQuery),
     responses(
-        (status = 200, description = "Success", body = Envelope<Page<ApplicationView>>),
+        (status = 200, description = "Success", body = Envelope<Page<ApplicationSummary>>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 500, response = inline(ApiErrorResponse)),
         (status = 503, response = inline(ApiErrorResponse)),
@@ -61,8 +57,8 @@ pub(super) async fn list(
             "pagination parameters are invalid",
         )
     })?;
-    let limit = query.limit.unwrap_or(APPLICATION_PAGE_SIZE);
-    if !(1..=APPLICATION_PAGE_SIZE).contains(&limit) {
+    let limit = query.limit.unwrap_or(MAX_APPLICATION_PAGE_SIZE);
+    if !(1..=MAX_APPLICATION_PAGE_SIZE).contains(&limit) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "pagination_invalid",
@@ -71,7 +67,7 @@ pub(super) async fn list(
     }
     let page = state
         .store
-        .list(query.cursor.as_deref(), limit)
+        .list_summaries(query.cursor.as_deref(), usize::from(limit))
         .await
         .map_err(|error| match error {
             StoreError::InvalidInput | StoreError::InvalidInputSource(_) => ApiError::new(
@@ -82,7 +78,19 @@ pub(super) async fn list(
             error => error.into(),
         })?;
     Ok(ok(Page {
-        items: page.items.into_iter().map(application_view).collect(),
+        items: page
+            .items
+            .into_iter()
+            .map(|stored| ApplicationSummary {
+                id: stored.id,
+                name: stored.name,
+                generation: stored.generation,
+                resolved_generation: stored.resolved_generation,
+                delete_intent: stored.delete_intent,
+                created_at_ms: stored.created_at_ms,
+                updated_at_ms: stored.updated_at_ms,
+            })
+            .collect(),
         next_cursor: page.next_cursor,
     }))
 }

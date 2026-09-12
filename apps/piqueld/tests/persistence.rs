@@ -219,6 +219,14 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         .expect("row can be corrupted");
     drop(connection);
 
+    let summaries = store
+        .list_summaries(None, 50)
+        .await
+        .expect("summary listing does not read manifest documents");
+    assert_eq!(summaries.items.len(), 2);
+    assert_eq!(summaries.items[0].id, corrupt.id);
+    assert_eq!(summaries.items[1].id, healthy.id);
+
     let page = store
         .list(None, 50)
         .await

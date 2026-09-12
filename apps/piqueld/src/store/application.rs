@@ -1,12 +1,23 @@
 //! Application targets and atomic intent revision checks.
 use super::{
-    ApplicationId, ApplicationPage, ApplicationRow, ApplicationStatus, NormalizedApplication,
-    Operation, OperationKind, ResolvedApplication, SqliteStore, StoreError, StoredApplication,
-    now_ms, page_limit,
+    ApplicationId, ApplicationPage, ApplicationRow, ApplicationStatus, ApplicationSummaryPage,
+    ApplicationSummaryRow, NormalizedApplication, Operation, OperationKind, ResolvedApplication,
+    SqliteStore, StoreError, StoredApplication, now_ms, page_limit,
 };
 use sqlx::{Sqlite, Transaction};
 
 impl SqliteStore {
+    fn application_cursor(cursor: Option<&str>) -> Result<Option<ApplicationId>, StoreError> {
+        cursor
+            .map(|value| {
+                value
+                    .strip_prefix("v1:")
+                    .ok_or(StoreError::InvalidInput)
+                    .and_then(|id| ApplicationId::parse(id).map_err(StoreError::invalid_input))
+            })
+            .transpose()
+    }
+
     /// Checks a caller's optional revision precondition.
     /// # Errors
     /// Returns a generation conflict for stale intent or invalid input for an oversized revision.
@@ -291,14 +302,7 @@ impl SqliteStore {
         limit: usize,
     ) -> Result<ApplicationPage, StoreError> {
         let fetch_limit = page_limit(limit)? + 1;
-        let after = cursor
-            .map(|value| {
-                value
-                    .strip_prefix("v1:")
-                    .ok_or(StoreError::InvalidInput)
-                    .and_then(|id| ApplicationId::parse(id).map_err(StoreError::invalid_input))
-            })
-            .transpose()?;
+        let after = Self::application_cursor(cursor)?;
         let after = after.as_ref().map_or("", ApplicationId::as_str);
         let mut rows = sqlx::query_as!(ApplicationRow,
             r#"SELECT id AS "id!",desired_json,resolved_json,generation,resolved_generation,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id>?1 AND deleted_at_ms IS NULL ORDER BY id LIMIT ?2"#,after,fetch_limit)
@@ -318,5 +322,34 @@ impl SqliteStore {
             }
         }).collect();
         Ok(ApplicationPage { items, next_cursor })
+    }
+
+    /// Lists live application metadata by ID without reading manifest documents.
+    ///
+    /// # Errors
+    /// Returns a storage error or an invalid pagination error.
+    pub async fn list_summaries(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<ApplicationSummaryPage, StoreError> {
+        let fetch_limit = page_limit(limit)? + 1;
+        let after = Self::application_cursor(cursor)?;
+        let after = after.as_ref().map_or("", ApplicationId::as_str);
+        let mut rows = sqlx::query_as!(ApplicationSummaryRow,
+            r#"SELECT id AS "id!",name AS "name!",generation,resolved_generation,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id>?1 AND deleted_at_ms IS NULL ORDER BY id LIMIT ?2"#,after,fetch_limit)
+            .fetch_all(&self.pool).await.map_err(StoreError::database)?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_cursor = if has_more {
+            rows.last().map(|row| format!("v1:{}", row.id))
+        } else {
+            None
+        };
+        let items = rows
+            .into_iter()
+            .map(ApplicationSummaryRow::decode)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ApplicationSummaryPage { items, next_cursor })
     }
 }

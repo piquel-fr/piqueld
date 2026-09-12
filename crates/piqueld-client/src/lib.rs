@@ -20,9 +20,10 @@ pub mod system;
 mod client;
 
 pub use applications::{
-    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationView,
-    ApplyApplicationRequest, DiagnosticView, ListApplicationsOptions, ObservedApplicationView,
-    ObservedServiceView, PlanView, RenameApplicationRequest, RenamedApplication,
+    AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
+    ApplicationView, ApplyApplicationRequest, DiagnosticView, ListApplicationsOptions,
+    MAX_APPLICATION_PAGE_SIZE, ObservedApplicationView, ObservedServiceView, PlanView,
+    RenameApplicationRequest, RenamedApplication,
 };
 pub use client::Client;
 pub use piqueld_core::manifest::{

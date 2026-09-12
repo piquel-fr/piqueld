@@ -5,12 +5,16 @@ Responses use a `data` envelope; lists contain `items` and an opaque
 `next_cursor`. Errors expose a safe message, code, details, and request ID.
 Clients poll for progress.
 
+Application list items contain only `id`, `name`, generation metadata, deletion
+intent, and timestamps. Read `/api/v1/applications/{id}` when the complete
+normalized manifest is needed.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/v1/system/status` | Daemon status |
 | GET | `/api/v1/openapi.json` | Generated API schema |
-| GET | `/api/v1/applications` | Paginated applications |
-| GET | `/api/v1/applications/{id}` | Latest accepted application intent |
+| GET | `/api/v1/applications` | Paginated application summaries (up to 100 per page) |
+| GET | `/api/v1/applications/{id}` | Full latest accepted application intent |
 | GET | `/api/v1/applications/{id}/detail` | Intent, resolved generation, observed runtime, operation, diagnostics |
 | GET | `/api/v1/applications/{id}/status` | Intent progress and separate runtime health |
 | POST | `/api/v1/applications/plan` | Preview a manifest without pulling images |

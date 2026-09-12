@@ -14,8 +14,8 @@ use crate::{
 };
 use futures_util::StreamExt;
 use piqueld_client::{
-    ApplicationView, Client, ClientError, ListApplicationsOptions, Operation, OperationState, Page,
-    Source,
+    ApplicationSummary, ApplicationView, Client, ClientError, ListApplicationsOptions, Operation,
+    OperationState, Page, Source,
 };
 use serde_json::{Value, json};
 use std::{
@@ -118,11 +118,11 @@ async fn status(cli: &Cli, client: &Client) -> Result<()> {
 
 async fn list(cli: &Cli, client: &Client) -> Result<()> {
     let applications = all_applications(client).await?;
-    let statuses = futures_util::stream::iter(applications.iter().map(|application| async {
-        client
-            .application_status(application.application.id.as_str())
-            .await
-    }))
+    let statuses = futures_util::stream::iter(
+        applications
+            .iter()
+            .map(|application| async { client.application_status(application.id.as_str()).await }),
+    )
     .buffered(8)
     .collect::<Vec<_>>()
     .await;
@@ -132,10 +132,7 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
             Ok(status) => Some(status),
             Err(error) if cli.json => return Err(error.into()),
             Err(error) => {
-                eprintln!(
-                    "  {}: status unavailable: {}",
-                    application.application.metadata.name, error
-                );
+                eprintln!("  {}: status unavailable: {}", application.name, error);
                 None
             }
         };
@@ -163,16 +160,16 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
             );
             writeln!(
                 io::stdout().lock(),
-                "{}\t{}\tdesired replicas {}\t{}",
-                application.application.metadata.name,
-                application.application.id,
-                desired_replicas(&application),
+                "{}\t{}\tgeneration {}\t{}",
+                application.name,
+                application.id,
+                application.generation,
                 state,
             )?;
             if let Some(status) = status
                 && let Some(message) = &status.message
             {
-                eprintln!("  {}: {message}", application.application.metadata.name);
+                eprintln!("  {}: {message}", application.name);
             }
         }
     }
@@ -402,7 +399,7 @@ async fn operation(cli: &Cli, client: &Client, args: &OperationArgs) -> Result<(
     render_operation(cli, &operation)
 }
 
-async fn all_applications(client: &Client) -> Result<Vec<ApplicationView>> {
+async fn all_applications(client: &Client) -> Result<Vec<ApplicationSummary>> {
     fold_applications(client, Vec::new(), |applications, application| {
         applications.push(application);
     })
@@ -412,12 +409,12 @@ async fn all_applications(client: &Client) -> Result<Vec<ApplicationView>> {
 async fn fold_applications<T>(
     client: &Client,
     mut value: T,
-    mut fold: impl FnMut(&mut T, ApplicationView),
+    mut fold: impl FnMut(&mut T, ApplicationSummary),
 ) -> Result<T> {
     let mut cursor = None;
     let mut seen_cursors = BTreeSet::new();
     loop {
-        let page: Page<ApplicationView> = client
+        let page: Page<ApplicationSummary> = client
             .applications_with(&ListApplicationsOptions {
                 cursor: cursor.clone(),
                 limit: Some(PAGE_SIZE),
@@ -439,9 +436,9 @@ async fn fold_applications<T>(
     }
 }
 
-async fn find_by_name(client: &Client, name: &str) -> Result<Option<ApplicationView>> {
+async fn find_by_name(client: &Client, name: &str) -> Result<Option<ApplicationSummary>> {
     let matches = fold_applications(client, Vec::new(), |matches, application| {
-        if application.application.metadata.name == name {
+        if application.name == name {
             matches.push(application);
         }
     })
@@ -466,12 +463,13 @@ async fn resolve_application(client: &Client, name_or_id: &str) -> Result<Applic
             Err(error) => return Err(error.into()),
         }
     }
-    find_by_name(client, name_or_id).await?.ok_or_else(|| {
+    let summary = find_by_name(client, name_or_id).await?.ok_or_else(|| {
         CliError::new(
             ErrorKind::Input,
             format!("application {name_or_id:?} was not found"),
         )
-    })
+    })?;
+    Ok(client.application(summary.id.as_str()).await?)
 }
 
 async fn wait_for_operation(
