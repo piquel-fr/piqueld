@@ -16,7 +16,7 @@ use piqueld_core::api::{
     AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
     ApplicationView, ApplyApplicationRequest, DiagnosticView, Envelope, MAX_APPLICATION_PAGE_SIZE,
     ManifestChange, ObservedApplicationView, ObservedServiceView, Page, PlanView,
-    RenameApplicationRequest, RenamedApplication,
+    RenameApplicationRequest, RenamedApplication, SavedApplication,
 };
 use piqueld_core::{
     ApplicationId, NormalizedApplication, ObservedApplication, Plan, PlanRequest, ResolutionSet,
@@ -138,7 +138,17 @@ pub(super) async fn detail(
 ) -> Result<impl IntoResponse, ApiError> {
     let id = ApplicationId::parse(&id)?;
     let (stored, status) = state.store.get_with_status(&id).await?;
-    let observed = state.runtime.observe(&stored).await?;
+    let (observed, observation_error) = if stored.resolved.is_none() {
+        (ObservedApplication::default(), None)
+    } else {
+        match state.runtime.observe(&stored).await {
+            Ok(observed) => (observed, None),
+            Err(error) => {
+                tracing::warn!(%error,"application detail observation failed");
+                (ObservedApplication::default(),Some(DiagnosticView{code:"runtime_unavailable".into(),message:"Runtime observation is unavailable. Saved configuration and deployment history are still available.".into()}))
+            }
+        }
+    };
     let observed_view = observed_view(
         &stored,
         &observed,
@@ -146,7 +156,8 @@ pub(super) async fn detail(
     );
     let status = status_view(status);
     let latest_operation = state.store.latest_operation_for_application(&id).await?;
-    let diagnostics = detail_diagnostics(&status, &observed_view, latest_operation.as_ref());
+    let mut diagnostics = detail_diagnostics(&status, &observed_view, latest_operation.as_ref());
+    diagnostics.extend(observation_error);
     Ok(ok(ApplicationDetailView {
         application: application_view(stored),
         status,
@@ -159,10 +170,11 @@ pub(super) async fn detail(
 #[utoipa::path(
     post, path = "/api/v1/applications/apply", operation_id = "applyApplication",
     summary = "Apply an application manifest",
-    params(ForceQuery,("X-Expected-Generation"=Option<u64>,Header,description="TOML only: required unless forced; zero requires absence. JSON uses expected_generation in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses expected_application_id in the request body."),("Idempotency-Key"=Option<String>,Header)),
+    params(ApplyQuery,("X-Expected-Generation"=Option<u64>,Header,description="TOML only: required unless forced; zero requires absence. JSON uses expected_generation in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses expected_application_id in the request body."),("Idempotency-Key"=Option<String>,Header)),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
-        (status = 202, description = "Accepted or unchanged target", body = Envelope<AcceptedOperation>),
+        (status = 200, description = "Configuration saved", body = Envelope<SavedApplication>),
+        (status = 202, description = "Configuration saved and deployment accepted", body = Envelope<SavedApplication>),
         (status = 400, response = inline(ApiErrorResponse)),
         (status = 409, response = inline(ApiErrorResponse)),
         (status = 413, response = inline(ApiErrorResponse)),
@@ -175,19 +187,41 @@ pub(super) async fn detail(
 )]
 pub(super) async fn apply(
     State(state): State<ApiState>,
-    query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
+    query: Result<Query<ApplyQuery>, axum::extract::rejection::QueryRejection>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
+    let Query(query) = query.map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "query_invalid",
+            "force and deploy must be true or false",
+        )
+    })?;
     let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
     accept_mutation(
         &state,
-        Mutation::apply(manifest, expected_id),
+        Mutation::Save {
+            application: manifest
+                .normalize(ApplicationId::parse("pending-application").expect("valid placeholder")),
+            expected_application_id: expected_id,
+            deploy: query.deploy,
+        },
         expected,
-        ForceQuery::decode(query)?.force,
+        query.force,
         &headers,
     )
     .await
+}
+
+#[derive(Default, Deserialize, utoipa::IntoParams)]
+#[serde(default, deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub(super) struct ApplyQuery {
+    /// Explicitly bypass revision and identity preconditions.
+    pub(super) force: bool,
+    /// Deploy the saved configuration; omission saves only.
+    deploy: bool,
 }
 
 #[utoipa::path(
@@ -271,17 +305,23 @@ pub(super) async fn plan(
     } else {
         None
     };
+    let baseline = if let Some(op) = &operation {
+        if op.kind == piqueld_core::OperationKind::Delete {
+            None
+        } else {
+            Some(state.store.deployment_manifest(&op.id).await?)
+        }
+    } else {
+        None
+    };
     Ok(ok(PlanView {
         application_id: id.to_string(),
         generation: current.as_ref().map_or(0, |app| app.generation),
-        identical: current
+        identical: baseline
             .as_ref()
-            .is_some_and(|app| !app.delete_intent && app.application == application),
+            .is_some_and(|app| app.spec == application.spec),
         operation,
-        changes: ManifestChange::between(
-            current.as_ref().map(|app| &app.application),
-            &application,
-        ),
+        changes: ManifestChange::between(baseline.as_ref(), &application),
         plan,
     }))
 }
@@ -297,14 +337,7 @@ async fn preview_plan(
         state.runtime.check_available().await?;
         ObservedApplication::default()
     };
-    if current.is_some_and(|current| !current.delete_intent && current.application == *app) {
-        return Ok(Plan::default());
-    }
-    let resolutions = current
-        .and_then(|app| app.resolved.as_ref())
-        .map_or_else(ResolutionSet::default, |target| {
-            target.reusable_resolutions(app)
-        });
+    let resolutions = ResolutionSet::default();
     let unresolved = preview_resolution(app, &resolutions);
     let desired = if unresolved.is_empty() {
         Some(
@@ -634,13 +667,13 @@ mod tests {
 #[into_params(parameter_in = Query)]
 pub(super) struct GenerationQuery {
     /// Current intent revision; optional for reconcile and refresh, required for deletion unless forced.
-    expected_generation: Option<u64>,
+    pub(super) expected_generation: Option<u64>,
     /// Explicitly bypass intent preconditions.
     #[serde(default)]
-    force: bool,
+    pub(super) force: bool,
 }
 impl GenerationQuery {
-    fn decode(
+    pub(super) fn decode(
         query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
     ) -> Result<Self, ApiError> {
         query.map(|Query(value)| value).map_err(|_| {
@@ -701,7 +734,7 @@ pub(super) async fn refresh(
     .await
 }
 
-async fn accept_mutation(
+pub(super) async fn accept_mutation(
     state: &ApiState,
     mutation: Mutation,
     expected: Option<u64>,
@@ -737,7 +770,13 @@ async fn accept_mutation(
         .await?
     {
         MutationResponse::Operation(operation) => Ok(accepted(operation)),
-        MutationResponse::Saved(saved) => Ok(ok(saved).into_response()),
+        MutationResponse::Saved(saved) => {
+            if saved.operation_id.is_some() {
+                Ok(accepted(saved))
+            } else {
+                Ok(ok(saved).into_response())
+            }
+        }
         MutationResponse::Rename(renamed) => Ok(ok(renamed).into_response()),
     }
 }
@@ -781,10 +820,10 @@ pub(super) async fn rename(
 #[into_params(parameter_in = Query)]
 pub(super) struct ForceQuery {
     /// Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.
-    force: bool,
+    pub(super) force: bool,
 }
 impl ForceQuery {
-    fn decode(
+    pub(super) fn decode(
         query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
     ) -> Result<Self, ApiError> {
         query.map(|Query(value)| value).map_err(|_| {

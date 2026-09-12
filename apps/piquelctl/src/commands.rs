@@ -3,10 +3,7 @@ use crate::{
         ApplyArgs, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs, ReconcileArgs, RenameArgs,
     },
     error::{CliError, ErrorKind, Result},
-    output::{
-        blocked_plan_error, emit_json, render_operation, render_plan, render_plan_stderr,
-        report_operation,
-    },
+    output::{blocked_plan_error, emit_json, render_operation, render_plan, report_operation},
     support::{
         confirm, desired_replicas, looks_like_application_id, manifest_name, read_manifest,
         retry_transport,
@@ -263,76 +260,55 @@ async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result
 async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
     let name = manifest_name(&manifest, &args.file)?;
-    let plan = client
-        .plan_application_toml_with_generation(&manifest, args.expected_generation)
-        .await?;
-    if plan.identical && !args.force {
-        let operation = plan.operation.ok_or_else(|| {
-            CliError::new(ErrorKind::General, "identical application has no operation")
-        })?;
-        let operation = if args.no_wait {
-            if operation.state.terminal() {
-                finish_operation(operation)?
-            } else {
-                operation
-            }
-        } else {
-            wait_for_operation(client, &operation.id.clone(), Some(operation)).await?
-        };
-        if cli.json {
-            return emit_json(&json!({
-                "identical": true, "application_id": plan.application_id,
-                "outcome": operation.state, "operation": operation,
-            }));
-        }
-        writeln!(
-            io::stdout().lock(),
-            "This is identical to the existing manifest."
-        )?;
-        return render_operation(cli, &operation);
-    }
-    render_plan_stderr(&plan).map_err(|error| {
-        CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
-    })?;
-    if plan.plan.is_blocked() {
-        return Err(blocked_plan_error(&plan, true));
-    }
-    confirm(args.yes, &format!("Apply application {name:?}? [y/N] ")).await?;
-
-    let accepted = retry_transport(|| {
+    // Configuration inspection does not depend on Docker availability.
+    let current = find_by_name(client, &name).await?;
+    let generation = current.as_ref().map_or(0, |app| app.generation);
+    let id = current.as_ref().map(|app| app.application.id.as_str());
+    let action = if args.deployment.deploy {
+        "Save and deploy"
+    } else {
+        "Save"
+    };
+    confirm(args.yes, &format!("{action} application {name:?}? [y/N] ")).await?;
+    let saved = retry_transport(|| {
         client.apply_application_toml_with_preconditions(
             &manifest,
-            (!args.force).then_some(args.expected_generation.unwrap_or(plan.generation)),
-            (!args.force && plan.generation > 0).then_some(plan.application_id.as_str()),
+            (!args.force).then_some(args.expected_generation.unwrap_or(generation)),
+            if args.force { None } else { id },
             args.force,
+            args.deployment.deploy,
         )
     })
     .await?;
-    if args.no_wait {
+    let Some(operation_id) = saved.operation_id.as_deref() else {
         if cli.json {
-            return emit_json(&accepted);
+            return emit_json(&saved);
         }
         writeln!(
             io::stdout().lock(),
-            "accepted operation {} for application {}",
-            accepted.operation_id,
-            accepted.application_id
+            "Saved application {} (configuration revision {}). Not deployed.",
+            saved.application_id,
+            saved.generation
+        )?;
+        return Ok(());
+    };
+    if args.deployment.no_wait {
+        if cli.json {
+            return emit_json(&saved);
+        }
+        writeln!(
+            io::stdout().lock(),
+            "Accepted deployment {operation_id} for application {}",
+            saved.application_id
         )?;
         return Ok(());
     }
-    let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
+    let operation = wait_for_operation(client, operation_id, None).await?;
     if cli.json {
-        return emit_json(
-            &json!({"accepted": accepted, "outcome": operation.state, "operation": operation}),
-        );
+        emit_json(&json!({"saved":saved,"outcome":operation.state,"operation":operation}))
+    } else {
+        render_operation(cli, &operation)
     }
-    writeln!(
-        io::stdout().lock(),
-        "operation {} {}",
-        operation.id,
-        operation.state
-    )?;
-    Ok(())
 }
 
 async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
@@ -370,20 +346,18 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
         )?;
         return Ok(());
     }
-    let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
+    wait_for_deletion(client, &accepted.application_id, &accepted.operation_id).await?;
     if cli.json {
         return emit_json(&json!({
             "accepted": accepted,
-            "outcome": operation.state,
-            "operation": operation,
+            "outcome": "deleted",
             "volumes_retained": true,
         }));
     }
     writeln!(
         io::stdout().lock(),
-        "operation {} {} (named volumes retained)",
-        operation.id,
-        operation.state
+        "application {} deleted (named volumes retained)",
+        accepted.application_id
     )?;
     Ok(())
 }
@@ -620,4 +594,26 @@ async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
         renamed.name
     );
     Ok(())
+}
+
+async fn wait_for_deletion(client: &Client, id: &str, operation_id: &str) -> Result<()> {
+    let wait = async {
+        loop {
+            match client.application(id).await {
+                Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => return Ok(()),
+                Err(error) => return Err(error.into()),
+                Ok(_) => {}
+            }
+            match client.operation(operation_id).await {
+                Ok(operation) => report_operation(&operation),
+                Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {}
+                Err(error) => return Err(error.into()),
+            }
+            time::sleep(POLL_INTERVAL).await;
+        }
+    };
+    tokio::select! {result=wait=>result,result=signal::ctrl_c()=>{
+        result.map_err(|error|CliError::new(ErrorKind::General,error.to_string()))?;
+        Err(CliError::new(ErrorKind::Interrupted,"wait interrupted; deletion continues on the server"))
+    }}
 }

@@ -85,7 +85,7 @@ pub struct ApplicationView {
 #[serde(deny_unknown_fields)]
 /// Desired application state to apply or preview.
 pub struct ApplyApplicationRequest {
-    /// Application manifest to store and reconcile.
+    /// Application configuration to save or preview. Deployment is an explicit query option.
     pub manifest: ApplicationManifest,
     /// Required for apply unless forced; optional for preview. Zero requires an absent name.
     #[serde(default)]
@@ -113,11 +113,11 @@ pub struct PlanView {
     pub application_id: String,
     /// Current intent revision; zero means the name is absent.
     pub generation: u64,
-    /// Whether this manifest already matches accepted intent (excluding deletion).
+    /// Whether this specification matches the latest deployment snapshot.
     pub identical: bool,
     /// Latest operation at the time of comparison.
     pub operation: Option<Operation>,
-    /// Safe changes to accepted manifest fields, independent of Docker availability.
+    /// Safe changes relative to the latest deployment snapshot.
     pub changes: Vec<ManifestChange>,
     /// Ordered runtime plan; unresolved images are explicit actions.
     pub plan: Plan,
@@ -271,4 +271,11 @@ pub struct DeploymentView {
     pub current_target: bool,
     /// Whether this is the most recent deployment to converge successfully.
     pub last_successful: bool,
+}
+
+/// Effective host settings loaded by the daemon; no mutation endpoint exists.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct HostConfiguration {
+    /// Settings grouped by server, Docker, reconciliation and retention.
+    pub groups: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 }

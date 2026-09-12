@@ -145,6 +145,7 @@ impl Mutation {
 /// the database layer to know about the controller.
 #[derive(Clone)]
 pub struct Applications {
+    pub(crate) configuration: Option<piqueld_core::api::HostConfiguration>,
     pub(crate) store: Arc<SqliteStore>,
     pub(crate) runtime: Arc<dyn RuntimeBoundary>,
 }
@@ -153,7 +154,21 @@ impl Applications {
     /// Creates the application service.
     #[must_use]
     pub fn new(store: Arc<SqliteStore>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
-        Self { store, runtime }
+        Self {
+            store,
+            runtime,
+            configuration: None,
+        }
+    }
+
+    /// Attaches the effective host configuration for read-only API inspection.
+    #[must_use]
+    pub fn with_configuration(
+        mut self,
+        configuration: piqueld_core::api::HostConfiguration,
+    ) -> Self {
+        self.configuration = Some(configuration);
+        self
     }
 
     /// Accepts a mutation and records its receipt in the same transaction.

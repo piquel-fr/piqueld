@@ -256,3 +256,82 @@ pub fn init_tracing() -> Result<(), tracing_subscriber::util::TryInitError> {
 
 #[cfg(test)]
 mod tests;
+
+impl DaemonConfig {
+    /// Projects effective settings into the read-only public dashboard response.
+    #[must_use]
+    pub fn view(&self) -> piqueld_core::api::HostConfiguration {
+        let groups = [
+            (
+                "Server",
+                vec![
+                    ("Data directory", self.server.data_dir.display().to_string()),
+                    (
+                        "Database",
+                        self.server.database_path().display().to_string(),
+                    ),
+                    (
+                        "API socket",
+                        self.server.socket_path().display().to_string(),
+                    ),
+                    (
+                        "HTTP listener",
+                        self.server
+                            .http_listen
+                            .map_or_else(|| "Disabled".into(), |v| v.to_string()),
+                    ),
+                ],
+            ),
+            (
+                "Docker",
+                vec![
+                    ("Socket", self.docker.socket.display().to_string()),
+                    (
+                        "Initialize Swarm",
+                        self.docker.auto_initialize_swarm.to_string(),
+                    ),
+                ],
+            ),
+            (
+                "Reconciliation",
+                vec![
+                    (
+                        "Scan interval (seconds)",
+                        self.reconciliation.scan_interval_seconds.to_string(),
+                    ),
+                    (
+                        "Preparation timeout (seconds)",
+                        self.reconciliation.prepare_timeout_seconds.to_string(),
+                    ),
+                    (
+                        "Convergence timeout (seconds)",
+                        self.reconciliation.convergence_timeout_seconds.to_string(),
+                    ),
+                ],
+            ),
+            (
+                "Retention",
+                vec![
+                    ("Deployment history", "Until application deletion".into()),
+                    (
+                        "Other finished operations (days)",
+                        self.retention.finished_operation_days.to_string(),
+                    ),
+                    ("Events (days)", self.retention.event_days.to_string()),
+                ],
+            ),
+        ]
+        .into_iter()
+        .map(|(group, values)| {
+            (
+                group.into(),
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key.into(), value))
+                    .collect(),
+            )
+        })
+        .collect();
+        piqueld_core::api::HostConfiguration { groups }
+    }
+}

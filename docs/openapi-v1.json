@@ -435,6 +435,7 @@
       "ApplicationState": {
         "description": "Current application reconciliation status.",
         "enum": [
+          "not_deployed",
           "pending",
           "deploying",
           "ready",
@@ -606,7 +607,7 @@
           },
           "manifest": {
             "$ref": "#/components/schemas/ApplicationManifest",
-            "description": "Application manifest to store and reconcile."
+            "description": "Application configuration to save or preview. Deployment is an explicit query option."
           }
         },
         "required": [
@@ -623,6 +624,42 @@
           "failed"
         ],
         "type": "string"
+      },
+      "DeploymentView": {
+        "description": "Durable deployment snapshot and execution summary.",
+        "properties": {
+          "application": {
+            "$ref": "#/components/schemas/NormalizedApplication",
+            "description": "Configuration captured when deployment was accepted."
+          },
+          "current_target": {
+            "description": "Whether this is the currently promoted runtime target.",
+            "type": "boolean"
+          },
+          "last_successful": {
+            "description": "Whether this is the most recent deployment to converge successfully.",
+            "type": "boolean"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/Operation",
+            "description": "Execution ID also identifies this deployment."
+          },
+          "succeeded_at_ms": {
+            "description": "First successful convergence, retained during later drift repair.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "operation",
+          "application",
+          "current_target",
+          "last_successful"
+        ],
+        "type": "object"
       },
       "DesiredMount": {
         "additionalProperties": false,
@@ -1034,6 +1071,40 @@
         ],
         "type": "object"
       },
+      "Envelope_HostConfiguration": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Effective host settings loaded by the daemon; no mutation endpoint exists.",
+            "properties": {
+              "groups": {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "description": "Settings grouped by server, Docker, reconciliation and retention.",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "groups"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_Operation": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -1227,6 +1298,71 @@
         ],
         "type": "object"
       },
+      "Envelope_Page_DeploymentView": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Cursor-paginated API response.",
+            "properties": {
+              "items": {
+                "description": "Items in this page.",
+                "items": {
+                  "description": "Durable deployment snapshot and execution summary.",
+                  "properties": {
+                    "application": {
+                      "$ref": "#/components/schemas/NormalizedApplication",
+                      "description": "Configuration captured when deployment was accepted."
+                    },
+                    "current_target": {
+                      "description": "Whether this is the currently promoted runtime target.",
+                      "type": "boolean"
+                    },
+                    "last_successful": {
+                      "description": "Whether this is the most recent deployment to converge successfully.",
+                      "type": "boolean"
+                    },
+                    "operation": {
+                      "$ref": "#/components/schemas/Operation",
+                      "description": "Execution ID also identifies this deployment."
+                    },
+                    "succeeded_at_ms": {
+                      "description": "First successful convergence, retained during later drift repair.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "operation",
+                    "application",
+                    "current_target",
+                    "last_successful"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_Page_Event": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -1345,6 +1481,139 @@
         ],
         "type": "object"
       },
+      "Envelope_Page_Operation": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Cursor-paginated API response.",
+            "properties": {
+              "items": {
+                "description": "Items in this page.",
+                "items": {
+                  "description": "Durable asynchronous operation returned by the API.",
+                  "properties": {
+                    "application_id": {
+                      "$ref": "#/components/schemas/ApplicationId",
+                      "description": "Stable application identifier."
+                    },
+                    "attempt": {
+                      "description": "Number of execution attempts started, including interrupted attempts.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "consecutive_failures": {
+                      "description": "Consecutive failed attempts since the last successful execution.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "created_at_ms": {
+                      "description": "Creation timestamp in Unix milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "error_code": {
+                      "description": "Stable failure code, when present.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "error_message": {
+                      "description": "Safe failure message, when present.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "finished_at_ms": {
+                      "description": "Completion timestamp in Unix milliseconds.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "generation": {
+                      "description": "Intent revision this operation targets.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "id": {
+                      "description": "Stable operation identifier.",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "$ref": "#/components/schemas/OperationKind",
+                      "description": "Requested change."
+                    },
+                    "phase": {
+                      "description": "Current execution phase, retained on failure.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "resource": {
+                      "description": "Logical or Docker resource currently being processed.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "started_at_ms": {
+                      "description": "Start timestamp in Unix milliseconds.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "state": {
+                      "$ref": "#/components/schemas/OperationState",
+                      "description": "Current lifecycle state."
+                    },
+                    "updated_at_ms": {
+                      "description": "Last update timestamp in Unix milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "application_id",
+                    "kind",
+                    "generation",
+                    "attempt",
+                    "state",
+                    "created_at_ms",
+                    "updated_at_ms"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_PlanView": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -1356,7 +1625,7 @@
                 "type": "string"
               },
               "changes": {
-                "description": "Safe changes to accepted manifest fields, independent of Docker availability.",
+                "description": "Safe changes relative to the latest deployment snapshot.",
                 "items": {
                   "$ref": "#/components/schemas/ManifestChange"
                 },
@@ -1369,7 +1638,7 @@
                 "type": "integer"
               },
               "identical": {
-                "description": "Whether this manifest already matches accepted intent (excluding deletion).",
+                "description": "Whether this specification matches the latest deployment snapshot.",
                 "type": "boolean"
               },
               "operation": {
@@ -1427,6 +1696,42 @@
             "required": [
               "application_id",
               "name",
+              "generation"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_SavedApplication": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Saved application configuration, optionally accompanied by a deployment.",
+            "properties": {
+              "application_id": {
+                "description": "Stable application identity.",
+                "type": "string"
+              },
+              "generation": {
+                "description": "Saved configuration revision.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "operation_id": {
+                "description": "Deployment operation, only when explicitly requested.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "application_id",
               "generation"
             ],
             "type": "object"
@@ -1666,6 +1971,31 @@
             "type": "object"
           }
         ]
+      },
+      "HostConfiguration": {
+        "description": "Effective host settings loaded by the daemon; no mutation endpoint exists.",
+        "properties": {
+          "groups": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "propertyNames": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "description": "Settings grouped by server, Docker, reconciliation and retention.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "groups"
+        ],
+        "type": "object"
       },
       "ManifestChange": {
         "description": "A change to a manifest field. Environment and process values are redacted.",
@@ -2059,7 +2389,7 @@
             "type": "string"
           },
           "changes": {
-            "description": "Safe changes to accepted manifest fields, independent of Docker availability.",
+            "description": "Safe changes relative to the latest deployment snapshot.",
             "items": {
               "$ref": "#/components/schemas/ManifestChange"
             },
@@ -2072,7 +2402,7 @@
             "type": "integer"
           },
           "identical": {
-            "description": "Whether this manifest already matches accepted intent (excluding deletion).",
+            "description": "Whether this specification matches the latest deployment snapshot.",
             "type": "boolean"
           },
           "operation": {
@@ -2202,6 +2532,33 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "SavedApplication": {
+        "description": "Saved application configuration, optionally accompanied by a deployment.",
+        "properties": {
+          "application_id": {
+            "description": "Stable application identity.",
+            "type": "string"
+          },
+          "generation": {
+            "description": "Saved configuration revision.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "operation_id": {
+            "description": "Deployment operation, only when explicitly requested.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "application_id",
+          "generation"
+        ],
         "type": "object"
       },
       "Service": {
@@ -2437,9 +2794,18 @@
         "operationId": "applyApplication",
         "parameters": [
           {
-            "description": "Explicitly bypass the intent revision precondition and, for apply, the name-based identity precondition. Name availability is always enforced.",
+            "description": "Explicitly bypass revision and identity preconditions.",
             "in": "query",
             "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Deploy the saved configuration; omission saves only.",
+            "in": "query",
+            "name": "deploy",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -2504,15 +2870,25 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved"
+          },
           "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
                 }
               }
             },
-            "description": "Accepted or unchanged target"
+            "description": "Configuration saved and deployment accepted"
           },
           "400": {
             "content": {
@@ -2921,6 +3297,252 @@
           }
         },
         "summary": "Get an application"
+      }
+    },
+    "/api/v1/applications/{id}/deploy": {
+      "post": {
+        "operationId": "deployApplication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Current intent revision; optional for reconcile and refresh, required for deletion unless forced.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/deployments": {
+      "get": {
+        "operationId": "listDeployments",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_DeploymentView"
+                }
+              }
+            },
+            "description": "Deployment snapshots, newest first (three per page)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/applications/{id}/deployments/{deployment}/attempts": {
+      "get": {
+        "operationId": "listDeploymentAttempts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_Operation"
+                }
+              }
+            },
+            "description": "Retained attempt outcomes, newest first (100 per page)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
       }
     },
     "/api/v1/applications/{id}/detail": {
@@ -3537,6 +4159,33 @@
           }
         },
         "summary": "Get an operation"
+      }
+    },
+    "/api/v1/system/configuration": {
+      "get": {
+        "operationId": "systemConfiguration",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_HostConfiguration"
+                }
+              }
+            },
+            "description": "Effective read-only host settings"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
       }
     },
     "/api/v1/system/status": {

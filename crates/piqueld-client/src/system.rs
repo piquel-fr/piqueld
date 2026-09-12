@@ -19,3 +19,20 @@ impl Client {
         .await
     }
 }
+
+impl Client {
+    /// Reads effective daemon configuration without changing host settings.
+    /// # Errors
+    /// Returns transport, API or decoding errors.
+    pub async fn system_configuration(
+        &self,
+    ) -> Result<piqueld_core::api::HostConfiguration, ClientError> {
+        self.send::<_, ()>(
+            Method::GET,
+            &format!("{}/system/configuration", crate::API_PREFIX),
+            None,
+            &[],
+        )
+        .await
+    }
+}

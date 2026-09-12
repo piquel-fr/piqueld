@@ -29,3 +29,18 @@ struct HealthResponse {
 pub(super) async fn health() -> impl IntoResponse {
     (StatusCode::OK, axum::Json(HealthResponse { status: "ok" }))
 }
+
+#[utoipa::path(get,path="/api/v1/system/configuration",operation_id="systemConfiguration",
+    responses((status=200,description="Effective read-only host settings",body=Envelope<piqueld_core::api::HostConfiguration>),
+    (status=503,response=inline(super::openapi::ApiErrorResponse))))]
+pub(super) async fn configuration(
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, super::ApiError> {
+    Ok(ok(state.configuration.ok_or_else(|| {
+        super::ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "configuration_unavailable",
+            "Effective host configuration is unavailable",
+        )
+    })?))
+}

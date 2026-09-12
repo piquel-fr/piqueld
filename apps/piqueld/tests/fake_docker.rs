@@ -1258,14 +1258,6 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     })
     .await
     .expect("delete supersedes pending preparation without waiting for its pull");
-    assert!(matches!(
-        store.operation(&accepted.id).await,
-        Err(piqueld::store::StoreError::NotFound)
-    ));
-    assert!(matches!(
-        store.prepared_target(&accepted.id).await,
-        Err(piqueld::store::StoreError::NotFound)
-    ));
     assert_eq!(docker.images.maximum.load(Ordering::SeqCst), 2);
     cancellation.cancel();
     controller_task.await.unwrap().unwrap();

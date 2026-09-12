@@ -10,7 +10,7 @@ use axum::{
     routing::get,
 };
 use piqueld_core::ApplicationIdError;
-use piqueld_core::api::{AcceptedOperation, ApplyApplicationRequest, Envelope, ErrorBody};
+use piqueld_core::api::{ApplyApplicationRequest, Envelope, ErrorBody};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -23,6 +23,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::store::StoreError;
 
 mod applications;
+mod deployments;
 mod events;
 mod openapi;
 mod operations;
@@ -300,6 +301,7 @@ fn finish_router(
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .routes(routes!(system::status))
+        .routes(routes!(system::configuration))
         .routes(routes!(openapi::openapi))
         .routes(routes!(applications::list))
         .routes(routes!(applications::apply))
@@ -310,6 +312,9 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::refresh))
         .routes(routes!(applications::rename))
+        .routes(routes!(deployments::deploy))
+        .routes(routes!(deployments::list))
+        .routes(routes!(deployments::attempts))
         .routes(routes!(events::list))
         .routes(routes!(operations::get))
 }
@@ -455,7 +460,7 @@ impl AllowRoutes {
 fn ok<T: Serialize>(data: T) -> impl IntoResponse {
     (StatusCode::OK, axum::Json(Envelope { data }))
 }
-fn accepted(data: AcceptedOperation) -> Response {
+fn accepted<T: Serialize>(data: T) -> Response {
     (StatusCode::ACCEPTED, axum::Json(Envelope { data })).into_response()
 }
 fn content_type(headers: &HeaderMap) -> Option<&str> {

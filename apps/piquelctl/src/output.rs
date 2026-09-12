@@ -95,12 +95,6 @@ pub(crate) fn render_plan(plan: &PlanView, output: &mut impl Write) -> io::Resul
     Ok(())
 }
 
-pub(crate) fn render_plan_stderr(plan: &PlanView) -> io::Result<()> {
-    let stderr = io::stderr();
-    let mut output = stderr.lock();
-    render_plan(plan, &mut output)
-}
-
 pub(crate) fn blocked_plan_error(plan: &PlanView, include_plan_details: bool) -> CliError {
     let codes = plan
         .plan
