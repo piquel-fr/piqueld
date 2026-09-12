@@ -350,7 +350,15 @@ fn RepositorySettings() -> impl IntoView {
     ));
     let baseline = create_rw_signal(draft.get_untracked());
     dirty_group("repository".into(), draft, baseline);
+    let other_edits = move || {
+        context
+            .dirty
+            .with(|groups| groups.iter().any(|group| group != "repository"))
+    };
     let save = move |_| {
+        if other_edits() {
+            return;
+        }
         let value = draft.get_untracked();
         let mut manifest = context.manifest();
         manifest.spec.manifest = value.0.then(|| Box::new(value.1));
@@ -359,7 +367,7 @@ fn RepositorySettings() -> impl IntoView {
             Callback::new(move |_| baseline.set(draft.get_untracked())),
         );
     };
-    view! {<section class="settings-card"><h3>"Repository manifest"</h3><fieldset disabled=move ||context.blocked()><label><input type="checkbox" prop:checked=move ||draft.get().0 on:change=move |ev|draft.update(|v|v.0=event_target_checked(&ev))/>"Load configuration from Git on Deploy"</label><div hidden=move ||!draft.get().0 class="form-grid">{text_input("Repository",draft,|v|v.1.repository.url.clone(),|v,s|v.1.repository.url=s)}{text_input("Branch",draft,|v|v.1.repository.branch.clone(),|v,s|v.1.repository.branch=s)}{text_input("Commit (optional)",draft,|v|v.1.repository.commit.clone().unwrap_or_default(),|v,s|v.1.repository.commit=(!s.is_empty()).then_some(s))}{text_input("Manifest path",draft,|v|v.1.path.clone(),|v,s|v.1.path=s)}</div><div class="form-actions"><button class="primary" disabled=move ||draft.get()==baseline.get() on:click=save>"Save Changes"</button><button on:click=move |_|draft.set(baseline.get_untracked())>"Discard edits"</button></div></fieldset></section>}
+    view! {<section class="settings-card"><h3>"Repository manifest"</h3><Show when=other_edits><p class="help">"Save or discard edits in other settings before changing the repository connection."</p></Show><fieldset disabled=move ||context.blocked()><label><input type="checkbox" prop:checked=move ||draft.get().0 on:change=move |ev|draft.update(|v|v.0=event_target_checked(&ev))/>"Load configuration from Git on Deploy"</label><div hidden=move ||!draft.get().0 class="form-grid">{text_input("Repository",draft,|v|v.1.repository.url.clone(),|v,s|v.1.repository.url=s)}{text_input("Branch",draft,|v|v.1.repository.branch.clone(),|v,s|v.1.repository.branch=s)}{text_input("Commit (optional)",draft,|v|v.1.repository.commit.clone().unwrap_or_default(),|v,s|v.1.repository.commit=(!s.is_empty()).then_some(s))}{text_input("Manifest path",draft,|v|v.1.path.clone(),|v,s|v.1.path=s)}</div><div class="form-actions"><button class="primary" disabled=move ||draft.get()==baseline.get() || other_edits() on:click=save>"Save Changes"</button><button on:click=move |_|draft.set(baseline.get_untracked())>"Discard edits"</button></div></fieldset></section>}
 }
 
 #[component]
