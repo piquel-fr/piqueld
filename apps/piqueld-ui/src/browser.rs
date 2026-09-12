@@ -103,10 +103,9 @@ fn App() -> impl IntoView {
                 </Route>
                 <Route path="/dashboard" view=DashboardLayout>
                     <Route path="" view=DashboardRedirect/>
-                    <Route path="/" view=OverviewPage/>
                     <Route path="/applications" view=ApplicationsPage/>
                     <Route path="/applications/:id" view=ApplicationDetailPage/>
-                    <Route path="/*any" view=NotFoundPage/>
+                    <Route path="/*any" view=DashboardRouteFallback/>
                 </Route>
                 <Route path="/*any" view=NotFoundPage/>
             </Routes>
@@ -117,6 +116,18 @@ fn App() -> impl IntoView {
 #[component]
 fn DashboardRedirect() -> impl IntoView {
     view! { <Redirect path="/dashboard/"/> }
+}
+
+#[component]
+fn DashboardRouteFallback() -> impl IntoView {
+    let params = use_params_map();
+    let is_overview = params.with(|params| params.get("any").map_or(true, |path| path.is_empty()));
+
+    if is_overview {
+        view! { <OverviewPage/> }.into_view()
+    } else {
+        view! { <NotFoundPage/> }.into_view()
+    }
 }
 
 #[component]
