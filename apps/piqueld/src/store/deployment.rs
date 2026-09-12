@@ -56,7 +56,15 @@ impl SqliteStore {
         id: &str,
     ) -> Result<(), StoreError> {
         let op = Self::operation_on(tx, id).await?;
-        let json = serde_json::to_string(&op).map_err(StoreError::corrupt)?;
+        Self::save_deployment_attempt(tx, &op).await
+    }
+
+    pub(super) async fn save_deployment_attempt(
+        tx: &mut Transaction<'_, Sqlite>,
+        op: &Operation,
+    ) -> Result<(), StoreError> {
+        let id = &op.id;
+        let json = serde_json::to_string(op).map_err(StoreError::corrupt)?;
         let attempt = i64::try_from(op.attempt).map_err(StoreError::corrupt)?;
         sqlx::query!("INSERT INTO deployment_attempts(deployment_id,attempt,outcome_json) SELECT id,?1,?2 FROM deployments WHERE id=?3 ON CONFLICT(deployment_id,attempt) DO UPDATE SET outcome_json=excluded.outcome_json",attempt,json,id).execute(&mut **tx).await.map_err(StoreError::database)?;
         if op.state == super::OperationState::Succeeded {
@@ -233,6 +241,12 @@ mod tests {
         let store = SqliteStore::open(&path).await.unwrap();
         store.recover_interrupted().await.unwrap();
         let op = store.operation(&deploy.operation_id).await.unwrap();
+        let attempts = store.deployment_attempts(&op.id, None, 100).await.unwrap();
+        assert_eq!(attempts.items.len(), 1);
+        assert_eq!(attempts.items[0].attempt, 1);
+        assert_eq!(attempts.items[0].state, OperationState::Cancelled);
+        assert!(attempts.items[0].finished_at_ms.is_some());
+        assert_eq!(store.recover_interrupted().await.unwrap(), 0);
         assert_eq!(op.generation, 1);
         assert_eq!(store.deployment_manifest(&op.id).await.unwrap(), original);
         let (MutationResponse::Operation(replay), wake) = store

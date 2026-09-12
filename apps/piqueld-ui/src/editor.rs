@@ -260,6 +260,29 @@ mod tests {
         assert!(matches!(saved.source,Source::Image{image} if image=="nginx:new"));
     }
     #[test]
+    fn health_sections_round_trip() {
+        for check in [
+            HealthCheck::Http {
+                port: 9000,
+                path: "/live".into(),
+                interval_seconds: 5,
+                timeout_seconds: 2,
+            },
+            HealthCheck::Command {
+                command: vec!["curl".into(), "-f".into(), "localhost".into()],
+                interval_seconds: 7,
+                timeout_seconds: 4,
+            },
+        ] {
+            let mut saved = service();
+            saved.healthcheck = Some(check.clone());
+            let draft = ServiceForm::from(&saved);
+            saved.healthcheck = None;
+            draft.patch(Section::Health, &mut saved).unwrap();
+            assert_eq!(saved.healthcheck, Some(check));
+        }
+    }
+    #[test]
     fn invalid_text_and_duplicate_keys_are_not_silently_discarded() {
         let mut saved = service();
         let mut draft = ServiceForm::from(&saved);

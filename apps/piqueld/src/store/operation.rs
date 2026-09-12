@@ -282,6 +282,18 @@ impl SqliteStore {
         let now = now_ms();
         let (_writer, mut tx) = self.begin_immediate().await?;
         sqlx::query!("INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT application_id,id,generation,attempt,'operation_interrupted','daemon restarted during execution',error_code,phase,resource,?1 FROM operations WHERE state='running'",now).execute(&mut *tx).await.map_err(StoreError::database)?;
+        let interrupted =
+            sqlx::query_scalar!(r#"SELECT id AS "id!" FROM operations WHERE state='running'"#)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
+        for id in interrupted {
+            let mut attempt = Self::operation_on(&mut tx, &id).await?;
+            attempt.state = OperationState::Cancelled;
+            attempt.updated_at_ms = now;
+            attempt.finished_at_ms = Some(now);
+            Self::save_deployment_attempt(&mut tx, &attempt).await?;
+        }
         let count=sqlx::query!("UPDATE operations SET state='requested',updated_at_ms=?1,started_at_ms=NULL,error_code=NULL,error_message=NULL WHERE state='running'",now)
             .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         tx.commit().await.map_err(StoreError::database)?;

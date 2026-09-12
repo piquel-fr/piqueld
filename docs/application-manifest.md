@@ -73,10 +73,9 @@ spec. The application name selects which application an apply targets; changing
 it targets a different application. Use the explicit rename action to retain
 identity and resources, then update the manifest name.
 
-The parser is pure. Apply compares complete normalized manifests. Identical intent
-causes no image resolution or deployment, including after failure; use reconcile
-to explicitly request another attempt. Changed intent is persisted before operation execution resolves
-new/changed image references. Unchanged service image references reuse active
-digests. Explicit refresh resolves unchanged image references again; reconciliation
-reuses the prepared target. Resolved runtime state remains separate from portable
-manifest DTOs. Generations advance only for changed manifests or deletion intent.
+The parser is pure. Apply saves configuration and advances its generation without
+starting runtime work. Explicit Deploy captures the saved configuration and resolves
+image references; saving with `--deploy` performs both actions. Refresh resolves the
+latest deployment's references again, while reconcile retries its prepared target.
+Neither action deploys later saved edits. Resolved runtime state remains separate
+from portable manifest DTOs. Deletion intent also advances the generation.

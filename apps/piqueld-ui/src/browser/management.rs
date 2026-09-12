@@ -256,6 +256,39 @@ fn ApplicationEditor(initial: ApplicationView) -> impl IntoView {
     }
 }
 
+#[derive(Clone)]
+struct GuardedLocation {
+    dirty: RwSignal<BTreeSet<String>>,
+    url: String,
+    state: leptos::wasm_bindgen::JsValue,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct HistoryGuard(RwSignal<Option<GuardedLocation>>);
+impl HistoryGuard {
+    /// Window-targeted history events must be intercepted before the router's listener.
+    pub(super) fn install() {
+        let guard = Self(create_rw_signal(None::<GuardedLocation>));
+        provide_context(guard);
+        let listener = window_event_listener(ev::popstate, move |event| {
+            let Some(location) = guard.0.get_untracked() else {
+                return;
+            };
+            if !location.dirty.get_untracked().is_empty()
+                && !window()
+                    .confirm_with_message("Leave this application and discard unsaved form edits?")
+                    .unwrap_or(false)
+            {
+                event.stop_immediate_propagation();
+                if let Ok(history) = window().history() {
+                    let _ = history.push_state_with_url(&location.state, "", Some(&location.url));
+                }
+            }
+        });
+        on_cleanup(move || listener.remove());
+    }
+}
+
 fn guard_navigation(dirty: RwSignal<BTreeSet<String>>) {
     let listener = window_event_listener(ev::beforeunload, move |event| {
         if !dirty.get_untracked().is_empty() {
@@ -264,40 +297,16 @@ fn guard_navigation(dirty: RwSignal<BTreeSet<String>>) {
         }
     });
     on_cleanup(move || listener.remove());
-    // Capture history navigation before the router can unmount the editor.
-    let location = window().location().href().unwrap_or_default();
-    let history_state = window()
-        .history()
-        .and_then(|h| h.state())
-        .unwrap_or_default();
-    let popstate = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
-        if !dirty.get_untracked().is_empty()
-            && !window()
-                .confirm_with_message("Leave this application and discard unsaved form edits?")
-                .unwrap_or(false)
-        {
-            event.stop_immediate_propagation();
-            if let Ok(history) = window().history() {
-                let _ = history.push_state_with_url(&history_state, "", Some(&location));
-            }
-        }
-    });
-    if window()
-        .add_event_listener_with_callback_and_bool(
-            "popstate",
-            popstate.as_ref().unchecked_ref(),
-            true,
-        )
-        .is_ok()
-    {
-        on_cleanup(move || {
-            let _ = window().remove_event_listener_with_callback_and_bool(
-                "popstate",
-                popstate.as_ref().unchecked_ref(),
-                true,
-            );
-        });
-    }
+    let guard = use_context::<HistoryGuard>().expect("history guard installed before router");
+    guard.0.set(Some(GuardedLocation {
+        dirty,
+        url: window().location().href().unwrap_or_default(),
+        state: window()
+            .history()
+            .and_then(|h| h.state())
+            .unwrap_or_default(),
+    }));
+    on_cleanup(move || guard.0.set(None));
     let callback = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
         if dirty.get_untracked().is_empty() {
             return;

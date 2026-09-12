@@ -32,3 +32,11 @@ CREATE TABLE application_status_new (
 INSERT INTO application_status_new SELECT * FROM application_status;
 DROP TABLE application_status;
 ALTER TABLE application_status_new RENAME TO application_status;
+
+-- Apply physical deletion to legacy tombstones as well. Events and receipts
+-- intentionally lack foreign keys; remove them before cascading application data.
+DELETE FROM events WHERE application_id IN (SELECT id FROM applications WHERE deleted_at_ms IS NOT NULL);
+DELETE FROM request_receipts WHERE
+    json_extract(response_json,'$.Operation.application_id') IN (SELECT id FROM applications WHERE deleted_at_ms IS NOT NULL) OR
+    json_extract(response_json,'$.Rename.application_id') IN (SELECT id FROM applications WHERE deleted_at_ms IS NOT NULL);
+DELETE FROM applications WHERE deleted_at_ms IS NOT NULL;

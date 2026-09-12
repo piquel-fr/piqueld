@@ -45,7 +45,7 @@ The supported manifest and runtime model are documented in:
 | --- | --- |
 | Prebuilt images, replicas, environment, command/args, health checks, resource limits, named volumes, and mounts | Git sources, builds, registry management, credentials, and secrets |
 | Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, and the essential `piquelctl` workflow | Published ports, routes, Traefik, logs, state transfer, authentication, and remote or multi-node operation |
-| Unix-socket and loopback-TCP API transports, plus a read-only Leptos/WASM dashboard on the TCP listener | Mutating web controls, secrets, streams, and the advanced web UI |
+| Unix-socket and loopback-TCP API transports, plus a Leptos/WASM dashboard for saving configuration, deploying, and inspecting history | Secrets, streams, and the advanced web UI |
 
 ## Development
 
