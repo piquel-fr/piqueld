@@ -493,7 +493,10 @@ async fn keyed_replace_replay_after_failure_resets_the_failed_operation() {
                 &request_hash
             )
             .await,
-        Err(StoreError::GenerationConflict)
+        Err(piqueld::store::StoreError::GenerationConflict {
+            expected: 2,
+            actual: 3
+        })
     ));
 }
 

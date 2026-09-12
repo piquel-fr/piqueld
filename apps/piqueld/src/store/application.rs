@@ -320,17 +320,23 @@ impl SqliteStore {
                 }
                 Some(replay) => {
                     let app_id = app.id.as_str();
-                    let replay_generation = generation_i64(replay.mutation.generation)?;
-                    let current = sqlx::query_scalar!(
-                        r#"SELECT COUNT(*) AS "count!: i64" FROM applications WHERE id=?1 AND generation=?2 AND delete_intent=0 AND deleted_at_ms IS NULL"#,
-                        app_id,
-                        replay_generation
+                    let current = sqlx::query!(
+                        "SELECT generation,delete_intent FROM applications WHERE id=?1",
+                        app_id
                     )
-                    .fetch_one(&mut *tx)
+                    .fetch_optional(&mut *tx)
                     .await
-                    .map_err(StoreError::database)?;
-                    if current != 1 {
-                        return Err(StoreError::GenerationConflict);
+                    .map_err(StoreError::database)?
+                    .ok_or(StoreError::NotFound)?;
+                    let actual = u64::try_from(current.generation).map_err(StoreError::corrupt)?;
+                    if actual != replay.mutation.generation {
+                        return Err(StoreError::GenerationConflict {
+                            expected: replay.mutation.generation,
+                            actual,
+                        });
+                    }
+                    if current.delete_intent == 1 {
+                        return Err(StoreError::IllegalTransition);
                     }
                     let result = Self::reset_failed_operation(
                         &mut tx,
