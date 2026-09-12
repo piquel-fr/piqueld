@@ -266,7 +266,7 @@ mod web {
 
     use gloo_net::http::{Request, RequestBuilder, Response};
     use http::{Method, StatusCode};
-    use js_sys::{Reflect, Uint8Array};
+    use js_sys::{Date, Reflect, Uint8Array};
     use std::time::Duration;
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
@@ -287,7 +287,10 @@ mod web {
         payload: Vec<u8>,
         headers: &[(&str, &str)],
     ) -> Result<(StatusCode, Vec<u8>), ClientError> {
-        let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        let millis = u32::try_from(timeout.as_millis()).map_err(|_| {
+            invalid_request("browser request timeout exceeds u32::MAX milliseconds")
+        })?;
+        let deadline = Date::now() + f64::from(millis);
         let signal = web_sys::AbortSignal::timeout_with_u32(millis);
         let mut request = match method {
             Method::GET => Request::get(path),
@@ -307,7 +310,8 @@ mod web {
         }
         // The browser enforces the deadline through the abort signal, which
         // rejects the fetch and any pending body read once it fires. This
-        // keeps the native per-request timer semantics on every target.
+        // bounds pending I/O. Also check elapsed time after each await: the
+        // abort timer pauses while a page is suspended in the back-forward cache.
         let request = request.abort_signal(Some(&signal));
         let sent = if payload.is_empty() {
             request.send().await
@@ -317,29 +321,21 @@ mod web {
                 .map_err(|_| invalid_request("request payload is not valid UTF-8"))?;
             request.body(body).map_err(transport)?.send().await
         };
-        let response = match sent {
-            Ok(response) => response,
-            Err(error) => {
-                return Err(if signal.aborted() {
-                    timed_out()
-                } else {
-                    transport(error)
-                });
-            }
-        };
+        if signal.aborted() || Date::now() >= deadline {
+            return Err(timed_out());
+        }
+        let response = sent.map_err(transport)?;
         let status = StatusCode::from_u16(response.status()).map_err(|_| {
             transport(format!(
                 "server returned invalid status {}",
                 response.status()
             ))
         })?;
-        let body = match collect_bounded(&response, MAX_RESPONSE_BODY_BYTES).await {
-            Ok(body) => body,
-            Err(error) => {
-                return Err(if signal.aborted() { timed_out() } else { error });
-            }
-        };
-        Ok((status, body))
+        let body = collect_bounded(&response, MAX_RESPONSE_BODY_BYTES).await;
+        if signal.aborted() || Date::now() >= deadline {
+            return Err(timed_out());
+        }
+        Ok((status, body?))
     }
 
     /// Drains a fetch body as exact bytes without allowing unbounded buffering.
@@ -426,6 +422,63 @@ mod web {
             assert!(!payload.is_empty());
         }
 
+        #[wasm_bindgen::prelude::wasm_bindgen(inline_js = "
+            export function advanceClockDuringFetch() {
+                const originalFetch = globalThis.fetch;
+                const originalNow = Date.now;
+                globalThis.fetch = async (...args) => {
+                    const response = await originalFetch(...args);
+                    Date.now = () => originalNow() + 60000;
+                    return response;
+                };
+                return () => {
+                    globalThis.fetch = originalFetch;
+                    Date.now = originalNow;
+                };
+            }
+        ")]
+        extern "C" {
+            #[wasm_bindgen::prelude::wasm_bindgen(js_name = advanceClockDuringFetch)]
+            fn advance_clock_during_fetch() -> js_sys::Function;
+        }
+
+        #[wasm_bindgen_test]
+        async fn elapsed_deadline_rejects_fetch_after_page_suspension() {
+            let restore = advance_clock_during_fetch();
+            let result = Client::browser()
+                .exchange(Method::GET, "/", Vec::new(), &[])
+                .await;
+            restore.call0(&wasm_bindgen::JsValue::NULL).unwrap();
+            assert!(matches!(
+                result,
+                Err(ClientError::Transport { message }) if message == super::super::TIMEOUT_MESSAGE
+            ));
+        }
+
+        #[wasm_bindgen_test]
+        async fn oversized_timeout_returns_an_error_before_fetch() {
+            let result = Client::browser()
+                .with_timeout(std::time::Duration::from_millis(u64::from(u32::MAX) + 1))
+                .exchange(Method::GET, "/", Vec::new(), &[])
+                .await;
+            assert!(matches!(
+                result,
+                Err(ClientError::Endpoint { message }) if message.contains("timeout exceeds")
+            ));
+        }
+
+        #[wasm_bindgen_test]
+        async fn zero_timeout_cannot_return_a_successful_fetch() {
+            let result = Client::browser()
+                .with_timeout(std::time::Duration::ZERO)
+                .exchange(Method::GET, "/", Vec::new(), &[])
+                .await;
+            assert!(matches!(
+                result,
+                Err(ClientError::Transport { message }) if message == super::super::TIMEOUT_MESSAGE
+            ));
+        }
+
         #[wasm_bindgen_test]
         async fn invalid_headers_return_an_error_before_fetch() {
             let result = Client::browser()
@@ -487,6 +540,8 @@ impl Client {
     }
 
     /// Overrides the per-request timeout.
+    ///
+    /// Browser requests reject timeouts larger than `u32::MAX` milliseconds.
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
