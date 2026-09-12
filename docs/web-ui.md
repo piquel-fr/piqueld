@@ -36,7 +36,7 @@ Use `nix develop` for the Rust/WASM toolchain, Nextest, Cargo Watch, Trunk,
 wasm-bindgen, Binaryen, and Tailwind. Alternatively install those tools and
 add the WASM target with `rustup target add wasm32-unknown-unknown`.
 Docker must be accessible to your user and support a single-node Swarm.
-Replace the example configuration's UID with your own before starting:
+Start the development workflow:
 
 ```console
 just dev
