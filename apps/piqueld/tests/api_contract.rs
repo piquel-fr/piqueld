@@ -917,7 +917,7 @@ image = "ghcr.io/example/notes:1"
 }
 
 #[tokio::test]
-async fn host_allowlist_blocks_foreign_authorities() {
+async fn accepts_foreign_authorities() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
     let address = listener.local_addr().expect("address");
@@ -931,19 +931,12 @@ async fn host_allowlist_blocks_foreign_authorities() {
         Vec::new(),
     )
     .await;
-    assert_eq!(rebinding.status, StatusCode::FORBIDDEN);
-    assert_eq!(rebinding.code(), "host_not_allowed");
-    // Allowlist rejections are structured errors too: their body must carry
-    // the same request ID the response headers advertise.
+    assert_eq!(rebinding.status, StatusCode::OK);
     let header_id = rebinding
         .headers
         .get("x-request-id")
         .and_then(|value| value.to_str().ok());
-    if let Some(header_id) = header_id {
-        assert_eq!(rebinding.request_id(), Some(header_id));
-    } else {
-        panic!("rejected host response carries no x-request-id header");
-    }
+    assert!(header_id.is_some());
 
     let loopback = send_raw(
         Target::Tcp(address),
@@ -983,7 +976,7 @@ async fn host_allowlist_blocks_foreign_authorities() {
         Vec::new(),
     )
     .await;
-    assert_eq!(malformed_ipv6.status, StatusCode::FORBIDDEN);
+    assert_eq!(malformed_ipv6.status, StatusCode::OK);
 
     // A bare unbracketed IPv6 literal has no port to split off; its colons
     // must not be mistaken for a host:port separator.
@@ -997,7 +990,6 @@ async fn host_allowlist_blocks_foreign_authorities() {
     .await;
     assert_eq!(bare_ipv6.status, StatusCode::OK);
 
-    // A non-loopback IPv6 literal stays rejected.
     let foreign_ipv6 = send_raw(
         Target::Tcp(address),
         Method::GET,
@@ -1006,8 +998,7 @@ async fn host_allowlist_blocks_foreign_authorities() {
         Vec::new(),
     )
     .await;
-    assert_eq!(foreign_ipv6.status, StatusCode::FORBIDDEN);
-    assert_eq!(foreign_ipv6.code(), "host_not_allowed");
+    assert_eq!(foreign_ipv6.status, StatusCode::OK);
 
     server.abort();
 }

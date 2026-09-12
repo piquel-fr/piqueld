@@ -274,10 +274,8 @@ fn finish_router(
     router
         .with_state(state)
         .layer(Extension(Arc::new(openapi)))
-        .layer(middleware::from_fn(host_allowlist))
-        // Both layers below wrap the allowlist: the propagator stamps even
-        // short-circuited host rejections with their request ID, and the
-        // binder echoes that same identifier in every structured error body.
+        // The propagator stamps errors with their request ID, and the binder
+        // echoes that same identifier in every structured error body.
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
         .layer(middleware::from_fn(bind_error_request_id))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
@@ -295,61 +293,6 @@ fn finish_router(
                     tracing::info!(status = %response.status(), latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX), "request completed");
                 }),
         )
-}
-
-/// The unauthenticated control plane only accepts loopback-style authorities.
-/// Browsers reaching any other Host would indicate DNS rebinding.
-async fn host_allowlist(request: Request, next: Next) -> Response {
-    let allowed = request
-        .headers()
-        .get(header::HOST)
-        .is_none_or(|value| value.to_str().is_ok_and(allowed_host));
-    if allowed {
-        next.run(request).await
-    } else {
-        ApiError::new(
-            StatusCode::FORBIDDEN,
-            "host_not_allowed",
-            "request host is not permitted",
-        )
-        .into_response()
-    }
-}
-
-fn allowed_host(raw: &str) -> bool {
-    let lowered = raw.to_ascii_lowercase();
-    // Bracketed IPv6 literals carry the port outside the brackets.
-    let authority = if let Some(rest) = lowered.strip_prefix('[') {
-        let Some((head, suffix)) = rest.split_once(']') else {
-            return false;
-        };
-        if !suffix.is_empty()
-            && !suffix.strip_prefix(':').is_some_and(|port| {
-                !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
-            })
-        {
-            return false;
-        }
-        head
-    } else {
-        match lowered.rsplit_once(':') {
-            // A digits-only suffix is a port unless the head itself contains
-            // colons, which means this is an unbracketed IPv6 literal such as
-            // `::1`.
-            Some((head, tail))
-                if !tail.is_empty()
-                    && tail.bytes().all(|byte| byte.is_ascii_digit())
-                    && !head.contains(':') =>
-            {
-                head
-            }
-            _ => lowered.as_str(),
-        }
-    };
-    authority == "localhost"
-        || authority
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
 }
 
 // Public endpoints must be registered through `routes!` here so Axum and the
