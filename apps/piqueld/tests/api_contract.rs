@@ -212,6 +212,82 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     assert_api_only_and_ui_modes(&temp).await;
 }
 
+/// Exercise the shipped bundle, including the CSP that authorizes its loader.
+#[cfg(feature = "embedded-ui")]
+#[tokio::test]
+async fn compiled_dashboard_serves_assets_and_authorizes_inline_scripts() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let assets = UiAssets::resolve();
+    let UiAssets::Embedded(bundle) = assets else {
+        panic!("embedded-ui must resolve to the compiled bundle");
+    };
+    let application = web_router(state(&temp).await, assets);
+    let response = application
+        .clone()
+        .oneshot(request("/dashboard/"))
+        .await
+        .expect("compiled dashboard request succeeds");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let csp = response.headers()["content-security-policy"]
+        .to_str()
+        .expect("CSP is text")
+        .to_owned();
+    let html = response_text(response).await.1;
+    let script_policy = csp
+        .split(';')
+        .find(|directive| directive.trim_start().starts_with("script-src "))
+        .expect("CSP restricts scripts");
+    assert!(!script_policy.contains("'unsafe-inline'"));
+
+    let mut inline_scripts = 0;
+    for script in html.split("<script").skip(1) {
+        let (attributes, rest) = script.split_once('>').expect("script opening tag");
+        if attributes
+            .split_whitespace()
+            .any(|attr| attr.starts_with("src="))
+        {
+            continue;
+        }
+        let (body, _) = rest.split_once("</script>").expect("script closing tag");
+        let hash = STANDARD.encode(Sha256::digest(body.as_bytes()));
+        assert!(
+            script_policy
+                .split_whitespace()
+                .any(|source| source == format!("'sha256-{hash}'")),
+            "CSP must authorize each exact inline script: {hash}"
+        );
+        inline_scripts += 1;
+    }
+    assert!(inline_scripts > 0, "Trunk's inline loader must be present");
+
+    for extension in [".js", ".wasm", ".css"] {
+        assert!(
+            bundle
+                .iter()
+                .any(|(name, _)| name.ends_with(extension) && html.contains(name)),
+            "the shell must reference a bundled {extension} asset"
+        );
+    }
+    for (name, expected) in bundle {
+        let response = application
+            .clone()
+            .oneshot(request(&format!("/dashboard/{name}")))
+            .await
+            .expect("compiled asset request succeeds");
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "{name}");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("asset body")
+            .to_bytes();
+        assert_eq!(body.as_ref(), *expected, "{name}");
+    }
+}
+
 async fn assert_dashboard_routes(application: &axum::Router) {
     let root = response_text(
         application

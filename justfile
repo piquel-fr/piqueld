@@ -38,7 +38,7 @@ test-wasm:
 test:
     @cargo nextest run --locked --workspace
 
-# Execute feature-gated dashboard routes and their security assertions.
+# Verify the real embedded bundle and run daemon tests with its generated CSP.
 test-embedded:
     @cargo nextest run --locked --package piqueld --features embedded-ui
 
