@@ -85,6 +85,30 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         (docker, swarm)
     }
 
+    async fn remove_secrets(
+        &self,
+        application: &piqueld_core::ApplicationId,
+        names: &[String],
+    ) -> Result<(), BoundaryError> {
+        let ownership = std::collections::BTreeMap::from([
+            (piqueld_core::resource::MANAGED_LABEL.into(), "true".into()),
+            (
+                piqueld_core::resource::APPLICATION_LABEL.into(),
+                application.to_string(),
+            ),
+            (
+                piqueld_core::resource::INSTANCE_LABEL.into(),
+                self.instance_id.to_string(),
+            ),
+        ]);
+        DockerTimeout::Request
+            .run(
+                "remove secrets",
+                self.docker.remove_secrets(names, &ownership),
+            )
+            .await?;
+        Ok(())
+    }
     fn trigger_reconciliation(&self) {
         self.wake.notify_one();
     }

@@ -68,7 +68,17 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
         }
         let operation = &self.store.operation(&operation.id).await?;
-        let result = self.execute_operation(operation, cancellation).await;
+        let result = async {
+            self.execute_operation(operation, cancellation).await?;
+            if operation.kind == OperationKind::Delete {
+                let names = self.store.secret_names(&operation.application_id).await?;
+                self.docker
+                    .remove_secrets(&names, &self.ownership_labels(&operation.application_id))
+                    .await?;
+            }
+            Ok::<(), OperationError>(())
+        }
+        .await;
         if cancellation.is_cancelled() {
             return Ok("cancelled");
         }
@@ -275,7 +285,7 @@ impl<D: DockerApi> Controller<D> {
         let manifest = self.deployment_manifest(operation, &snapshot).await?;
         // A rename changes display metadata without rewriting deployment history.
         let manifest = manifest.with_name(application.application.metadata().name.clone());
-        let reusable = if operation.kind == OperationKind::Refresh {
+        let mut reusable = if operation.kind == OperationKind::Refresh {
             piqueld_core::ResolutionSet::default()
         } else {
             application
@@ -285,6 +295,7 @@ impl<D: DockerApi> Controller<D> {
                     target.reusable_resolutions(&manifest)
                 })
         };
+        reusable.secret_names = self.store.pin_secrets(&operation.id, &manifest).await?;
         let prepared =
             runtime
                 .prepare(&manifest, &reusable)

@@ -66,6 +66,13 @@ pub(crate) enum Command {
     },
     /// Inspect build attempts and their persisted output.
     Builds(BuildArgs),
+
+    /// Manage application-scoped secret values and metadata.
+    Secret {
+        application: String,
+        #[command(subcommand)]
+        action: crate::secrets::SecretAction,
+    },
     /// Preview creation or replacement from a TOML manifest.
     Plan(ManifestArgs),
     /// Plan, confirm, and apply a TOML manifest.

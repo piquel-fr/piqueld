@@ -19,6 +19,7 @@ pub mod system;
 
 mod builds;
 mod client;
+mod secrets;
 
 pub use applications::{
     AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
@@ -29,7 +30,7 @@ pub use applications::{
 pub use client::Client;
 pub use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, Metadata, Mount,
-    RepositoryManifest, ResourceLimits, Service, Source, Volume,
+    RepositoryManifest, ResourceLimits, SecretMount, Service, Source, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{
@@ -43,7 +44,7 @@ use thiserror::Error;
 
 pub use piqueld_core::api::{
     API_PREFIX, ApplicationLogs, BuildLogPage, BuildRecord, BuildState, Envelope, ErrorBody,
-    LogRecord, Page,
+    LogRecord, Page, SecretMetadata,
 };
 
 /// Validates a TOML application manifest and returns its editable name.

@@ -111,7 +111,14 @@ impl SwarmScenario {
         let image = engine.docker.resolve_image("alpine:3.20").await.unwrap();
         let mut service_labels = labels.clone();
         service_labels.insert("io.piqueld.service".into(), "web".into());
+        let secret_name = format!("piqueld-secret-{suffix}");
+        engine
+            .docker
+            .ensure_secret(&secret_name, b"mounted-value", &labels)
+            .await
+            .unwrap();
         let service = DesiredService {
+            secrets: vec![piqueld_core::resource::SecretFile { secret_name: secret_name.clone(), target: "/run/secrets/token".into() }],
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
             name: piqueld_core::DockerServiceName::parse(docker_resource_name(
                 &app,
@@ -126,7 +133,7 @@ impl SwarmScenario {
             command: vec!["/bin/sh".into()],
             arguments: vec![
                 "-c".into(),
-                "echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
+                "test $(cat /run/secrets/token) = mounted-value || exit 1; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
             ],
             mounts: vec![],
             healthcheck: Some(HealthCheck::Command {
@@ -139,6 +146,14 @@ impl SwarmScenario {
             labels: service_labels,
         };
         engine.ensure_service_eventually(&service).await;
+        assert!(
+            engine
+                .docker
+                .remove_secrets(std::slice::from_ref(&secret_name), &labels)
+                .await
+                .is_err(),
+            "Docker refuses removal while a service uses the secret"
+        );
 
         Self {
             engine,
@@ -223,6 +238,16 @@ impl SwarmScenario {
     }
 
     async fn assert_healthchecks(&self, http_service: &DesiredService) {
+        let observed = self.engine.docker.observe(&self.app).await.unwrap();
+        assert_eq!(
+            observed
+                .services
+                .iter()
+                .find(|s| s.name == self.service.name.as_str())
+                .unwrap()
+                .secrets,
+            self.service.secrets
+        );
         let observed = self.engine.docker.observe(&self.app).await.unwrap();
         assert_eq!(
             observed
@@ -422,6 +447,19 @@ impl SwarmScenario {
             bollard::API_DEFAULT_VERSION,
         )
         .unwrap();
+        let secret_name = &self.service.secrets[0].secret_name;
+        self.engine
+            .docker
+            .remove_secrets(std::slice::from_ref(secret_name), &self.labels)
+            .await
+            .unwrap();
+        assert!(matches!(
+            raw.inspect_secret(secret_name).await,
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            })
+        ));
         raw.remove_volume(
             self.volume.name.as_str(),
             None::<bollard::query_parameters::RemoveVolumeOptions>,

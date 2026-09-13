@@ -43,6 +43,9 @@ pub struct ValidatedService {
     pub arguments: Vec<String>,
     /// Persistent volume mounts.
     pub mounts: Vec<ValidatedMount>,
+    /// Application-scoped secret file mounts.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<input::SecretMount>,
     /// Optional container health check.
     pub healthcheck: Option<HealthCheck>,
     /// Optional CPU and memory limits.
@@ -144,6 +147,7 @@ impl ValidatedService {
             environment: value.environment,
             command: value.command,
             arguments: value.arguments,
+            secrets: value.secrets,
             mounts: value
                 .mounts
                 .into_iter()
@@ -174,6 +178,7 @@ impl ValidatedService {
             environment: self.environment.clone(),
             command: self.command.clone(),
             arguments: self.arguments.clone(),
+            secrets: self.secrets.clone(),
             mounts: self
                 .mounts
                 .iter()

@@ -200,3 +200,18 @@ Authentication and credentials are not profile settings yet.
 `piquelctl builds list [--application ID] [--cursor CURSOR]` lists one page of build
 attempts. `piquelctl builds logs ID [--offset BYTE_OFFSET]` reads one bounded output
 page and prints the next offset when available. Both support `--json`.
+
+Application secrets are write-only:
+
+```sh
+piquelctl secret notes list
+piquelctl secret notes set database-password --file ./password --yes
+printf '%s' 'new-value' | piquelctl secret notes set database-password --stdin --yes
+piquelctl secret notes delete database-password --yes
+```
+
+Prefer protected files or a secure stdin producer over literal shell values in
+real use. `--expected-generation` pins a write to inspected metadata; otherwise
+the CLI reads the current generation before confirming. `--json` returns only
+metadata. Replacement creates a new version for a later Deploy and does not
+change running deployments. Deletion refuses saved or runnable references.

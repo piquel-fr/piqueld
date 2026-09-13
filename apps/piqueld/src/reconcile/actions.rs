@@ -60,7 +60,27 @@ impl<D: DockerApi> Controller<D> {
         match kind {
             ActionKind::EnsureNetwork { network } => self.docker.ensure_network(network).await,
             ActionKind::EnsureVolume { volume } => self.docker.ensure_volume(volume).await,
-            ActionKind::EnsureService { service } => self.docker.ensure_service(service).await,
+            ActionKind::EnsureService { service } => {
+                let app = ownership
+                    .get(super::APPLICATION_LABEL)
+                    .ok_or(DockerError::OwnershipConflict)?;
+                let app = piqueld_core::ApplicationId::parse(app)
+                    .map_err(|_| DockerError::OwnershipConflict)?;
+                for secret in &service.secrets {
+                    let value = self
+                        .store
+                        .secret_plaintext(&app, &secret.secret_name)
+                        .await
+                        .map_err(|error| DockerError::RequestSource {
+                            operation: "load secret for service",
+                            source: error.into(),
+                        })?;
+                    self.docker
+                        .ensure_secret(&secret.secret_name, &value, ownership)
+                        .await?;
+                }
+                self.docker.ensure_service(service).await
+            }
             ActionKind::RemoveService { name } => self.docker.remove_service(name, ownership).await,
             ActionKind::RemoveNetwork { name } => self.docker.remove_network(name, ownership).await,
             _ => Err(DockerError::Validation("execute a non-mutating action")),

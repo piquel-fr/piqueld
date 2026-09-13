@@ -5,6 +5,8 @@ mod commands;
 mod error;
 mod output;
 mod profiles;
+
+mod secrets;
 mod support;
 
 use clap::{CommandFactory, FromArgMatches};
