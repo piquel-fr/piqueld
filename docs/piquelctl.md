@@ -130,3 +130,27 @@ application. Use `--yes` to skip interactive confirmation, `--no-wait` to return
 after acceptance, or a longer global `--timeout` for builds. The server continues
 deployment if the CLI wait times out. `refresh` resolves only the stored service
 sources; `reconcile` retries or repairs the latest deployment snapshot and prepared target.
+
+## Connection profiles
+
+Select a named connection with `--profile NAME` or `PIQUELD_PROFILE`.
+`--profiles-file PATH` / `PIQUELD_PROFILES_FILE` overrides
+`$XDG_CONFIG_HOME/piqueld/profiles.toml` (otherwise `$HOME/.config/piqueld/profiles.toml`).
+An optional `[profiles.default]` is used when no name is selected; an explicitly
+selected missing profile is an error.
+
+```toml
+[profiles.testing]
+socket = "/tmp/piqueld-dev/piqueld.sock"
+timeout = "2m"
+
+[profiles.local-http]
+url = "http://127.0.0.1:7845"
+```
+
+Profiles contain exactly one `socket` or `url`, plus an optional `timeout`.
+Precedence is explicit flags, then `PIQUELD_SOCKET` / `PIQUELD_URL` /
+`PIQUELD_TIMEOUT`, then profile settings, then built-in defaults. A transport
+override replaces the entire profile transport. Simultaneous environment socket
+and URL values are rejected unless an explicit transport overrides them.
+Authentication and credentials are not profile settings yet.

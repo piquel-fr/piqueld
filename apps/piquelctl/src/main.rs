@@ -4,9 +4,10 @@ mod cli;
 mod commands;
 mod error;
 mod output;
+mod profiles;
 mod support;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use cli::Cli;
 use error::{CliError, ErrorKind, finish_error};
 use std::{process::ExitCode, time::Duration};
@@ -14,7 +15,11 @@ use tokio::time::Instant;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let mut cli = Cli::from_arg_matches(&matches).expect("validated command arguments");
+    if let Err(error) = profiles::Profiles::resolve(&mut cli, &matches) {
+        return finish_error(&cli, error);
+    }
     match run_with_timeout(&cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => finish_error(&cli, error),
