@@ -280,7 +280,7 @@ pub(super) async fn plan(
 ) -> Result<impl IntoResponse, ApiError> {
     let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
     let current = state.store.find_by_name(manifest.name()).await?;
-    crate::store::SqliteStore::check_generation(
+    crate::store::Store::check_generation(
         expected,
         current.as_ref().map_or(0, |app| app.generation),
     )?;

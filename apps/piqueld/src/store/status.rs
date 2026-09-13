@@ -1,10 +1,10 @@
 //! Runtime status writes are guarded by the operation that observed them.
 
-use super::{ApplicationId, ApplicationState, ApplicationStatus, SqliteStore, StoreError, now_ms};
+use super::{ApplicationId, ApplicationState, ApplicationStatus, Store, StoreError, now_ms};
 use serde::Deserialize;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
-impl SqliteStore {
+impl Store {
     /// Reads the application's last observed status.
     ///
     /// # Errors
@@ -79,7 +79,7 @@ impl SqliteStore {
     }
 }
 
-impl SqliteStore {
+impl Store {
     /// Records a meaningful observed health transition without overwriting intent progress.
     /// # Errors
     /// Returns a store error. Superseded observations are ignored.

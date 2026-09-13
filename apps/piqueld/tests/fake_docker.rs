@@ -6,7 +6,7 @@ mod git_fixture;
 use async_trait::async_trait;
 use piqueld::docker::{DockerApi, DockerError, ImageSource, SwarmState, resolve_image_digest};
 use piqueld::reconcile::Controller;
-use piqueld::store::SqliteStore;
+use piqueld::store::Store;
 use piqueld_core::Sha256Digest;
 use piqueld_core::planner::PlanRequest;
 use piqueld_core::resource::{
@@ -373,12 +373,12 @@ fn application() -> piqueld_core::NormalizedApplication {
 async fn fixture_store(
     directory: &tempfile::TempDir,
 ) -> (
-    Arc<SqliteStore>,
+    Arc<Store>,
     piqueld_core::NormalizedApplication,
     ResolvedApplication,
 ) {
     let store = Arc::new(
-        SqliteStore::open(directory.path().join("control-plane.db"))
+        Store::open(directory.path().join("control-plane.db"))
             .await
             .expect("fresh database opens"),
     );
@@ -415,7 +415,7 @@ fn foreign_labels(application_id: &ApplicationId) -> BTreeMap<String, String> {
 struct ControllerHarness {
     _directory: tempfile::TempDir,
     database_path: PathBuf,
-    store: Arc<SqliteStore>,
+    store: Arc<Store>,
     application: piqueld_core::NormalizedApplication,
     resolutions: ResolutionSet,
     resolved: ResolvedApplication,
@@ -428,7 +428,7 @@ impl ControllerHarness {
         let directory = tempfile::tempdir().expect("temporary directory");
         let database_path = directory.path().join("control-plane.db");
         let store = Arc::new(
-            SqliteStore::open(&database_path)
+            Store::open(&database_path)
                 .await
                 .expect("fresh database opens"),
         );
@@ -795,7 +795,7 @@ async fn controller_refuses_a_foreign_same_name_service() {
 /// conflict is journaled as a degraded, failed operation.
 async fn assert_foreign_fixture_refuses_reconciliation(
     docker: &Arc<FakeDocker>,
-    store: &Arc<SqliteStore>,
+    store: &Arc<Store>,
     application: &piqueld_core::NormalizedApplication,
     resolved: &ResolvedApplication,
 ) -> Operation {
@@ -1173,7 +1173,7 @@ async fn periodic_recovery_reuses_failed_prepared_target_and_records_health_chan
 async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_discarded() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        SqliteStore::open(directory.path().join("state.db"))
+        Store::open(directory.path().join("state.db"))
             .await
             .unwrap(),
     );
@@ -1275,7 +1275,7 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
 async fn controller_enforces_global_io_bounds_on_a_single_thread() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        SqliteStore::open(directory.path().join("state.db"))
+        Store::open(directory.path().join("state.db"))
             .await
             .unwrap(),
     );
@@ -1840,7 +1840,7 @@ mod repository_deployments {
         assert_eq!(failed.error_code.as_deref(), Some("git_build_failed"));
         repository.write("app.json", &initial);
         repository.commit();
-        let reopened = Arc::new(SqliteStore::open(&harness.database_path).await.unwrap());
+        let reopened = Arc::new(Store::open(&harness.database_path).await.unwrap());
         let controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&reopened));
         let applications = piqueld::application::Applications::new(
             Arc::clone(&reopened),

@@ -5,7 +5,7 @@ use axum::{body::Body, http::Request, serve};
 use http_body_util::BodyExt;
 use piqueld::api::{ApiState, EmbeddedBundle, UiAssets, api_router, router, web_router};
 use piqueld::application::{BoundaryError, RuntimeBoundary};
-use piqueld::store::{SqliteStore, StoredApplication};
+use piqueld::store::{Store, StoredApplication};
 use piqueld_client::{AcceptedOperation, ApplyApplicationRequest, Client};
 use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
@@ -90,7 +90,7 @@ fn manifest() -> ApplicationManifest {
 
 async fn state(temp: &TempDir) -> ApiState {
     let store = Arc::new(
-        SqliteStore::open(temp.path().join("state.db"))
+        Store::open(temp.path().join("state.db"))
             .await
             .expect("fresh database opens"),
     );
@@ -1262,17 +1262,13 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
 struct AcceptanceApi {
     client: Client,
     runtime: Arc<FakeRuntime>,
-    store: Arc<SqliteStore>,
+    store: Arc<Store>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 
 impl AcceptanceApi {
     async fn start(temp: &TempDir) -> Self {
-        let store = Arc::new(
-            SqliteStore::open(temp.path().join("state.db"))
-                .await
-                .unwrap(),
-        );
+        let store = Arc::new(Store::open(temp.path().join("state.db")).await.unwrap());
         let instance = InstanceId::parse(store.instance_id()).unwrap();
         let runtime = Arc::new(FakeRuntime {
             instance,

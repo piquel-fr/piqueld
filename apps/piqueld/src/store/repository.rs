@@ -7,7 +7,7 @@
 //! The candidate is copied to deployment history when fetched, but only becomes
 //! saved application configuration after source preparation succeeds, provided
 //! no newer configuration was saved in the meantime.
-use super::{NormalizedApplication, Operation, SqliteStore, StoreError, now_ms};
+use super::{NormalizedApplication, Operation, Store, StoreError, now_ms};
 use sqlx::{Sqlite, Transaction};
 
 pub(crate) struct DeploymentInput {
@@ -15,7 +15,7 @@ pub(crate) struct DeploymentInput {
     pub(crate) fetched: bool,
 }
 
-impl SqliteStore {
+impl Store {
     pub(crate) async fn insert_deployment_on(
         tx: &mut Transaction<'_, Sqlite>,
         operation: &Operation,
@@ -115,9 +115,7 @@ mod tests {
     #[tokio::test]
     async fn fetched_snapshot_preserves_intervening_saved_configuration() {
         let directory = tempfile::tempdir().unwrap();
-        let store = SqliteStore::open(directory.path().join("db"))
-            .await
-            .unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
         let initial = piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='test'\n[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/app.git'\nbranch='main'").unwrap().normalize(ApplicationId::parse("test-app").unwrap());
         let (MutationResponse::Saved(saved), _) = store
             .accept(

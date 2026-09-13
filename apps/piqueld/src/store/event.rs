@@ -1,9 +1,9 @@
 //! Append-only diagnostic history, independent of operation retention.
-use super::{ApplicationId, SqliteStore, StoreError, page_limit};
+use super::{ApplicationId, Store, StoreError, page_limit};
 use piqueld_core::{Event, api::Page};
 use sqlx::{Sqlite, Transaction};
 
-impl SqliteStore {
+impl Store {
     pub(super) async fn operation_event(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,

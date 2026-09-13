@@ -1,6 +1,6 @@
 //! Durable desired state and operation history.
 
-use piqueld::store::{SqliteStore, StoreError};
+use piqueld::store::{Store, StoreError};
 use piqueld_core::resource::{ResolutionSet, ResolvedSource, compile_application};
 use piqueld_core::{ApplicationId, InstanceId, OperationState, parse_toml};
 use sqlx::{Connection, SqliteConnection};
@@ -49,9 +49,7 @@ fn resolved(
 async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("control-plane.db");
-    let store = SqliteStore::open(&database)
-        .await
-        .expect("fresh database opens");
+    let store = Store::open(&database).await.expect("fresh database opens");
     let application = application();
     let desired = resolved(&application, store.instance_id());
     let created = store
@@ -81,9 +79,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     assert!(store.get(&application.id).await.unwrap().delete_intent);
     drop(store);
 
-    let reopened = SqliteStore::open(&database)
-        .await
-        .expect("database reopens");
+    let reopened = Store::open(&database).await.expect("database reopens");
     assert_eq!(
         reopened
             .get(&application.id)
@@ -126,7 +122,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
 #[tokio::test]
 async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation() {
     let directory = tempfile::tempdir().expect("temporary directory");
-    let store = SqliteStore::open(directory.path().join("state.db"))
+    let store = Store::open(directory.path().join("state.db"))
         .await
         .unwrap();
     let application = application();
@@ -194,9 +190,7 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
 async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("control-plane.db");
-    let store = SqliteStore::open(&database)
-        .await
-        .expect("fresh database opens");
+    let store = Store::open(&database).await.expect("fresh database opens");
     let corrupt = application();
     let healthy = application_named("app-persist-02", "archive");
     store
@@ -292,7 +286,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
 #[tokio::test]
 async fn deployment_history_survives_pruning_and_events_have_independent_retention() {
     let directory = tempfile::tempdir().unwrap();
-    let store = SqliteStore::open(directory.path().join("state.db"))
+    let store = Store::open(directory.path().join("state.db"))
         .await
         .unwrap();
     let app = application();

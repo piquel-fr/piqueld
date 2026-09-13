@@ -195,13 +195,13 @@ pub struct ApplicationSummaryPage {
 
 /// SQLite repository shared by the application service and controller.
 #[derive(Clone)]
-pub struct SqliteStore {
+pub struct Store {
     pool: SqlitePool,
     instance_id: String,
     writers: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
-impl SqliteStore {
+impl Store {
     /// Opens a local `SQLite` database, applies forward migrations, and creates or loads its instance ID.
     ///
     /// # Errors
