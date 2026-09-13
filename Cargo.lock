@@ -1835,6 +1835,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "gloo-timers",
+ "js-sys",
  "leptos",
  "leptos_router",
  "piqueld-client",

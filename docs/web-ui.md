@@ -151,3 +151,8 @@ The main overview groups daemon connectivity with deployment readiness for
 SQLite, Docker reachability, and Swarm suitability. Green and red labels state
 each result in text, and one refresh updates the complete dashboard status.
 These diagnostics never disable configuration controls.
+
+Build history is available from the main navigation and each application's Builds
+tab. Attempts show their outcome, commit, image and duration. Running attempts
+refresh while the page is visible; older pages remain stable. Output is read in
+bounded pages, with explicit expiration and truncation notices.
