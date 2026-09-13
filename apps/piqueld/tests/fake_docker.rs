@@ -1915,3 +1915,70 @@ mod repository_deployments {
         );
     }
 }
+
+#[derive(Clone, Default)]
+struct TraceCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for TraceCapture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn operation_traces_correlate_outcomes_without_configuration_values() {
+    use tracing::instrument::WithSubscriber;
+    let capture = TraceCapture::default();
+    let writer = capture.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || writer.clone())
+        .finish();
+    let (application_id, operation_id) = async {
+        let mut harness = ControllerHarness::new().await;
+        harness.application.spec.services[0]
+            .environment
+            .insert("TOKEN".into(), "must-not-appear-in-traces".into());
+        harness.resolved = compile_application(
+            &harness.application,
+            InstanceId::parse(harness.store.instance_id()).unwrap(),
+            &harness.resolutions,
+        )
+        .unwrap();
+        let operation = harness.create().await;
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+        (harness.application.id.to_string(), operation.id)
+    }
+    .with_subscriber(subscriber)
+    .await;
+    let text = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    assert!(!text.contains("must-not-appear-in-traces"));
+    let events: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let completed = events
+        .iter()
+        .find(|event| event["fields"]["message"] == "operation execution completed")
+        .unwrap();
+    assert_eq!(completed["span"]["application_id"], application_id);
+    assert_eq!(completed["span"]["operation_id"], operation_id);
+    assert_eq!(completed["span"]["generation"], 1);
+    assert_eq!(completed["fields"]["outcome"], "succeeded");
+    assert!(completed["fields"]["duration_ms"].as_f64().is_some());
+    assert!(
+        events
+            .iter()
+            .any(|event| event["fields"]["message"] == "action completed")
+    );
+}

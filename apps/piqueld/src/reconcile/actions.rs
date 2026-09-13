@@ -4,6 +4,7 @@ use super::{
 };
 
 impl<D: DockerApi> Controller<D> {
+    #[tracing::instrument(skip_all, fields(action = action.kind.name(), resource = action.kind.resource_name()))]
     pub(super) async fn execute_action(
         &self,
         action: &piqueld_core::PlanAction,
@@ -19,6 +20,8 @@ impl<D: DockerApi> Controller<D> {
             )
             .await
             .map_err(OperationError::from)?;
+        let started = std::time::Instant::now();
+        tracing::debug!("action started");
         let result = match &action.kind {
             kind if kind.mutates_runtime() => {
                 self.retry(operation, cancellation, || {
@@ -36,6 +39,11 @@ impl<D: DockerApi> Controller<D> {
             }
             _ => Ok(()),
         };
+        tracing::debug!(
+            succeeded = result.is_ok(),
+            duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
+            "action completed"
+        );
         if result.is_ok() && action.kind.mutates_runtime() {
             self.store
                 .mutation_event(&operation.id)
@@ -114,6 +122,8 @@ impl<D: DockerApi> Controller<D> {
                     tracing::warn!(
                         error = ?error,
                         attempt = attempt + 1,
+                        attempts,
+                        retry_delay_ms = delay.as_secs_f64() * 1_000.0,
                         "Docker operation failed; retrying"
                     );
                     tokio::select! {()=cancellation.cancelled()=>return Err(OperationError::Cancelled),()=tokio::time::sleep(delay)=>{}}
@@ -153,6 +163,7 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Reads application state until Docker responds or the convergence deadline expires.
+    #[tracing::instrument(skip_all, fields(phase = "observation"))]
     pub(super) async fn observe_with_retry(
         &self,
         operation: &Operation,
@@ -160,7 +171,9 @@ impl<D: DockerApi> Controller<D> {
         deadline: tokio::time::Instant,
     ) -> Result<piqueld_core::ObservedApplication, OperationError> {
         let mut delay = self.retry.initial_delay;
+        let mut attempt = 0_u64;
         loop {
+            attempt = attempt.saturating_add(1);
             self.check_current(operation).await?;
             if cancellation.is_cancelled() {
                 return Err(OperationError::Cancelled);
@@ -184,7 +197,7 @@ impl<D: DockerApi> Controller<D> {
                         return Err(error.into());
                     }
                     let remaining = deadline.saturating_duration_since(now);
-                    tracing::warn!(error = ?error, "Docker observation failed; retrying");
+                    tracing::warn!(error = ?error, attempt, retry_delay_ms = delay.min(remaining).as_secs_f64() * 1_000.0, "Docker observation failed; retrying");
                     tokio::select! {
                         () = cancellation.cancelled() => return Err(OperationError::Cancelled),
                         () = tokio::time::sleep(delay.min(remaining)) => {}

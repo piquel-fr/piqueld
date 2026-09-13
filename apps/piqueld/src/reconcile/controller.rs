@@ -6,11 +6,33 @@ use crate::application::RuntimeBoundary;
 use std::sync::Arc;
 
 impl<D: DockerApi> Controller<D> {
+    #[tracing::instrument(skip_all, fields(
+        application_id = %operation.application_id,
+        operation_id = %operation.id,
+        generation = operation.generation,
+        operation_kind = ?operation.kind,
+    ))]
     pub(super) async fn run_operation(
         &self,
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<(), StoreError> {
+        let started = std::time::Instant::now();
+        tracing::info!("operation started");
+        let result = self.run_operation_inner(operation, cancellation).await;
+        let duration_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        match &result {
+            Ok(outcome) => tracing::info!(outcome, duration_ms, "operation execution completed"),
+            Err(error) => tracing::error!(?error, duration_ms, "operation journal update failed"),
+        }
+        result.map(|_| ())
+    }
+
+    async fn run_operation_inner(
+        &self,
+        operation: &Operation,
+        cancellation: &CancellationToken,
+    ) -> Result<&'static str, StoreError> {
         if operation.state == OperationState::Requested {
             match self
                 .store
@@ -23,7 +45,7 @@ impl<D: DockerApi> Controller<D> {
                 .await
             {
                 Ok(()) => {}
-                Err(StoreError::IllegalTransition) => return Ok(()),
+                Err(StoreError::IllegalTransition) => return Ok("superseded"),
                 Err(error) => return Err(error),
             }
         }
@@ -48,9 +70,13 @@ impl<D: DockerApi> Controller<D> {
         let operation = &self.store.operation(&operation.id).await?;
         let result = self.execute_operation(operation, cancellation).await;
         if cancellation.is_cancelled() {
-            return Ok(());
+            return Ok("cancelled");
         }
-        match result {
+        let outcome = match &result {
+            Ok(()) => "succeeded",
+            Err(error) => error.code(),
+        };
+        let persisted = match result {
             Ok(()) if operation.kind == OperationKind::Delete => {
                 self.store.finish_delete_operation(operation).await
             }
@@ -82,11 +108,13 @@ impl<D: DockerApi> Controller<D> {
                 }
             }
             Err(error) if operation.kind == OperationKind::Delete => {
+                tracing::warn!(code = error.code(), "deletion will be retried");
                 self.store
                     .record_operation_error(operation, error.code(), &error.message())
                     .await
             }
             Err(error) => {
+                tracing::error!(code = error.code(), "operation failed");
                 self.record_failure(operation, error).await?;
                 self.store
                     .transition_operation(
@@ -97,11 +125,13 @@ impl<D: DockerApi> Controller<D> {
                     )
                     .await
             }
-        }
+        };
+        persisted.map(|()| outcome)
     }
 
     /// Plans from fresh observations until no work remains. Only desired state and
     /// operation status are durable; Docker state determines the next action.
+    #[tracing::instrument(skip_all, fields(phase = "convergence"))]
     async fn execute_operation(
         &self,
         operation: &Operation,
@@ -140,6 +170,10 @@ impl<D: DockerApi> Controller<D> {
         {
             return Err(OperationError::Superseded);
         }
+        tracing::debug!(
+            timeout_seconds = self.retry.convergence_timeout.as_secs(),
+            "convergence started"
+        );
         let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
         loop {
             self.check_current(operation).await?;
@@ -161,6 +195,11 @@ impl<D: DockerApi> Controller<D> {
                 .await
                 .map_err(OperationError::from)?;
             let plan = Plan::from_request(&request, &observed);
+            tracing::debug!(
+                actions = plan.actions.len(),
+                blocked = plan.is_blocked(),
+                "observation planned"
+            );
             self.check_plan(operation, &plan).await?;
             if operation.kind != OperationKind::Delete {
                 let _guard = self.mutations.lock().await;
@@ -210,6 +249,7 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(phase = "preparation", timeout_seconds = self.prepare_timeout.as_secs()))]
     async fn prepare_target(
         &self,
         operation: &Operation,
