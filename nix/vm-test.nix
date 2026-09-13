@@ -18,6 +18,13 @@ pkgs.testers.runNixOSTest {
     virtualisation.memorySize = 2048;
     virtualisation.diskSize = 4096;
   };
+  nodes.client = { ... }: {
+    imports = [ module ];
+    services.piqueld = {
+      installCli = true;
+      cliPackage = cli;
+    };
+  };
   testScript = ''
     start_all()
     machine.wait_for_unit("piqueld.service")
@@ -25,6 +32,12 @@ pkgs.testers.runNixOSTest {
     machine.succeed("test $(stat -c %a /var/lib/piqueld-test) = 700")
     machine.succeed("test $(stat -c %a /var/lib/piqueld-test/piqueld.sock) = 600")
     machine.fail("su nobody -s /bin/sh -c 'cat /var/lib/piqueld-test/piqueld.db'")
+    machine.fail("su nobody -s /bin/sh -c 'curl --fail --max-time 5 http://127.0.0.1:7845/api/v1/system/status'")
+    machine.fail("su nobody -s /bin/sh -c 'piquelctl --socket /var/lib/piqueld-test/piqueld.sock status'")
+    client.succeed("piquelctl --help")
+    client.succeed("test ! -e /etc/systemd/system/piqueld.service")
+    client.succeed("test ! -e /etc/systemd/system/docker.service")
+    client.fail("id piqueld")
     machine.succeed("piquelctl --socket /var/lib/piqueld-test/piqueld.sock status")
     machine.succeed("docker info --format '{{.Swarm.ControlAvailable}}' | grep true")
     machine.succeed("systemctl restart piqueld.service")
