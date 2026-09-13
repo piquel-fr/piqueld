@@ -13,6 +13,7 @@
     let
       supportedSystems = [
         "x86_64-linux"
+        "aarch64-linux"
         "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
@@ -216,6 +217,66 @@
             withUi = true;
             cargoArtifacts = daemonDeps;
           };
+        }
+      );
+
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          package = self.packages.${system}.default;
+          cli-package = self.packages.${system}.cli;
+          formatting =
+            pkgs.runCommand "piqueld-formatting"
+              {
+                nativeBuildInputs = [
+                  pkgs.cargo
+                  pkgs.rustfmt
+                  pkgs.nixfmt
+                ];
+                src = pkgs.lib.cleanSource self;
+              }
+              ''
+                cp -R "$src" source
+                chmod -R u+w source
+                cd source
+                cargo fmt --check
+                nixfmt --check flake.nix
+                touch "$out"
+              '';
+          # cargo tree must resolve the crates.io dependency graph, so the
+          # check vendors all sources up front and stays sandbox-safe.
+          dependency-boundary = pkgs.stdenv.mkDerivation {
+            name = "piqueld-dependency-boundary";
+            src = pkgs.lib.cleanSource self;
+            nativeBuildInputs = [
+              pkgs.cargo
+              pkgs.rustPlatform.cargoSetupHook
+            ];
+            cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+              name = "piqueld-dependency-boundary-deps";
+              src = pkgs.lib.cleanSource self;
+              hash = "sha256-OMl/tz8vE76uhu/tGbZHCnqA2YTG4ukOG3Gsh+ubJMU=";
+            };
+            dontConfigure = true;
+            buildPhase = ''
+              bash scripts/check-dependency-boundaries.sh
+            '';
+            installPhase = ''
+              touch "$out"
+            '';
+          };
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          nixos-service = import ./nix/vm-test.nix {
+            inherit pkgs;
+            module = self.nixosModules.default;
+            daemon = self.packages.${system}.daemon;
+            cli = self.packages.${system}.cli;
+          };
+          daemon-package = self.packages.${system}.daemon;
         }
       );
 
