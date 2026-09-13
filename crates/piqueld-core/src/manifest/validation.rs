@@ -1,24 +1,17 @@
-//! Public application manifests and their validated, canonical domain model.
+//! Strict decoding and aggregate semantic validation of manifest inputs.
 
-use crate::ApplicationId;
-use crate::codes;
-use crate::resource::valid_logical_name;
+use super::{
+    APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, GitRepository,
+    HealthCheck, Mount, ResourceLimits, Service, Source, ValidatedApplication, Volume,
+};
+use crate::{codes, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
 use serde_path_to_error::Path;
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
 };
 use utoipa::ToSchema;
-
-/// The supported application API version.
-pub const APPLICATION_API_VERSION: &str = "piqueld.dev/v1alpha1";
-/// The supported manifest resource kind.
-pub const APPLICATION_KIND: &str = "Application";
-/// Envelope version for the specification hash. Version 2 hashes only the
-/// canonical spec, so cosmetic metadata changes no longer redeploy services.
-pub const SPEC_HASH_VERSION: &str = "piqueld-spec-hash/v2";
 
 const MAX_SERVICES: usize = 64;
 const MAX_VOLUMES: usize = 64;
@@ -32,115 +25,6 @@ const MAX_PROCESS_ELEMENT_BYTES: usize = 4_096;
 const MAX_MOUNTS_PER_SERVICE: usize = 32;
 const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
 const MAX_CPU_MILLIS: u32 = 1_048_576;
-
-/// Strict public application manifest request and export shape.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ApplicationManifest {
-    /// API version string.
-    pub api_version: String,
-    /// Resource kind string.
-    pub kind: String,
-    /// User-provided metadata.
-    pub metadata: Metadata,
-    /// Desired application resources.
-    pub spec: ApplicationSpec,
-}
-
-/// User-provided application metadata.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Metadata {
-    /// User-facing application name.
-    pub name: String,
-}
-
-/// User-provided application resource lists.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct ApplicationSpec {
-    /// Optional repository that supplies this application's manifest on Deploy.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub manifest: Option<RepositoryManifest>,
-    /// Declared services.
-    pub services: Vec<Service>,
-    /// Declared named volumes.
-    pub volumes: Vec<Volume>,
-}
-
-/// Independently selects the manifest used by a manual deployment.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RepositoryManifest {
-    /// Repository and revision containing the manifest.
-    pub repository: GitRepository,
-    /// Exact TOML or JSON file path relative to the repository root.
-    pub path: String,
-}
-
-/// User-declared application service.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Service {
-    /// Logical service name.
-    pub name: String,
-    /// Explicit image or build source.
-    pub source: Source,
-    /// Desired replica count.
-    #[serde(default = "default_replicas")]
-    pub replicas: u16,
-    /// Environment variables keyed by name.
-    #[serde(default)]
-    pub environment: BTreeMap<String, String>,
-    /// Container entrypoint command.
-    #[serde(default)]
-    pub command: Vec<String>,
-    /// Arguments passed to the command.
-    #[serde(default)]
-    pub arguments: Vec<String>,
-    /// Persistent volume mounts.
-    #[serde(default)]
-    pub mounts: Vec<Mount>,
-    /// Optional container health check.
-    pub healthcheck: Option<HealthCheck>,
-    /// Optional CPU and memory limits.
-    pub resources: Option<ResourceLimits>,
-}
-
-fn default_replicas() -> u16 {
-    1
-}
-
-/// The exhaustive set of deployable service sources.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
-pub enum Source {
-    /// Pull a prebuilt image from a registry.
-    Image {
-        /// Image reference.
-        image: String,
-    },
-    /// Build a checked-out Git revision.
-    Git {
-        /// Repository and revision to resolve.
-        repository: GitRepository,
-        /// Explicit build instructions.
-        build: Build,
-    },
-}
-
-/// Git checkout configuration. Credentials come from the host's Git configuration.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct GitRepository {
-    /// Git clone URL or local repository path.
-    pub url: String,
-    /// Branch to fetch when no commit is pinned.
-    pub branch: String,
-    /// Optional full commit hash.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-}
 
 impl GitRepository {
     /// Validates Git arguments without executing Git.
@@ -232,99 +116,6 @@ pub fn valid_repository_path(value: &str) -> bool {
         && value.split('/').all(|part| part != ".." && part != ".git")
 }
 
-/// Explicit build backend, extensible independently from source selection.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
-pub enum Build {
-    /// Build a local container image using Docker.
-    Docker {
-        /// Dockerfile path relative to the repository root.
-        dockerfile: String,
-        /// Build context relative to the repository root.
-        #[serde(default = "default_build_context")]
-        context: String,
-    },
-}
-
-fn default_build_context() -> String {
-    ".".into()
-}
-
-/// User-declared named volume.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Volume {
-    /// Logical volume name.
-    pub name: String,
-}
-
-/// A persistent volume mount in a service.
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Mount {
-    /// Referenced logical volume name.
-    pub volume: String,
-    /// Container target path.
-    pub target: String,
-    /// Whether the mount is read-only.
-    #[serde(default)]
-    pub read_only: bool,
-}
-
-/// User-declared container health check.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
-pub enum HealthCheck {
-    /// HTTP health endpoint check.
-    Http {
-        /// Container port to probe.
-        port: u16,
-        /// HTTP path to probe.
-        #[serde(default = "default_health_path")]
-        path: String,
-        /// Probe interval in seconds.
-        #[serde(default = "default_interval")]
-        interval_seconds: u32,
-        /// Probe timeout in seconds.
-        #[serde(default = "default_timeout")]
-        timeout_seconds: u32,
-    },
-    /// Executable command health check.
-    Command {
-        /// Command and arguments to execute.
-        command: Vec<String>,
-        /// Probe interval in seconds.
-        #[serde(default = "default_interval")]
-        interval_seconds: u32,
-        /// Probe timeout in seconds.
-        #[serde(default = "default_timeout")]
-        timeout_seconds: u32,
-    },
-}
-
-fn default_health_path() -> String {
-    "/health".into()
-}
-
-fn default_interval() -> u32 {
-    10
-}
-
-fn default_timeout() -> u32 {
-    3
-}
-
-/// Optional CPU and memory limits for a service.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ResourceLimits {
-    /// CPU limit in millicores.
-    pub cpu_millis: Option<u32>,
-    /// Memory limit in bytes.
-    #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_u64)]
-    pub memory_bytes: Option<u64>,
-}
-
 /// A field-level, safe validation error.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct ValidationError {
@@ -360,28 +151,6 @@ impl fmt::Display for ValidationErrors {
 }
 
 impl std::error::Error for ValidationErrors {}
-
-/// Validated domain application before canonical collection ordering.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ValidatedApplication {
-    name: String,
-    spec: ApplicationSpec,
-}
-
-/// Canonical desired application plus persistence-assigned identity.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-pub struct NormalizedApplication {
-    /// Stable application identity.
-    pub id: ApplicationId,
-    /// API version string.
-    pub api_version: String,
-    /// Resource kind string.
-    pub kind: String,
-    /// Canonical metadata.
-    pub metadata: Metadata,
-    /// Canonical resource specification.
-    pub spec: ApplicationSpec,
-}
 
 /// Parses and validates strict TOML without performing I/O.
 ///
@@ -937,108 +706,6 @@ fn unique_names<'a>(
         }
     }
     found
-}
-
-impl ValidatedApplication {
-    /// Returns the editable application name.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the validated specification before canonical ordering.
-    #[must_use]
-    pub fn spec(&self) -> &ApplicationSpec {
-        &self.spec
-    }
-
-    /// Canonicalizes unordered collections and attaches a stable ID.
-    #[must_use]
-    pub fn normalize(self, id: ApplicationId) -> NormalizedApplication {
-        let mut spec = self.spec;
-        normalize_spec(&mut spec);
-        NormalizedApplication {
-            id,
-            api_version: APPLICATION_API_VERSION.into(),
-            kind: APPLICATION_KIND.into(),
-            metadata: Metadata { name: self.name },
-            spec,
-        }
-    }
-}
-
-fn normalize_spec(spec: &mut ApplicationSpec) {
-    spec.services
-        .sort_by(|left, right| left.name.cmp(&right.name));
-    for service in &mut spec.services {
-        service.mounts.sort();
-    }
-    spec.volumes.sort();
-}
-
-impl NormalizedApplication {
-    /// Reapplies canonical ordering. This operation is idempotent.
-    #[must_use]
-    pub fn normalize(mut self) -> Self {
-        normalize_spec(&mut self.spec);
-        self
-    }
-
-    /// Versioned SHA-256 over canonical JSON after defaults and normalization.
-    ///
-    /// The envelope covers only the canonical spec, so cosmetic metadata edits
-    /// do not change the hash or redeploy services.
-    #[must_use]
-    ///
-    /// # Panics
-    ///
-    /// Panics only if the internal normalized manifest cannot be serialized,
-    /// which indicates a bug in the domain types.
-    pub fn spec_hash(&self) -> String {
-        #[derive(Serialize)]
-        struct HashEnvelope<'a> {
-            hash_version: &'static str,
-            spec: &'a ApplicationSpec,
-        }
-        let mut normalized = self.clone().normalize();
-        // Manifest location does not change the desired runtime resources.
-        normalized.spec.manifest = None;
-        let bytes = serde_json::to_vec(&HashEnvelope {
-            hash_version: SPEC_HASH_VERSION,
-            spec: &normalized.spec,
-        })
-        .expect("domain serialization is infallible");
-        format!("sha256:{:x}", Sha256::digest(bytes))
-    }
-
-    /// Canonical JSON representation used for durable desired state.
-    ///
-    /// # Errors
-    ///
-    /// Returns a serialization error if the normalized manifest cannot be
-    /// represented as JSON.
-    pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&self.clone().normalize())
-    }
-
-    /// Portable desired TOML representation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a serialization error if the normalized manifest cannot be
-    /// represented as TOML.
-    pub fn export_toml(&self) -> Result<String, toml::ser::Error> {
-        toml::to_string_pretty(&self.clone().normalize().to_manifest())
-    }
-
-    fn to_manifest(&self) -> ApplicationManifest {
-        ApplicationManifest {
-            api_version: self.api_version.clone(),
-            kind: self.kind.clone(),
-            metadata: self.metadata.clone(),
-            spec: self.spec.clone(),
-        }
-    }
 }
 
 fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
