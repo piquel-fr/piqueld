@@ -373,7 +373,7 @@ async fn toml_mutation_headers_are_forwarded() {
         .await
         .unwrap();
     server.abort();
-    assert_eq!(accepted.operation_id, "op-1");
+    assert_eq!(accepted.operation_id.as_deref(), Some("op-1"));
     let captured = CAPTURED
         .lock()
         .unwrap()

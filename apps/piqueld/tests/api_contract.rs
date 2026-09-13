@@ -157,16 +157,16 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
         manifest: manifest.clone(),
     };
     let created = client
-        .apply_application(&request)
+        .apply_and_deploy(&request)
         .await
         .expect("apply succeeds");
     request.expected_generation = Some(created.generation);
     request.expected_application_id = Some(created.application_id.clone());
     let replay = client
-        .apply_application(&request)
+        .apply_and_deploy(&request)
         .await
         .expect("apply retry succeeds");
-    assert_eq!(created.operation_id, replay.operation_id);
+    assert_ne!(created.operation_id, replay.operation_id);
     let summaries = client.applications().await.unwrap();
     assert_eq!(summaries.items.len(), 1);
     assert_eq!(
@@ -195,9 +195,9 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
     assert!(detail.diagnostics.is_empty());
     assert_eq!(
         client.operation(&created.operation_id).await.unwrap().kind,
-        piqueld_core::OperationKind::Apply
+        piqueld_core::OperationKind::Refresh
     );
-    created
+    replay
 }
 
 #[tokio::test]
@@ -571,7 +571,7 @@ async fn replace_and_plan(
         manifest,
     };
     let replaced = client
-        .apply_application(&request)
+        .apply_and_deploy(&request)
         .await
         .expect("replacement succeeds");
     assert_eq!(replaced.application_id, created.application_id);
@@ -693,26 +693,6 @@ async fn send_raw(
         headers,
         body,
     }
-}
-
-async fn create_toml_application(address: std::net::SocketAddr, manifest: &str) -> String {
-    let created = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/api/v1/applications/apply",
-        &[
-            ("content-type", "application/toml"),
-            ("x-expected-generation", "0"),
-        ],
-        manifest.as_bytes().to_vec(),
-    )
-    .await;
-    assert_eq!(created.status, StatusCode::ACCEPTED);
-    assert!(created.body["data"]["operation_id"].is_string());
-    created.body["data"]["application_id"]
-        .as_str()
-        .expect("accepted application ID")
-        .to_owned()
 }
 
 enum Target<'a> {
@@ -932,7 +912,16 @@ image = ""
     .await;
     unknown.assert_error(StatusCode::BAD_REQUEST, "json_malformed");
 
-    // TOML creation shares the JSON normalization pipeline.
+    server.abort();
+}
+
+#[tokio::test]
+async fn toml_save_exposes_summary_and_full_configuration() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+
     let valid_toml = r#"
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
@@ -945,7 +934,22 @@ replicas = 2
 type = "image"
 image = "ghcr.io/example/notes:1"
 "#;
-    let application_id = create_toml_application(address, valid_toml).await;
+    let created = send_raw(
+        Target::Tcp(address),
+        Method::POST,
+        "/api/v1/applications/apply",
+        &[
+            ("content-type", "application/toml"),
+            ("x-expected-generation", "0"),
+        ],
+        valid_toml.as_bytes().to_vec(),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK);
+    assert!(created.body["data"]["operation_id"].is_null());
+    let application_id = created.body["data"]["application_id"]
+        .as_str()
+        .expect("accepted application ID");
 
     let listed = send_raw(
         Target::Tcp(address),
@@ -1163,23 +1167,23 @@ async fn generations_refresh_reconcile_and_event_pagination_share_the_http_contr
         expected_generation: Some(0),
         expected_application_id: None,
     };
-    let first = client.apply_application(&request).await.unwrap();
+    let first = client.apply_and_deploy(&request).await.unwrap();
     assert_eq!(first.generation, 1);
-    let stale = client.apply_application(&request).await.unwrap_err();
+    let stale = client.apply_and_deploy(&request).await.unwrap_err();
     assert!(
         matches!(stale,piqueld_client::ClientError::Api {status,..} if status==axum::http::StatusCode::CONFLICT)
     );
     request.expected_generation = Some(1);
     request.expected_application_id = Some(first.application_id.clone());
     request.manifest.spec.services[0].replicas = 2;
-    let changed = client.apply_application(&request).await.unwrap();
+    let changed = client.apply_and_deploy(&request).await.unwrap();
     assert_eq!(changed.generation, 2);
     let refreshed = client
         .refresh_application(&first.application_id, Some(2))
         .await
         .unwrap();
     assert_eq!(refreshed.generation, 2);
-    assert_ne!(refreshed.operation_id, changed.operation_id);
+    assert_eq!(refreshed.operation_id, changed.operation_id);
     let reconciled = client
         .reconcile_application(&first.application_id, Some(2))
         .await
@@ -1276,16 +1280,16 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
     let api = AcceptanceApi::start(&temp).await;
     let request = AcceptanceApi::request();
     let keyed = api.client.clone().with_request_id("apply-command-1");
-    let accepted = keyed.apply_application(&request).await.unwrap();
+    let accepted = keyed.apply_and_deploy(&request).await.unwrap();
     let mut replacement = request.clone();
     replacement.expected_generation = Some(1);
     replacement.expected_application_id = Some(accepted.application_id.clone());
     replacement.manifest.spec.services[0].replicas = 2;
-    api.client.apply_application(&replacement).await.unwrap();
+    api.client.apply_and_deploy(&replacement).await.unwrap();
     drop(api);
     let api = AcceptanceApi::start(&temp).await;
     let keyed = api.client.clone().with_request_id("apply-command-1");
-    let replayed = keyed.apply_application(&request).await.unwrap();
+    let replayed = keyed.apply_and_deploy(&request).await.unwrap();
     assert_eq!(replayed.operation_id, accepted.operation_id);
     assert_eq!(replayed.generation, 1);
     assert_eq!(
@@ -1304,7 +1308,7 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
             .state,
         piqueld_core::OperationState::Superseded
     );
-    let error = keyed.apply_application(&replacement).await.unwrap_err();
+    let error = keyed.apply_and_deploy(&replacement).await.unwrap_err();
     assert!(
         matches!(error,piqueld_client::ClientError::Api {error,..} if error.code=="request_id_conflict")
     );
@@ -1313,8 +1317,8 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
     fresh.manifest.metadata.name = "another".into();
     let concurrent = api.client.clone().with_request_id("concurrent-command");
     let (a, b) = tokio::join!(
-        concurrent.apply_application(&fresh),
-        concurrent.apply_application(&fresh)
+        concurrent.apply_and_deploy(&fresh),
+        concurrent.apply_and_deploy(&fresh)
     );
     assert_eq!(a.unwrap().operation_id, b.unwrap().operation_id);
 }
@@ -1325,7 +1329,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     let api = AcceptanceApi::start(&temp).await;
     let accepted = api
         .client
-        .apply_application(&AcceptanceApi::request())
+        .apply_and_deploy(&AcceptanceApi::request())
         .await
         .unwrap();
     let request = piqueld_client::RenameApplicationRequest {
@@ -1374,9 +1378,9 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     identical.manifest.metadata.name = "renamed".into();
     identical.expected_generation = Some(2);
     identical.expected_application_id = Some(accepted.application_id.clone());
-    let no_op = api.client.apply_application(&identical).await.unwrap();
-    assert_eq!(no_op.operation_id, accepted.operation_id);
-    assert_eq!(no_op.generation, 2);
+    let no_op = api.client.apply_and_deploy(&identical).await.unwrap();
+    assert_ne!(no_op.operation_id, accepted.operation_id);
+    assert_eq!(no_op.generation, 3);
     assert_eq!(
         api.client
             .operation(&accepted.operation_id)
@@ -1388,14 +1392,14 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     // The old name now identifies a different app. A captured ID must prevent overwriting it.
     let old_name = api
         .client
-        .apply_application(&AcceptanceApi::request())
+        .apply_and_deploy(&AcceptanceApi::request())
         .await
         .unwrap();
     let mut stale = AcceptanceApi::request();
     stale.expected_generation = Some(1);
     stale.expected_application_id = Some(accepted.application_id);
     stale.manifest.spec.services[0].replicas = 3;
-    let error = api.client.apply_application(&stale).await.unwrap_err();
+    let error = api.client.apply_and_deploy(&stale).await.unwrap_err();
     assert!(
         matches!(error,piqueld_client::ClientError::Api {error,..} if error.code=="identity_conflict")
     );
@@ -1426,13 +1430,13 @@ async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
     sqlx::query("CREATE TRIGGER reject_receipt BEFORE INSERT ON request_receipts BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END").execute(&mut connection).await.unwrap();
     let keyed = api.client.clone().with_request_id("atomic-command");
     let request = AcceptanceApi::request();
-    assert!(keyed.apply_application(&request).await.is_err());
+    assert!(keyed.apply_and_deploy(&request).await.is_err());
     assert!(api.store.list(None, 50).await.unwrap().items.is_empty());
     sqlx::query("DROP TRIGGER reject_receipt")
         .execute(&mut connection)
         .await
         .unwrap();
-    let accepted = keyed.apply_application(&request).await.unwrap();
+    let accepted = keyed.apply_and_deploy(&request).await.unwrap();
     sqlx::query("UPDATE request_receipts SET expires_at_ms=0")
         .execute(&mut connection)
         .await
@@ -1441,11 +1445,11 @@ async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
         .refresh_application(&accepted.application_id, Some(1))
         .await
         .unwrap();
-    assert_ne!(refreshed.operation_id, accepted.operation_id);
+    assert_eq!(refreshed.operation_id, accepted.operation_id);
 }
 
 #[tokio::test]
-async fn preview_reuses_active_digests_and_redacts_manifest_and_runtime_configuration() {
+async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configuration() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
     let mut request = AcceptanceApi::request();
@@ -1488,7 +1492,7 @@ async fn preview_reuses_active_digests_and_redacts_manifest_and_runtime_configur
                 && change.after.as_deref() == Some("3"))
     );
     assert!(
-        !preview
+        preview
             .plan
             .actions
             .iter()
@@ -1559,14 +1563,14 @@ async fn mutations_require_preconditions_but_refresh_and_reconcile_use_current_i
     let mut request = AcceptanceApi::request();
     request.expected_generation = None;
     AcceptanceApi::assert_error(
-        api.client.apply_application(&request).await.unwrap_err(),
+        api.client.apply_and_deploy(&request).await.unwrap_err(),
         "precondition_required",
     );
     request.expected_generation = Some(0);
-    let accepted = api.client.apply_application(&request).await.unwrap();
+    let accepted = api.client.apply_and_deploy(&request).await.unwrap();
     request.expected_generation = Some(1);
     AcceptanceApi::assert_error(
-        api.client.apply_application(&request).await.unwrap_err(),
+        api.client.apply_and_deploy(&request).await.unwrap_err(),
         "precondition_required",
     );
     request.expected_application_id = Some(accepted.application_id.clone());
@@ -1574,8 +1578,8 @@ async fn mutations_require_preconditions_but_refresh_and_reconcile_use_current_i
     let mut competing = request.clone();
     competing.manifest.spec.services[0].replicas = 3;
     let (first, second) = tokio::join!(
-        api.client.apply_application(&request),
-        api.client.apply_application(&competing)
+        api.client.apply_and_deploy(&request),
+        api.client.apply_and_deploy(&competing)
     );
     assert_ne!(first.is_ok(), second.is_ok());
     AcceptanceApi::assert_error(first.err().or(second.err()).unwrap(), "generation_conflict");
@@ -1627,7 +1631,7 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
     request.expected_generation = None;
     let original = api
         .client
-        .apply_application_with_force(&request, true)
+        .apply_and_deploy_with_force(&request, true)
         .await
         .unwrap();
     let deletion = api
@@ -1638,7 +1642,7 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
     api.finish_deletion(&deletion).await;
     let replacement = api
         .client
-        .apply_application(&AcceptanceApi::request())
+        .apply_and_deploy(&AcceptanceApi::request())
         .await
         .unwrap();
     assert_ne!(replacement.application_id, original.application_id);
@@ -1646,12 +1650,12 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
     request.expected_application_id = Some(original.application_id);
     request.manifest.spec.services[0].replicas = 4;
     AcceptanceApi::assert_error(
-        api.client.apply_application(&request).await.unwrap_err(),
+        api.client.apply_and_deploy(&request).await.unwrap_err(),
         "identity_conflict",
     );
     let forced = api
         .client
-        .apply_application_with_force(&request, true)
+        .apply_and_deploy_with_force(&request, true)
         .await
         .unwrap();
     assert_eq!(forced.application_id, replacement.application_id);
@@ -1670,7 +1674,7 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
     request.manifest.spec.services[0].replicas = 0;
     assert!(
         api.client
-            .apply_application_with_force(&request, true)
+            .apply_and_deploy_with_force(&request, true)
             .await
             .is_err(),
         "force must not bypass manifest validation"
@@ -1692,21 +1696,21 @@ async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent()
     let request = AcceptanceApi::request();
     let keyed = api.client.clone().with_request_id("forced-command");
     let accepted = keyed
-        .apply_application_with_force(&request, true)
+        .apply_and_deploy_with_force(&request, true)
         .await
         .unwrap();
     let mut changed = request.clone();
     changed.manifest.spec.services[0].replicas = 3;
     let newer = api
         .client
-        .apply_application_with_force(&changed, true)
+        .apply_and_deploy_with_force(&changed, true)
         .await
         .unwrap();
     drop(api);
     let api = AcceptanceApi::start(&temp).await;
     let keyed = api.client.clone().with_request_id("forced-command");
     let replay = keyed
-        .apply_application_with_force(&request, true)
+        .apply_and_deploy_with_force(&request, true)
         .await
         .unwrap();
     assert_eq!(replay.operation_id, accepted.operation_id);
@@ -1727,12 +1731,12 @@ async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent()
     assert_eq!(current.generation, newer.generation);
     assert_eq!(current.application.spec.services[0].replicas, 3);
     AcceptanceApi::assert_error(
-        keyed.apply_application(&request).await.unwrap_err(),
+        keyed.apply_and_deploy(&request).await.unwrap_err(),
         "request_id_conflict",
     );
     let separately_invoked = api.client.clone().with_request_id("new-forced-command");
     let reapplied = separately_invoked
-        .apply_application_with_force(&request, true)
+        .apply_and_deploy_with_force(&request, true)
         .await
         .unwrap();
     assert_eq!(reapplied.generation, newer.generation + 1);
@@ -1744,7 +1748,7 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
     let api = AcceptanceApi::start(&temp).await;
     let accepted = api
         .client
-        .apply_application(&AcceptanceApi::request())
+        .apply_and_deploy(&AcceptanceApi::request())
         .await
         .unwrap();
     let mut rename = piqueld_client::RenameApplicationRequest {
@@ -1775,7 +1779,7 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
     assert_eq!(renamed.generation, 2);
     assert_eq!(renamed.application_id, accepted.application_id);
     api.client
-        .apply_application(&AcceptanceApi::request())
+        .apply_and_deploy(&AcceptanceApi::request())
         .await
         .unwrap();
     rename.name = "notes".into();
@@ -1789,48 +1793,241 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
 }
 
 #[tokio::test]
-async fn docker_outage_rejects_previews_and_new_apply_but_preserves_receipt_replay() {
+async fn docker_outage_allows_acceptance_and_preserves_receipt_replay() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
     let request = AcceptanceApi::request();
     let keyed = api.client.clone().with_request_id("outage-replay");
-    let accepted = keyed.apply_application(&request).await.unwrap();
+    let accepted = keyed.apply_and_deploy(&request).await.unwrap();
     api.runtime
         .unavailable
         .store(true, std::sync::atomic::Ordering::Relaxed);
-
-    let replay = keyed.apply_application(&request).await.unwrap();
-    assert_eq!(replay.operation_id, accepted.operation_id);
-    let mut existing = request.clone();
-    existing.expected_generation = Some(accepted.generation);
-    existing.expected_application_id = Some(accepted.application_id.clone());
-    let mut changed = existing.clone();
-    changed.manifest.spec.services[0].replicas = 2;
-    let mut fresh = request.clone();
-    fresh.manifest.metadata.name = "new-application".into();
-    for proposed in [&existing, &changed, &fresh] {
-        for error in [
-            api.client.plan_application(proposed).await.unwrap_err(),
-            api.client.apply_application(proposed).await.unwrap_err(),
-        ] {
-            assert!(
-                matches!(error, piqueld_client::ClientError::Api { status, error, .. }
-                if status == axum::http::StatusCode::SERVICE_UNAVAILABLE && error.code == "docker_unavailable")
-            );
-        }
-    }
-    let mismatch = keyed.apply_application(&changed).await.unwrap_err();
-    assert!(
-        matches!(mismatch, piqueld_client::ClientError::Api { error, .. } if error.code == "request_id_conflict")
+    assert_eq!(
+        keyed.apply_and_deploy(&request).await.unwrap().operation_id,
+        accepted.operation_id
     );
+    let mut changed = request.clone();
+    changed.expected_generation = Some(accepted.generation);
+    changed.expected_application_id = Some(accepted.application_id.clone());
+    changed.manifest.spec.services[0].replicas = 2;
     assert!(
+        matches!(api.client.plan_application(&changed).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status==StatusCode::SERVICE_UNAVAILABLE)
+    );
+    let next = api.client.apply_and_deploy(&changed).await.unwrap();
+    assert_ne!(next.operation_id, accepted.operation_id);
+    AcceptanceApi::assert_error(
+        keyed.apply_and_deploy(&changed).await.unwrap_err(),
+        "request_id_conflict",
+    );
+}
+
+// Existing lifecycle scenarios explicitly request deployment; save-only behavior
+// is exercised separately below.
+trait DeployFixture {
+    async fn apply_and_deploy(
+        &self,
+        request: &ApplyApplicationRequest,
+    ) -> Result<AcceptedOperation, piqueld_client::ClientError>;
+    async fn apply_and_deploy_with_force(
+        &self,
+        request: &ApplyApplicationRequest,
+        force: bool,
+    ) -> Result<AcceptedOperation, piqueld_client::ClientError>;
+}
+impl DeployFixture for Client {
+    async fn apply_and_deploy(
+        &self,
+        request: &ApplyApplicationRequest,
+    ) -> Result<AcceptedOperation, piqueld_client::ClientError> {
+        self.apply_and_deploy_with_force(request, false).await
+    }
+    async fn apply_and_deploy_with_force(
+        &self,
+        request: &ApplyApplicationRequest,
+        force: bool,
+    ) -> Result<AcceptedOperation, piqueld_client::ClientError> {
+        let saved = self
+            .apply_application_with_options(request, force, true)
+            .await?;
+        Ok(AcceptedOperation {
+            application_id: saved.application_id,
+            generation: saved.generation,
+            operation_id: saved.operation_id.expect("deployment requested"),
+        })
+    }
+}
+
+#[tokio::test]
+async fn saved_configuration_preview_and_deployment_are_separate_even_offline() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    api.runtime
+        .unavailable
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut request = AcceptanceApi::request();
+    request.manifest.spec.services.clear();
+    let saved = api.client.apply_application(&request).await.unwrap();
+    assert!(saved.operation_id.is_none());
+    let detail = api
+        .client
+        .application_detail(&saved.application_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        detail.status.state,
+        piqueld_core::ApplicationState::NotDeployed
+    );
+    assert!(detail.latest_operation.is_none());
+    let first = api
+        .client
+        .deploy_application(&saved.application_id, saved.generation)
+        .await
+        .unwrap();
+    let second = api
+        .client
+        .deploy_application(&saved.application_id, saved.generation)
+        .await
+        .unwrap();
+    assert_ne!(first.operation_id, second.operation_id);
+    let history = api
+        .client
+        .deployments(&saved.application_id, None)
+        .await
+        .unwrap();
+    assert_eq!(history.items.len(), 2);
+    assert_eq!(
+        history.items[1].operation.state,
+        piqueld_core::OperationState::Superseded
+    );
+    request.expected_application_id = Some(saved.application_id.clone());
+    request.expected_generation = Some(saved.generation);
+    request
+        .manifest
+        .spec
+        .volumes
+        .push(piqueld_core::manifest::Volume {
+            name: "later".into(),
+        });
+    let saved = api.client.apply_application(&request).await.unwrap();
+    assert_eq!(
         api.store
-            .find_by_name("new-application")
+            .deployment_manifest(&second.operation_id)
             .await
             .unwrap()
-            .is_none()
+            .spec
+            .volumes
+            .len(),
+        0
     );
-    let stored = api.store.find_by_name("notes").await.unwrap().unwrap();
-    assert_eq!(stored.generation, accepted.generation);
-    assert_eq!(stored.application.spec.services[0].replicas, 1);
+    assert!(
+        api.client
+            .deploy_application(&saved.application_id, 1)
+            .await
+            .is_err()
+    );
+    api.runtime
+        .unavailable
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    request.expected_generation = Some(saved.generation);
+    let preview = api.client.plan_application(&request).await.unwrap();
+    assert!(!preview.identical);
+    assert!(!preview.changes.is_empty());
+}
+
+#[tokio::test]
+async fn refresh_after_rename_preserves_name_and_deployed_spec() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let accepted = api
+        .client
+        .apply_and_deploy(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    api.finish_operation(&accepted.operation_id, None).await;
+    api.client
+        .rename_application(
+            &accepted.application_id,
+            &piqueld_client::RenameApplicationRequest {
+                name: "renamed".into(),
+                expected_generation: Some(1),
+            },
+        )
+        .await
+        .unwrap();
+    let mut edited = AcceptanceApi::request();
+    edited.manifest.metadata.name = "renamed".into();
+    edited.manifest.spec.services[0].replicas = 2;
+    edited.expected_generation = Some(2);
+    edited.expected_application_id = Some(accepted.application_id.clone());
+    api.client.apply_application(&edited).await.unwrap();
+    let refreshed = api
+        .client
+        .refresh_application(&accepted.application_id, Some(3))
+        .await
+        .unwrap();
+    let snapshot = api
+        .store
+        .deployment_manifest(&refreshed.operation_id)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.metadata.name, "renamed");
+    assert_eq!(snapshot.spec.services[0].replicas, 1);
+    assert_eq!(
+        api.store
+            .deployment_manifest(&accepted.operation_id)
+            .await
+            .unwrap()
+            .metadata
+            .name,
+        "notes"
+    );
+}
+
+#[tokio::test]
+async fn unavailable_observation_does_not_claim_services_are_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let accepted = api
+        .client
+        .apply_and_deploy(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let id = piqueld_core::ApplicationId::parse(&accepted.application_id).unwrap();
+    let app = api.store.get(&id).await.unwrap();
+    let target = api
+        .runtime
+        .prepare(&app.application, &ResolutionSet::default())
+        .await
+        .unwrap();
+    api.store
+        .transition_operation(
+            &accepted.operation_id,
+            piqueld_core::OperationState::Requested,
+            piqueld_core::OperationState::Running,
+            None,
+        )
+        .await
+        .unwrap();
+    let op = api.store.operation(&accepted.operation_id).await.unwrap();
+    api.store.save_prepared(&op, &target).await.unwrap();
+    api.store.publish_prepared(&op).await.unwrap();
+    api.store
+        .set_status_for_operation(&op.id, piqueld_core::ApplicationState::Ready, None)
+        .await
+        .unwrap();
+    api.runtime
+        .unavailable
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let detail = api
+        .client
+        .application_detail(&accepted.application_id)
+        .await
+        .unwrap();
+    assert!(
+        detail
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "runtime_unavailable")
+    );
+    assert!(detail.observed.services.iter().all(|s| s.diagnostics.is_empty() && s.convergence != piqueld_core::Convergence::Failed));
 }

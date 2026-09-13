@@ -32,6 +32,10 @@ impl SqliteStore {
             if let Mutation::Apply {
                 expected_application_id,
                 ..
+            }
+            | Mutation::Save {
+                expected_application_id,
+                ..
             } = &mut mutation
             {
                 *expected_application_id = None;
@@ -49,28 +53,6 @@ impl SqliteStore {
         }
         tx.commit().await.map_err(StoreError::database)?;
         Ok((response, wake))
-    }
-
-    // Read before Docker preflight without holding the writer lock. Acceptance
-    // checks again inside its transaction to cover concurrent matching requests.
-    pub(crate) async fn replay(
-        &self,
-        mutation: &Mutation,
-        expected_generation: Option<u64>,
-        force: bool,
-        request_id: Option<&str>,
-    ) -> Result<Option<MutationResponse>, StoreError> {
-        if request_id.is_none() {
-            return Ok(None);
-        }
-        let fingerprint = Self::mutation_fingerprint(mutation, expected_generation, force)?;
-        Self::replay_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            request_id,
-            &fingerprint,
-            now_ms(),
-        )
-        .await
     }
 
     fn mutation_fingerprint(
@@ -144,6 +126,32 @@ impl SqliteStore {
                 )
                 .await?
             }
+            Mutation::Save {
+                mut application,
+                expected_application_id,
+                deploy,
+            } => {
+                application.id = Self::application_identity(
+                    current.as_ref(),
+                    expected_application_id.as_deref(),
+                )?;
+                let mut saved =
+                    Self::save_configuration_on(tx, &application, expected_generation).await?;
+                if deploy {
+                    let op = Self::request_refresh_on(tx, &application.id, Some(saved.generation))
+                        .await?;
+                    saved.operation_id = Some(op.id);
+                }
+                (MutationResponse::Saved(saved), deploy)
+            }
+            Mutation::Deploy { id } => {
+                current.ok_or(StoreError::NotFound)?;
+                let op = Self::request_refresh_on(tx, &id, expected_generation).await?;
+                (
+                    MutationResponse::Operation(AcceptedOperation::from(&op)),
+                    true,
+                )
+            }
             Mutation::Delete { id } => {
                 let operation =
                     if let Some(op) = latest.filter(|op| op.kind == OperationKind::Delete) {
@@ -170,25 +178,7 @@ impl SqliteStore {
                 )
             }
             Mutation::Refresh { id } => {
-                let app = current.ok_or(StoreError::NotFound)?;
-                if app.delete_intent {
-                    return Err(StoreError::IllegalTransition);
-                }
-                let operation = if let Some(op) = latest.filter(|op| {
-                    op.kind == OperationKind::Refresh && op.state != OperationState::Succeeded
-                }) {
-                    if op.state == OperationState::Failed {
-                        Self::retry_operation_on(tx, &op).await?
-                    } else {
-                        op
-                    }
-                } else {
-                    Self::request_refresh_on(tx, &id, expected_generation).await?
-                };
-                (
-                    MutationResponse::Operation(AcceptedOperation::from(&operation)),
-                    true,
-                )
+                Self::accept_refresh(tx, &id, current, latest, expected_generation).await?
             }
             Mutation::Rename { id, name } => {
                 Self::rename_on(
@@ -204,6 +194,53 @@ impl SqliteStore {
         })
     }
 
+    async fn accept_refresh(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &ApplicationId,
+        current: Option<StoredApplication>,
+        latest: Option<Operation>,
+        expected_generation: Option<u64>,
+    ) -> Result<(MutationResponse, bool), StoreError> {
+        let app = current.ok_or(StoreError::NotFound)?;
+        if app.delete_intent {
+            return Err(StoreError::IllegalTransition);
+        }
+        let operation = if let Some(op) = latest
+            .clone()
+            .filter(|op| op.kind == OperationKind::Refresh && op.state != OperationState::Succeeded)
+        {
+            if op.state == OperationState::Failed {
+                Self::retry_operation_on(tx, &op).await?
+            } else {
+                op
+            }
+        } else {
+            let previous = latest.as_ref().ok_or(StoreError::NotFound)?;
+            let previous_id = previous.id.clone();
+            let op = Self::request_refresh_on(tx, id, expected_generation).await?;
+            sqlx::query!("UPDATE deployments SET manifest_json=json_set((SELECT manifest_json FROM deployments WHERE id=?1),'$.metadata.name',?3),generation=(SELECT generation FROM deployments WHERE id=?1) WHERE id=?2",previous_id,op.id,app.application.metadata.name).execute(&mut **tx).await.map_err(StoreError::database)?;
+            sqlx::query!("UPDATE operations SET generation=(SELECT generation FROM deployments WHERE id=?1) WHERE id=?1",op.id).execute(&mut **tx).await.map_err(StoreError::database)?;
+            Self::operation_on(tx, &op.id).await?
+        };
+        Ok((
+            MutationResponse::Operation(AcceptedOperation::from(&operation)),
+            true,
+        ))
+    }
+
+    fn application_identity(
+        current: Option<&StoredApplication>,
+        expected: Option<&str>,
+    ) -> Result<ApplicationId, StoreError> {
+        if expected.is_some_and(|id| current.is_none_or(|app| app.application.id.as_str() != id)) {
+            return Err(StoreError::IdentityConflict);
+        }
+        Ok(current.map_or_else(
+            || ApplicationId::parse(super::new_id("app")).expect("valid generated ID"),
+            |app| app.application.id.clone(),
+        ))
+    }
+
     async fn accept_apply(
         tx: &mut Transaction<'_, Sqlite>,
         mut application: piqueld_core::NormalizedApplication,
@@ -212,20 +249,8 @@ impl SqliteStore {
         latest: Option<Operation>,
         expected_generation: Option<u64>,
     ) -> Result<(MutationResponse, bool), StoreError> {
-        if let Some(expected_id) = expected_application_id
-            && current
-                .as_ref()
-                .is_none_or(|app| app.application.id.as_str() != expected_id)
-        {
-            return Err(StoreError::IdentityConflict);
-        }
-        application.id = current.as_ref().map_or_else(
-            || {
-                piqueld_core::ApplicationId::parse(super::new_id("app"))
-                    .expect("valid generated ID")
-            },
-            |app| app.application.id.clone(),
-        );
+        application.id =
+            Self::application_identity(current.as_ref(), expected_application_id.as_deref())?;
         let identical = current
             .as_ref()
             .is_some_and(|app| !app.delete_intent && app.application == application);
@@ -246,8 +271,11 @@ impl SqliteStore {
         mutation: &Mutation,
     ) -> Result<(Option<StoredApplication>, Option<Operation>), StoreError> {
         let (id, name) = match mutation {
-            Mutation::Apply { application, .. } => (None, Some(application.metadata.name.as_str())),
-            Mutation::Delete { id }
+            Mutation::Apply { application, .. } | Mutation::Save { application, .. } => {
+                (None, Some(application.metadata.name.as_str()))
+            }
+            Mutation::Deploy { id }
+            | Mutation::Delete { id }
             | Mutation::Reconcile { id }
             | Mutation::Refresh { id }
             | Mutation::Rename { id, .. } => (Some(id.as_str()), None),

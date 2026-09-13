@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
     let runtime = reconciler.runtime(Arc::clone(&wake));
     let ui_assets = UiAssets::resolve();
     log_ui_status(&ui_assets);
-    let state = ApiState::new(Arc::clone(&store), runtime);
+    let state = ApiState::new(Arc::clone(&store), runtime).with_configuration(config.view());
 
     // cancellation token for workers
     let cancellation = CancellationToken::new();

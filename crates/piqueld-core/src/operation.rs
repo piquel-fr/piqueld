@@ -148,6 +148,8 @@ pub struct Operation {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationState {
+    /// Configuration is saved but no deployment has been requested.
+    NotDeployed,
     /// Desired state is waiting to be reconciled.
     Pending,
     /// Runtime resources are being reconciled.
@@ -167,6 +169,7 @@ impl ApplicationState {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::NotDeployed => "not_deployed",
             Self::Pending => "pending",
             Self::Deploying => "deploying",
             Self::Ready => "ready",

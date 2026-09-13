@@ -80,6 +80,8 @@ pub(crate) struct ManifestArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct ApplyArgs {
+    #[command(flatten)]
+    pub(crate) deployment: DeploymentArgs,
     /// TOML application manifest.
     #[arg(long, value_name = "PATH")]
     pub(crate) file: PathBuf,
@@ -94,8 +96,14 @@ pub(crate) struct ApplyArgs {
     /// Override intent preconditions (does not skip confirmation).
     #[arg(long, conflicts_with = "expected_generation")]
     pub(crate) force: bool,
+}
 
-    /// Return after the daemon accepts the operation.
+#[derive(Debug, Args)]
+pub(crate) struct DeploymentArgs {
+    /// Deploy after saving; by default only configuration is saved.
+    #[arg(long)]
+    pub(crate) deploy: bool,
+    /// Return immediately after saving or accepting deployment.
     #[arg(long)]
     pub(crate) no_wait: bool,
 }

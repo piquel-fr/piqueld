@@ -20,13 +20,24 @@ operation state, require a fresh database.
 Startup reads `PRAGMA user_version`, rejects an unsupported newer schema, and
 applies missing embedded migrations transactionally.
 
-Deletion marks an application deleted only after runtime verification. Its
-operation history remains available. Retention removes eligible terminal history
-older than the configured cutoff; `retention.finished_operation_days = 0`
-disables operation pruning. Event retention is separate: `retention.event_days`
-defaults to 30 and zero disables it. Events survive operation pruning and never
-reconstruct runtime state. The latest operation is retained because it identifies the
-current target and supports duplicate requests and reconciliation.
+`0002_deployments.sql` separates editable configuration from deployment inputs.
+Each deployment references its execution operation and captures a manifest and
+configuration revision. Attempt outcomes survive ordinary event pruning, and
+successful convergence is retained independently of later runtime repair.
+The migration captures the latest recoverable legacy intent; older operations
+lack source manifests and are not presented as reconstructed deployments.
+
+Saving configuration does not create or supersede an operation. Deployment
+preparation reads only its snapshot, including after restart. Prepared image
+resolutions remain attached to that operation during retries. A new deployment
+resolves image tags again. Empty applications are valid and deploy without
+services or networks.
+
+Deployment snapshots, execution records and attempt outcomes are retained until
+application deletion. Deletion removes the application's database records,
+history and request receipts after runtime verification; Docker volumes remain.
+Ordinary operational events still use `retention.event_days` (30 by default,
+zero disables pruning). Non-deployment operation retention remains configurable.
 
 The daemon prepares its private data directory before opening SQLite. The store
 checks the database file path. During builds, the daemon build script provisions

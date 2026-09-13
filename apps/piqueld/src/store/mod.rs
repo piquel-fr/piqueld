@@ -3,6 +3,7 @@
 
 mod acceptance;
 mod application;
+mod deployment;
 mod event;
 mod operation;
 mod status;

@@ -252,3 +252,17 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod network_defaults_tests {
+    use super::BollardDocker;
+    #[test]
+    fn empty_config_from_is_an_engine_default_but_named_sources_are_conflicts() {
+        let mut network: bollard::models::Network=serde_json::from_value(serde_json::json!({"Driver":"overlay","Internal":false,"Attachable":true,"ConfigFrom":{"Network":""},"Options":{"com.docker.network.driver.overlay.vxlanid_list":"4100"}})).unwrap();
+        assert!(BollardDocker::network_configuration_matches(&network));
+        network.config_from.as_mut().unwrap().network = Some("external-template".into());
+        assert!(!BollardDocker::network_configuration_matches(&network));
+        network.config_from = None;
+        assert!(BollardDocker::network_configuration_matches(&network));
+    }
+}

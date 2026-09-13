@@ -2,9 +2,9 @@ use http::Method;
 
 pub use piqueld_core::api::{
     AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
-    ApplicationView, ApplyApplicationRequest, DiagnosticView, MAX_APPLICATION_PAGE_SIZE,
-    ObservedApplicationView, ObservedServiceView, PlanView, RenameApplicationRequest,
-    RenamedApplication,
+    ApplicationView, ApplyApplicationRequest, DeploymentView, DiagnosticView,
+    MAX_APPLICATION_PAGE_SIZE, ObservedApplicationView, ObservedServiceView, PlanView,
+    RenameApplicationRequest, RenamedApplication, SavedApplication,
 };
 
 use crate::{
@@ -95,14 +95,14 @@ impl Client {
         .await
     }
 
-    /// Applies desired application state and starts asynchronous reconciliation.
+    /// Saves application configuration without deploying.
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn apply_application(
         &self,
         request: &ApplyApplicationRequest,
-    ) -> Result<AcceptedOperation, ClientError> {
+    ) -> Result<SavedApplication, ClientError> {
         self.apply_application_with_force(request, false).await
     }
 
@@ -113,10 +113,26 @@ impl Client {
         &self,
         request: &ApplyApplicationRequest,
         force: bool,
-    ) -> Result<AcceptedOperation, ClientError> {
+    ) -> Result<SavedApplication, ClientError> {
+        self.apply_application_with_options(request, force, false)
+            .await
+    }
+
+    /// Saves configuration and optionally creates a deployment in one transaction.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn apply_application_with_options(
+        &self,
+        request: &ApplyApplicationRequest,
+        force: bool,
+        deploy: bool,
+    ) -> Result<SavedApplication, ClientError> {
         self.send(
             Method::POST,
-            &Self::force_path(format!("{}/applications/apply", crate::API_PREFIX), force),
+            &Self::force_path(
+                format!("{}/applications/apply?deploy={deploy}", crate::API_PREFIX),
+                force,
+            ),
             Some(request),
             &[],
         )
@@ -195,7 +211,7 @@ impl Client {
     pub async fn apply_application_toml(
         &self,
         manifest: &str,
-    ) -> Result<AcceptedOperation, ClientError> {
+    ) -> Result<SavedApplication, ClientError> {
         self.apply_application_toml_with_generation(manifest, Some(0))
             .await
     }
@@ -207,8 +223,8 @@ impl Client {
         &self,
         manifest: &str,
         expected: Option<u64>,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.apply_application_toml_with_preconditions(manifest, expected, None, false)
+    ) -> Result<SavedApplication, ClientError> {
+        self.apply_application_toml_with_preconditions(manifest, expected, None, false, false)
             .await
     }
 
@@ -221,7 +237,8 @@ impl Client {
         expected: Option<u64>,
         expected_id: Option<&str>,
         force: bool,
-    ) -> Result<AcceptedOperation, ClientError> {
+        deploy: bool,
+    ) -> Result<SavedApplication, ClientError> {
         let generation = expected.map(|value| value.to_string());
         let mut headers = vec![("content-type", "application/toml")];
         if let Some(value) = generation.as_deref() {
@@ -232,7 +249,10 @@ impl Client {
         }
         self.send_text(
             Method::POST,
-            &Self::force_path(format!("{}/applications/apply", crate::API_PREFIX), force),
+            &Self::force_path(
+                format!("{}/applications/apply?deploy={deploy}", crate::API_PREFIX),
+                force,
+            ),
             manifest,
             &headers,
         )
@@ -376,5 +396,75 @@ impl Client {
         query.append_pair("limit", &limit.to_string());
         let path = format!("{}/events?{}", crate::API_PREFIX, query.finish());
         self.send::<_, ()>(Method::GET, &path, None, &[]).await
+    }
+}
+
+impl Client {
+    /// Deploys exactly the inspected saved configuration revision.
+    /// # Errors
+    /// Returns transport, API, or revision conflict errors.
+    pub async fn deploy_application(
+        &self,
+        id: &str,
+        expected: u64,
+    ) -> Result<AcceptedOperation, ClientError> {
+        self.send::<_, ()>(
+            Method::POST,
+            &Self::mutation_path(id, "/deploy", Some(expected)),
+            None,
+            &[],
+        )
+        .await
+    }
+
+    /// Lists deployment snapshots newest first, three per page.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn deployments(
+        &self,
+        id: &str,
+        cursor: Option<&str>,
+    ) -> Result<Page<DeploymentView>, ClientError> {
+        self.send::<_, ()>(
+            Method::GET,
+            &Self::history_path(id, "/deployments", cursor),
+            None,
+            &[],
+        )
+        .await
+    }
+
+    /// Lists retained attempt outcomes, 100 per page.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn deployment_attempts(
+        &self,
+        id: &str,
+        deployment: &str,
+        cursor: Option<&str>,
+    ) -> Result<Page<piqueld_core::Operation>, ClientError> {
+        self.send::<_, ()>(
+            Method::GET,
+            &Self::history_path(
+                id,
+                &format!("/deployments/{}/attempts", path_segment(deployment)),
+                cursor,
+            ),
+            None,
+            &[],
+        )
+        .await
+    }
+
+    fn history_path(id: &str, action: &str, cursor: Option<&str>) -> String {
+        let mut path = Self::mutation_path(id, action, None);
+        if let Some(cursor) = cursor {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("cursor", cursor)
+                .finish();
+            path.push('?');
+            path.push_str(&query);
+        }
+        path
     }
 }

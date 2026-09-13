@@ -530,14 +530,14 @@ fn show_resolves_name_across_pages_and_id_directly() {
 }
 
 #[test]
-fn plan_before_apply_confirmation_and_transport_retry_are_exercised() {
+fn apply_deploy_confirmation_and_transport_retry_are_exercised() {
     for unix in [false, true] {
         let directory = tempdir().expect("manifest directory");
         let manifest = write_manifest(&directory);
         let mut mutation_requests = Vec::new();
         let server = start_server(unix, 3, move |request| match request.path.as_str() {
-            "/api/v1/applications/plan" => Reply::json(plan("preview-00000001")),
-            "/api/v1/applications/apply" => {
+            "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
+            "/api/v1/applications/apply?deploy=true" => {
                 mutation_requests.push(request.clone());
                 assert_eq!(request.body, MANIFEST.as_bytes());
                 if mutation_requests.len() == 1 {
@@ -556,6 +556,7 @@ fn plan_before_apply_confirmation_and_transport_retry_are_exercised() {
             &server,
             &[
                 "apply",
+                "--deploy",
                 "--file",
                 manifest.to_str().expect("manifest path"),
                 "--yes",
@@ -564,21 +565,18 @@ fn plan_before_apply_confirmation_and_transport_retry_are_exercised() {
         );
         let value = assert_json_success(&output);
         assert_eq!(value["application_id"], "app-notes-01");
-        assert!(
-            !output.stderr.is_empty(),
-            "the plan must be displayed on stderr"
-        );
+        assert!(output.stderr.is_empty(), "preview is a separate command");
         let records = server.finish();
         let retries = records
             .iter()
-            .filter(|request| request.path == "/api/v1/applications/apply")
+            .filter(|request| request.path == "/api/v1/applications/apply?deploy=true")
             .map(|request| request.body.clone())
             .collect::<Vec<_>>();
         assert_eq!(retries.len(), 2);
         assert_eq!(retries[0], retries[1]);
         let mutations = records
             .iter()
-            .filter(|request| request.path == "/api/v1/applications/apply")
+            .filter(|request| request.path == "/api/v1/applications/apply?deploy=true")
             .collect::<Vec<_>>();
         let key = mutations[0]
             .headers
@@ -596,16 +594,21 @@ fn plan_before_apply_confirmation_and_transport_retry_are_exercised() {
 }
 
 #[test]
-fn noninteractive_apply_stops_after_displaying_the_plan() {
+fn noninteractive_apply_stops_after_inspection() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 1, move |request| match request.path.as_str() {
-        "/api/v1/applications/plan" => Reply::json(plan("preview-00000001")),
+        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
         path => panic!("mutation must not be sent; got {path}"),
     });
     let output = run(
         &server,
-        &["apply", "--file", manifest.to_str().expect("manifest path")],
+        &[
+            "apply",
+            "--deploy",
+            "--file",
+            manifest.to_str().expect("manifest path"),
+        ],
     );
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
@@ -618,8 +621,8 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications/plan" => Reply::json(plan("preview-00000001")),
-        "/api/v1/applications/apply" => Reply::accepted(accepted("app-notes-01")),
+        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications/apply?deploy=true" => Reply::accepted(accepted("app-notes-01")),
         "/api/v1/operations/operation-01" => Reply::json(operation("failed")),
         path => panic!("unexpected path {path}"),
     });
@@ -627,6 +630,7 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
         &server,
         &[
             "apply",
+            "--deploy",
             "--file",
             manifest.to_str().expect("manifest path"),
             "--yes",
@@ -700,8 +704,8 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(true, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications/plan" => Reply::json(plan("preview-00000001")),
-        "/api/v1/applications/apply" => Reply::accepted(accepted("app-notes-01")),
+        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications/apply?deploy=true" => Reply::accepted(accepted("app-notes-01")),
         "/api/v1/operations/operation-01" => {
             let mut value = operation("failed");
             value["phase"] = json!("ensure_network");
@@ -715,6 +719,7 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
         &server,
         &[
             "apply",
+            "--deploy",
             "--file",
             manifest.to_str().expect("manifest path"),
             "--yes",
@@ -760,7 +765,41 @@ fn manifest_input_is_missing_or_oversized_before_network_use() {
 #[test]
 fn delete_reports_named_volume_retention_and_operation_completion() {
     for unix in [false, true] {
+        let mut deleting = false;
         let server = start_server(unix, 4, move |request| match request.path.as_str() {
+            "/api/v1/applications?limit=100" => {
+                Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
+            }
+            "/api/v1/applications/app-notes-01" if !deleting => {
+                Reply::json(app_view("app-notes-01", "notes"))
+            }
+            "/api/v1/applications/app-notes-01?expected_generation=1" => {
+                deleting = true;
+                Reply::accepted(accepted("app-notes-01"))
+            }
+            "/api/v1/applications/app-notes-01" => {
+                let mut reply = Reply::json(Value::Null);
+                reply.status = "404 Not Found";
+                reply.body = serde_json::to_vec(
+                    &json!({"code":"not_found","message":"Application deleted"}),
+                )
+                .unwrap();
+                reply
+            }
+            path => panic!("unexpected path {path}"),
+        });
+        let output = run(&server, &["delete", "notes", "--yes"]);
+        let value = assert_json_success(&output);
+        assert_eq!(value["volumes_retained"], true);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("named volumes are retained"));
+        let _ = server.finish();
+    }
+}
+
+#[test]
+fn delete_stops_on_failed_or_cancelled_operation() {
+    for state in ["failed", "cancelled"] {
+        let server = start_server(false, 5, move |request| match request.path.as_str() {
             "/api/v1/applications?limit=100" => {
                 Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
             }
@@ -768,13 +807,20 @@ fn delete_reports_named_volume_retention_and_operation_completion() {
             "/api/v1/applications/app-notes-01?expected_generation=1" => {
                 Reply::accepted(accepted("app-notes-01"))
             }
-            "/api/v1/operations/operation-01" => Reply::json(operation("succeeded")),
+            "/api/v1/operations/operation-01" => Reply::json(operation(state)),
             path => panic!("unexpected path {path}"),
         });
         let output = run(&server, &["delete", "notes", "--yes"]);
-        let value = assert_json_success(&output);
-        assert_eq!(value["volumes_retained"], true);
-        assert!(String::from_utf8_lossy(&output.stderr).contains("named volumes are retained"));
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(if state == "failed" {
+                "runtime reconciliation failed"
+            } else {
+                "cancelled"
+            }),
+            "{stderr}"
+        );
         let _ = server.finish();
     }
 }
@@ -1016,67 +1062,44 @@ fn events_cli_reads_a_filtered_page() {
 }
 
 #[test]
-fn identical_apply_waits_without_confirmation_or_another_mutation() {
-    for final_state in ["succeeded", "superseded", "failed", "cancelled"] {
-        let directory = tempdir().unwrap();
-        let manifest = write_manifest(&directory);
-        let server = start_server(false, 2, move |request| {
-            if request.path == "/api/v1/applications/plan" {
-                let mut preview = plan("app-notes-01");
-                preview["identical"] = json!(true);
-                preview["operation"] = operation("running");
-                return Reply::json(preview);
-            }
-            assert_eq!(request.method, "GET");
-            assert_eq!(request.path, "/api/v1/operations/operation-01");
-            Reply::json(operation(final_state))
-        });
-        let output = run(&server, &["apply", "--file", manifest.to_str().unwrap()]);
-        if matches!(final_state, "succeeded" | "superseded") {
-            let result = assert_json_success(&output);
-            assert_eq!(result["identical"], true);
-            assert_eq!(result["outcome"], final_state);
-            assert_eq!(result["operation"]["state"], final_state);
-        } else {
-            assert_eq!(output.status.code(), Some(5));
-            assert!(String::from_utf8_lossy(&output.stderr).contains("reconcile"));
+fn apply_defaults_to_saving_without_preview_or_operation_polling() {
+    let directory = tempdir().unwrap();
+    let manifest = write_manifest(&directory);
+    let server = start_server(false, 2, |request| match request.path.as_str() {
+        "/api/v1/applications?limit=100" => {
+            Reply::json(json!({"items":[app_summary("app-notes-01","notes")],"next_cursor":null}))
         }
-        assert_eq!(server.finish().len(), 2);
-    }
+        "/api/v1/applications/apply?deploy=false" => {
+            assert_eq!(
+                request
+                    .headers
+                    .get("x-expected-generation")
+                    .map(String::as_str),
+                Some("1")
+            );
+            Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+        }
+        _ => panic!("unexpected request {}", request.path),
+    });
+    let output = run(
+        &server,
+        &["apply", "--file", manifest.to_str().unwrap(), "--yes"],
+    );
+    let saved = assert_json_success(&output);
+    assert_eq!(saved["generation"], 2);
+    assert!(saved["operation_id"].is_null());
+    assert_eq!(server.finish().len(), 2);
 }
 
 #[test]
-fn identical_apply_does_not_poll_when_finished_or_no_wait_is_requested() {
-    for (state, no_wait) in [("succeeded", false), ("requested", true), ("running", true)] {
-        let directory = tempdir().unwrap();
-        let manifest = write_manifest(&directory);
-        let server = start_server(false, 1, move |request| {
-            assert_eq!(request.path, "/api/v1/applications/plan");
-            let mut preview = plan("app-notes-01");
-            preview["identical"] = json!(true);
-            preview["operation"] = operation(state);
-            Reply::json(preview)
-        });
-        let mut args = vec!["apply", "--file", manifest.to_str().unwrap()];
-        if no_wait {
-            args.push("--no-wait");
-        }
-        let output = run(&server, &args);
-        let result = assert_json_success(&output);
-        assert_eq!(result["operation"]["state"], state);
-        assert_eq!(server.finish().len(), 1);
-    }
-}
-
-#[test]
-fn apply_protects_the_preview_identity_and_revision_with_confirmation_skipped() {
+fn apply_protects_the_inspected_identity_and_revision_with_confirmation_skipped() {
     let directory = tempdir().unwrap();
     let manifest = write_manifest(&directory);
     let server = start_server(false, 2, move |request| {
-        if request.path == "/api/v1/applications/plan" {
-            let mut preview = plan("app-notes-01");
-            preview["generation"] = json!(7);
-            return Reply::json(preview);
+        if request.path == "/api/v1/applications?limit=100" {
+            let mut app = app_summary("app-notes-01", "notes");
+            app["generation"] = json!(7);
+            return Reply::json(json!({"items":[app],"next_cursor":null}));
         }
         assert_eq!(
             request
@@ -1099,7 +1122,13 @@ fn apply_protects_the_preview_identity_and_revision_with_confirmation_skipped() 
     });
     let output = run(
         &server,
-        &["apply", "--file", manifest.to_str().unwrap(), "--yes"],
+        &[
+            "apply",
+            "--deploy",
+            "--file",
+            manifest.to_str().unwrap(),
+            "--yes",
+        ],
     );
     assert_eq!(output.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&output.stderr).contains("run the command again"));
@@ -1138,10 +1167,13 @@ fn force_does_not_skip_confirmation_and_explicit_force_is_sent_to_the_endpoint()
         let manifest = write_manifest(&directory);
         let mut mutations = 0;
         let server = start_server(false, if yes { 3 } else { 1 }, move |request| {
-            if request.path == "/api/v1/applications/plan" {
-                return Reply::json(plan("app-notes-01"));
+            if request.path == "/api/v1/applications?limit=100" {
+                return Reply::json(json!({"items":[],"next_cursor":null}));
             }
-            assert_eq!(request.path, "/api/v1/applications/apply?force=true");
+            assert_eq!(
+                request.path,
+                "/api/v1/applications/apply?deploy=true&force=true"
+            );
             assert!(!request.headers.contains_key("x-expected-generation"));
             assert!(!request.headers.contains_key("x-expected-application-id"));
             mutations += 1;
@@ -1153,6 +1185,7 @@ fn force_does_not_skip_confirmation_and_explicit_force_is_sent_to_the_endpoint()
         });
         let mut args = vec![
             "apply",
+            "--deploy",
             "--file",
             manifest.to_str().unwrap(),
             "--force",
@@ -1183,17 +1216,36 @@ fn apply_returns_superseded_success_without_following_the_replacement() {
     let directory = tempdir().unwrap();
     let manifest = write_manifest(&directory);
     let server = start_server(false, 3, |request| match request.path.as_str() {
-        "/api/v1/applications/plan" => Reply::json(plan("app-notes-01")),
-        "/api/v1/applications/apply" => Reply::accepted(accepted("app-notes-01")),
+        "/api/v1/applications?limit=100" => Reply::json(json!({"items":[],"next_cursor":null})),
+        "/api/v1/applications/apply?deploy=true" => Reply::accepted(accepted("app-notes-01")),
         "/api/v1/operations/operation-01" => Reply::json(operation("superseded")),
         _ => panic!("unexpected request {}", request.path),
     });
     let output = run(
         &server,
-        &["apply", "--file", manifest.to_str().unwrap(), "--yes"],
+        &[
+            "apply",
+            "--deploy",
+            "--file",
+            manifest.to_str().unwrap(),
+            "--yes",
+        ],
     );
     let result = assert_json_success(&output);
     assert_eq!(result["outcome"], "superseded");
     assert_eq!(result["operation"]["state"], "superseded");
     assert_eq!(server.finish().len(), 3);
+}
+
+#[test]
+fn preview_is_an_explicit_read_only_command() {
+    let directory = tempdir().unwrap();
+    let manifest = write_manifest(&directory);
+    let server = start_server(false, 1, |request| {
+        assert_eq!(request.path, "/api/v1/applications/plan");
+        Reply::json(plan("preview-00000001"))
+    });
+    let output = run(&server, &["plan", "--file", manifest.to_str().unwrap()]);
+    assert_json_success(&output);
+    assert_eq!(server.finish().len(), 1);
 }

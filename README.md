@@ -5,18 +5,17 @@ single-node Swarm. Submit an application
 manifest naming prebuilt images; the server resolves those images to digests
 and reconciles a private network, named volumes, and replicated services.
 
-Applications are identified by name. Apply durably accepts the full normalized
-manifest and returns an operation ID before resolving images. Identical applies
-are no-ops, including after failure. Explicit reconcile repairs or retries stored targets;
-refresh explicitly resolves images again. Apply, delete, and rename require inspected preconditions by default;
-explicit force overrides them. The CLI separates `--force` from `--yes` confirmation
-and waits for existing operations on identical applies. Refresh and reconcile act
-on current intent. Request IDs are reused across transport retries. SQLite retains acceptance receipts for 24 hours.
+Applications are identified by name. Apply saves the full configuration without
+deploying; `piquelctl apply --deploy` explicitly saves and deploys. Every deployment
+captures its configuration in SQLite and refreshes image tags. Reconciliation and
+retries use deployment snapshots, never pending configuration edits. Preconditions
+prevent stale saves and deployments. Idempotency receipts survive restarts for
+24 hours, and deployment history remains until application deletion.
 
 One async controller overlaps image pulls, observations, and timers while allowing
 one resource mutation request at a time. The active deployment remains maintained
 while a candidate prepares; promotion starts rollout without automatic rollback.
-Unchanged image references reuse active digests. Rename changes metadata without
+Retries reuse prepared digests. Rename changes metadata without
 redeployment. Durable
 operations, attempt outcomes, and informational events remain in SQLite. Deletion
 completes only after services and networks are verified absent; volumes remain.
@@ -46,7 +45,7 @@ The supported manifest and runtime model are documented in:
 | --- | --- |
 | Prebuilt images, replicas, environment, command/args, health checks, resource limits, named volumes, and mounts | Git sources, builds, registry management, credentials, and secrets |
 | Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, and the essential `piquelctl` workflow | Published ports, routes, Traefik, logs, state transfer, authentication, and remote or multi-node operation |
-| Unix-socket and loopback-TCP API transports, plus a read-only Leptos/WASM dashboard on the TCP listener | Mutating web controls, secrets, streams, and the advanced web UI |
+| Unix-socket and loopback-TCP API transports, plus a Leptos/WASM dashboard for saving configuration, deploying, and inspecting history | Secrets, streams, and the advanced web UI |
 
 ## Development
 

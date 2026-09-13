@@ -407,14 +407,6 @@ fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError
         );
     }
     validate_name(&input.metadata.name, "metadata.name", errors);
-    if input.spec.services.is_empty() {
-        error(
-            errors,
-            codes::SERVICE_REQUIRED,
-            "spec.services",
-            "application must declare at least one service",
-        );
-    }
 }
 
 fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) -> bool {

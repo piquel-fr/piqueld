@@ -31,7 +31,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    async fn generation_on(
+    pub(super) async fn generation_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
         expected: Option<u64>,
@@ -231,7 +231,7 @@ impl SqliteStore {
     pub async fn publish_prepared(&self, operation: &Operation) -> Result<(), StoreError> {
         let app_id = operation.application_id.as_str();
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let changed=sqlx::query!("UPDATE applications SET resolved_json=(SELECT target_json FROM operations WHERE id=?1),resolved_generation=generation WHERE id=?2 AND ?1=(SELECT latest.id FROM operations latest WHERE latest.application_id=applications.id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1) AND EXISTS(SELECT 1 FROM operations WHERE id=?1 AND state='running' AND target_json IS NOT NULL)",operation.id,app_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
+        let changed=sqlx::query!("UPDATE applications SET resolved_json=(SELECT target_json FROM operations WHERE id=?1),resolved_generation=(SELECT generation FROM operations WHERE id=?1) WHERE id=?2 AND ?1=(SELECT latest.id FROM operations latest WHERE latest.application_id=applications.id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1) AND EXISTS(SELECT 1 FROM operations WHERE id=?1 AND state='running' AND target_json IS NOT NULL)",operation.id,app_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }

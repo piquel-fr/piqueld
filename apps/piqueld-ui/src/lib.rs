@@ -1,5 +1,6 @@
-//! Read-only browser dashboard for the Plan 06 daemon.
+//! Browser application management and deployment history.
 
+pub mod editor;
 pub mod state;
 
 #[cfg(target_arch = "wasm32")]

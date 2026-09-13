@@ -12,13 +12,17 @@ normalized manifest is needed.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/v1/system/status` | Daemon status |
+| GET | `/api/v1/system/configuration` | Effective read-only host settings |
 | GET | `/api/v1/openapi.json` | Generated API schema |
 | GET | `/api/v1/applications` | Paginated application summaries (up to 100 per page) |
 | GET | `/api/v1/applications/{id}` | Full latest accepted application intent |
 | GET | `/api/v1/applications/{id}/detail` | Intent, resolved generation, observed runtime, operation, diagnostics |
 | GET | `/api/v1/applications/{id}/status` | Intent progress and separate runtime health |
 | POST | `/api/v1/applications/plan` | Preview a manifest without pulling images |
-| POST | `/api/v1/applications/apply` | Accept a full manifest by name |
+| POST | `/api/v1/applications/apply` | Save configuration by name; `?deploy=true` also deploys |
+| POST | `/api/v1/applications/{id}/deploy` | Deploy the inspected saved revision |
+| GET | `/api/v1/applications/{id}/deployments` | Deployment snapshots, newest first, three per page |
+| GET | `/api/v1/applications/{id}/deployments/{deployment}/attempts` | Retained outcomes, newest first, 100 per page |
 | DELETE | `/api/v1/applications/{id}` | Request deletion; no body |
 | POST | `/api/v1/applications/{id}/reconcile` | Repair latest intent without refreshing prepared digests |
 | POST | `/api/v1/applications/{id}/refresh` | Explicitly refresh image references |
@@ -26,24 +30,21 @@ normalized manifest is needed.
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
 
-Plan and new apply acceptance require Docker availability. Existing-application
-previews also require successful runtime observation. An unreachable
-Docker Engine returns 503 `docker_unavailable`; the response contains a safe
-message and the daemon logs the underlying diagnostic. No new intent is stored.
-A matching, unexpired idempotency receipt still replays its previously accepted
-response during an outage. Image resolution and reconciliation remain asynchronous;
-an outage after acceptance is reported by the operation.
+Saving and deployment acceptance work while Docker is unavailable. Execution
+errors are recorded asynchronously. Preview requires runtime observation and
+returns `503 docker_unavailable` during an outage. Application detail remains
+readable and reports unavailable runtime observation as a diagnostic.
 
 Apply and plan accept JSON `{ "manifest": ..., "expected_generation": 3,
 "expected_application_id": "app-..." }`, or complete TOML with
 `Content-Type: application/toml` or `text/toml`. TOML preconditions use
 `X-Expected-Generation` and `X-Expected-Application-Id`.
 
-Apply, delete, and rename require preconditions unless the endpoint is explicitly
+Apply, deploy, delete, and rename require preconditions unless the endpoint is explicitly
 called with the query parameter `force=true`. Missing preconditions return 400
 `precondition_required`. Apply requires generation zero to create an absent name,
 or both the inspected application ID and generation to update an existing name.
-Delete requires `expected_generation` in its query; rename takes it in JSON.
+Deploy and delete require `expected_generation` in its query; rename takes it in JSON.
 Revision mismatches return 409 `generation_conflict`; identity mismatches return
 409 `identity_conflict`. Checks and acceptance are atomic.
 
@@ -59,20 +60,25 @@ Reconcile can continue an already-requested deletion. Preview preconditions are
 also optional. The CLI supplies apply/delete/rename preconditions automatically;
 `--yes` skips confirmation and `--force` requests the override independently.
 
-Generation starts at 1 and advances for a changed normalized manifest or deletion
-intent. Comments and ordering do not cause changes. Full apply replaces the
-manifest without merging. Refresh, reconciliation, attempts, and runtime health
-never advance generation. Applying the same manifest while deletion is intended
-reverses deletion and advances generation.
+Configuration generation starts at 1 and advances on saves, changed names, and
+deletion intent. Apply replaces the full configuration without merging. It returns
+200 with `SavedApplication` (`application_id`, `generation`, and null `operation_id`).
+With `?deploy=true`, apply atomically saves and deploys, returning 202 with a populated
+`operation_id`. Saving during deletion is rejected.
 
-Apply returns 202 and an `AcceptedOperation` before image resolution. Preparation
-failures are reported on the operation. An identical manifest returns the current
-operation without resolution or scheduling, even after failure. Explicit reconcile
-requests another attempt.
-Refresh explicitly resolves the current manifest: active refreshes are reused,
-failed refreshes retry, and a refresh after success starts a new operation.
-Refresh is rejected during deletion. Reconcile reuses stored digests for latest
-intent, retrying preparation only when it did not complete.
+Deploy captures exactly the inspected saved revision, returning 202 with
+`AcceptedOperation`. Every explicit Deploy creates a new snapshot and supersedes
+pending work, even for unchanged configuration. It resolves image tags again;
+matching healthy containers need no restart. Empty applications are valid: an
+empty deployment removes services and networks while retaining volume data.
+
+Reconciliation and retries use deployment snapshots and their prepared digests,
+never newer saved edits. Refresh uses the latest deployment configuration, not
+pending changes. Configuration saves do not supersede operations. Deployments and
+attempt outcomes remain indefinitely until application deletion. The deployments
+response distinguishes `current_target`, `last_successful`, and mutable operation
+progress; last successful does not imply automatic rollback after a failed rollout.
+History endpoints accept `cursor` for subsequent pages.
 
 Mutation endpoints accept an optional `Idempotency-Key` (1–128 ASCII letters,
 digits, `-`, `_`, `.`, or `:`). The CLI generates one UUID per command and reuses
@@ -98,22 +104,24 @@ Operations have kind `apply`, `refresh`, or `delete` and state `requested`,
 pending/running older operations `superseded`, separately from cancellation.
 The CLI treats supersession as success with an explicit outcome and stops waiting
 immediately, without following the replacement. Each execution increments
-`attempt`. Previous outcomes remain in events even when the operation is reused.
+`attempt`. Deployment attempt outcomes remain available even after event pruning.
 Deletion retains volumes and completes only after runtime absence is verified.
+It then removes the application, operations, deployments, attempts, events, and
+receipts. Clients waiting for deletion poll application absence; its operation
+endpoint also returns 404 after cleanup.
 
 Preview returns 200 with a `PlanView`, no durable changes, and no image pulls.
 The response includes the inspected generation (zero for an absent name), an
 `identical` flag, latest operation, redacted manifest field changes, and a runtime
-plan. Identical intent has an empty plan; this does not assert runtime health.
-Unchanged service image references reuse active digests for both preview and apply;
-new/changed references report resolution requirements. Runtime unavailability is
-an informational diagnostic, so manifest changes remain available. Environment,
+plan. Manifest differences compare against the last deployment snapshot, not saved
+configuration. Image tags report resolution requirements even when unchanged,
+matching Deploy's refresh behavior. Environment,
 command, argument, and health-check values are redacted in previews, including
 runtime actions. Execution computes its own unredacted plan after preparation.
 Previews cannot freeze mutable tags or runtime state.
 
 Events accept optional `application_id`, `cursor`, and `limit` (1–100, default 50).
-They include history for deleted applications and survive operation pruning.
+They survive ordinary operation pruning but are removed with their application.
 Event retention is independently configured by `retention.event_days` (default
 30; zero disables pruning). Events contain safe diagnostics and identifiers,
 never manifests, environment values, or raw Docker errors. Failure events preserve
@@ -121,7 +129,7 @@ never manifests, environment values, or raw Docker errors. Failure events preser
 resource. Significant resource mutations and active-target repairs are recorded,
 while unchanged observations and timer ticks are omitted.
 
-The unauthenticated TCP API accepts only loopback hosts. The read-only dashboard
+The unauthenticated TCP API accepts only loopback hosts. The dashboard
 is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
 The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
 [the generated contract](openapi-v1.json).

@@ -12,6 +12,7 @@ piquelctl list
 piquelctl show <name-or-id>
 piquelctl plan --file application.toml
 piquelctl apply --file application.toml
+piquelctl apply --file application.toml --deploy
 piquelctl delete <name-or-id>
 piquelctl operation <operation-id>
 piquelctl reconcile <name-or-id>
@@ -44,12 +45,12 @@ written to stderr, so stdout remains valid JSON.
 | `list` | `{ "items": [{ "application": ApplicationSummary, "status": ApplicationStatusView }], "next_cursor": null }` |
 | `show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
 | `plan` | `PlanView` |
-| identical `apply` | `{ "identical": true, "application_id": string, "outcome": OperationState, "operation": Operation }` |
 | `rename` | `RenamedApplication` |
-| `apply --no-wait` | `AcceptedOperation` |
-| `apply` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
+| `apply` | `SavedApplication` with null `operation_id` |
+| `apply --deploy --no-wait` | `SavedApplication` with a deployment operation ID |
+| `apply --deploy` | `{ "saved": SavedApplication, "outcome": OperationState, "operation": Operation }` |
 | `delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
-| `delete` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation, "volumes_retained": true }` |
+| `delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": true }` |
 | `operation --no-wait` | `Operation` |
 | `operation` | `Operation` |
 | `reconcile` / `refresh` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
@@ -62,37 +63,22 @@ JSON stdout.
 
 ## Mutation safety
 
-`plan` previews a manifest, and `apply` sends it to the single apply endpoint.
-The server creates or updates the application identified by its name. `apply`
-always previews first and stops when the plan is blocked or confirmation is
-declined. `show` and `delete` accept a name or ID; name lookup follows the
-paginated application list.
+`apply` saves configuration only. `apply --deploy` saves and deploys atomically.
+Both inspect the application identity and saved revision before confirmation;
+neither requires a runtime preview or Docker availability. Use `plan` separately
+to inspect redacted changes and image resolution requirements. Preview may fail
+when Docker observation is unavailable.
 
-Mutating commands require a TTY confirmation unless `--yes` is supplied.
-Apply, delete, and rename also accept `--force` to override preconditions;
-force does not skip confirmation. Unattended forced commands need both
-`--force --yes`. `--force` and `--expected-generation` are mutually exclusive.
-Deleting an application retains its named volumes; the CLI prints that notice
-and includes `volumes_retained: true` in JSON output.
+Mutating commands require TTY confirmation unless `--yes` is supplied. Apply,
+delete and rename accept `--force` independently of confirmation. Every explicit
+deployment creates a new snapshot, refreshes image references and supersedes prior
+work. Reconciliation retries the deployment snapshot using prepared digests.
+Unchanged healthy containers do not restart unnecessarily.
 
-Apply durably accepts intent before image preparation. An identical ordinary
-apply schedules no new work and needs no confirmation. It waits for the existing
-pending/running operation unless `--no-wait` is supplied. An existing success
-returns immediately and does not establish fresh runtime health. Failed/cancelled
-operations exit with code 5 and guidance to use `reconcile`. A forced apply always
-sends its request to the endpoint, even when the preview was identical, so the
-server can apply it to the name's current intent.
-
-`reconcile` repairs or retries latest intent using stored digests, including
-continuing an already-requested deletion. Apply reuses active digests for unchanged
-service image references; `refresh` explicitly resolves them again and is rejected
-during deletion. Reconcile and refresh accept `--yes` and `--no-wait`; they do not
-require a revision and have no `--force` flag.
-
-Previews are computed by the daemon. They redact sensitive configuration values
-and identify unresolved images separately from known runtime actions. If Docker
-observation is unavailable, the daemon returns `503 docker_unavailable` and
-`plan`/`apply` stop without submitting new intent.
+Deletion removes application configuration and all its history after runtime
+resources are absent. Named Docker volumes remain; output includes
+`volumes_retained: true`. The CLI waits for application absence because deletion
+also removes its operation record.
 
 For apply, delete, and rename, the CLI automatically sends the revision it
 inspected before confirmation. Apply also sends the inspected application ID,
@@ -116,10 +102,10 @@ advances generation and records an event. Update `metadata.name` in your manifes
 file afterward; the CLI does not edit files automatically.
 
 `events` reads one page, oldest first. `--application ID` optionally filters by
-stable ID, including deleted applications. Use `--cursor CURSOR` for subsequent
+stable ID. Deleted applications have no retained history. Use `--cursor CURSOR` for subsequent
 pages and `--limit N` (1–100, default 50). JSON includes the next cursor.
 
-By default, apply, delete, reconcile, refresh, and operation poll every 250 ms
+By default, apply with `--deploy`, delete, reconcile, refresh, and operation poll every 250 ms
 until a terminal state. Supersession returns immediately with exit code 0 and
 `outcome: "superseded"` in mutation command results (`state: "superseded"` on an
 operation record). It does not wait for the replacement to deploy. An observed
@@ -134,5 +120,5 @@ usage or input errors, 3 for conflicts, 4 for unavailable or timed
 out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.
 
-There are no mutating browser controls. Logs, remote authentication, builds,
+The dashboard provides application management forms. Logs, remote authentication, builds,
 registry management, and advanced interactive CLI flows remain future work.

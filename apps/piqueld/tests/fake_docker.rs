@@ -629,9 +629,10 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
         .await
         .expect("delete converges");
     harness.assert_deleted().await;
-    let completed = harness.store.operation(&deletion.id).await.unwrap();
-    assert_eq!(completed.state, OperationState::Succeeded);
-    assert!(completed.error_code.is_none());
+    assert!(matches!(
+        harness.store.operation(&deletion.id).await,
+        Err(piqueld::store::StoreError::NotFound)
+    ));
 }
 
 #[tokio::test]
@@ -1246,7 +1247,10 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
-            if store.operation(&deleted.id).await.unwrap().state == OperationState::Succeeded {
+            if matches!(
+                store.operation(&deleted.id).await,
+                Err(piqueld::store::StoreError::NotFound)
+            ) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -1254,11 +1258,6 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     })
     .await
     .expect("delete supersedes pending preparation without waiting for its pull");
-    assert_eq!(
-        store.operation(&accepted.id).await.unwrap().state,
-        OperationState::Superseded
-    );
-    assert!(store.prepared_target(&accepted.id).await.unwrap().is_none());
     assert_eq!(docker.images.maximum.load(Ordering::SeqCst), 2);
     cancellation.cancel();
     controller_task.await.unwrap().unwrap();

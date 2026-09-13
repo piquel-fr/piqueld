@@ -119,6 +119,9 @@ impl SqliteStore {
             to,code,message,now,finished,id,from)
             .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if changed == 1 {
+            if terminal {
+                Self::record_deployment_attempt(&mut tx, id).await?;
+            }
             if from != to {
                 let kind = match to {
                     "running" => "operation_started",
@@ -180,16 +183,18 @@ impl SqliteStore {
             return Err(StoreError::IllegalTransition);
         }
         let app_id = operation.application_id.as_str();
-        sqlx::query!("UPDATE applications SET deleted_at_ms=?1,updated_at_ms=?1 WHERE id=?2 AND delete_intent=1",now,app_id)
-            .execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM events WHERE application_id=?1", app_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM request_receipts WHERE json_extract(response_json,'$.Operation.application_id')=?1 OR json_extract(response_json,'$.Saved.application_id')=?1 OR json_extract(response_json,'$.Rename.application_id')=?1",app_id).execute(&mut *tx).await.map_err(StoreError::database)?;
         sqlx::query!(
-            "DELETE FROM application_status WHERE application_id=?1",
+            "DELETE FROM applications WHERE id=?1 AND delete_intent=1",
             app_id
         )
         .execute(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        Self::operation_event(&mut tx, &operation.id, "deletion_completed", None, now).await?;
         tx.commit().await.map_err(StoreError::database)
     }
 
@@ -209,7 +214,7 @@ impl SqliteStore {
         operation: &Operation,
     ) -> Result<Operation, StoreError> {
         let now = now_ms();
-        let changed = sqlx::query!("UPDATE operations SET generation=(SELECT generation FROM applications WHERE id=operations.application_id),phase=NULL,resource=NULL,state='requested',error_code=NULL,error_message=NULL,started_at_ms=NULL,finished_at_ms=NULL,updated_at_ms=?1 WHERE id=?2 AND (state IN ('succeeded','failed','cancelled') OR (state='running' AND error_code IS NOT NULL)) AND id=(SELECT latest.id FROM operations latest WHERE latest.application_id=operations.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",now,operation.id)
+        let changed = sqlx::query!("UPDATE operations SET phase=NULL,resource=NULL,state='requested',error_code=NULL,error_message=NULL,started_at_ms=NULL,finished_at_ms=NULL,updated_at_ms=?1 WHERE id=?2 AND (state IN ('succeeded','failed','cancelled') OR (state='running' AND error_code IS NOT NULL)) AND id=(SELECT latest.id FROM operations latest WHERE latest.application_id=operations.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",now,operation.id)
             .execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
             let current = Self::operation_on(tx, &operation.id).await?;
@@ -277,6 +282,18 @@ impl SqliteStore {
         let now = now_ms();
         let (_writer, mut tx) = self.begin_immediate().await?;
         sqlx::query!("INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT application_id,id,generation,attempt,'operation_interrupted','daemon restarted during execution',error_code,phase,resource,?1 FROM operations WHERE state='running'",now).execute(&mut *tx).await.map_err(StoreError::database)?;
+        let interrupted =
+            sqlx::query_scalar!(r#"SELECT id AS "id!" FROM operations WHERE state='running'"#)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
+        for id in interrupted {
+            let mut attempt = Self::operation_on(&mut tx, &id).await?;
+            attempt.state = OperationState::Cancelled;
+            attempt.updated_at_ms = now;
+            attempt.finished_at_ms = Some(now);
+            Self::save_deployment_attempt(&mut tx, &attempt).await?;
+        }
         let count=sqlx::query!("UPDATE operations SET state='requested',updated_at_ms=?1,started_at_ms=NULL,error_code=NULL,error_message=NULL WHERE state='running'",now)
             .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         tx.commit().await.map_err(StoreError::database)?;
@@ -289,7 +306,7 @@ impl SqliteStore {
     /// Returns a storage error.
     pub async fn prune_finished_operations(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
         let _writer = self.writers.lock().await;
-        Ok(sqlx::query!("DELETE FROM operations WHERE finished_at_ms < ?1 AND id != (SELECT latest.id FROM operations latest WHERE latest.application_id=operations.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",cutoff_ms)
+        Ok(sqlx::query!("DELETE FROM operations WHERE NOT EXISTS(SELECT 1 FROM deployments WHERE deployments.id=operations.id) AND finished_at_ms < ?1 AND id != (SELECT latest.id FROM operations latest WHERE latest.application_id=operations.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",cutoff_ms)
             .execute(&self.pool).await.map_err(StoreError::database)?.rows_affected())
     }
 
@@ -303,10 +320,17 @@ impl SqliteStore {
         sqlx::query!("INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT application_id,id,generation,attempt,'operation_superseded','superseded by newer intent',error_code,phase,resource,?1 FROM operations WHERE application_id=?2 AND state IN ('requested','running')",now,app_id).execute(&mut **tx).await.map_err(StoreError::database)?;
         sqlx::query!("UPDATE operations SET state='superseded',error_code=NULL,error_message=NULL,finished_at_ms=?1,updated_at_ms=?1 WHERE application_id=?2 AND state IN ('requested','running')",now,app_id)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
+        let superseded=sqlx::query_scalar!(r#"SELECT id AS "id!" FROM operations WHERE application_id=?1 AND state='superseded' AND updated_at_ms=?2"#,app_id,now).fetch_all(&mut **tx).await.map_err(StoreError::database)?;
+        for previous in superseded {
+            Self::record_deployment_attempt(tx, &previous).await?;
+        }
         let id = new_id("operation");
         let kind = kind.as_str();
         sqlx::query!("INSERT INTO operations(id,application_id,generation,kind,state,created_at_ms,updated_at_ms) SELECT ?1,?2,generation,?3,'requested',?4,?4 FROM applications WHERE id=?2",id,app_id,kind,now)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
+        if kind != "delete" {
+            Self::capture_deployment(tx, &id).await?;
+        }
         let event = match kind {
             "apply" => "application_applied",
             "refresh" => "refresh_requested",
