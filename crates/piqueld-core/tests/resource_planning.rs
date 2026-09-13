@@ -560,6 +560,7 @@ fn compiled_ownership_carries_the_spec_hash_label() {
 fn cleanup_plans_are_stable_across_engine_listing_order() {
     let desired = compile_application(&application(), instance(), &resolutions()).unwrap();
     let mut snapshot = observed(&desired);
+    let mut obsolete_names = Vec::new();
     for logical in ["old-z", "old-a"] {
         let mut service = snapshot.services[0].clone();
         service.name = piqueld_core::docker_resource_name(
@@ -570,6 +571,7 @@ fn cleanup_plans_are_stable_across_engine_listing_order() {
         service
             .labels
             .insert("io.piqueld.service".into(), logical.into());
+        obsolete_names.push(service.name.clone());
         snapshot.services.push(service);
         let mut volume = snapshot.volumes[0].clone();
         volume.name = piqueld_core::docker_resource_name(
@@ -594,12 +596,9 @@ fn cleanup_plans_are_stable_across_engine_listing_order() {
         },
     ] {
         let expected = Plan::from_request(&request, &snapshot);
-        assert!(
-            expected
-                .actions
-                .iter()
-                .any(|action| matches!(action.kind, ActionKind::RemoveService { .. }))
-        );
+        for name in &obsolete_names {
+            assert!(expected.actions.iter().any(|action| matches!(&action.kind, ActionKind::RemoveService { name: found } if found == name)), "missing cleanup for {name}");
+        }
         assert!(
             expected
                 .actions

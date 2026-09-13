@@ -2151,12 +2151,13 @@ impl RawResponse {
                 serde_json::from_value(self.body.clone()).unwrap();
             assert!(!error.code.is_empty());
             assert!(!error.message.is_empty());
-            assert_eq!(
-                self.request_id(),
-                self.headers
-                    .get("x-request-id")
-                    .and_then(|value| value.to_str().ok())
-            );
+            let header_id = self
+                .headers
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok())
+                .expect("request ID header");
+            assert!(!header_id.is_empty());
+            assert_eq!(error.request_id, header_id);
         }
     }
 }
