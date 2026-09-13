@@ -9,6 +9,8 @@ pub mod reconcile;
 pub mod store;
 
 mod command;
+mod data_dir;
+pub use data_dir::DataDirLock;
 mod git;
 mod ui_bundle;
 

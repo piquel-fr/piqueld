@@ -46,6 +46,23 @@ async fn main() -> Result<()> {
             )
         })?;
 
+    let _lock = piqueld::DataDirLock::acquire(&config.server.data_dir).with_context(|| {
+        format!(
+            "failed to lock data directory {}",
+            config.server.data_dir.display()
+        )
+    })?;
+    // Bind both endpoints before opening state or starting any background work.
+    let tcp_listener = match config.server.http_listen {
+        Some(address) => Some(
+            TcpListener::bind(address)
+                .await
+                .with_context(|| format!("failed to bind HTTP API on {address}"))?,
+        ),
+        None => None,
+    };
+    let unix_listener = bind_unix_api(config.server.socket_path()).await?;
+
     let store = Arc::new(
         SqliteStore::open(config.server.database_path())
             .await
@@ -108,15 +125,9 @@ async fn main() -> Result<()> {
         result
     });
 
-    let tcp_api = match config.server.http_listen {
-        Some(address) => Some(
-            spawn_tcp_api(address, state.clone(), ui_assets, cancellation.clone())
-                .await
-                .with_context(|| format!("failed to bind HTTP API on {address}"))?,
-        ),
-        None => None,
-    };
-    let unix_api = spawn_unix_api(config.server.socket_path(), state, cancellation.clone()).await?;
+    let tcp_api = tcp_listener
+        .map(|listener| spawn_tcp_api(listener, state.clone(), ui_assets, cancellation.clone()));
+    let unix_api = spawn_unix_api(unix_listener, state, cancellation.clone());
 
     piqueld::run_until_cancelled(cancellation).await?;
 
@@ -197,17 +208,14 @@ fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> 
     }
 }
 
-async fn spawn_tcp_api(
-    address: std::net::SocketAddr,
+fn spawn_tcp_api(
+    listener: TcpListener,
     state: ApiState,
     ui_assets: UiAssets,
     cancellation: CancellationToken,
-) -> Result<tokio::task::JoinHandle<Result<(), std::io::Error>>> {
-    let listener = TcpListener::bind(address)
-        .await
-        .context("failed to bind HTTP API")?;
-    info!(%address, "HTTP API listening");
-    Ok(tokio::spawn(async move {
+) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
+    info!(address = ?listener.local_addr(), "HTTP API listening");
+    tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
             axum::serve(listener, piqueld::api::web_router(state, ui_assets))
@@ -232,14 +240,10 @@ async fn spawn_tcp_api(
         };
         cancellation.cancel();
         served
-    }))
+    })
 }
 
-async fn spawn_unix_api(
-    path: PathBuf,
-    state: ApiState,
-    cancellation: CancellationToken,
-) -> Result<tokio::task::JoinHandle<Result<(), std::io::Error>>> {
+async fn bind_unix_api(path: PathBuf) -> Result<UnixListener> {
     match tokio::fs::symlink_metadata(&path).await {
         Ok(metadata) if metadata.file_type().is_socket() => {
             tokio::fs::remove_file(&path)
@@ -262,8 +266,16 @@ async fn spawn_unix_api(
     tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
         .await
         .context("failed to restrict Unix API socket permissions")?;
-    info!(socket = %path.display(), "Unix API socket listening");
-    Ok(tokio::spawn(async move {
+    info!(socket = %path.display(), "Unix API socket bound");
+    Ok(listener)
+}
+
+fn spawn_unix_api(
+    listener: UnixListener,
+    state: ApiState,
+    cancellation: CancellationToken,
+) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
+    tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
             axum::serve(listener, piqueld::api::api_router(state))
@@ -287,5 +299,5 @@ async fn spawn_unix_api(
         };
         cancellation.cancel();
         served
-    }))
+    })
 }
