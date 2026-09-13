@@ -1932,7 +1932,6 @@ impl std::io::Write for TraceCapture {
 
 #[tokio::test]
 async fn operation_traces_correlate_outcomes_without_configuration_values() {
-    use tracing::instrument::WithSubscriber;
     let capture = TraceCapture::default();
     let writer = capture.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -1940,7 +1939,10 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
         .with_max_level(tracing::Level::DEBUG)
         .with_writer(move || writer.clone())
         .finish();
-    let (application_id, operation_id) = async {
+    // Cargo runs these tests concurrently in one process. Install capture
+    // globally and select this operation's events from the shared stream.
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+    let (application_id, operation_id) = {
         let mut harness = ControllerHarness::new().await;
         harness.application.spec.services[0]
             .environment
@@ -1958,9 +1960,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
             .await
             .unwrap();
         (harness.application.id.to_string(), operation.id)
-    }
-    .with_subscriber(subscriber)
-    .await;
+    };
     let text = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
     assert!(!text.contains("must-not-appear-in-traces"));
     let events: Vec<serde_json::Value> = text
@@ -1969,16 +1969,22 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
         .collect();
     let completed = events
         .iter()
-        .find(|event| event["fields"]["message"] == "operation execution completed")
-        .unwrap();
+        .find(|event| {
+            event["fields"]["message"] == "operation execution completed"
+                && event["span"]["operation_id"] == operation_id
+        })
+        .unwrap_or_else(|| panic!("missing completion event in captured traces:\n{text}"));
     assert_eq!(completed["span"]["application_id"], application_id);
     assert_eq!(completed["span"]["operation_id"], operation_id);
     assert_eq!(completed["span"]["generation"], 1);
     assert_eq!(completed["fields"]["outcome"], "succeeded");
     assert!(completed["fields"]["duration_ms"].as_f64().is_some());
-    assert!(
-        events
-            .iter()
-            .any(|event| event["fields"]["message"] == "action completed")
-    );
+    assert!(events.iter().any(|event| {
+        event["fields"]["message"] == "action completed"
+            && event["spans"].as_array().is_some_and(|spans| {
+                spans
+                    .iter()
+                    .any(|span| span["operation_id"] == operation_id)
+            })
+    }));
 }
