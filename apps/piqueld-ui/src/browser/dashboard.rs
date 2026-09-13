@@ -204,7 +204,7 @@ pub(super) fn ApplicationsPage() -> impl IntoView {
                         view! {
                             <A
                                 class="application-row"
-                                href={format!("/dashboard/applications/{}", row.application.id())}
+                                href={format!("/dashboard/applications/{}", row.application.id)}
                             >
                                 <span class="app-icon" aria-hidden="true">
                                     "▤"
