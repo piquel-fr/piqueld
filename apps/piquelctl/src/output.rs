@@ -5,36 +5,24 @@ use crate::{
 use piqueld_client::{ActionReason, ActionRisk, Operation, PlanView};
 use serde::Serialize;
 use serde_json::json;
-use std::io::{self, Write};
-
-pub(crate) fn report_operation(operation: &Operation) {
-    let phase = operation.phase.as_deref().map(humanize).unwrap_or_default();
-    match (phase.is_empty(), operation.resource.as_deref()) {
-        (true, None) => eprintln!("  {}", operation.state),
-        (false, None) => eprintln!("  {:<10} · {phase}", operation.state),
-        (true, Some(resource)) => eprintln!("  {:<10} · {resource}", operation.state),
-        (false, Some(resource)) => {
-            eprintln!("  {:<10} · {phase} · {resource}", operation.state);
-        }
-    }
-}
+use std::io::{self, IsTerminal, Write};
 
 pub(crate) fn render_operation(cli: &Cli, operation: &Operation) -> Result<()> {
     if cli.json {
         return emit_json(operation);
     }
     writeln!(
-        io::stdout().lock(),
+        cli.output(),
         "Operation: {}\n  State:       {}\n  Application: {}",
         operation.id,
         operation.state,
         operation.application_id
     )?;
     if let Some(phase) = operation.phase.as_deref() {
-        writeln!(io::stdout().lock(), "  Phase:       {}", humanize(phase))?;
+        writeln!(cli.output(), "  Phase:       {}", humanize(phase))?;
     }
     if let Some(resource) = operation.resource.as_deref() {
-        writeln!(io::stdout().lock(), "  Resource:    {resource}")?;
+        writeln!(cli.output(), "  Resource:    {resource}")?;
     }
     if let Some(message) = &operation.error_message {
         eprintln!("\nDiagnostic: {message}");
@@ -177,4 +165,133 @@ pub(crate) fn emit_json<T: Serialize>(value: &T) -> Result<()> {
         CliError::new(ErrorKind::General, format!("could not write JSON: {error}"))
     })?;
     Ok(())
+}
+
+/// Human output has a single formatting boundary; JSON bypasses it entirely.
+pub(crate) struct HumanOutput {
+    quiet: bool,
+    color: bool,
+}
+impl Cli {
+    pub(crate) fn output(&self) -> HumanOutput {
+        HumanOutput {
+            quiet: self.quiet,
+            color: io::stdout().is_terminal()
+                && std::env::var_os("NO_COLOR").is_none()
+                && std::env::var("TERM").as_deref() != Ok("dumb"),
+        }
+    }
+}
+impl Write for HumanOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.quiet {
+            Ok(bytes.len())
+        } else {
+            io::stdout().lock().write(bytes)
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        io::stdout().lock().flush()
+    }
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> io::Result<()> {
+        if self.quiet {
+            return Ok(());
+        }
+        let text = args.to_string();
+        let mut output = io::stdout().lock();
+        for line in text.split_inclusive('\n') {
+            if self.color {
+                let split = line
+                    .find([':', '\t'])
+                    .unwrap_or_else(|| line.trim_end().len());
+                let (label, value) = line.split_at(split);
+                write!(output, "\x1b[1;36m{label}\x1b[0m{value}")?;
+            } else {
+                output.write_all(line.as_bytes())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+enum ProgressStyle {
+    Plain,
+    Terminal,
+    Color,
+}
+
+pub(crate) struct Progress {
+    quiet: bool,
+    style: ProgressStyle,
+    started: std::time::Instant,
+    last: Option<String>,
+    drawn: bool,
+    last_second: u64,
+}
+impl Progress {
+    pub(crate) fn new(cli: &Cli, id: &str) -> Self {
+        let terminal = io::stderr().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb");
+        if !cli.quiet {
+            eprintln!("\nProgress: {id}");
+        }
+        Self {
+            quiet: cli.quiet,
+            style: if !terminal {
+                ProgressStyle::Plain
+            } else if std::env::var_os("NO_COLOR").is_some() {
+                ProgressStyle::Terminal
+            } else {
+                ProgressStyle::Color
+            },
+            started: std::time::Instant::now(),
+            last: None,
+            drawn: false,
+            last_second: 0,
+        }
+    }
+    pub(crate) fn update(&mut self, operation: &Operation) {
+        if self.quiet {
+            return;
+        }
+        let line = format!(
+            "{:<10} · {}{}",
+            operation.state,
+            operation.phase.as_deref().map(humanize).unwrap_or_default(),
+            operation
+                .resource
+                .as_ref()
+                .map_or_else(String::new, |r| format!(" · {r}"))
+        );
+        let elapsed = self.started.elapsed().as_secs();
+        if self.last.as_ref() == Some(&line)
+            && (matches!(self.style, ProgressStyle::Plain) || elapsed == self.last_second)
+        {
+            return;
+        }
+        if matches!(self.style, ProgressStyle::Plain) {
+            eprintln!("  {line}  [{elapsed}s]");
+        } else {
+            let code = match operation.state {
+                piqueld_client::OperationState::Succeeded => "1;32",
+                piqueld_client::OperationState::Failed => "1;31",
+                _ => "1;36",
+            };
+            if matches!(self.style, ProgressStyle::Color) {
+                eprint!("\r\x1b[2K  \x1b[{code}m{line}\x1b[0m  [{elapsed}s]");
+            } else {
+                eprint!("\r\x1b[2K  {line}  [{elapsed}s]");
+            }
+            let _ = io::stderr().flush();
+            self.drawn = true;
+        }
+        self.last = Some(line);
+        self.last_second = elapsed;
+    }
+}
+impl Drop for Progress {
+    fn drop(&mut self) {
+        if self.drawn {
+            eprintln!();
+        }
+    }
 }

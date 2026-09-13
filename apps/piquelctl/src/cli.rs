@@ -32,6 +32,13 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) json: bool,
 
+    /// Suppress successful human output and progress; JSON and errors remain available.
+    #[arg(long, short, global = true)]
+    pub(crate) quiet: bool,
+    /// Never prompt, even on a terminal. Mutations still require --yes.
+    #[arg(long, global = true)]
+    pub(crate) noninteractive: bool,
+
     #[command(subcommand)]
     pub(crate) command: Command,
 }

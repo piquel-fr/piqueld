@@ -1256,3 +1256,29 @@ fn preview_is_an_explicit_read_only_command() {
     assert_json_success(&output);
     assert_eq!(server.finish().len(), 1);
 }
+
+#[test]
+fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
+    for json in [false, true] {
+        let server = start_server(false, 1, |_| {
+            Reply::json(json!({
+                "status":"running", "api_version":"v1", "daemon_version":"test", "instance_id":"instance-test"
+            }))
+        });
+        let output = run_with_format(&server, &["--quiet", "status"], "2s", json);
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        if json {
+            assert_json_success(&output);
+        } else {
+            assert!(output.stdout.is_empty());
+        }
+        server.finish();
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_piquelctl"))
+        .args(["--quiet", "--socket", "/nonexistent/piqueld.sock", "status"])
+        .output()
+        .expect("CLI");
+    assert!(!output.status.success());
+    assert!(!output.stderr.is_empty());
+}

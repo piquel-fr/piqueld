@@ -131,6 +131,12 @@ after acceptance, or a longer global `--timeout` for builds. The server continue
 deployment if the CLI wait times out. `refresh` resolves only the stored service
 sources; `reconcile` retries or repairs the latest deployment snapshot and prepared target.
 
+Human output uses bold labels and color on terminals, aligned application lists,
+and elapsed operation progress. Redirected output stays plain and `NO_COLOR`
+disables color. `--quiet` suppresses successful human output and progress while
+preserving errors and explicit JSON results. `--noninteractive` refuses prompts
+even on a terminal; destructive commands still need `--yes`.
+
 ## Connection profiles
 
 Select a named connection with `--profile NAME` or `PIQUELD_PROFILE`.
