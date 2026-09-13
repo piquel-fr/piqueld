@@ -4,6 +4,7 @@ use axum::{
     body::Body,
     extract::Request,
     http::{Method, StatusCode, header},
+    middleware::Next,
     response::{IntoResponse, Response},
 };
 use std::path::Path;
@@ -35,19 +36,17 @@ const SECURITY_HEADERS: [(&str, &str); 3] = [
     ("content-security-policy", DASHBOARD_CONTENT_SECURITY_POLICY),
 ];
 
-/// Inserts the shared security headers without clobbering existing values.
-///
-/// Invariant: applied exactly once per dashboard response, at the serving
-/// boundary ([`serve`]'s single exit, [`redirect`], [`not_found`]); response
-/// constructors stay raw so no path can double-apply or skip the headers.
-fn harden(mut response: Response) -> Response {
-    let headers = response.headers_mut();
-    for (name, value) in SECURITY_HEADERS {
-        if !headers.contains_key(name)
-            && let Ok(name) = header::HeaderName::from_lowercase(name.as_bytes())
-            && let Ok(header_value) = header::HeaderValue::from_str(value)
-        {
-            headers.insert(name, header_value);
+/// Applies dashboard headers once, including router-generated errors.
+/// API and liveness responses retain their own response policy.
+pub(super) async fn security_headers(request: Request, next: Next) -> Response {
+    let dashboard = !is_api_path(request.uri().path()) && request.uri().path() != "/health";
+    let mut response = next.run(request).await;
+    if dashboard {
+        for (name, value) in SECURITY_HEADERS {
+            response
+                .headers_mut()
+                .entry(header::HeaderName::from_static(name))
+                .or_insert(header::HeaderValue::from_static(value));
         }
     }
     response
@@ -89,7 +88,7 @@ pub(super) fn is_api_path(path: &str) -> bool {
 
 /// Returns a permanent redirect to the canonical dashboard root.
 pub(super) async fn redirect() -> impl IntoResponse {
-    harden(axum::response::Redirect::permanent("/dashboard/").into_response())
+    axum::response::Redirect::permanent("/dashboard/")
 }
 
 /// Serves embedded bundle files below `/dashboard/` and falls back to the
@@ -117,11 +116,11 @@ pub(super) fn serve(bundle: &'static EmbeddedBundle, request: &Request) -> Respo
     if head {
         *response.body_mut() = Body::empty();
     }
-    harden(response)
+    response
 }
 
 pub(super) fn not_found() -> Response<Body> {
-    harden(StatusCode::NOT_FOUND.into_response())
+    StatusCode::NOT_FOUND.into_response()
 }
 
 fn lookup(bundle: &'static EmbeddedBundle, name: &str) -> Option<EmbeddedFile> {

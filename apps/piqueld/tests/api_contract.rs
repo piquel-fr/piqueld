@@ -416,18 +416,8 @@ async fn dashboard_responses_carry_security_headers() {
     assert!(csp.contains("default-src 'self'"), "{csp}");
     assert!(csp.contains("wasm-unsafe-eval"), "{csp}");
     assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
-    assert_eq!(
-        headers
-            .get("x-content-type-options")
-            .and_then(|value| value.to_str().ok()),
-        Some("nosniff")
-    );
-    assert_eq!(
-        headers
-            .get("referrer-policy")
-            .and_then(|value| value.to_str().ok()),
-        Some("no-referrer")
-    );
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert_eq!(headers["referrer-policy"], "no-referrer");
 
     let head = application
         .clone()
@@ -451,6 +441,7 @@ async fn dashboard_responses_carry_security_headers() {
     );
 
     let method_not_allowed = application
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -465,6 +456,43 @@ async fn dashboard_responses_carry_security_headers() {
         method_not_allowed.headers().get(http::header::ALLOW),
         Some(&HeaderValue::from_static("GET, HEAD"))
     );
+    for (method, path, status) in [
+        (Method::GET, "/", StatusCode::PERMANENT_REDIRECT),
+        (Method::GET, "/dashboard/missing.js", StatusCode::NOT_FOUND),
+        (Method::POST, "/dashboard", StatusCode::METHOD_NOT_ALLOWED),
+    ] {
+        let response = application
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        for name in [
+            "content-security-policy",
+            "x-content-type-options",
+            "referrer-policy",
+        ] {
+            assert_eq!(
+                response.headers().get_all(name).iter().count(),
+                1,
+                "{path}: {name}"
+            );
+            assert_eq!(response.headers().get(name), headers.get(name));
+        }
+    }
+    for path in ["/health", "/api/v1/missing"] {
+        let response = application.clone().oneshot(request(path)).await.unwrap();
+        assert!(
+            !response.headers().contains_key("content-security-policy"),
+            "{path}"
+        );
+    }
 }
 
 #[tokio::test]
