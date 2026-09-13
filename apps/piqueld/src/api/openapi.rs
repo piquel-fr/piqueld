@@ -21,8 +21,9 @@ pub(super) fn base_document() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
 }
 
-// Endpoint response attributes reference this type through Utoipa's proc macro.
-// The Rust compiler cannot see that generated reference when checking dead code.
+// Utoipa's declarative response schema uses this tuple field as a body type;
+// no runtime value reads the field. Keep the schema-only wrapper rather than
+// replacing the derive with a handwritten ToResponse implementation.
 #[allow(dead_code)]
 #[derive(ToResponse)]
 #[response(description = "Structured, sanitized error")]
