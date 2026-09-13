@@ -95,19 +95,37 @@ impl DockerApi for BollardDocker {
         .await
     }
 
-    async fn build_git(
+    async fn build_image(
         &self,
-        repository: &piqueld_core::manifest::GitRepository,
-        build: &piqueld_core::manifest::Build,
-    ) -> Result<(String, piqueld_core::resource::Sha256Digest), DockerError> {
+        dockerfile: &std::path::Path,
+        context: &std::path::Path,
+    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
+        use anyhow::Context;
         let result = async {
-            let checkout = crate::git::Checkout::clone(repository).await?;
-            let image = checkout.build(self.socket.as_ref(), build).await?;
-            Ok::<_, anyhow::Error>((checkout.commit, image))
+            if !dockerfile.is_file() || !context.is_dir() {
+                anyhow::bail!("Dockerfile must be a file and build context must be a directory");
+            }
+            let directory = tempfile::tempdir().context("create Docker build directory")?;
+            let iidfile = directory.path().join("image-id");
+            let mut command = tokio::process::Command::new("docker");
+            command
+                .arg("--host")
+                .arg(format!("unix://{}", self.socket.display()))
+                .args(["build", "--pull", "--file"])
+                .arg(dockerfile)
+                .arg("--iidfile")
+                .arg(&iidfile)
+                .arg(context);
+            crate::command::LoggedCommand::run(&mut command, "build Docker image").await?;
+            let id = tokio::fs::read_to_string(iidfile)
+                .await
+                .context("read built image ID")?;
+            piqueld_core::resource::Sha256Digest::parse(id.trim())
+                .context("validate built image ID")
         }
         .await;
         result.map_err(|source| DockerError::RequestDiagnostic {
-            operation: "prepare Git source",
+            operation: "build Docker image",
             source: source.into(),
         })
     }

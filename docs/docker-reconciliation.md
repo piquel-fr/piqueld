@@ -24,10 +24,10 @@ service image references; new/changed references resolve during preparation.
 Maintaining the active target during preparation does not replace the requested
 candidate or report it as successfully deployed.
 
-Explicit `refresh` resolves the current manifest again without advancing its
-generation. Active refreshes are reused; failed refreshes retry their prepared
-target when available. A refresh after success starts a new operation. Refresh
-supersedes apply/reconcile and is rejected while deletion is intended.
+Explicit `deploy` captures the latest saved configuration and resolves its sources
+again without advancing its generation. Each deployment supersedes pending work;
+retries with the same idempotency key return the original operation. Deployment
+is rejected while deletion is intended.
 
 One async controller polls pending application futures and discovery together.
 SQLite calls, Docker observations, image pulls, and convergence timers yield to

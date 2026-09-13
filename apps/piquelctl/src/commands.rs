@@ -34,11 +34,9 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
         Command::Apply(args) => apply(cli, &client, args).await,
         Command::Delete(args) => delete(cli, &client, args).await,
         Command::Operation(args) => operation(cli, &client, args).await,
-        Command::Reconcile(args) => reconcile_or_refresh(cli, &client, args, false).await,
+        Command::Reconcile(args) => reconcile_or_deploy(cli, &client, args, false).await,
         Command::Rename(args) => rename(cli, &client, args).await,
-        Command::Refresh(args) | Command::Deploy(args) => {
-            reconcile_or_refresh(cli, &client, args, true).await
-        }
+        Command::Deploy(args) => reconcile_or_deploy(cli, &client, args, true).await,
         Command::Events {
             application,
             cursor,
@@ -507,17 +505,15 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
     }
 }
 
-async fn reconcile_or_refresh(
+async fn reconcile_or_deploy(
     cli: &Cli,
     client: &Client,
     args: &ReconcileArgs,
-    refresh: bool,
+    deploy: bool,
 ) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
-    let action = if matches!(cli.command, Command::Deploy(_)) {
+    let action = if deploy {
         "Deploy"
-    } else if refresh {
-        "Refresh sources for"
     } else {
         "Reconcile current intent for"
     };
@@ -531,16 +527,12 @@ async fn reconcile_or_refresh(
     .await?;
     let id = application.application.id.as_str();
     let accepted = retry_transport(|| async {
-        if matches!(cli.command, Command::Deploy(_)) {
+        if deploy {
             client
                 .deploy_application(
                     id,
                     args.expected_generation.unwrap_or(application.generation),
                 )
-                .await
-        } else if refresh {
-            client
-                .refresh_application(id, args.expected_generation)
                 .await
         } else {
             client

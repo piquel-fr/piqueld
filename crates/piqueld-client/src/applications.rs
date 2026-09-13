@@ -328,23 +328,6 @@ impl Client {
         .await
     }
 
-    /// Explicitly resolves the current manifest again.
-    /// # Errors
-    /// Returns transport, API, or decoding errors.
-    pub async fn refresh_application(
-        &self,
-        id: &str,
-        expected: Option<u64>,
-    ) -> Result<AcceptedOperation, ClientError> {
-        self.send::<_, ()>(
-            Method::POST,
-            &Self::mutation_path(id, "/refresh", expected),
-            None,
-            &[],
-        )
-        .await
-    }
-
     /// Renames an idle application without touching its runtime resources.
     /// # Errors
     /// Returns transport, API, decoding, name, busy, or generation errors.

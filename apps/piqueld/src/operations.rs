@@ -33,6 +33,9 @@ pub enum OperationError {
     /// The registry rejected the requested image or credentials.
     #[error("container image was rejected by the registry while {0}")]
     ImageResolutionRejected(&'static str),
+    /// Git source preparation failed before rollout.
+    #[error("Git source build failed")]
+    GitBuildFailed,
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     DockerRequestFailed(&'static str),
@@ -55,6 +58,7 @@ impl OperationError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::GitBuildFailed => "git_build_failed",
             Self::JournalUnavailable => "journal_unavailable",
             Self::Cancelled => "cancelled",
             Self::Superseded => "superseded",

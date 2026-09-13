@@ -23,7 +23,7 @@ pub struct DockerRuntime<D> {
     instance_id: InstanceId,
     wake: Arc<Notify>,
     prepare_timeout: Duration,
-    // Set only for execution, never API previews. Records the image-resolution
+    // Set only for execution, never API previews. Records the source-preparation
     // phase and service names in the existing operation row so polling/events
     // can explain a slow or failed pull; it is not an execution journal.
     progress: Option<(Arc<crate::store::SqliteStore>, String)>,
@@ -46,7 +46,7 @@ impl<D> DockerRuntime<D> {
             progress: None,
         }
     }
-    /// Associates image preparation with the operation whose status is reported.
+    /// Associates source preparation with the operation whose status is reported.
     pub(crate) fn with_progress(
         mut self,
         store: Arc<crate::store::SqliteStore>,
@@ -76,14 +76,6 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                 .filter(|service| !reusable.sources.contains_key(&service.name))
                 .map(|service| (service.name.clone(), service.source.clone()))
                 .collect::<Vec<_>>();
-            let phase = if pending
-                .iter()
-                .any(|(_, source)| matches!(source, Source::Git { .. }))
-            {
-                "preparing_sources"
-            } else {
-                "resolving_image"
-            };
             if let Some((store, id)) = &self.progress
                 && !pending.is_empty()
             {
@@ -92,7 +84,9 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                     .map(|(name, _)| name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                store.progress(id, phase, Some(&names)).await?;
+                store
+                    .progress(id, "preparing_sources", Some(&names))
+                    .await?;
             }
             let docker = Arc::clone(&self.docker);
             let sources = stream::iter(pending.into_iter().map(move |(name, source)| {
@@ -106,17 +100,29 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                             )
                             .await
                             .unwrap_or_else(|_| Err(DockerError::Unavailable("resolve image")))
-                            .map_err(|error| (name.clone(), "resolving_image", error))?;
+                            .map_err(|error| {
+                                (
+                                    name.clone(),
+                                    "resolving_image",
+                                    BoundaryError::Runtime(error),
+                                )
+                            })?;
                             ResolvedSource::Image {
                                 requested: image.clone(),
                                 digest_reference,
                             }
                         }
                         Source::Git { repository, build } => {
-                            let (commit, image_id) = docker
-                                .build_git(repository, build)
-                                .await
-                                .map_err(|error| (name.clone(), "building_git", error))?;
+                            let (commit, image_id) =
+                                crate::git::Checkout::prepare(repository, build, docker.as_ref())
+                                    .await
+                                    .map_err(|error| {
+                                        (
+                                            name.clone(),
+                                            "building_git",
+                                            BoundaryError::GitBuild(error),
+                                        )
+                                    })?;
                             ResolvedSource::Git {
                                 requested: source,
                                 commit,
@@ -124,7 +130,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                             }
                         }
                     };
-                    Ok::<_, (String, &'static str, DockerError)>((name, resolved))
+                    Ok::<_, (String, &'static str, BoundaryError)>((name, resolved))
                 }
             }))
             .buffer_unordered(4)
@@ -136,7 +142,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                     if let Some((store, id)) = &self.progress {
                         store.progress(id, phase, Some(&service)).await?;
                     }
-                    return Err(BoundaryError::Runtime(error));
+                    return Err(error);
                 }
             };
             let mut resolutions = reusable.clone();

@@ -50,8 +50,6 @@ pub(crate) enum Command {
     Operation(OperationArgs),
     /// Repair latest intent without refreshing resolved images.
     Reconcile(ReconcileArgs),
-    /// Resolve current image references again and deploy the resulting target.
-    Refresh(ReconcileArgs),
     /// Deploy saved configuration with fresh source resolution.
     Deploy(ReconcileArgs),
     /// Rename an idle application without redeploying it.

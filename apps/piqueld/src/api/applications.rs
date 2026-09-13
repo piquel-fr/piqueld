@@ -666,7 +666,7 @@ mod tests {
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(super) struct GenerationQuery {
-    /// Current intent revision; optional for reconcile and refresh, required for deployment and deletion unless forced.
+    /// Current intent revision; optional for reconcile, required for deployment and deletion unless forced.
     pub(super) expected_generation: Option<u64>,
     /// Explicitly bypass intent preconditions.
     #[serde(default)]
@@ -710,30 +710,6 @@ pub(super) async fn reconcile(
     .await
 }
 
-#[utoipa::path(post,path="/api/v1/applications/{id}/refresh",operation_id="refreshApplication",
-    params(("id"=String,Path),GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
-    responses((status=202,description="Image refresh accepted",body=Envelope<AcceptedOperation>),
-    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
-    (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
-pub(super) async fn refresh(
-    State(state): State<ApiState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
-) -> Result<Response, ApiError> {
-    let query = GenerationQuery::decode(query)?;
-    accept_mutation(
-        &state,
-        Mutation::Refresh {
-            id: ApplicationId::parse(id)?,
-        },
-        query.expected_generation,
-        query.force,
-        &headers,
-    )
-    .await
-}
-
 pub(super) async fn accept_mutation(
     state: &ApiState,
     mutation: Mutation,
@@ -754,7 +730,7 @@ pub(super) async fn accept_mutation(
             Mutation::Deploy { .. } | Mutation::Delete { .. } | Mutation::Rename { .. } => {
                 expected.is_none()
             }
-            Mutation::Reconcile { .. } | Mutation::Refresh { .. } => false,
+            Mutation::Reconcile { .. } => false,
         };
         if missing {
             return Err(ApiError::new(

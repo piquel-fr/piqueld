@@ -1,5 +1,5 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
-use super::{ApplicationRow, OperationKind, OperationState, SqliteStore, StoreError, now_ms};
+use super::{ApplicationRow, OperationKind, SqliteStore, StoreError, now_ms};
 use super::{Operation, StoredApplication};
 use crate::application::{Mutation, MutationResponse};
 use piqueld_core::ApplicationId;
@@ -138,7 +138,7 @@ impl SqliteStore {
                 let mut saved =
                     Self::save_configuration_on(tx, &application, expected_generation).await?;
                 if deploy {
-                    let op = Self::request_refresh_on(tx, &application.id, Some(saved.generation))
+                    let op = Self::request_deploy_on(tx, &application.id, Some(saved.generation))
                         .await?;
                     saved.operation_id = Some(op.id);
                 }
@@ -146,7 +146,7 @@ impl SqliteStore {
             }
             Mutation::Deploy { id } => {
                 current.ok_or(StoreError::NotFound)?;
-                let op = Self::request_refresh_on(tx, &id, expected_generation).await?;
+                let op = Self::request_deploy_on(tx, &id, expected_generation).await?;
                 (
                     MutationResponse::Operation(AcceptedOperation::from(&op)),
                     true,
@@ -177,9 +177,6 @@ impl SqliteStore {
                     true,
                 )
             }
-            Mutation::Refresh { id } => {
-                Self::accept_refresh(tx, &id, current, latest, expected_generation).await?
-            }
             Mutation::Rename { id, name } => {
                 Self::rename_on(
                     tx,
@@ -192,40 +189,6 @@ impl SqliteStore {
                 .await?
             }
         })
-    }
-
-    async fn accept_refresh(
-        tx: &mut Transaction<'_, Sqlite>,
-        id: &ApplicationId,
-        current: Option<StoredApplication>,
-        latest: Option<Operation>,
-        expected_generation: Option<u64>,
-    ) -> Result<(MutationResponse, bool), StoreError> {
-        let app = current.ok_or(StoreError::NotFound)?;
-        if app.delete_intent {
-            return Err(StoreError::IllegalTransition);
-        }
-        let operation = if let Some(op) = latest
-            .clone()
-            .filter(|op| op.kind == OperationKind::Refresh && op.state != OperationState::Succeeded)
-        {
-            if op.state == OperationState::Failed {
-                Self::retry_operation_on(tx, &op).await?
-            } else {
-                op
-            }
-        } else {
-            let previous = latest.as_ref().ok_or(StoreError::NotFound)?;
-            let previous_id = previous.id.clone();
-            let op = Self::request_refresh_on(tx, id, expected_generation).await?;
-            sqlx::query!("UPDATE deployments SET manifest_json=json_set((SELECT manifest_json FROM deployments WHERE id=?1),'$.metadata.name',?3),generation=(SELECT generation FROM deployments WHERE id=?1) WHERE id=?2",previous_id,op.id,app.application.metadata.name).execute(&mut **tx).await.map_err(StoreError::database)?;
-            sqlx::query!("UPDATE operations SET generation=(SELECT generation FROM deployments WHERE id=?1) WHERE id=?1",op.id).execute(&mut **tx).await.map_err(StoreError::database)?;
-            Self::operation_on(tx, &op.id).await?
-        };
-        Ok((
-            MutationResponse::Operation(AcceptedOperation::from(&operation)),
-            true,
-        ))
     }
 
     fn application_identity(
@@ -277,7 +240,6 @@ impl SqliteStore {
             Mutation::Deploy { id }
             | Mutation::Delete { id }
             | Mutation::Reconcile { id }
-            | Mutation::Refresh { id }
             | Mutation::Rename { id, .. } => (Some(id.as_str()), None),
         };
         let current = sqlx::query_as!(ApplicationRow,r#"SELECT id AS "id!",desired_json,resolved_json,generation,resolved_generation,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE deleted_at_ms IS NULL AND ((?1 IS NOT NULL AND id=?1) OR (?1 IS NULL AND name=?2))"#,id,name)

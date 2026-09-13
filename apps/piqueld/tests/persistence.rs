@@ -301,7 +301,7 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
         .save_application(&app, Some(&desired), Some(0))
         .await
         .unwrap();
-    let second = store.request_refresh(&app.id, Some(1)).await.unwrap();
+    let second = store.request_deploy(&app.id, Some(1)).await.unwrap();
     store.prune_finished_operations(i64::MAX).await.unwrap();
     assert!(store.operation(&first.id).await.is_ok());
     assert!(store.operation(&second.id).await.is_ok());

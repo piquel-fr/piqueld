@@ -76,7 +76,7 @@ The parser is pure. Apply saves the complete normalized configuration without
 starting a deployment unless explicitly requested. Deploy captures that saved
 revision and prepares every source again. Reconciliation and retries reuse the
 captured deployment and its prepared target, so later saved edits cannot enter
-an existing deployment. Refresh prepares the last deployment's sources again.
+an existing deployment. Deploy resolves and builds the saved configuration's sources again.
 Resolved runtime state remains separate from portable manifests. Generations
 advance on saves, changed names, and deletion intent.
 
@@ -116,7 +116,7 @@ reused and base images are refreshed with `--pull`.
 The resolved source records the full Git commit and content-addressed local image
 ID. All service sources are prepared before any application rollout. A failed
 checkout or build preserves the existing running deployment. Normal reconciliation
-reuses prepared images; explicit refresh resolves and builds sources again.
+reuses prepared images; explicit deploy resolves and builds sources again.
 Local images are supported only on the existing single-node Swarm topology.
 
 Git checkout permits file, Git, HTTP(S), and SSH transports. Executable remote

@@ -260,6 +260,10 @@ impl<D: DockerApi> Controller<D> {
                     crate::application::BoundaryError::Runtime(error) => {
                         OperationError::from(error)
                     }
+                    crate::application::BoundaryError::GitBuild(error) => {
+                        tracing::warn!(error = ?error, "Git source build failed");
+                        OperationError::GitBuildFailed
+                    }
                     crate::application::BoundaryError::Compilation(errors) => {
                         tracing::error!(?errors, "application compilation failed");
                         OperationError::ValidationFailed("compile application")

@@ -1,6 +1,10 @@
 //! Privileged end-to-end qualification for the Docker adapter.
 
 use bollard::query_parameters::{InspectServiceOptions, UpdateServiceOptionsBuilder};
+#[path = "support/git.rs"]
+mod git_fixture;
+use git_fixture::GitBuildFixture;
+use piqueld::application::RuntimeBoundary;
 use piqueld::docker::{BollardDocker, DockerApi, DockerError};
 use piqueld_core::manifest::HealthCheck;
 use piqueld_core::resource::{DesiredNetwork, DesiredService, DesiredVolume, ResolvedSource};
@@ -310,30 +314,20 @@ async fn git_build_runs_as_a_local_swarm_image() {
     docker.ensure_swarm(true).await.unwrap();
     let fixture = GitBuildFixture::new();
     let source = fixture.source.clone();
-    let piqueld_core::Source::Git { repository, build } = &source else {
-        unreachable!()
-    };
-    let (commit, image_id) = docker.build_git(repository, build).await.unwrap();
     let manifest = serde_json::json!({"api_version":"piqueld.dev/v1alpha1", "kind":"Application", "metadata":{"name":"git-local"}, "spec":{"services":[{"name":"web", "source":source}]}});
     let app = piqueld_core::parse_json(&manifest.to_string())
         .unwrap()
         .normalize(ApplicationId::parse("git-local-build").unwrap());
-    let resolutions = piqueld_core::ResolutionSet {
-        sources: BTreeMap::from([(
-            "web".into(),
-            ResolvedSource::Git {
-                requested: source,
-                commit,
-                image_id,
-            },
-        )]),
-    };
-    let target = piqueld_core::compile_application(
-        &app,
+    let runtime = piqueld::application::DockerRuntime::new(
+        std::sync::Arc::new(docker.clone()),
         InstanceId::parse("git-build-test").unwrap(),
-        &resolutions,
-    )
-    .unwrap();
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        Duration::from_secs(120),
+    );
+    let target = runtime
+        .prepare(&app, &piqueld_core::ResolutionSet::default())
+        .await
+        .unwrap();
     docker.ensure_network(&target.networks[0]).await.unwrap();
     let observed = docker.observe(&app.id).await.unwrap();
     assert!(observed.networks[0].runtime_configuration_matches);
@@ -358,57 +352,4 @@ async fn git_build_runs_as_a_local_swarm_image() {
         .remove_service(&target.services[0].name, &target.services[0].labels)
         .await
         .unwrap();
-}
-
-struct GitBuildFixture {
-    _directory: tempfile::TempDir,
-    source: piqueld_core::Source,
-}
-
-impl GitBuildFixture {
-    fn new() -> Self {
-        let repo = tempfile::tempdir().unwrap();
-        std::fs::write(
-            repo.path().join("Dockerfile"),
-            "FROM alpine:3.20\nCMD [\"sleep\", \"3600\"]\n",
-        )
-        .unwrap();
-        for args in [
-            vec!["init", "--initial-branch=main"],
-            vec!["add", "."],
-            vec![
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "-m",
-                "fixture",
-            ],
-        ] {
-            assert!(
-                std::process::Command::new("git")
-                    .current_dir(repo.path())
-                    .args(args)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        }
-        let source = piqueld_core::Source::Git {
-            repository: piqueld_core::manifest::GitRepository {
-                url: repo.path().display().to_string(),
-                branch: "main".into(),
-                commit: None,
-            },
-            build: piqueld_core::manifest::Build::Docker {
-                dockerfile: "Dockerfile".into(),
-                context: ".".into(),
-            },
-        };
-        Self {
-            _directory: repo,
-            source,
-        }
-    }
 }

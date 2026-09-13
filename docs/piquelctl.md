@@ -16,7 +16,7 @@ piquelctl apply --file application.toml --deploy
 piquelctl delete <name-or-id>
 piquelctl operation <operation-id>
 piquelctl reconcile <name-or-id>
-piquelctl refresh <name-or-id>
+piquelctl deploy <name-or-id>
 piquelctl rename <name-or-id> <new-name>
 piquelctl events --application <application-id> --limit 50
 ```
@@ -53,8 +53,8 @@ written to stderr, so stdout remains valid JSON.
 | `delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": true }` |
 | `operation --no-wait` | `Operation` |
 | `operation` | `Operation` |
-| `reconcile` / `refresh` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
-| `reconcile --no-wait` / `refresh --no-wait` | `AcceptedOperation` |
+| `reconcile` / `deploy` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
+| `reconcile --no-wait` / `deploy --no-wait` | `AcceptedOperation` |
 | `events` | `{ "items": [Event], "next_cursor": string or null }` |
 
 The DTO fields and error envelope are defined by the versioned API and the
@@ -105,7 +105,7 @@ file afterward; the CLI does not edit files automatically.
 stable ID. Deleted applications have no retained history. Use `--cursor CURSOR` for subsequent
 pages and `--limit N` (1–100, default 50). JSON includes the next cursor.
 
-By default, apply with `--deploy`, delete, reconcile, refresh, and operation poll every 250 ms
+By default, apply with `--deploy`, delete, reconcile, deploy, and operation poll every 250 ms
 until a terminal state. Supersession returns immediately with exit code 0 and
 `outcome: "superseded"` in mutation command results (`state: "superseded"` on an
 operation record). It does not wait for the replacement to deploy. An observed

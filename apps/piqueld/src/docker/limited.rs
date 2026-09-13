@@ -42,17 +42,17 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
             .expect("semaphore is never closed");
         self.inner.resolve_image(reference).await
     }
-    async fn build_git(
+    async fn build_image(
         &self,
-        repository: &piqueld_core::manifest::GitRepository,
-        build: &piqueld_core::manifest::Build,
-    ) -> Result<(String, piqueld_core::resource::Sha256Digest), DockerError> {
+        dockerfile: &std::path::Path,
+        context: &std::path::Path,
+    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         let _permit = self
             .builds
             .acquire()
             .await
             .expect("semaphore is never closed");
-        self.inner.build_git(repository, build).await
+        self.inner.build_image(dockerfile, context).await
     }
     async fn observe(&self, id: &ApplicationId) -> Result<ObservedApplication, DockerError> {
         let _permit = self

@@ -40,7 +40,7 @@ operation by default; failed attempts require explicit retry. Use the same devel
 
 ```console
 just run --socket /run/user/1000/piqueld/piqueld.sock reconcile notes --yes
-just run --socket /run/user/1000/piqueld/piqueld.sock refresh notes --yes
+just run --socket /run/user/1000/piqueld/piqueld.sock deploy notes --yes
 just run --socket /run/user/1000/piqueld/piqueld.sock events --application <application-id>
 ```
 

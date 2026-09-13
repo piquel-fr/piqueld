@@ -1,5 +1,8 @@
 //! Reconciliation coverage using the real Docker seam and an in-memory backend.
 
+#[path = "support/git.rs"]
+mod git_fixture;
+
 use async_trait::async_trait;
 use piqueld::docker::{DockerApi, DockerError, ImageSource, SwarmState, resolve_image_digest};
 use piqueld::reconcile::Controller;
@@ -189,19 +192,18 @@ impl DockerApi for FakeDocker {
         Ok(SwarmState::Ready)
     }
 
-    async fn build_git(
+    async fn build_image(
         &self,
-        repository: &piqueld_core::manifest::GitRepository,
-        _build: &piqueld_core::manifest::Build,
-    ) -> Result<(String, Sha256Digest), DockerError> {
-        if repository.url == "build-fails" {
-            return Err(DockerError::Request("build Git source"));
+        dockerfile: &std::path::Path,
+        context: &std::path::Path,
+    ) -> Result<Sha256Digest, DockerError> {
+        assert!(context.is_dir());
+        let contents = tokio::fs::read_to_string(dockerfile).await.unwrap();
+        if contents.contains("build-fails") {
+            return Err(DockerError::Request("build Docker image"));
         }
         self.registry.lock().await.pull("git-build");
-        Ok((
-            repository.commit.clone().unwrap_or_else(|| "a".repeat(40)),
-            Sha256Digest::parse(format!("sha256:{}", "b".repeat(64))).unwrap(),
-        ))
+        Ok(Sha256Digest::parse(format!("sha256:{}", "b".repeat(64))).unwrap())
     }
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         let _probe = self.images.enter().await;
@@ -959,7 +961,7 @@ impl ControllerHarness {
 }
 
 #[tokio::test]
-async fn apply_is_durable_before_resolution_and_refresh_is_explicit() {
+async fn apply_is_durable_before_resolution_and_deploy_is_explicit() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let manifest = manifest();
@@ -986,18 +988,10 @@ async fn apply_is_durable_before_resolution_and_refresh_is_explicit() {
     harness.finish(&reconcile).await;
     assert_eq!(harness.pulls().await, pulls);
     let refresh = applications
-        .refresh(&accepted.application_id, Some(1))
+        .deploy(&accepted.application_id, Some(1))
         .await
         .unwrap();
     assert_ne!(refresh.id, accepted.id);
-    assert_eq!(
-        applications
-            .refresh(&accepted.application_id, None)
-            .await
-            .unwrap()
-            .id,
-        refresh.id
-    );
     harness.finish(&refresh).await;
     assert!(harness.pulls().await > pulls);
     assert_eq!(
@@ -1094,7 +1088,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
     );
     assert!(
         applications
-            .refresh(&first.application_id, None)
+            .deploy(&first.application_id, None)
             .await
             .is_err()
     );
@@ -1364,7 +1358,7 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
             .ends_with(&"a".repeat(64))
     );
     let refreshed = applications
-        .refresh(&first.application_id, Some(2))
+        .deploy(&first.application_id, Some(2))
         .await
         .unwrap();
     harness.finish(&refreshed).await;
@@ -1483,17 +1477,8 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let mut input = manifest();
-    input.spec.services[0].source = piqueld_core::Source::Git {
-        repository: piqueld_core::manifest::GitRepository {
-            url: "fixture".into(),
-            branch: "main".into(),
-            commit: None,
-        },
-        build: piqueld_core::manifest::Build::Docker {
-            dockerfile: "Dockerfile".into(),
-            context: ".".into(),
-        },
-    };
+    let fixture = git_fixture::GitBuildFixture::new();
+    input.spec.services[0].source = fixture.source.clone();
     let first = applications
         .apply(input.clone().validate().unwrap(), Some(0))
         .await
@@ -1526,7 +1511,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         .resolved
         .unwrap();
     assert!(
-        matches!(&active.services[0].source, ResolvedSource::Git { commit, .. } if commit == &"a".repeat(40))
+        matches!(&active.services[0].source, ResolvedSource::Git { commit, .. } if piqueld_core::manifest::valid_git_commit(commit))
     );
     let pulls = harness.pulls().await;
     let MutationResponse::Operation(accepted) = applications
@@ -1551,10 +1536,11 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         .unwrap();
     harness.finish(&operation).await;
     assert!(harness.pulls().await > pulls);
-    let piqueld_core::Source::Git { repository, .. } = &mut input.spec.services[0].source else {
+    let piqueld_core::Source::Git { build, .. } = &mut input.spec.services[0].source else {
         unreachable!()
     };
-    repository.url = "build-fails".into();
+    let piqueld_core::manifest::Build::Docker { dockerfile, .. } = build;
+    *dockerfile = "Failfile".into();
     let failed = applications
         .apply(input.validate().unwrap(), Some(1))
         .await
@@ -1564,10 +1550,11 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         .scan(&CancellationToken::new())
         .await
         .unwrap();
-    assert_eq!(
-        harness.store.operation(&failed.id).await.unwrap().state,
-        OperationState::Failed
-    );
+    let failure = harness.store.operation(&failed.id).await.unwrap();
+    assert_eq!(failure.state, OperationState::Failed);
+    assert_eq!(failure.phase.as_deref(), Some("building_git"));
+    assert_eq!(failure.resource.as_deref(), Some("web"));
+    assert_eq!(failure.error_code.as_deref(), Some("git_build_failed"));
     assert_eq!(
         harness
             .store
@@ -1578,4 +1565,49 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
             .unwrap(),
         active
     );
+}
+
+#[tokio::test]
+async fn mixed_sources_report_the_failing_source() {
+    for git_fails in [false, true] {
+        let harness = ControllerHarness::new().await;
+        let fixture = git_fixture::GitBuildFixture::new();
+        let mut input = manifest();
+        let mut git_service = input.spec.services[0].clone();
+        git_service.name = "git-service".into();
+        git_service.source = fixture.source.clone();
+        if git_fails {
+            let piqueld_core::Source::Git { build, .. } = &mut git_service.source else {
+                unreachable!()
+            };
+            let piqueld_core::manifest::Build::Docker { dockerfile, .. } = build;
+            *dockerfile = "Failfile".into();
+        } else {
+            input.spec.services[0].source = piqueld_core::Source::Image {
+                image: "ghcr.io/example/unstable:1".into(),
+            };
+            harness.docker.arm_tag_flips(100).await;
+        }
+        input.spec.services.push(git_service);
+        let operation = harness
+            .applications()
+            .apply(input.validate().unwrap(), Some(0))
+            .await
+            .unwrap();
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+        let failure = harness.store.operation(&operation.id).await.unwrap();
+        assert_eq!(failure.state, OperationState::Failed);
+        let (phase, service, code) = if git_fails {
+            ("building_git", "git-service", "git_build_failed")
+        } else {
+            ("resolving_image", "web", "image_resolution_failed")
+        };
+        assert_eq!(failure.phase.as_deref(), Some(phase));
+        assert_eq!(failure.resource.as_deref(), Some(service));
+        assert_eq!(failure.error_code.as_deref(), Some(code));
+    }
 }

@@ -2,11 +2,7 @@
 
 use anyhow::{Context, bail};
 use piqueld_core::manifest::{GitRepository, valid_git_commit, valid_repository_path};
-use std::{
-    io::{Read, Seek, SeekFrom},
-    path::{Path, PathBuf},
-    process::Stdio,
-};
+use std::path::PathBuf;
 use tokio::process::Command;
 
 /// A private checkout pinned once, retained until preparation finishes.
@@ -30,9 +26,9 @@ impl Checkout {
             clone.args(["--branch", &repository.branch]);
         }
         clone.arg("--").arg(&repository.url).arg(&root);
-        Self::run(&mut clone, "clone Git repository").await?;
+        crate::command::LoggedCommand::run(&mut clone, "clone Git repository").await?;
         if let Some(commit) = &repository.commit {
-            Self::run(
+            crate::command::LoggedCommand::run(
                 Self::command()
                     .arg("-C")
                     .arg(&root)
@@ -42,7 +38,7 @@ impl Checkout {
             .await?;
         }
         let revision = repository.commit.as_deref().unwrap_or("HEAD");
-        Self::run(
+        crate::command::LoggedCommand::run(
             Self::command()
                 .arg("-C")
                 .arg(&root)
@@ -102,78 +98,43 @@ impl Checkout {
         Ok(path)
     }
 
-    /// Execute without retaining unbounded build output in memory. Error tails
-    /// stay in internal diagnostics, never the public API response.
-    pub(crate) async fn run(command: &mut Command, operation: &'static str) -> anyhow::Result<()> {
-        let mut log = tempfile::tempfile().context("create command log")?;
-        let status = command
-            .stdin(Stdio::null())
-            .stdout(log.try_clone()?)
-            .stderr(log.try_clone()?)
-            .kill_on_drop(true)
-            .status()
-            .await
-            .with_context(|| operation)?;
-        if !status.success() {
-            log.seek(SeekFrom::End(-i64::try_from(
-                log.metadata()?.len().min(8192),
-            )?))?;
-            let mut tail = String::new();
-            log.take(8192)
-                .read_to_string(&mut tail)
-                .context("read command diagnostics")?;
-            bail!("{operation} failed ({status}): {tail}");
-        }
-        Ok(())
-    }
-
-    pub(crate) async fn build(
-        &self,
-        socket: &Path,
+    /// Pin a checkout and resolve its paths before building its local image.
+    pub(crate) async fn prepare(
+        repository: &GitRepository,
         build: &piqueld_core::manifest::Build,
-    ) -> anyhow::Result<piqueld_core::resource::Sha256Digest> {
+        docker: &impl crate::docker::DockerApi,
+    ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
+        let checkout = Self::clone(repository).await?;
         let piqueld_core::manifest::Build::Docker {
             dockerfile,
             context,
         } = build;
-        let dockerfile = self.path(dockerfile).await?;
-        let context = self.path(context).await?;
-        if !dockerfile.is_file() || !context.is_dir() {
-            bail!("Dockerfile must be a file and build context must be a directory");
-        }
-        let iidfile = self.directory.path().join("image-id");
-        let mut command = Command::new("docker");
-        command
-            .arg("--host")
-            .arg(format!("unix://{}", socket.display()))
-            .args(["build", "--pull", "--file"])
-            .arg(dockerfile)
-            .arg("--iidfile")
-            .arg(&iidfile)
-            .arg(context);
-        Self::run(&mut command, "build Docker image").await?;
-        let id = tokio::fs::read_to_string(iidfile)
+        let dockerfile = checkout.path(dockerfile).await?;
+        let context = checkout.path(context).await?;
+        let image = docker
+            .build_image(&dockerfile, &context)
             .await
-            .context("read built image ID")?;
-        piqueld_core::resource::Sha256Digest::parse(id.trim()).context("validate built image ID")
+            .context("build Git source image")?;
+        Ok((checkout.commit, image))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     async fn commit(root: &Path, contents: &str) -> String {
         tokio::fs::write(root.join("Dockerfile"), contents)
             .await
             .unwrap();
-        Checkout::run(
+        crate::command::LoggedCommand::run(
             Checkout::command().arg("-C").arg(root).args(["add", "."]),
             "stage fixture",
         )
         .await
         .unwrap();
-        Checkout::run(
+        crate::command::LoggedCommand::run(
             Checkout::command().arg("-C").arg(root).args([
                 "-c",
                 "user.name=Test",
@@ -219,7 +180,7 @@ mod tests {
                     &helper
                 })
                 .arg(root.path().join("checkout"));
-            let error = Checkout::run(&mut command, "clone fixture")
+            let error = crate::command::LoggedCommand::run(&mut command, "clone fixture")
                 .await
                 .unwrap_err();
             assert!(
@@ -233,7 +194,7 @@ mod tests {
     #[tokio::test]
     async fn checkout_pins_commits_and_confines_paths() {
         let repository = tempfile::tempdir().unwrap();
-        Checkout::run(
+        crate::command::LoggedCommand::run(
             Checkout::command()
                 .args(["init", "--initial-branch=main"])
                 .arg(repository.path()),

@@ -3269,7 +3269,7 @@
             }
           },
           {
-            "description": "Current intent revision; optional for reconcile and refresh, required for deployment and deletion unless forced.",
+            "description": "Current intent revision; optional for reconcile, required for deployment and deletion unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -3446,7 +3446,7 @@
             }
           },
           {
-            "description": "Current intent revision; optional for reconcile and refresh, required for deployment and deletion unless forced.",
+            "description": "Current intent revision; optional for reconcile, required for deployment and deletion unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -3772,7 +3772,7 @@
             }
           },
           {
-            "description": "Current intent revision; optional for reconcile and refresh, required for deployment and deletion unless forced.",
+            "description": "Current intent revision; optional for reconcile, required for deployment and deletion unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -3813,114 +3813,6 @@
               }
             },
             "description": "Reconciliation accepted"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        }
-      }
-    },
-    "/api/v1/applications/{id}/refresh": {
-      "post": {
-        "operationId": "refreshApplication",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "description": "Current intent revision; optional for reconcile and refresh, required for deployment and deletion unless forced.",
-            "in": "query",
-            "name": "expected_generation",
-            "required": false,
-            "schema": {
-              "format": "int64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Explicitly bypass intent preconditions.",
-            "in": "query",
-            "name": "force",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
-                }
-              }
-            },
-            "description": "Image refresh accepted"
           },
           "400": {
             "content": {

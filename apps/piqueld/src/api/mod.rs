@@ -163,6 +163,11 @@ impl From<BoundaryError> for ApiError {
                 "runtime_request_failed",
                 "runtime request failed",
             ),
+            BoundaryError::GitBuild(_) => Self::new(
+                StatusCode::BAD_GATEWAY,
+                "git_build_failed",
+                "Git source build failed",
+            ),
             BoundaryError::Compilation(_) => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "application_compilation_failed",
@@ -310,7 +315,6 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::detail))
         .routes(routes!(applications::status))
         .routes(routes!(applications::reconcile))
-        .routes(routes!(applications::refresh))
         .routes(routes!(applications::rename))
         .routes(routes!(deployments::deploy))
         .routes(routes!(deployments::list))
