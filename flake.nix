@@ -52,6 +52,13 @@
                 "--package"
                 binary
               ]) binaries;
+              # Nix's sandbox root is not owned by root or the build user, so
+              # the daemon correctly rejects every absolute data directory.
+              # Exercise real startup in host CI; keep the process-lock tests
+              # enabled here without weakening directory ownership checks.
+              checkFlags = lib.optionals (builtins.elem "piqueld" binaries) [
+                "--skip=competing_daemon_preserves_database_and_live_socket"
+              ];
               nativeBuildInputs = [
                 pkgs.cmake
                 pkgs.lld
