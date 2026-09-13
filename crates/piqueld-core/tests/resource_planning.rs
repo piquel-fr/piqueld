@@ -555,3 +555,69 @@ fn compiled_ownership_carries_the_spec_hash_label() {
         );
     }
 }
+
+#[test]
+fn cleanup_plans_are_stable_across_engine_listing_order() {
+    let desired = compile_application(&application(), instance(), &resolutions()).unwrap();
+    let mut snapshot = observed(&desired);
+    for logical in ["old-z", "old-a"] {
+        let mut service = snapshot.services[0].clone();
+        service.name = piqueld_core::docker_resource_name(
+            &desired.id,
+            piqueld_core::ResourceKind::Service,
+            Some(logical),
+        );
+        service
+            .labels
+            .insert("io.piqueld.service".into(), logical.into());
+        snapshot.services.push(service);
+        let mut volume = snapshot.volumes[0].clone();
+        volume.name = piqueld_core::docker_resource_name(
+            &desired.id,
+            piqueld_core::ResourceKind::Volume,
+            Some(logical),
+        );
+        snapshot.volumes.push(volume);
+    }
+    // Foreign observations must remain diagnostics regardless of their position.
+    let mut foreign = snapshot.networks[0].clone();
+    foreign.name = "unmanaged-network".into();
+    foreign.labels.clear();
+    snapshot.networks.push(foreign);
+    for request in [
+        PlanRequest::Reconcile {
+            desired: desired.clone(),
+        },
+        PlanRequest::Delete {
+            application_id: desired.id.clone(),
+            instance_id: desired.instance_id.clone(),
+        },
+    ] {
+        let expected = Plan::from_request(&request, &snapshot);
+        assert!(
+            expected
+                .actions
+                .iter()
+                .any(|action| matches!(action.kind, ActionKind::RemoveService { .. }))
+        );
+        assert!(
+            expected
+                .actions
+                .iter()
+                .any(|action| matches!(action.kind, ActionKind::RetainVolume { .. }))
+        );
+        for _ in 0..snapshot.services.len() {
+            snapshot.services.rotate_left(1);
+            snapshot.volumes.reverse();
+            snapshot.networks.reverse();
+            assert_eq!(Plan::from_request(&request, &snapshot), expected);
+        }
+        assert!(
+            !expected
+                .actions
+                .iter()
+                .any(|action| action.kind.mutates_runtime()
+                    && action.kind.resource_name() == "unmanaged-network")
+        );
+    }
+}
