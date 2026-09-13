@@ -280,6 +280,7 @@ mod tests {
     use super::*;
     fn service() -> Service {
         Service {
+            secrets: Vec::new(),
             name: "web".into(),
             source: Source::Image {
                 image: "nginx:stable".into(),

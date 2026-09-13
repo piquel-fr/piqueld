@@ -2448,3 +2448,43 @@ async fn readiness_distinguishes_engine_reachability_and_does_not_gate_saves() {
         .unwrap();
     assert_eq!(api.client.system_status().await.unwrap().status, "running");
 }
+
+#[tokio::test]
+async fn secret_api_is_application_scoped_write_only_and_versioned() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let app = create_and_inspect(&client, &manifest()).await;
+    let value = b"private-token-value".to_vec();
+    let secret = client
+        .put_secret(&app.application_id, "token", 0, value)
+        .await
+        .unwrap();
+    assert_eq!(secret.generation, 1);
+    assert!(
+        !serde_json::to_string(&secret)
+            .unwrap()
+            .contains("private-token-value")
+    );
+    assert_eq!(client.secrets(&app.application_id).await.unwrap().len(), 1);
+    assert!(
+        matches!(client.put_secret(&app.application_id,"token",0,b"stale".to_vec()).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==409)
+    );
+    assert!(
+        matches!(client.secrets("app-absent").await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
+    );
+    client
+        .delete_secret(&app.application_id, "token", 1)
+        .await
+        .unwrap();
+    assert!(
+        client
+            .secrets(&app.application_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    server.abort();
+}

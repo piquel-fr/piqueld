@@ -119,12 +119,25 @@ impl ResolvedSource {
     }
 }
 
+/// A Docker secret name and its file destination, with no secret value.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretFile {
+    /// Immutable version name in Docker.
+    pub secret_name: String,
+    /// Container file destination.
+    pub target: String,
+}
+
 /// Immutable resolutions supplied to application compilation.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResolutionSet {
     /// Resolved service sources keyed by logical service name.
     pub sources: BTreeMap<ServiceName, ResolvedSource>,
+    /// Logical secrets pinned to immutable Docker names.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secret_names: BTreeMap<String, String>,
 }
 
 /// Resolution work still required before compilation.
@@ -309,6 +322,9 @@ pub struct DesiredService {
     pub arguments: Vec<String>,
     /// Persistent volume mounts.
     pub mounts: Vec<DesiredMount>,
+    /// Immutable secret file bindings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<SecretFile>,
     /// Optional health check.
     pub healthcheck: Option<HealthCheck>,
     /// Optional CPU and memory limits.
@@ -337,6 +353,9 @@ impl DesiredService {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedApplication {
+    /// Immutable secret versions selected during effective input preparation.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secret_names: BTreeMap<String, String>,
     /// Stable application identity.
     pub id: ApplicationId,
     /// User-facing application name.
@@ -358,6 +377,7 @@ impl ResolvedApplication {
     #[must_use]
     pub fn reusable_resolutions(&self, application: &NormalizedApplication) -> ResolutionSet {
         ResolutionSet {
+            secret_names: self.secret_names.clone(),
             sources: application
                 .spec()
                 .services
@@ -451,6 +471,7 @@ pub fn compile_application(
     };
     let private_network = DockerNetworkName::for_application(app.id());
     Ok(ResolvedApplication {
+        secret_names: resolutions.secret_names.clone(),
         id: app.id().clone(),
         name: app.metadata().name.clone(),
         instance_id,
@@ -487,6 +508,17 @@ fn validate_application(
     resolutions: &ResolutionSet,
 ) -> Vec<CompileError> {
     let mut errors = unresolved_errors(app, resolutions);
+    for service in &app.spec().services {
+        for secret in &service.secrets {
+            if !resolutions.secret_names.contains_key(&secret.name) {
+                errors.push(CompileError {
+                    code: "secret_unresolved".into(),
+                    resource: service.name.to_string(),
+                    message: format!("secret {} has not been pinned", secret.name),
+                });
+            }
+        }
+    }
     for service in &app.spec().services {
         let Some(resolved) = resolutions.sources.get(&service.name) else {
             continue;
@@ -572,6 +604,14 @@ fn compile_service(
                 volume_name: DockerVolumeName::for_volume(app.id(), &mount.volume),
                 target: mount.target.clone(),
                 read_only: mount.read_only,
+            })
+            .collect(),
+        secrets: service
+            .secrets
+            .iter()
+            .map(|secret| SecretFile {
+                secret_name: resolutions.secret_names[&secret.name].clone(),
+                target: secret.target.clone(),
             })
             .collect(),
         healthcheck: service.healthcheck.clone(),
@@ -773,6 +813,9 @@ pub struct ObservedService {
     pub arguments: Vec<String>,
     /// Persistent mounts observed on the service.
     pub mounts: Vec<ObservedMount>,
+    /// Immutable secret file bindings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<SecretFile>,
     /// Observed health check.
     pub healthcheck: Option<HealthCheck>,
     /// Whether Docker has a health check, including an unsupported one.
@@ -826,6 +869,7 @@ impl ObservedService {
             && self.command == desired.command
             && self.arguments == desired.arguments
             && self.mounts_match(desired)
+            && unordered_eq(&self.secrets, &desired.secrets)
             && self.healthcheck == desired.healthcheck
             && self.healthcheck_configured == desired.healthcheck.is_some()
             && self.resources == desired.resources
