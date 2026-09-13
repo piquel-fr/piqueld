@@ -282,8 +282,8 @@ mod tests {
     fn default_runtime_echo_back_is_not_drift() {
         let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
         let desired = DesiredService {
-            logical_name: "web".into(),
-            name: "app-policy-web".into(),
+            logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
+            name: piqueld_core::DockerServiceName::parse("app-policy-web").unwrap(),
             source: ResolvedSource::Image {
                 requested: "ghcr.io/example/notes:1.4.0".into(),
                 digest_reference: image.clone(),
@@ -356,8 +356,8 @@ mod tests {
     fn policy_verifies_exactly_the_authored_fields() {
         let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
         let desired = DesiredService {
-            logical_name: "web".into(),
-            name: "app-policy-web".into(),
+            logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
+            name: piqueld_core::DockerServiceName::parse("app-policy-web").unwrap(),
             source: ResolvedSource::Image {
                 requested: "ghcr.io/example/notes:1.4.0".into(),
                 digest_reference: image.clone(),

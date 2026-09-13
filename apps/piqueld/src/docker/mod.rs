@@ -22,8 +22,8 @@ use bollard::{
 use futures_util::{StreamExt, TryStreamExt, stream};
 use piqueld_core::manifest::{HealthCheck, ResourceLimits};
 use piqueld_core::resource::{
-    APPLICATION_LABEL, Convergence, DesiredMount, DesiredNetwork, DesiredService, DesiredVolume,
-    INSTANCE_LABEL, MANAGED_LABEL, ObservedNetwork, ObservedService, ObservedTask, ObservedVolume,
+    APPLICATION_LABEL, Convergence, DesiredNetwork, DesiredService, DesiredVolume, INSTANCE_LABEL,
+    MANAGED_LABEL, ObservedMount, ObservedNetwork, ObservedService, ObservedTask, ObservedVolume,
     SERVICE_LABEL, SPEC_HASH_LABEL, TaskDiagnostic, TaskState, image_repository,
     valid_logical_name,
 };

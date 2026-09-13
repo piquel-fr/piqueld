@@ -40,7 +40,7 @@ fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedAp
             .networks
             .iter()
             .map(|network| ObservedNetwork {
-                name: network.name.clone(),
+                name: network.name.to_string(),
                 runtime_configuration_matches: true,
                 labels: network.labels.clone(),
             })
@@ -49,7 +49,7 @@ fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedAp
             .volumes
             .iter()
             .map(|volume| ObservedVolume {
-                name: volume.name.clone(),
+                name: volume.name.to_string(),
                 runtime_configuration_matches: true,
                 labels: volume.labels.clone(),
             })
@@ -58,17 +58,21 @@ fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedAp
             .services
             .iter()
             .map(|service| ObservedService {
-                name: service.name.clone(),
+                name: service.name.to_string(),
                 image: service.image.clone(),
                 replicas: service.replicas,
                 environment: service.environment.clone(),
                 command: service.command.clone(),
                 arguments: service.arguments.clone(),
-                mounts: service.mounts.clone(),
+                mounts: service
+                    .mounts
+                    .iter()
+                    .map(piqueld_core::resource::ObservedMount::from)
+                    .collect(),
                 healthcheck: service.healthcheck.clone(),
                 healthcheck_configured: service.healthcheck.is_some(),
                 resources: service.resources.clone(),
-                networks: service.networks.clone(),
+                networks: service.networks.iter().map(ToString::to_string).collect(),
                 labels: service.labels.clone(),
                 runtime_configuration_matches: true,
                 tasks: vec![ObservedTask {
@@ -254,7 +258,12 @@ fn desired_identity_matrices_reject_non_canonical_resources() {
     let id = ApplicationId::parse("app-notes-01").unwrap();
     let instance = instance();
     let network = DesiredNetwork {
-        name: piqueld_core::docker_resource_name(&id, piqueld_core::ResourceKind::Network, None),
+        name: piqueld_core::DockerNetworkName::parse(piqueld_core::docker_resource_name(
+            &id,
+            piqueld_core::ResourceKind::Network,
+            None,
+        ))
+        .unwrap(),
         labels: labels_for(&instance, &id),
     };
     assert!(network.has_valid_identity());
@@ -268,28 +277,30 @@ fn desired_identity_matrices_reject_non_canonical_resources() {
 
     // An off-canonical name is rejected.
     let mut renamed = network.clone();
-    renamed.name = format!("{}x", renamed.name);
+    renamed.name = piqueld_core::DockerNetworkName::parse(format!("{}x", renamed.name)).unwrap();
     assert!(!renamed.has_valid_identity());
 
     let volume = DesiredVolume {
-        logical_name: "data".into(),
-        name: piqueld_core::docker_resource_name(
+        logical_name: piqueld_core::VolumeName::parse("data").unwrap(),
+        name: piqueld_core::DockerVolumeName::parse(piqueld_core::docker_resource_name(
             &id,
             piqueld_core::ResourceKind::Volume,
             Some("data"),
-        ),
+        ))
+        .unwrap(),
         labels: labels_for(&instance, &id),
     };
     assert!(volume.has_valid_identity());
 
     let resolved = resolutions().sources.get("web").unwrap().clone();
     let service = DesiredService {
-        logical_name: "web".into(),
-        name: piqueld_core::docker_resource_name(
+        logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
+        name: piqueld_core::DockerServiceName::parse(piqueld_core::docker_resource_name(
             &id,
             piqueld_core::ResourceKind::Service,
             Some("web"),
-        ),
+        ))
+        .unwrap(),
         source: resolved,
         image: format!("ghcr.io/example/notes@{}", digest()),
         replicas: 1,
@@ -299,11 +310,14 @@ fn desired_identity_matrices_reject_non_canonical_resources() {
         mounts: Vec::new(),
         healthcheck: None,
         resources: None,
-        networks: vec![piqueld_core::docker_resource_name(
-            &id,
-            piqueld_core::ResourceKind::Network,
-            None,
-        )],
+        networks: vec![
+            piqueld_core::DockerNetworkName::parse(piqueld_core::docker_resource_name(
+                &id,
+                piqueld_core::ResourceKind::Network,
+                None,
+            ))
+            .unwrap(),
+        ],
         labels: {
             let mut labels = labels_for(&instance, &id);
             labels.insert("io.piqueld.service".into(), "web".into());
@@ -535,7 +549,7 @@ fn observation_matching_ignores_order_but_not_multiplicity() {
     let networks = desired.services[0].networks.clone();
     duplicated.services[0].networks = networks
         .iter()
-        .flat_map(|network| [network.clone(), network.clone()])
+        .flat_map(|network| [network.to_string(), network.to_string()])
         .collect();
     assert!(!duplicated.services[0].matches(&desired.services[0]));
 }
@@ -619,4 +633,25 @@ fn cleanup_plans_are_stable_across_engine_listing_order() {
                     && action.kind.resource_name() == "unmanaged-network")
         );
     }
+}
+
+#[test]
+fn desired_names_are_checked_while_engine_observations_remain_permissive() {
+    let desired = compile_application(&application(), instance(), &resolutions()).unwrap();
+    let mut wire = serde_json::to_value(&desired).unwrap();
+    wire["services"][0]["name"] = "Foreign_Service".into();
+    assert!(serde_json::from_value::<piqueld_core::ResolvedApplication>(wire).is_err());
+
+    let mut snapshot = serde_json::to_value(observed(&desired)).unwrap();
+    snapshot["services"][0]["name"] = "Foreign_Service".into();
+    snapshot["services"][0]["mounts"] = serde_json::json!([
+        {"volume_name":"Foreign.Volume", "target":"/data", "read_only":false}
+    ]);
+    let observation: ObservedApplication = serde_json::from_value(snapshot).unwrap();
+    assert_eq!(observation.services[0].name, "Foreign_Service");
+    assert_eq!(
+        observation.services[0].mounts[0].volume_name,
+        "Foreign.Volume"
+    );
+    assert!(!observation.services[0].is_owned_by(&desired.instance_id, &desired.id));
 }

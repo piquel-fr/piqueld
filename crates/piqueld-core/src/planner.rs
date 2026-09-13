@@ -3,7 +3,7 @@
 use crate::resource::{
     Convergence, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
     ObservedService, OwnershipState, ResolutionRequirement, ResolvedApplication,
-    owned_label_subset, unordered_eq,
+    owned_label_subset,
 };
 use crate::{ApplicationId, InstanceId};
 use serde::{Deserialize, Serialize};
@@ -140,9 +140,9 @@ impl ActionKind {
     #[must_use]
     pub fn resource_name(&self) -> &str {
         match self {
-            Self::EnsureNetwork { network } => &network.name,
-            Self::EnsureVolume { volume } => &volume.name,
-            Self::EnsureService { service } => &service.name,
+            Self::EnsureNetwork { network } => network.name.as_str(),
+            Self::EnsureVolume { volume } => volume.name.as_str(),
+            Self::EnsureService { service } => service.name.as_str(),
             Self::RemoveService { name }
             | Self::RemoveNetwork { name }
             | Self::RetainVolume { name } => name,
@@ -496,7 +496,7 @@ impl Plan {
             match observed
                 .networks
                 .iter()
-                .find(|found| found.name == network.name)
+                .find(|found| found.name == network.name.as_str())
             {
                 None => {
                     ready = false;
@@ -509,7 +509,7 @@ impl Plan {
                 }
                 Some(found) if !found.matches_ownership(network, desired) => {
                     ready = false;
-                    self.collision(&network.name, blocked);
+                    self.collision(network.name.as_str(), blocked);
                 }
                 Some(found)
                     if !found.runtime_configuration_matches
@@ -517,7 +517,7 @@ impl Plan {
                             != relevant_network_labels(&network.labels) =>
                 {
                     ready = false;
-                    self.immutable_drift(&network.name, "network");
+                    self.immutable_drift(network.name.as_str(), "network");
                 }
                 Some(_) => {}
             }
@@ -536,7 +536,7 @@ impl Plan {
             match observed
                 .volumes
                 .iter()
-                .find(|found| found.name == volume.name)
+                .find(|found| found.name == volume.name.as_str())
             {
                 None => {
                     ready = false;
@@ -555,11 +555,11 @@ impl Plan {
                     ) != OwnershipState::Owned =>
                 {
                     ready = false;
-                    self.collision(&volume.name, blocked);
+                    self.collision(volume.name.as_str(), blocked);
                 }
                 Some(found) if !found.runtime_configuration_matches => {
                     ready = false;
-                    self.immutable_drift(&volume.name, "volume");
+                    self.immutable_drift(volume.name.as_str(), "volume");
                 }
                 Some(_) => {}
             }
@@ -608,7 +608,7 @@ impl Plan {
             match observed
                 .services
                 .iter()
-                .find(|found| found.name == service.name)
+                .find(|found| found.name == service.name.as_str())
             {
                 None => {
                     ready = false;
@@ -618,11 +618,11 @@ impl Plan {
                         },
                         ActionReason::Missing,
                     ));
-                    waits.push(PlanAction::wait_for_service(&service.name));
+                    waits.push(PlanAction::wait_for_service(service.name.as_str()));
                 }
                 Some(found) if !found.matches_ownership(service, desired) => {
                     ready = false;
-                    self.collision(&service.name, blocked);
+                    self.collision(service.name.as_str(), blocked);
                 }
                 Some(found) if !found.matches(service) => {
                     ready = false;
@@ -634,21 +634,21 @@ impl Plan {
                             fields: service_drift(found, service),
                         },
                     ));
-                    waits.push(PlanAction::wait_for_service(&service.name));
+                    waits.push(PlanAction::wait_for_service(service.name.as_str()));
                 }
                 Some(found) => {
                     match found.convergence {
                         Convergence::Converged => {}
                         Convergence::Updating | Convergence::Degraded => {
                             ready = false;
-                            waits.push(PlanAction::wait_for_service(&service.name));
+                            waits.push(PlanAction::wait_for_service(service.name.as_str()));
                         }
                         Convergence::Failed => {
                             ready = false;
                             self.diagnostics.push(PlanDiagnostic {
                                 code: codes::SERVICE_UPDATE_FAILED.into(),
                                 severity: DiagnosticSeverity::Error,
-                                resource: service.name.clone(),
+                                resource: service.name.to_string(),
                                 message: "service update failed; inspect the operation and Docker task state".into(),
                                 blocking: true,
                             });
@@ -819,12 +819,12 @@ fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<Strin
     if found.arguments != desired.arguments {
         fields.push("arguments".into());
     }
-    if !unordered_eq(&found.mounts, &desired.mounts) {
+    if !found.mounts_match(desired) {
         fields.push("mounts".into());
     }
     // Multiplicity is significant, matching `ObservedService::matches`, so a
     // duplicated attachment registers as network drift.
-    if !unordered_eq(&found.networks, &desired.networks) {
+    if !found.networks_match(desired) {
         fields.push("networks".into());
     }
     if found.healthcheck != desired.healthcheck {

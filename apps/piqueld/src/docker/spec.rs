@@ -16,7 +16,7 @@ impl BollardDocker {
             return Err(DockerError::Validation("validate digest-pinned image"));
         }
         Ok(ServiceSpec {
-            name: Some(desired.name.clone()),
+            name: Some(desired.name.to_string()),
             labels: Some(desired.labels.clone().into_iter().collect()),
             task_template: Some(Self::task_spec(desired)?),
             mode: Some(ServiceSpecMode {
@@ -50,7 +50,7 @@ impl BollardDocker {
                         .iter()
                         .map(|mount| Mount {
                             target: Some(mount.target.clone()),
-                            source: Some(mount.volume_name.clone()),
+                            source: Some(mount.volume_name.to_string()),
                             typ: Some(MountTypeEnum::VOLUME),
                             read_only: Some(mount.read_only),
                             ..Default::default()
@@ -69,7 +69,7 @@ impl BollardDocker {
                     .networks
                     .iter()
                     .map(|network| NetworkAttachmentConfig {
-                        target: Some(network.clone()),
+                        target: Some(network.to_string()),
                         ..Default::default()
                     })
                     .collect(),

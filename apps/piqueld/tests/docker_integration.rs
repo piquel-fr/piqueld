@@ -83,12 +83,22 @@ impl SwarmScenario {
             ("io.piqueld.spec-hash".into(), spec_hash),
         ]);
         let network = DesiredNetwork {
-            name: docker_resource_name(&app, ResourceKind::Network, None),
+            name: piqueld_core::DockerNetworkName::parse(docker_resource_name(
+                &app,
+                ResourceKind::Network,
+                None,
+            ))
+            .unwrap(),
             labels: labels.clone(),
         };
         let volume = DesiredVolume {
-            logical_name: "data".into(),
-            name: docker_resource_name(&app, ResourceKind::Volume, Some("data")),
+            logical_name: piqueld_core::VolumeName::parse("data").unwrap(),
+            name: piqueld_core::DockerVolumeName::parse(docker_resource_name(
+                &app,
+                ResourceKind::Volume,
+                Some("data"),
+            ))
+            .unwrap(),
             labels: labels.clone(),
         };
         engine.docker.ensure_network(&network).await.unwrap();
@@ -102,8 +112,13 @@ impl SwarmScenario {
         let mut service_labels = labels.clone();
         service_labels.insert("io.piqueld.service".into(), "web".into());
         let service = DesiredService {
-            logical_name: "web".into(),
-            name: docker_resource_name(&app, ResourceKind::Service, Some("web")),
+            logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
+            name: piqueld_core::DockerServiceName::parse(docker_resource_name(
+                &app,
+                ResourceKind::Service,
+                Some("web"),
+            ))
+            .unwrap(),
             source: ResolvedSource::Image {
                 requested: "alpine:3.20".into(),
                 digest_reference: image.clone(),
@@ -184,8 +199,13 @@ impl SwarmScenario {
 
     async fn add_http_service(&self) -> DesiredService {
         let mut http_service = self.service.clone();
-        http_service.logical_name = "http".into();
-        http_service.name = docker_resource_name(&self.app, ResourceKind::Service, Some("http"));
+        http_service.logical_name = piqueld_core::ServiceName::parse("http").unwrap();
+        http_service.name = piqueld_core::DockerServiceName::parse(docker_resource_name(
+            &self.app,
+            ResourceKind::Service,
+            Some("http"),
+        ))
+        .unwrap();
         http_service.command = vec!["/bin/sh".into()];
         http_service.arguments = vec![
             "-c".into(),
@@ -211,7 +231,7 @@ impl SwarmScenario {
             observed
                 .services
                 .iter()
-                .find(|candidate| candidate.name == self.service.name)
+                .find(|candidate| candidate.name == self.service.name.as_str())
                 .and_then(|candidate| candidate.healthcheck.as_ref()),
             self.service.healthcheck.as_ref(),
             "command health check survives complete service inspection"
@@ -220,7 +240,7 @@ impl SwarmScenario {
             observed
                 .services
                 .iter()
-                .find(|candidate| candidate.name == http_service.name)
+                .find(|candidate| candidate.name == http_service.name.as_str())
                 .and_then(|candidate| candidate.healthcheck.as_ref()),
             http_service.healthcheck.as_ref(),
             "HTTP health check survives complete service inspection"
@@ -234,7 +254,7 @@ impl SwarmScenario {
             let healthy = observed
                 .services
                 .iter()
-                .find(|candidate| candidate.name == self.service.name)
+                .find(|candidate| candidate.name == self.service.name.as_str())
                 .and_then(|candidate| candidate.tasks.iter().find(|task| task.desired_running))
                 .map(|task| task.healthy);
             if healthy == Some(Some(true)) {
@@ -259,7 +279,7 @@ impl SwarmScenario {
             if observed
                 .services
                 .iter()
-                .any(|s| s.name == self.service.name && s.replicas == 2)
+                .any(|s| s.name == self.service.name.as_str() && s.replicas == 2)
             {
                 break;
             }
@@ -271,7 +291,7 @@ impl SwarmScenario {
             observed
                 .services
                 .iter()
-                .find(|candidate| candidate.name == self.service.name)
+                .find(|candidate| candidate.name == self.service.name.as_str())
                 .and_then(|candidate| candidate.healthcheck.as_ref()),
             self.service.healthcheck.as_ref()
         );
@@ -285,13 +305,13 @@ impl SwarmScenario {
         )
         .unwrap();
         let matching = raw
-            .inspect_service(&self.service.name, None::<InspectServiceOptions>)
+            .inspect_service(self.service.name.as_str(), None::<InspectServiceOptions>)
             .await
             .unwrap();
         let matching_version = matching.version.as_ref().and_then(|version| version.index);
         self.engine.ensure_service_eventually(&self.service).await;
         let unchanged = raw
-            .inspect_service(&self.service.name, None::<InspectServiceOptions>)
+            .inspect_service(self.service.name.as_str(), None::<InspectServiceOptions>)
             .await
             .unwrap();
         assert_eq!(
@@ -311,7 +331,7 @@ impl SwarmScenario {
             .unwrap()
             .replicas = Some(1);
         raw.update_service(
-            &self.service.name,
+            self.service.name.as_str(),
             drifted_spec,
             UpdateServiceOptionsBuilder::default()
                 .version(i32::try_from(matching_version.unwrap()).unwrap())
@@ -326,7 +346,7 @@ impl SwarmScenario {
             .await
             .unwrap();
         let repaired = raw
-            .inspect_service(&self.service.name, None::<InspectServiceOptions>)
+            .inspect_service(self.service.name.as_str(), None::<InspectServiceOptions>)
             .await
             .unwrap();
         assert!(
@@ -348,12 +368,12 @@ impl SwarmScenario {
     async fn delete_retaining_volume(&self, http_service: &DesiredService) {
         self.engine
             .docker
-            .remove_service(&http_service.name, &self.labels)
+            .remove_service(http_service.name.as_str(), &self.labels)
             .await
             .unwrap();
         self.engine
             .docker
-            .remove_service(&self.service.name, &self.labels)
+            .remove_service(self.service.name.as_str(), &self.labels)
             .await
             .unwrap();
         let removal_deadline = tokio::time::Instant::now() + Duration::from_mins(1);
@@ -366,7 +386,8 @@ impl SwarmScenario {
             .services
             .iter()
             .any(|observed| {
-                observed.name == self.service.name || observed.name == http_service.name
+                observed.name == self.service.name.as_str()
+                    || observed.name == http_service.name.as_str()
             })
         {
             assert!(tokio::time::Instant::now() < removal_deadline);
@@ -374,7 +395,7 @@ impl SwarmScenario {
         }
         self.engine
             .docker
-            .remove_network(&self.network.name, &self.labels)
+            .remove_network(self.network.name.as_str(), &self.labels)
             .await
             .unwrap();
         let network_removal_deadline = tokio::time::Instant::now() + Duration::from_mins(1);
@@ -386,13 +407,18 @@ impl SwarmScenario {
             .unwrap()
             .networks
             .iter()
-            .any(|observed| observed.name == self.network.name)
+            .any(|observed| observed.name == self.network.name.as_str())
         {
             assert!(tokio::time::Instant::now() < network_removal_deadline);
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         let retained = self.engine.docker.observe(&self.app).await.unwrap();
-        assert!(retained.volumes.iter().any(|v| v.name == self.volume.name));
+        assert!(
+            retained
+                .volumes
+                .iter()
+                .any(|v| v.name == self.volume.name.as_str())
+        );
         let raw = bollard::Docker::connect_with_unix(
             self.engine.socket.to_str().unwrap(),
             120,
@@ -400,7 +426,7 @@ impl SwarmScenario {
         )
         .unwrap();
         raw.remove_volume(
-            &self.volume.name,
+            self.volume.name.as_str(),
             None::<bollard::query_parameters::RemoveVolumeOptions>,
         )
         .await
@@ -463,7 +489,7 @@ async fn git_build_runs_as_a_local_swarm_image() {
     .await
     .expect("local Git-built image must converge in Swarm");
     docker
-        .remove_service(&target.services[0].name, &target.services[0].labels)
+        .remove_service(target.services[0].name.as_str(), &target.services[0].labels)
         .await
         .unwrap();
 }

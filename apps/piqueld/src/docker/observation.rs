@@ -1,8 +1,8 @@
 use super::policy::ServiceRuntimePolicy;
 use super::{
-    BTreeMap, BollardDocker, Convergence, DesiredMount, DockerError, HealthCheck, HealthConfig,
+    BTreeMap, BollardDocker, Convergence, DockerError, HealthCheck, HealthConfig,
     InspectContainerOptionsBuilder, MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND,
-    ObservedService, ObservedTask, ResourceLimits, ServiceSpec, TaskDiagnostic,
+    ObservedMount, ObservedService, ObservedTask, ResourceLimits, ServiceSpec, TaskDiagnostic,
     TaskSpecContainerSpec, TaskState,
 };
 use bollard::models::HealthStatusEnum;
@@ -165,7 +165,7 @@ impl BollardDocker {
             .collect()
     }
 
-    pub(super) fn observed_mounts(container: &TaskSpecContainerSpec) -> Vec<DesiredMount> {
+    pub(super) fn observed_mounts(container: &TaskSpecContainerSpec) -> Vec<ObservedMount> {
         container
             .mounts
             .clone()
@@ -173,7 +173,7 @@ impl BollardDocker {
             .into_iter()
             .filter(|mount| mount.typ == Some(MountTypeEnum::VOLUME))
             .filter_map(|mount| {
-                Some(DesiredMount {
+                Some(ObservedMount {
                     volume_name: mount.source?,
                     target: mount.target?,
                     read_only: mount.read_only.unwrap_or(false),

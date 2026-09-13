@@ -800,8 +800,8 @@
             "type": "string"
           },
           "volume_name": {
-            "description": "Canonical Docker volume name.",
-            "type": "string"
+            "$ref": "#/components/schemas/DockerVolumeName",
+            "description": "Canonical Docker volume name."
           }
         },
         "required": [
@@ -826,8 +826,8 @@
             "type": "object"
           },
           "name": {
-            "description": "Canonical Docker resource name.",
-            "type": "string"
+            "$ref": "#/components/schemas/DockerNetworkName",
+            "description": "Canonical Docker resource name."
           }
         },
         "required": [
@@ -890,8 +890,8 @@
             "type": "object"
           },
           "logical_name": {
-            "description": "Manifest-level service name.",
-            "type": "string"
+            "$ref": "#/components/schemas/ServiceName",
+            "description": "Manifest-level service name."
           },
           "mounts": {
             "description": "Persistent volume mounts.",
@@ -901,13 +901,13 @@
             "type": "array"
           },
           "name": {
-            "description": "Canonical Docker service name.",
-            "type": "string"
+            "$ref": "#/components/schemas/DockerServiceName",
+            "description": "Canonical Docker service name."
           },
           "networks": {
             "description": "Canonical private network names attached to the service.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/DockerNetworkName"
             },
             "type": "array"
           },
@@ -963,12 +963,12 @@
             "type": "object"
           },
           "logical_name": {
-            "description": "Manifest-level volume name.",
-            "type": "string"
+            "$ref": "#/components/schemas/VolumeName",
+            "description": "Manifest-level volume name."
           },
           "name": {
-            "description": "Canonical Docker resource name.",
-            "type": "string"
+            "$ref": "#/components/schemas/DockerVolumeName",
+            "description": "Canonical Docker resource name."
           }
         },
         "required": [
@@ -1004,6 +1004,18 @@
           "message"
         ],
         "type": "object"
+      },
+      "DockerNetworkName": {
+        "description": "A Docker network name, distinct from logical names and other resource kinds.",
+        "type": "string"
+      },
+      "DockerServiceName": {
+        "description": "A Docker service name, distinct from its logical service name.\n\n```compile_fail\nuse piqueld_core::{DockerNetworkName, DockerServiceName};\nfn attach_network(_: DockerNetworkName) {}\nfn wrong_kind(service: DockerServiceName) { attach_network(service); }\n```",
+        "type": "string"
+      },
+      "DockerVolumeName": {
+        "description": "A Docker volume name, distinct from its logical volume name.",
+        "type": "string"
       },
       "Envelope_AcceptedOperation": {
         "description": "Successful API response envelope.",

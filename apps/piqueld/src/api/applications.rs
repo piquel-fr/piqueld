@@ -441,7 +441,7 @@ fn observed_view(
             let runtime = observed
                 .services
                 .iter()
-                .find(|service| service.name == desired.name);
+                .find(|service| service.name == desired.name.as_str());
             let (image, observed_replicas, healthy_replicas, convergence, diagnostics) = runtime
                 .map_or_else(
                     || {
@@ -478,7 +478,7 @@ fn observed_view(
                     },
                 );
             ObservedServiceView {
-                name: desired.logical_name.clone(),
+                name: desired.logical_name.to_string(),
                 image,
                 desired_replicas: desired.replicas,
                 observed_replicas,

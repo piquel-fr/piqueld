@@ -3,7 +3,8 @@
 use crate::manifest::domain::{ValidatedMount as Mount, ValidatedService as Service};
 use crate::names::validated_string;
 use crate::{
-    ApplicationId, ResourceKind, ServiceName, docker_resource_name,
+    ApplicationId, ApplicationName, DockerNetworkName, DockerServiceName, DockerVolumeName,
+    ResourceKind, ServiceName, VolumeName, docker_resource_name,
     manifest::{HealthCheck, NormalizedApplication, ResourceLimits, Source, valid_image_reference},
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -161,7 +162,7 @@ pub struct Ownership {
     /// The application that owns the resource.
     pub application_id: ApplicationId,
     /// Logical service name when the resource belongs to one service.
-    pub service: Option<String>,
+    pub service: Option<ServiceName>,
     /// Normalized application spec hash.
     pub spec_hash: String,
 }
@@ -177,7 +178,7 @@ impl Ownership {
             (SPEC_HASH_LABEL.into(), self.spec_hash.clone()),
         ]);
         if let Some(service) = &self.service {
-            labels.insert(SERVICE_LABEL.into(), service.clone());
+            labels.insert(SERVICE_LABEL.into(), service.to_string());
         }
         labels
     }
@@ -188,7 +189,7 @@ impl Ownership {
 #[serde(deny_unknown_fields)]
 pub struct DesiredNetwork {
     /// Canonical Docker resource name.
-    pub name: String,
+    pub name: DockerNetworkName,
     /// Expected ownership labels.
     pub labels: BTreeMap<String, String>,
 }
@@ -201,7 +202,7 @@ impl DesiredNetwork {
             return false;
         };
         !self.labels.contains_key(SERVICE_LABEL)
-            && self.name == docker_resource_name(&application, ResourceKind::Network, None)
+            && self.name == DockerNetworkName::for_application(&application)
     }
 }
 
@@ -210,9 +211,9 @@ impl DesiredNetwork {
 #[serde(deny_unknown_fields)]
 pub struct DesiredVolume {
     /// Manifest-level volume name.
-    pub logical_name: String,
+    pub logical_name: VolumeName,
     /// Canonical Docker resource name.
-    pub name: String,
+    pub name: DockerVolumeName,
     /// Expected ownership labels.
     pub labels: BTreeMap<String, String>,
 }
@@ -224,14 +225,9 @@ impl DesiredVolume {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
             return false;
         };
-        valid_logical_name(&self.logical_name)
+        valid_logical_name(self.logical_name.as_str())
             && !self.labels.contains_key(SERVICE_LABEL)
-            && self.name
-                == docker_resource_name(
-                    &application,
-                    ResourceKind::Volume,
-                    Some(&self.logical_name),
-                )
+            && self.name == DockerVolumeName::for_volume(&application, &self.logical_name)
     }
 }
 
@@ -240,6 +236,18 @@ impl DesiredVolume {
 #[serde(deny_unknown_fields)]
 pub struct DesiredMount {
     /// Canonical Docker volume name.
+    pub volume_name: DockerVolumeName,
+    /// Container target path.
+    pub target: String,
+    /// Whether the mount is read-only.
+    pub read_only: bool,
+}
+
+/// Untrusted mount observation from Docker, including foreign volume names.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedMount {
+    /// Docker-reported volume name.
     pub volume_name: String,
     /// Container target path.
     pub target: String,
@@ -247,14 +255,24 @@ pub struct DesiredMount {
     pub read_only: bool,
 }
 
+impl From<&DesiredMount> for ObservedMount {
+    fn from(value: &DesiredMount) -> Self {
+        Self {
+            volume_name: value.volume_name.to_string(),
+            target: value.target.clone(),
+            read_only: value.read_only,
+        }
+    }
+}
+
 /// Desired Docker service state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DesiredService {
     /// Manifest-level service name.
-    pub logical_name: String,
+    pub logical_name: ServiceName,
     /// Canonical Docker service name.
-    pub name: String,
+    pub name: DockerServiceName,
     /// Immutable source resolution used by the service.
     pub source: ResolvedSource,
     /// Digest-pinned image reference.
@@ -274,7 +292,7 @@ pub struct DesiredService {
     /// Optional CPU and memory limits.
     pub resources: Option<ResourceLimits>,
     /// Canonical private network names attached to the service.
-    pub networks: Vec<String>,
+    pub networks: Vec<DockerNetworkName>,
     /// Ownership labels.
     pub labels: BTreeMap<String, String>,
 }
@@ -286,15 +304,10 @@ impl DesiredService {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
             return false;
         };
-        valid_logical_name(&self.logical_name)
+        valid_logical_name(self.logical_name.as_str())
             && self.labels.get(SERVICE_LABEL).map(String::as_str)
                 == Some(self.logical_name.as_str())
-            && self.name
-                == docker_resource_name(
-                    &application,
-                    ResourceKind::Service,
-                    Some(&self.logical_name),
-                )
+            && self.name == DockerServiceName::for_service(&application, &self.logical_name)
     }
 }
 
@@ -305,7 +318,7 @@ pub struct ResolvedApplication {
     /// Stable application identity.
     pub id: ApplicationId,
     /// User-facing application name.
-    pub name: String,
+    pub name: ApplicationName,
     /// Current control-plane instance identity.
     pub instance_id: InstanceId,
     /// Normalized application spec hash.
@@ -331,7 +344,7 @@ impl ResolvedApplication {
                     let prior = self
                         .services
                         .iter()
-                        .find(|prior| prior.logical_name == service.name.as_str())?;
+                        .find(|prior| prior.logical_name == service.name)?;
                     resolved_source_matches(&service.source, &prior.source)
                         .then(|| (service.name.clone(), prior.source.clone()))
                 })
@@ -414,10 +427,10 @@ pub fn compile_application(
         service: None,
         spec_hash: digest.as_str().to_owned(),
     };
-    let private_network = docker_resource_name(app.id(), ResourceKind::Network, None);
+    let private_network = DockerNetworkName::for_application(app.id());
     Ok(ResolvedApplication {
         id: app.id().clone(),
-        name: app.metadata().name.to_string(),
+        name: app.metadata().name.clone(),
         instance_id,
         spec_hash,
         networks: if app.spec().services.is_empty() {
@@ -433,12 +446,8 @@ pub fn compile_application(
             .volumes
             .iter()
             .map(|volume| DesiredVolume {
-                logical_name: volume.name.to_string(),
-                name: docker_resource_name(
-                    app.id(),
-                    ResourceKind::Volume,
-                    Some(volume.name.as_str()),
-                ),
+                logical_name: volume.name.clone(),
+                name: DockerVolumeName::for_volume(app.id(), &volume.name),
                 labels: ownership.labels(),
             })
             .collect(),
@@ -524,14 +533,14 @@ fn compile_service(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
     application_ownership: &Ownership,
-    private_network: &str,
+    private_network: &DockerNetworkName,
 ) -> DesiredService {
     let source = resolutions.sources[&service.name].clone();
     let mut ownership = application_ownership.clone();
-    ownership.service = Some(service.name.to_string());
+    ownership.service = Some(service.name.clone());
     DesiredService {
-        logical_name: service.name.to_string(),
-        name: docker_resource_name(app.id(), ResourceKind::Service, Some(service.name.as_str())),
+        logical_name: service.name.clone(),
+        name: DockerServiceName::for_service(app.id(), &service.name),
         image: source.digest_reference().into(),
         source,
         replicas: service.replicas,
@@ -542,18 +551,14 @@ fn compile_service(
             .mounts
             .iter()
             .map(|mount: &Mount| DesiredMount {
-                volume_name: docker_resource_name(
-                    app.id(),
-                    ResourceKind::Volume,
-                    Some(mount.volume.as_str()),
-                ),
+                volume_name: DockerVolumeName::for_volume(app.id(), &mount.volume),
                 target: mount.target.clone(),
                 read_only: mount.read_only,
             })
             .collect(),
         healthcheck: service.healthcheck.clone(),
         resources: service.resources.clone(),
-        networks: vec![private_network.into()],
+        networks: vec![private_network.clone()],
         labels: ownership.labels(),
     }
 }
@@ -716,7 +721,7 @@ impl ObservedNetwork {
     ) -> bool {
         OwnershipState::from_labels(&self.labels, &application.instance_id, &application.id)
             == OwnershipState::Owned
-            && self.name == desired.name
+            && self.name == desired.name.as_str()
     }
 }
 
@@ -749,7 +754,7 @@ pub struct ObservedService {
     /// Observed command arguments.
     pub arguments: Vec<String>,
     /// Persistent mounts observed on the service.
-    pub mounts: Vec<DesiredMount>,
+    pub mounts: Vec<ObservedMount>,
     /// Observed health check.
     pub healthcheck: Option<HealthCheck>,
     /// Whether Docker has a health check, including an unsupported one.
@@ -769,6 +774,31 @@ pub struct ObservedService {
 }
 
 impl ObservedService {
+    pub(crate) fn mounts_match(&self, desired: &DesiredService) -> bool {
+        unordered_eq(
+            self.mounts.iter().map(|mount| {
+                (
+                    mount.volume_name.as_str(),
+                    mount.target.as_str(),
+                    mount.read_only,
+                )
+            }),
+            desired.mounts.iter().map(|mount| {
+                (
+                    mount.volume_name.as_str(),
+                    mount.target.as_str(),
+                    mount.read_only,
+                )
+            }),
+        )
+    }
+    pub(crate) fn networks_match(&self, desired: &DesiredService) -> bool {
+        unordered_eq(
+            self.networks.iter().map(String::as_str),
+            desired.networks.iter().map(DockerNetworkName::as_str),
+        )
+    }
+
     /// Returns whether all desired service fields match.
     #[must_use]
     pub fn matches(&self, desired: &DesiredService) -> bool {
@@ -777,11 +807,11 @@ impl ObservedService {
             && self.environment == desired.environment
             && self.command == desired.command
             && self.arguments == desired.arguments
-            && unordered_eq(&self.mounts, &desired.mounts)
+            && self.mounts_match(desired)
             && self.healthcheck == desired.healthcheck
             && self.healthcheck_configured == desired.healthcheck.is_some()
             && self.resources == desired.resources
-            && unordered_eq(&self.networks, &desired.networks)
+            && self.networks_match(desired)
             && owned_label_subset(&self.labels, &desired.labels)
             && self.runtime_configuration_matches
     }
@@ -797,7 +827,7 @@ impl ObservedService {
             == OwnershipState::Owned
             && self.labels.get(SERVICE_LABEL).map(String::as_str)
                 == Some(desired.logical_name.as_str())
-            && self.name == desired.name
+            && self.name == desired.name.as_str()
     }
 
     /// Returns whether labels and the canonical name identify this service.
@@ -865,11 +895,14 @@ impl OwnershipState {
     }
 }
 
-pub(crate) fn unordered_eq<T: Ord>(observed: &[T], desired: &[T]) -> bool {
-    let mut observed = observed.iter().collect::<Vec<_>>();
-    let mut desired = desired.iter().collect::<Vec<_>>();
-    observed.sort_unstable();
-    desired.sort_unstable();
+pub(crate) fn unordered_eq<T: Ord>(
+    observed: impl IntoIterator<Item = T>,
+    desired: impl IntoIterator<Item = T>,
+) -> bool {
+    let mut observed: Vec<_> = observed.into_iter().collect();
+    let mut desired: Vec<_> = desired.into_iter().collect();
+    observed.sort();
+    desired.sort();
     observed == desired
 }
 
