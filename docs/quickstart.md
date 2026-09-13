@@ -23,13 +23,13 @@ developer.
 In a second terminal:
 
 ```console
-just run --socket /run/user/1000/piqueld/piqueld.sock status
+just run --socket /tmp/piqueld-dev/piqueld.sock status
 just run --url http://127.0.0.1:7845 status
-just run --socket /run/user/1000/piqueld/piqueld.sock plan \
+just run --socket /tmp/piqueld-dev/piqueld.sock plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
-just run --socket /run/user/1000/piqueld/piqueld.sock apply \
+just run --socket /tmp/piqueld-dev/piqueld.sock apply \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --yes
-just run --socket /run/user/1000/piqueld/piqueld.sock show notes
+just run --socket /tmp/piqueld-dev/piqueld.sock show notes
 ```
 
 `status` reports the daemon version and `--json` produces the same structured
@@ -39,9 +39,9 @@ manifest to update an existing application by name. Identical manifests schedule
 operation by default; failed attempts require explicit retry. Use the same development socket for repair, image refresh, and informational history:
 
 ```console
-just run --socket /run/user/1000/piqueld/piqueld.sock reconcile notes --yes
-just run --socket /run/user/1000/piqueld/piqueld.sock deploy notes --yes
-just run --socket /run/user/1000/piqueld/piqueld.sock events --application <application-id>
+just run --socket /tmp/piqueld-dev/piqueld.sock reconcile notes --yes
+just run --socket /tmp/piqueld-dev/piqueld.sock deploy notes --yes
+just run --socket /tmp/piqueld-dev/piqueld.sock events --application <application-id>
 ```
 
 ## Dashboard and cleanup
