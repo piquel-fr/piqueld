@@ -322,6 +322,18 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         <header class="application-heading">
             <MetadataSettings />
             <div class="header-controls">
+                <a
+                    class="back-link"
+                    href={move || {
+                        format!(
+                            "/api/v1/applications/{}/manifest",
+                            context.saved.get().application.id
+                        )
+                    }}
+                    download
+                >
+                    "Download saved manifest"
+                </a>
                 <DeploymentActions />
             </div>
         </header>

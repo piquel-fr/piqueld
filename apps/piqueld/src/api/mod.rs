@@ -318,6 +318,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::plan))
         .routes(routes!(applications::get, applications::delete))
         .routes(routes!(applications::detail))
+        .routes(routes!(applications::manifest_download))
         .routes(routes!(applications::status))
         .routes(routes!(applications::reconcile))
         .routes(routes!(applications::rename))
