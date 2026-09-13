@@ -38,6 +38,10 @@ test-wasm:
 test:
     @cargo nextest run --locked --workspace
 
+# Execute feature-gated dashboard routes and their security assertions.
+test-embedded:
+    @cargo nextest run --locked --package piqueld --features embedded-ui
+
 doc-test:
     @cargo test --locked --doc --workspace
 
