@@ -8,8 +8,9 @@ the database without changing running containers.
 
 **Preview** shows the planned changes. **Deploy** captures the saved configuration
 in a persisted deployment and applies it. Both buttons require all local edits
-to be saved or discarded. Every deployment supersedes its predecessor and
+to be saved or discarded. Every deployment supersedes pending work and
 refreshes image resolution, including when configuration has not changed.
+Completed deployments retain their terminal state in history.
 Retries use the captured deployment, not subsequent configuration edits.
 
 The Deployments tab lists deployment snapshots, progress, errors, and retry

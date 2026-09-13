@@ -71,8 +71,9 @@ when Docker observation is unavailable.
 
 Mutating commands require TTY confirmation unless `--yes` is supplied. Apply,
 delete and rename accept `--force` independently of confirmation. Every explicit
-deployment creates a new snapshot, refreshes image references and supersedes prior
-work. Reconciliation retries the deployment snapshot using prepared digests.
+deployment creates a new snapshot, refreshes image references and supersedes pending
+work. Completed deployments retain their terminal state in history.
+Reconciliation retries the deployment snapshot using prepared digests.
 Unchanged healthy containers do not restart unnecessarily.
 
 Deletion removes application configuration and all its history after runtime
@@ -120,5 +121,5 @@ usage or input errors, 3 for conflicts, 4 for unavailable or timed
 out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.
 
-The dashboard provides application management forms. Logs, remote authentication, builds,
+The dashboard provides application management forms. Logs, remote authentication, build logs,
 registry management, and advanced interactive CLI flows remain future work.

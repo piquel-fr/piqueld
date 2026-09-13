@@ -6,12 +6,15 @@ use std::fmt;
 use utoipa::ToSchema;
 
 /// Application change being reconciled.
+/// Deployment operations retain the serialized kind `refresh` for compatibility
+/// with existing stored records and API clients.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationKind {
     /// Apply the requested application state.
     Apply,
     /// Resolve the current manifest again without changing its generation.
+    /// Used by Deploy and Apply with deployment.
     Refresh,
     /// Delete its resources.
     Delete,

@@ -2358,7 +2358,7 @@
         "type": "object"
       },
       "OperationKind": {
-        "description": "Application change being reconciled.",
+        "description": "Application change being reconciled.\nDeployment operations retain the serialized kind `refresh` for compatibility\nwith existing stored records and API clients.",
         "enum": [
           "apply",
           "refresh",
