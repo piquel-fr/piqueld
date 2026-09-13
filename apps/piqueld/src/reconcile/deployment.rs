@@ -27,22 +27,25 @@ impl<D: DockerApi> Controller<D> {
             .await
             .map_err(|error| {
                 tracing::error!(?error, "manifest repository fetch failed");
-                OperationError::ManifestFetchFailed
+                OperationError::ManifestFetchFailed(error)
             })?;
         let path = checkout.path(&backing.path).await.map_err(|error| {
             tracing::error!(?error, "manifest file lookup failed");
-            if error
+            let not_found = error
                 .downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-            {
-                OperationError::ManifestNotFound
-            } else {
-                OperationError::ManifestInvalid
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+            OperationError::ManifestInput {
+                not_found,
+                source: error,
             }
         })?;
-        let metadata = tokio::fs::metadata(&path)
-            .await
-            .map_err(|_| OperationError::ManifestNotFound)?;
+        let metadata =
+            tokio::fs::metadata(&path)
+                .await
+                .map_err(|error| OperationError::ManifestInput {
+                    not_found: true,
+                    source: error.into(),
+                })?;
         if !metadata.is_file() {
             return Err(OperationError::ManifestNotFound);
         }
@@ -51,7 +54,10 @@ impl<D: DockerApi> Controller<D> {
         }
         let contents = tokio::fs::read_to_string(&path).await.map_err(|error| {
             tracing::error!(?error, "manifest read failed");
-            OperationError::ManifestInvalid
+            OperationError::ManifestInput {
+                not_found: false,
+                source: error.into(),
+            }
         })?;
         let parsed = if path
             .extension()
@@ -63,7 +69,10 @@ impl<D: DockerApi> Controller<D> {
         }
         .map_err(|error| {
             tracing::error!(?error, "repository manifest validation failed");
-            OperationError::ManifestInvalid
+            OperationError::ManifestInput {
+                not_found: false,
+                source: error.into(),
+            }
         })?;
         let application = parsed.normalize(operation.application_id.clone());
         if application.metadata.name != input.application.metadata.name {
