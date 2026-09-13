@@ -80,3 +80,10 @@ duration. Enable `RUST_LOG=piqueld=debug` for preparation/convergence phases,
 Docker actions, observations, and retry timing. Manifest values and runtime
 configuration are not recorded as span fields. Persisted failures and API error
 messages retain their sanitized codes and messages.
+
+Docker requests use one shared 30-second policy. It covers observation queueing,
+all inspection phases, and complete response bodies. Image resolution has a
+separate ten-minute budget including its queue wait and pulls; the configured
+preparation deadline still bounds the entire checkout/build/resolve phase.
+Raw service update retries share one absolute request deadline. Cancelling a
+request aborts its connection driver, and timeout errors retain their cause.

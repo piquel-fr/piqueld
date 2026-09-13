@@ -8,7 +8,7 @@ use tokio::net::UnixStream;
 // A valid API request may be 2 MiB; Docker adds service metadata around that
 // specification when it is inspected.
 const MAX_SERVICE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
-const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const SERVICE_REQUEST_TIMEOUT: Duration = super::DockerTimeout::Request.duration();
 
 /// Bollard's per-request timeout, in seconds. Bollard only bounds a request up
 /// to the response headers, which is why adapter calls additionally run under
@@ -146,8 +146,10 @@ impl BollardDocker {
         };
         // Hyper returns a connection driver separately from the request sender;
         // it must run concurrently for the sender to make progress. Always
-        // abort and join it after the request so no driver survives a timeout.
-        let driver = tokio::spawn(async move {
+        // abort and join it after the request. JoinSet also aborts on drop when
+        // an outer deadline or caller cancels this future.
+        let mut drivers = tokio::task::JoinSet::new();
+        drivers.spawn(async move {
             if let Err(source) = connection.await {
                 tracing::debug!(error = ?source, "Docker service connection driver failed");
             }
@@ -177,8 +179,8 @@ impl BollardDocker {
             Self::read_service_response(response).await
         })
         .await;
-        driver.abort();
-        if let Err(source) = driver.await
+        drivers.abort_all();
+        if let Some(Err(source)) = drivers.join_next().await
             && !source.is_cancelled()
         {
             return Err(ServiceWireError::Public(DockerError::request(
@@ -264,16 +266,19 @@ impl BollardDocker {
     ) -> Result<(), DockerError> {
         let deadline = tokio::time::Instant::now() + SERVICE_REQUEST_TIMEOUT;
         loop {
-            match self
-                .service_request(
+            match tokio::time::timeout_at(
+                deadline,
+                self.service_request(
                     Method::POST,
                     // registryAuthFrom=spec is intentional: piqueld specs are
                     // auth-free, so Docker must not fall back to credentials
                     // from its own store.
                     &format!("/services/{name}/update?version={version}&registryAuthFrom=spec"),
                     Some(spec),
-                )
-                .await
+                ),
+            )
+            .await
+            .map_err(|source| DockerError::unavailable("update service", source))?
             {
                 Ok(_) => return Ok(()),
                 Err(error)
@@ -404,6 +409,33 @@ mod tests {
                 _directory: directory,
             }
         }
+    }
+
+    #[tokio::test]
+    async fn cancelling_service_request_closes_connection_driver() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("docker.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let docker = BollardDocker::connect(&socket).unwrap();
+        let request = tokio::spawn(async move { docker.inspect_service_wire("test").await });
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            headers.push(stream.read_u8().await.unwrap());
+        }
+        // Leave the body pending so the driver still owns an open connection.
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{")
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        let mut byte = [0];
+        let read =
+            tokio::time::timeout(std::time::Duration::from_secs(1), stream.read(&mut byte)).await;
+        assert_eq!(read.expect("cancelled connection must close").unwrap(), 0);
     }
 
     #[tokio::test]

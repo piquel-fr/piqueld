@@ -45,6 +45,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 piqueld-client.workspace = true
 http.workspace = true
 http-body-util.workspace = true

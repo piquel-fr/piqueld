@@ -2,7 +2,7 @@
 
 use super::{BoundaryError, RuntimeBoundary};
 use crate::{
-    docker::{DockerApi, DockerError, IMAGE_RESOLVE_TIMEOUT},
+    docker::{DockerApi, DockerError, DockerTimeout},
     store::StoredApplication,
 };
 use async_trait::async_trait;
@@ -14,8 +14,6 @@ use piqueld_core::{
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
-
-const DOCKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runtime boundary backed by Docker.
 pub struct DockerRuntime<D> {
@@ -122,19 +120,16 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                 async move {
                     let resolved = match &source {
                         Source::Image { image } => {
-                            let digest_reference = tokio::time::timeout(
-                                IMAGE_RESOLVE_TIMEOUT,
-                                docker.resolve_image(image),
-                            )
-                            .await
-                            .unwrap_or_else(|_| Err(DockerError::Unavailable("resolve image")))
-                            .map_err(|error| {
-                                (
-                                    name.clone(),
-                                    "resolving_image",
-                                    BoundaryError::Runtime(error),
-                                )
-                            })?;
+                            let digest_reference = DockerTimeout::ImageResolution
+                                .run("resolve image", docker.resolve_image(image))
+                                .await
+                                .map_err(|error| {
+                                    (
+                                        name.clone(),
+                                        "resolving_image",
+                                        BoundaryError::Runtime(error),
+                                    )
+                                })?;
                             ResolvedSource::Image {
                                 requested: image.clone(),
                                 digest_reference,
@@ -180,15 +175,15 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             Ok(resolved)
         })
         .await
-        .map_err(|_| BoundaryError::Runtime(DockerError::Unavailable("prepare application")))?
+        .map_err(|source| {
+            BoundaryError::Runtime(DockerError::unavailable("prepare application", source))
+        })?
     }
 
     async fn check_available(&self) -> Result<(), BoundaryError> {
-        tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, self.docker.ensure_swarm(false))
-            .await
-            .map_err(|_| {
-                BoundaryError::Runtime(DockerError::Unavailable("check Docker availability"))
-            })??;
+        DockerTimeout::Request
+            .run("check Docker availability", self.docker.ensure_swarm(false))
+            .await?;
         Ok(())
     }
 
@@ -196,12 +191,12 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         &self,
         application: &StoredApplication,
     ) -> Result<piqueld_core::ObservedApplication, BoundaryError> {
-        tokio::time::timeout(
-            DOCKER_REQUEST_TIMEOUT,
-            self.docker.observe(&application.application.id),
-        )
-        .await
-        .map_err(|_| BoundaryError::Runtime(DockerError::Unavailable("observe application")))?
-        .map_err(BoundaryError::from)
+        DockerTimeout::Request
+            .run(
+                "observe application",
+                self.docker.observe(&application.application.id),
+            )
+            .await
+            .map_err(BoundaryError::from)
     }
 }

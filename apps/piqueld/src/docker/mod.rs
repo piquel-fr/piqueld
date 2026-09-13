@@ -33,7 +33,6 @@ use piqueld_core::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    future::Future,
     path::Path,
     sync::Arc,
     time::Duration,
@@ -46,13 +45,6 @@ const RESTART_DELAY: i64 = 2 * NANOSECONDS_PER_SECOND;
 const UPDATE_MONITOR: i64 = 30 * NANOSECONDS_PER_SECOND;
 const HEALTH_RETRIES: i64 = 3;
 
-/// Upper bound for one adapter-level Docker request.
-///
-/// Bollard only bounds a request up to the response headers, so every adapter
-/// call additionally runs under this deadline; an elapsed deadline surfaces as
-/// unavailability.
-const DOCKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Concurrent per-service inspections performed during one observation.
 const OBSERVATION_INSPECT_CONCURRENCY: usize = 8;
 
@@ -61,13 +53,6 @@ const IMAGE_RESOLVE_ATTEMPTS: usize = 3;
 /// Pause between resolution attempts after a suspected concurrent tag flip.
 const IMAGE_RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(100);
 
-/// Upper bound for one complete image resolution, including pulls.
-///
-/// Resolution performs up to [`IMAGE_RESOLVE_ATTEMPTS`] pulls plus digest
-/// lookups, so a cold pull of a large image must not share the single-request
-/// budget; the reconciler still bounds each prepare phase overall.
-pub(crate) const IMAGE_RESOLVE_TIMEOUT: Duration = Duration::from_mins(10);
-
 #[derive(Clone)]
 /// A shared connection to the Docker Engine.
 pub struct BollardDocker {
@@ -75,6 +60,8 @@ pub struct BollardDocker {
     socket: Arc<Path>,
 }
 
+mod timeout;
+pub(crate) use timeout::DockerTimeout;
 mod engine;
 mod limited;
 mod logs;
@@ -215,15 +202,4 @@ async fn matching_repo_digests(
                 && BollardDocker::valid_digest(digest)
         })
         .collect())
-}
-
-/// Bounds one adapter request, surfacing an elapsed deadline as unavailability.
-async fn bounded<T>(
-    what: &'static str,
-    fut: impl Future<Output = Result<T, DockerError>>,
-) -> Result<T, DockerError> {
-    match tokio::time::timeout(DOCKER_REQUEST_TIMEOUT, fut).await {
-        Ok(result) => result,
-        Err(_) => Err(DockerError::Unavailable(what)),
-    }
 }
