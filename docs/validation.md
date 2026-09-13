@@ -2,7 +2,8 @@
 
 CI runs independent checks on Blacksmith runners in parallel on every pull request.
 Rust build caches are scoped to jobs and dashboard tools are cached by version.
-Failed checks do not cancel unrelated jobs.
+Nix caches are separate for each native Linux architecture. Failed checks do not
+cancel unrelated jobs.
 
 | Capability | Local recipe | CI job |
 | --- | --- | --- |
@@ -18,6 +19,7 @@ Failed checks do not cancel unrelated jobs.
 | Real browser transport tests | `test-wasm` | `wasm-ui` |
 | Isolated Engine integration tests | `docker-test` | `docker-integration` |
 | Embedded daemon and CLI release builds | `build-embedded` | `embedded-release` |
+| Nix package builds, tests, formatting, boundaries | `nix-check` | `nix` (native x86_64 and aarch64) |
 
 `just` regenerates OpenAPI and runs the default native validation set. CI checks
 the committed document without rewriting it. `check` and `build` are covered by

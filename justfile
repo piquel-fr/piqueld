@@ -88,3 +88,7 @@ generate-openapi:
 
 docker-test:
     @bash ./scripts/run-docker-integration-test.sh
+
+# Explicit Nix evaluation; it may need network access for a missing flake input.
+nix-check:
+    @nix flake check --no-update-lock-file
