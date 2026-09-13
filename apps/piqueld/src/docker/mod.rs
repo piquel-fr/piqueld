@@ -105,13 +105,9 @@ pub trait DockerApi: Send + Sync + 'static {
     /// Builds local Docker inputs into an immutable image.
     async fn build_image(
         &self,
-        _dockerfile: &Path,
-        _context: &Path,
-    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        Err(DockerError::Validation(
-            "Image builds are unsupported by this runtime",
-        ))
-    }
+        dockerfile: &Path,
+        context: &Path,
+    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError>;
     /// Reads the resources managed for one application.
     async fn observe(
         &self,
