@@ -815,7 +815,9 @@ impl ForceQuery {
 /// Download only saved configuration; runtime availability is irrelevant.
 #[utoipa::path(get,path="/api/v1/applications/{id}/manifest",operation_id="downloadApplicationManifest",
     params(("id"=String,Path)),
-    responses((status=200,description="Saved application configuration",body=String,content_type="application/toml"),
+    responses((status=200,description="Saved application configuration",body=String,content_type="application/toml",
+        headers(("Content-Disposition"=String,description="Attachment filename for the saved TOML manifest"),
+                ("Cache-Control"=String,description="no-store"))),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
     (status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn manifest_download(

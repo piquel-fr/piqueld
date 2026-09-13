@@ -3812,7 +3812,21 @@
                 }
               }
             },
-            "description": "Saved application configuration"
+            "description": "Saved application configuration",
+            "headers": {
+              "Cache-Control": {
+                "description": "no-store",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "description": "Attachment filename for the saved TOML manifest",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {

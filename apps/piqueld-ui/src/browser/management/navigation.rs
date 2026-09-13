@@ -65,7 +65,8 @@ pub(super) fn guard_navigation(dirty: RwSignal<BTreeSet<String>>) {
         let anchor = event
             .target()
             .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-            .and_then(|element| element.closest("a[href]").ok().flatten());
+            .and_then(|element| element.closest("a[href]").ok().flatten())
+            .filter(|anchor| !anchor.has_attribute("download"));
         if anchor.is_some()&&!window().confirm_with_message("Leave this application and discard unsaved form edits? Saved configuration is already stored.").unwrap_or(false){event.prevent_default();event.stop_propagation();}
     });
     let document = document();
