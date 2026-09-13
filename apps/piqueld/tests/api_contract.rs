@@ -57,6 +57,14 @@ impl RuntimeBoundary for FakeRuntime {
         )
     }
 
+    async fn remove_secrets(
+        &self,
+        _application: &piqueld_core::ApplicationId,
+        _names: &[String],
+    ) -> Result<(), BoundaryError> {
+        Ok(())
+    }
+
     async fn prepare(
         &self,
         application: &NormalizedApplication,
@@ -85,7 +93,10 @@ impl RuntimeBoundary for FakeRuntime {
         let resolved = compile_application(
             application,
             self.instance.clone(),
-            &ResolutionSet { sources },
+            &ResolutionSet {
+                sources,
+                secret_names: BTreeMap::default(),
+            },
         )
         .map_err(BoundaryError::Compilation)?;
         Ok(resolved)
