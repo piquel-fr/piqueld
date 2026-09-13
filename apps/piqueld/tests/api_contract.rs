@@ -697,115 +697,116 @@ async fn send_raw(
     }
 }
 
+#[derive(Clone, Copy)]
 enum Target<'a> {
     Tcp(std::net::SocketAddr),
-    #[allow(dead_code)]
     Unix(&'a std::path::Path),
 }
 
 #[tokio::test]
 async fn transport_failures_are_structured_safe_and_request_ids_pair() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
-    let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let state = state(&temp).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let tcp_server = tokio::spawn(serve(listener, router(state.clone())).into_future());
+    let socket = temp.path().join("api.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let unix_server = tokio::spawn(serve(listener, api_router(state)).into_future());
 
-    let huge = format!(
-        "{{\"manifest\": {{\"padding\": \"{}\"}}}}",
-        "x".repeat(3 * 1024 * 1024)
-    );
-    let too_large = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/api/v1/applications/apply",
-        &[("content-type", "application/json")],
-        huge.into_bytes(),
-    )
-    .await;
-    assert_eq!(too_large.status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(too_large.code(), "request_body_too_large");
+    for target in [Target::Tcp(address), Target::Unix(&socket)] {
+        target.assert_failures().await;
+    }
+    for server in [tcp_server, unix_server] {
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+}
 
-    let missing = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/does-not-exist",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(missing.status, StatusCode::NOT_FOUND);
-    assert_eq!(missing.code(), "endpoint_not_found");
+impl Target<'_> {
+    async fn assert_failures(self) {
+        let huge = format!(
+            "{{\"manifest\": {{\"padding\": \"{}\"}}}}",
+            "x".repeat(3 * 1024 * 1024)
+        );
+        let too_large = send_raw(
+            self,
+            Method::POST,
+            "/api/v1/applications/apply",
+            &[("content-type", "application/json")],
+            huge.into_bytes(),
+        )
+        .await;
+        assert_eq!(too_large.status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(too_large.code(), "request_body_too_large");
 
-    let not_allowed = send_raw(
-        Target::Tcp(address),
-        Method::PUT,
-        "/api/v1/applications",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(not_allowed.status, StatusCode::METHOD_NOT_ALLOWED);
-    assert_eq!(not_allowed.code(), "method_not_allowed");
+        let missing = send_raw(self, Method::GET, "/api/v1/does-not-exist", &[], Vec::new()).await;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND);
+        assert_eq!(missing.code(), "endpoint_not_found");
 
-    let bad_cursor = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/applications?cursor=bogus",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(bad_cursor.status, StatusCode::BAD_REQUEST);
-    assert_eq!(bad_cursor.code(), "pagination_invalid");
+        let not_allowed =
+            send_raw(self, Method::PUT, "/api/v1/applications", &[], Vec::new()).await;
+        assert_eq!(not_allowed.status, StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(not_allowed.code(), "method_not_allowed");
 
-    let bad_limit = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/applications?limit=0",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(bad_limit.status, StatusCode::BAD_REQUEST);
+        let bad_cursor = send_raw(
+            self,
+            Method::GET,
+            "/api/v1/applications?cursor=bogus",
+            &[],
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(bad_cursor.status, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_cursor.code(), "pagination_invalid");
 
-    let oversized_page = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/applications?limit=101",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(oversized_page.status, StatusCode::BAD_REQUEST);
+        let bad_limit = send_raw(
+            self,
+            Method::GET,
+            "/api/v1/applications?limit=0",
+            &[],
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(bad_limit.status, StatusCode::BAD_REQUEST);
 
-    let malformed = send_raw(
-        Target::Tcp(address),
-        Method::POST,
-        "/api/v1/applications/plan",
-        &[("content-type", "application/json")],
-        b"{\"manifest\": {\"broken\"".to_vec(),
-    )
-    .await;
-    assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
-    assert_eq!(malformed.code(), "json_malformed");
+        let oversized_page = send_raw(
+            self,
+            Method::GET,
+            "/api/v1/applications?limit=101",
+            &[],
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(oversized_page.status, StatusCode::BAD_REQUEST);
 
-    let paired = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/applications/doesnotexist1",
-        &[],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(paired.status, StatusCode::NOT_FOUND);
-    let header_id = paired
-        .headers
-        .get("x-request-id")
-        .and_then(|value| value.to_str().ok())
-        .expect("request id header");
-    assert_eq!(paired.request_id(), Some(header_id));
+        let malformed = send_raw(
+            self,
+            Method::POST,
+            "/api/v1/applications/plan",
+            &[("content-type", "application/json")],
+            b"{\"manifest\": {\"broken\"".to_vec(),
+        )
+        .await;
+        assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
+        assert_eq!(malformed.code(), "json_malformed");
 
-    server.abort();
+        let paired = send_raw(
+            self,
+            Method::GET,
+            "/api/v1/applications/doesnotexist1",
+            &[],
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(paired.status, StatusCode::NOT_FOUND);
+        let header_id = paired
+            .headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("request id header");
+        assert_eq!(paired.request_id(), Some(header_id));
+    }
 }
 
 #[tokio::test]
