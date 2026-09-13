@@ -78,7 +78,7 @@ impl<D: DockerApi> Controller<D> {
                                             let observed=self.docker.observe(&health_id).await.map_err(super::OperationError::from)?;
                                             self.store.record_health(&health_operation,&observed).await.map_err(super::OperationError::from)
                                         }.await;
-                                        (health_id,result)
+                                        (health_id,health_operation,application.generation,result)
                                     }.instrument(span));
                                 }
 
@@ -98,9 +98,9 @@ impl<D: DockerApi> Controller<D> {
                         Err(error)=>tracing::error!(%error,"application discovery failed"),
                     }
                 }
-                Some((id,result))=health_jobs.next(), if !health_jobs.is_empty()=> {
+                Some((id,operation_id,generation,result))=health_jobs.next(), if !health_jobs.is_empty()=> {
                     health_active.remove(&id);
-                    if let Err(error)=result { tracing::warn!(application_id=%id,%error,"health reporting failed"); }
+                    if let Err(error)=result { tracing::warn!(application_id=%id,%operation_id,generation,%error,"health reporting failed"); }
                 }
                 Some((id,result))=jobs.next(), if !jobs.is_empty()=> {
                     active.remove(&id);
