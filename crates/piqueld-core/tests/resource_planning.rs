@@ -25,8 +25,13 @@ fn resolutions() -> ResolutionSet {
         sources: [(
             piqueld_core::ServiceName::parse("web").unwrap(),
             ResolvedSource::Image {
-                requested: "ghcr.io/example/notes:1.4.0".into(),
-                digest_reference: format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
+                requested: piqueld_core::ImageReference::parse("ghcr.io/example/notes:1.4.0")
+                    .unwrap(),
+                digest_reference: piqueld_core::RepositoryDigest::parse(format!(
+                    "ghcr.io/example/notes@sha256:{}",
+                    "a".repeat(64)
+                ))
+                .unwrap(),
             },
         )]
         .into_iter()
@@ -59,7 +64,7 @@ fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedAp
             .iter()
             .map(|service| ObservedService {
                 name: service.name.to_string(),
-                image: service.image.clone(),
+                image: service.image.to_string(),
                 replicas: service.replicas,
                 environment: service.environment.clone(),
                 command: service.command.clone(),
@@ -96,7 +101,7 @@ fn image_resolution_is_the_only_pending_compilation_input() {
     );
     let desired = compile_application(&app, instance(), &resolutions()).unwrap();
     assert_eq!(
-        desired.services[0].image,
+        desired.services[0].image.as_str(),
         format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64))
     );
     assert!(preview_resolution(&app, &resolutions()).is_empty());
@@ -302,7 +307,8 @@ fn desired_identity_matrices_reject_non_canonical_resources() {
         ))
         .unwrap(),
         source: resolved,
-        image: format!("ghcr.io/example/notes@{}", digest()),
+        image: piqueld_core::ImmutableImage::parse(format!("ghcr.io/example/notes@{}", digest()))
+            .unwrap(),
         replicas: 1,
         environment: BTreeMap::default(),
         command: Vec::new(),

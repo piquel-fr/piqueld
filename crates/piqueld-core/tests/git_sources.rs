@@ -73,7 +73,7 @@ fn git_resolution_retains_commit_and_local_image_and_rejects_mismatched_inputs()
     );
     let instance = InstanceId::parse("test").unwrap();
     let resolved = compile_application(&app, instance.clone(), &resolutions).unwrap();
-    assert_eq!(resolved.services[0].image, image_id.as_str());
+    assert_eq!(resolved.services[0].image.as_str(), image_id.as_str());
     assert_eq!(resolved.reusable_resolutions(&app), resolutions);
     let mut changed = app.to_manifest();
     let Source::Git { repository, .. } = &mut changed.spec.services[0].source else {

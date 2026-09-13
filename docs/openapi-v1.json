@@ -876,8 +876,8 @@
             ]
           },
           "image": {
-            "description": "Digest-pinned image reference.",
-            "type": "string"
+            "$ref": "#/components/schemas/ImmutableImage",
+            "description": "Digest-pinned image reference."
           },
           "labels": {
             "additionalProperties": {
@@ -2228,6 +2228,14 @@
         ],
         "type": "object"
       },
+      "ImageReference": {
+        "description": "A syntactically valid requested container image reference.",
+        "type": "string"
+      },
+      "ImmutableImage": {
+        "description": "An immutable runtime image: a repository digest or a local SHA-256 image ID.\n\n```compile_fail\nuse piqueld_core::{ImageReference, ImmutableImage};\nlet runtime: ImmutableImage = ImageReference::parse(\"alpine:latest\").unwrap();\n```",
+        "type": "string"
+      },
       "LogRecord": {
         "description": "One line of workload output with replica identity.",
         "properties": {
@@ -2770,6 +2778,10 @@
         ],
         "type": "object"
       },
+      "RepositoryDigest": {
+        "description": "A repository reference pinned to an explicit SHA-256 digest.",
+        "type": "string"
+      },
       "RepositoryManifest": {
         "additionalProperties": false,
         "description": "Independently selects the manifest used by a manual deployment.",
@@ -2796,12 +2808,12 @@
             "description": "A requested image resolved to an immutable repository digest.",
             "properties": {
               "digest_reference": {
-                "description": "The immutable image reference used at runtime.",
-                "type": "string"
+                "$ref": "#/components/schemas/RepositoryDigest",
+                "description": "The immutable image reference used at runtime."
               },
               "requested": {
-                "description": "The image reference requested by the user.",
-                "type": "string"
+                "$ref": "#/components/schemas/ImageReference",
+                "description": "The image reference requested by the user."
               },
               "type": {
                 "enum": [

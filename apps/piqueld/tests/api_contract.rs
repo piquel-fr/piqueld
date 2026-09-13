@@ -71,10 +71,11 @@ impl RuntimeBoundary for FakeRuntime {
                     .map_or(image.as_str(), |value| value.0);
                 (
                     service.name.clone(),
-                    ResolvedSource::Image {
-                        requested: image.clone(),
-                        digest_reference: format!("{repository}@sha256:{}", "a".repeat(64)),
-                    },
+                    ResolvedSource::parse_image(
+                        image.clone(),
+                        format!("{repository}@sha256:{}", "a".repeat(64)),
+                    )
+                    .unwrap(),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -1273,7 +1274,9 @@ async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
     piqueld::prepare_data_dir(data_dir.strip_prefix(&cwd).expect("fixture is below cwd"))
         .await
         .expect("data dir prepares");
-    let socket_path = data_dir.join("contract.sock");
+    // Keep the socket path short enough for Unix even in deeply nested worktrees.
+    let socket_dir = tempfile::tempdir().expect("socket directory");
+    let socket_path = socket_dir.path().join("contract.sock");
     let listener = tokio::net::UnixListener::bind(&socket_path).expect("unix binds");
     let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
     let client = Client::unix(&socket_path);
