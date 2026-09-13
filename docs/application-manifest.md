@@ -170,3 +170,15 @@ Connection settings alone remain editable through apply so an incorrect path
 can be repaired. Manifest connection settings do not change the runtime spec
 hash. Source builds, deployment, and rollback retain the behavior described above.
 Automatic synchronization and webhooks are not implemented.
+
+Services can reference application-scoped secrets as files:
+
+```toml
+[[spec.services.secrets]]
+name = "database-password"
+target = "/run/secrets/database-password"
+```
+
+References contain names and paths, never values. A service supports up to 64
+secret mounts, with unique normalized paths under `/run/secrets`. Values are set
+separately, and must exist when effective deployment inputs are prepared.

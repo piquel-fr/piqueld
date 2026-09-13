@@ -30,6 +30,7 @@ mod events;
 mod logs;
 mod openapi;
 mod operations;
+mod secrets;
 mod system;
 mod ui;
 
@@ -102,6 +103,25 @@ impl From<StoreError> for ApiError {
                 Self::new(status, code, "The field edit could not be applied")
                     .details(json!({"reason": error.to_string()}))
             }
+            StoreError::SecretVersionConflict { expected, actual } => Self::new(
+                StatusCode::CONFLICT,
+                "secret_generation_conflict",
+                "Secret changed since inspection; read its metadata and retry",
+            )
+            .details(json!({"expected_generation": expected, "actual_generation": actual})),
+            StoreError::SecretSource(error) => {
+                tracing::error!(?error, "secret storage failed");
+                Self::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "secret_storage_unavailable",
+                    "Secret storage is unavailable",
+                )
+            }
+            StoreError::SecretReferenced => Self::new(
+                StatusCode::CONFLICT,
+                "secret_referenced",
+                "Secret is still referenced by application configuration or a deployment",
+            ),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",
@@ -359,6 +379,8 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(builds::list))
         .routes(routes!(builds::logs))
         .routes(routes!(operations::get))
+        .routes(routes!(secrets::list))
+        .routes(routes!(secrets::put, secrets::delete))
 }
 
 async fn bind_error_request_id(request: Request, next: Next) -> Response {

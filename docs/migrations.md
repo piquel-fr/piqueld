@@ -53,3 +53,8 @@ Migration 0004 adds executor-independent build attempts and bounded output chunk
 Build metadata is owned by the application rather than an operation, so pruning
 operation history cannot erase build history. Interrupted running records are
 recovered at coordinator startup; output retention leaves metadata intact.
+
+The application-secrets migration adds logical metadata, encrypted versions and
+per-deployment pins. Empty pin sets are recorded too, so retries cannot silently
+pick up subsequently added values. Secret value changes do not update application
+configuration or request deployments.

@@ -27,6 +27,7 @@ fn resolved(
     instance_id: &str,
 ) -> piqueld_core::resource::ResolvedApplication {
     let resolutions = ResolutionSet {
+        secret_names: std::collections::BTreeMap::default(),
         sources: [(
             piqueld_core::ServiceName::parse("web").unwrap(),
             ResolvedSource::parse_image(

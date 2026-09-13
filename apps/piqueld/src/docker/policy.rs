@@ -79,7 +79,17 @@ impl ServiceRuntimePolicy {
                     && dns.search.as_ref().is_none_or(Vec::is_empty)
                     && dns.options.as_ref().is_none_or(Vec::is_empty)
             })
-            && container.secrets.as_ref().is_none_or(Vec::is_empty)
+            && container.secrets.as_ref().is_none_or(|items| {
+                items.iter().all(|s| {
+                    s.secret_id.is_some()
+                        && s.secret_name.is_some()
+                        && s.file.as_ref().is_some_and(|f| {
+                            f.uid.as_deref() == Some("0")
+                                && f.gid.as_deref() == Some("0")
+                                && f.mode == Some(0o444)
+                        })
+                })
+            })
             && container.configs.as_ref().is_none_or(Vec::is_empty)
             && container.oom_score_adj.is_none_or(|value| value == 0)
             && container.isolation.is_none_or(|value| {
@@ -282,6 +292,7 @@ mod tests {
     fn default_runtime_echo_back_is_not_drift() {
         let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
         let desired = DesiredService {
+            secrets: Vec::new(),
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
             name: piqueld_core::DockerServiceName::parse("app-policy-web").unwrap(),
             source: ResolvedSource::Image {
@@ -357,6 +368,7 @@ mod tests {
     fn policy_verifies_exactly_the_authored_fields() {
         let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
         let desired = DesiredService {
+            secrets: Vec::new(),
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
             name: piqueld_core::DockerServiceName::parse("app-policy-web").unwrap(),
             source: ResolvedSource::Image {
