@@ -707,6 +707,26 @@
         ],
         "type": "string"
       },
+      "DependencyStatus": {
+        "description": "One diagnostic dependency probe, independent of application health.",
+        "properties": {
+          "message": {
+            "description": "Explanation when the probe fails.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ready": {
+            "description": "Whether this dependency is usable.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ready"
+        ],
+        "type": "object"
+      },
       "DeploymentView": {
         "description": "Durable deployment snapshot and execution summary.",
         "properties": {
@@ -1784,6 +1804,43 @@
         ],
         "type": "object"
       },
+      "Envelope_ReadinessStatus": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Deployment prerequisites. Configuration APIs remain available when false.",
+            "properties": {
+              "database": {
+                "$ref": "#/components/schemas/DependencyStatus",
+                "description": "SQLite can execute a read query."
+              },
+              "docker": {
+                "$ref": "#/components/schemas/DependencyStatus",
+                "description": "Docker answers its ping endpoint."
+              },
+              "ready": {
+                "description": "All deployment dependencies are ready.",
+                "type": "boolean"
+              },
+              "swarm": {
+                "$ref": "#/components/schemas/DependencyStatus",
+                "description": "Docker is a compatible single-node Swarm manager."
+              }
+            },
+            "required": [
+              "ready",
+              "database",
+              "docker",
+              "swarm"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_RenamedApplication": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -2598,6 +2655,34 @@
           "identical",
           "changes",
           "plan"
+        ],
+        "type": "object"
+      },
+      "ReadinessStatus": {
+        "description": "Deployment prerequisites. Configuration APIs remain available when false.",
+        "properties": {
+          "database": {
+            "$ref": "#/components/schemas/DependencyStatus",
+            "description": "SQLite can execute a read query."
+          },
+          "docker": {
+            "$ref": "#/components/schemas/DependencyStatus",
+            "description": "Docker answers its ping endpoint."
+          },
+          "ready": {
+            "description": "All deployment dependencies are ready.",
+            "type": "boolean"
+          },
+          "swarm": {
+            "$ref": "#/components/schemas/DependencyStatus",
+            "description": "Docker is a compatible single-node Swarm manager."
+          }
+        },
+        "required": [
+          "ready",
+          "database",
+          "docker",
+          "swarm"
         ],
         "type": "object"
       },
@@ -4506,6 +4591,33 @@
               }
             },
             "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/system/readiness": {
+      "get": {
+        "operationId": "systemReadiness",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_ReadinessStatus"
+                }
+              }
+            },
+            "description": "Deployment dependencies ready"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_ReadinessStatus"
+                }
+              }
+            },
+            "description": "Deployment dependencies unavailable"
           }
         }
       }

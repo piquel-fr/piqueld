@@ -202,6 +202,17 @@ pub struct Store {
 }
 
 impl Store {
+    /// Checks whether the database can serve a read, without changing state.
+    /// # Errors
+    /// Returns the underlying database error when the probe fails.
+    pub async fn probe(&self) -> Result<(), StoreError> {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::database)?;
+        Ok(())
+    }
+
     /// Opens a local `SQLite` database, applies forward migrations, and creates or loads its instance ID.
     ///
     /// # Errors

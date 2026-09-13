@@ -44,3 +44,30 @@ pub(super) async fn configuration(
         )
     })?))
 }
+
+#[utoipa::path(get,path="/api/v1/system/readiness",operation_id="systemReadiness",
+ responses((status=200,description="Deployment dependencies ready",body=Envelope<piqueld_core::api::ReadinessStatus>),
+ (status=503,description="Deployment dependencies unavailable",body=Envelope<piqueld_core::api::ReadinessStatus>)))]
+pub(super) async fn readiness(State(state): State<ApiState>) -> impl IntoResponse {
+    use piqueld_core::api::{DependencyStatus, ReadinessStatus};
+    let (database, runtime) = tokio::join!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), state.store.probe()),
+        tokio::time::timeout(std::time::Duration::from_secs(5), state.runtime.readiness())
+    );
+    let database = database.is_ok_and(|r| r.is_ok());
+    let (docker, swarm) = runtime.unwrap_or((false, false));
+    let status = ReadinessStatus {
+        ready: database && docker && swarm,
+        database: DependencyStatus::new(database, "Database is unavailable or timed out"),
+        docker: DependencyStatus::new(docker, "Docker Engine is unavailable or timed out"),
+        swarm: DependencyStatus::new(swarm, "A compatible single-node Swarm manager is required"),
+    };
+    (
+        if status.ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        axum::Json(Envelope { data: status }),
+    )
+}

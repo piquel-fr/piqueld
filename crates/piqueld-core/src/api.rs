@@ -302,3 +302,34 @@ pub struct LogRecord {
     /// Text with terminal control sequences removed.
     pub message: String,
 }
+
+/// One diagnostic dependency probe, independent of application health.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct DependencyStatus {
+    /// Whether this dependency is usable.
+    pub ready: bool,
+    /// Explanation when the probe fails.
+    pub message: Option<String>,
+}
+impl DependencyStatus {
+    /// Creates a dependency verdict with a safe failure explanation.
+    #[must_use]
+    pub fn new(ready: bool, failure: &str) -> Self {
+        Self {
+            ready,
+            message: (!ready).then(|| failure.to_owned()),
+        }
+    }
+}
+/// Deployment prerequisites. Configuration APIs remain available when false.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct ReadinessStatus {
+    /// All deployment dependencies are ready.
+    pub ready: bool,
+    /// SQLite can execute a read query.
+    pub database: DependencyStatus,
+    /// Docker answers its ping endpoint.
+    pub docker: DependencyStatus,
+    /// Docker is a compatible single-node Swarm manager.
+    pub swarm: DependencyStatus,
+}

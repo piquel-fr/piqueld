@@ -45,6 +45,11 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
         Err(DockerError::Unavailable("application logs unavailable").into())
     }
 
+    /// Returns separate Engine and Swarm probe results. Unknown adapters fail closed.
+    async fn readiness(&self) -> (bool, bool) {
+        (false, false)
+    }
+
     /// Wakes the reconciler after a mutation requests an immediate scan.
     fn trigger_reconciliation(&self) {}
     /// Resolves all mutable inputs into a complete immutable target.

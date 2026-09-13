@@ -158,3 +158,11 @@ logical service name; `tail` defaults to 200 (1–1000) and `since_seconds` to 3
 Snapshots are capped at 1 MiB of collected text and 256 tasks, with `truncated`
 indicating a partial result. Docker retains the source logs; removed containers
 have no available history. No output is stored by piqueld.
+
+`GET /api/v1/system/readiness` reports `ready` plus separate `database`, `docker`,
+and `swarm` verdicts (each with `ready` and an optional safe `message`). HTTP 200
+means deployment dependencies are available; HTTP 503 carries the same structured
+envelope when they are not. Probes have bounded deadlines and do not initialize
+Swarm or repair resources. Docker being unavailable does not block configuration
+saves or history reads. `/health` remains a process-liveness endpoint. No metrics
+or external registry/ingress checks are introduced.

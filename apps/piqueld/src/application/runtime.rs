@@ -76,6 +76,17 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         .map_err(BoundaryError::from)
     }
 
+    async fn readiness(&self) -> (bool, bool) {
+        let docker = tokio::time::timeout(Duration::from_secs(2), self.docker.ping())
+            .await
+            .is_ok_and(|r| r.is_ok());
+        let swarm = docker
+            && tokio::time::timeout(Duration::from_secs(3), self.docker.ensure_swarm(false))
+                .await
+                .is_ok_and(|r| r.is_ok());
+        (docker, swarm)
+    }
+
     fn trigger_reconciliation(&self) {
         self.wake.notify_one();
     }
