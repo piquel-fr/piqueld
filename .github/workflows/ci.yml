@@ -17,10 +17,8 @@
 # `check` is deliberately not a separate job: `clippy --all-targets
 # --all-features` compiles everything it would and adds lints on top.
 #
-# Nix package builds are deliberately not run: they duplicate what the Cargo
-# jobs already prove and take far longer without a shared binary cache. The
-# Nix job instead proves full flake evaluation plus the two cheap sandboxed
-# flake checks.
+# Nix validates package builds and their sandboxed tests on both supported
+# native architectures. Each architecture restores its own Nix store cache.
 #
 # Speed comes from Swatinem/rust-cache in every compiling job (keyed per job
 # against Cargo.lock), prebuilt tool downloads instead of `cargo install`,
@@ -213,13 +211,31 @@ jobs:
             config/piqueld.example.toml
 
   nix:
-    name: nix
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 25
+    name: nix (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - system: aarch64-linux
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
+        with:
+          tool: just
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ matrix.system }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'flake.nix') }}-${{ github.sha }}
+          restore-prefixes-first-match: |
+            nix-${{ matrix.system }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'flake.nix') }}-
+            nix-${{ matrix.system }}-
+          gc-max-store-size-linux: 4294967296
       - name: Evaluate every flake output
         run: nix flake show --all-systems
-      - name: Build the sandboxed flake checks
-        run: nix build -L ".#checks.x86_64-linux.formatting" ".#checks.x86_64-linux.dependency-boundary"
+      - name: Validate all native packages and flake checks
+        run: just nix-check

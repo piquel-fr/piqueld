@@ -171,6 +171,7 @@
                 nativeBuildInputs = [
                   pkgs.cargo
                   pkgs.rustfmt
+                  pkgs.nixfmt
                 ];
                 src = pkgs.lib.cleanSource self;
               }
@@ -179,6 +180,7 @@
                 chmod -R u+w source
                 cd source
                 cargo fmt --check
+                nixfmt --check flake.nix
                 touch "$out"
               '';
           # cargo tree must resolve the crates.io dependency graph, so the
