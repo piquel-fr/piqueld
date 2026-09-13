@@ -162,7 +162,8 @@ impl GitRepository {
         }
         if self.branch.is_empty()
             || self.branch.len() > 255
-            || self.branch.starts_with(['-', '.'])
+            || self.branch == "@"
+            || self.branch.len() > 255
             || self.branch.ends_with(['/', '.'])
             || self.branch.contains("..")
             || self.branch.contains("@{")
