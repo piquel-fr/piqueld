@@ -8,13 +8,13 @@ the engine can run a single-node Swarm.
 
 ```console
 just build
-just daemon --config config/piqueld.example.toml
+just daemon --config examples/piqueld.toml
 ```
 
-The example keeps its state under a user-owned runtime directory,
-`/run/user/<uid>/piqueld`, so it does not require root-owned `/run` or
-`/var/lib` directories; before starting the daemon, replace `1000` with your
-own UID (`id -u`) in `config/piqueld.example.toml` and the socket paths below. The daemon's production default is
+The example keeps its state in `/tmp/piqueld-dev` and its Unix API socket at
+`/tmp/piqueld-dev/piqueld.sock`. The daemon creates the data directory with
+mode `0700`; an existing directory must be private and owned by your user.
+The daemon's production default is
 `/etc/piqueld/config.toml`; use `--config` when running as a non-root
 developer.
 
@@ -59,7 +59,7 @@ When finished, delete the application and note that its named volumes are
 retained:
 
 ```console
-just run --socket /run/user/1000/piqueld/piqueld.sock delete notes --yes
+just run --socket /tmp/piqueld-dev/piqueld.sock delete notes --yes
 ```
 
 The retained named volumes are deliberate so deleting an application does not

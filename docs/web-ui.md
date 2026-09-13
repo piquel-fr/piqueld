@@ -43,7 +43,7 @@ just dev
 
 This watches the daemon and dashboard sources, builds the embedded bundle
 with Tailwind and Trunk, and runs the daemon using
-`config/piqueld.example.toml`. Open `http://127.0.0.1:7845/dashboard/` and
+`examples/piqueld.toml`. Open `http://127.0.0.1:7845/dashboard/` and
 refresh the browser after a rebuild. Stopping the command allows the daemon
 its graceful shutdown period before terminating any remaining processes.
 

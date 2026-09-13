@@ -467,7 +467,11 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
             let name = service.name.clone();
             let image = match &service.source {
                 Source::Image { image } => image.clone(),
-                Source::Git { repository, .. } => format!("{} ({})", repository.url, repository.branch),
+                Source::Git { repository, .. } => format!(
+                    "{} ({})",
+                    repository.url,
+                    repository.commit.as_deref().unwrap_or(&repository.branch)
+                ),
             };
             let replicas = service.replicas;
             view! {

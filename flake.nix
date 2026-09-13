@@ -52,6 +52,7 @@
                 pkgs.pkg-config
                 pkgs.rustPlatform.bindgenHook
               ]
+              ++ lib.optional (builtins.elem "piqueld" binaries) pkgs.makeWrapper
               ++ lib.optionals withUi [
                 pkgs.binaryen
                 pkgs.tailwindcss_4
@@ -87,9 +88,12 @@
                     binary: ''install -Dm755 "target/${rustTarget}/release/${binary}" "$out/bin/${binary}"''
                   ) binaries
                 )}
-                install -Dm644 config/piqueld.example.toml \
+                install -Dm644 examples/piqueld.toml \
                   "$out/share/piqueld/piqueld.example.toml"
                 runHook postInstall
+              '';
+              postInstall = lib.optionalString (builtins.elem "piqueld" binaries) ''
+                wrapProgram "$out/bin/piqueld" --prefix PATH : ${lib.makeBinPath [ pkgs.git ]}
               '';
               doCheck = true;
             };

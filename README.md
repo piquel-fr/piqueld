@@ -79,6 +79,6 @@ The reproducible Nix package and checks can be evaluated explicitly with
 The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
 another host configuration. Configuration only covers local paths, listeners,
 SQLite, Docker, and reconciliation timing. The complete non-root development
-example is [`config/piqueld.example.toml`](config/piqueld.example.toml).
+example is [`examples/piqueld.toml`](examples/piqueld.toml).
 See [`docs/web-ui.md`](docs/web-ui.md) for development and release dashboard
 asset commands.

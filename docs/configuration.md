@@ -11,9 +11,9 @@ An explicitly supplied file must exist and pass validation; a missing or
 invalid file is an error with its path included in the diagnostic. If the
 production default file is absent, the daemon uses its validated built-in
 defaults and explains how to select the repository's complete development
-example with `--config config/piqueld.example.toml`. The development example
-keeps its state under a user-owned runtime directory such as
-`/run/user/<uid>/piqueld`; do not use a shared fixed path under `/tmp`.
+example with `--config examples/piqueld.toml`. The development example
+keeps its state in `/tmp/piqueld-dev`, with its Unix API socket at
+`/tmp/piqueld-dev/piqueld.sock`.
 
 The daemon keeps all state in one private data directory: the Unix API socket
 (`piqueld.sock`), the embedded database (`piqueld.db`), and future user data.
