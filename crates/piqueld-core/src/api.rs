@@ -340,3 +340,61 @@ pub struct ReadinessStatus {
     /// Docker is a compatible single-node Swarm manager.
     pub swarm: DependencyStatus,
 }
+
+/// Durable source-preparation attempt, independent of the build executor.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct BuildRecord {
+    /// Monotonic build identifier.
+    pub id: i64,
+    /// Owning application ID.
+    pub application_id: String,
+    /// Source operation ID, retained even after operation pruning.
+    pub operation_id: String,
+    /// Logical service name.
+    pub service: String,
+    /// Requested build source.
+    pub source: crate::manifest::Source,
+    /// Current attempt outcome.
+    pub state: BuildState,
+    /// Start time in Unix milliseconds.
+    pub started_at_ms: i64,
+    /// Completion time, absent while running.
+    pub finished_at_ms: Option<i64>,
+    /// Resolved Git commit, when checkout completed.
+    pub commit: Option<String>,
+    /// Built image identifier, when successful.
+    pub image_id: Option<String>,
+    /// Number of currently retained output bytes.
+    pub log_bytes: i64,
+    /// Output exceeded the configured per-build cap.
+    pub log_truncated: bool,
+    /// Output was removed by retention.
+    pub log_expired: bool,
+}
+/// Outcome of a source-preparation attempt.
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildState {
+    /// Source preparation is running.
+    Running,
+    /// An image was produced successfully.
+    Succeeded,
+    /// Checkout or build execution failed.
+    Failed,
+    /// Execution was cancelled or interrupted by daemon shutdown.
+    Interrupted,
+}
+/// Bounded byte-offset page of build output.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct BuildLogPage {
+    /// Lossy UTF-8 decoding of this output page.
+    pub text: String,
+    /// Byte offset of the next page, when more output exists.
+    pub next_offset: Option<i64>,
+    /// The build exceeded its total output cap.
+    pub truncated: bool,
+    /// Retention removed the output.
+    pub expired: bool,
+}

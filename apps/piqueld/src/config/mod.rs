@@ -20,6 +20,8 @@ pub struct DaemonConfig {
     pub reconciliation: ReconciliationConfig,
     /// Retention limits for terminal operation history.
     pub retention: RetentionConfig,
+    /// Durable build-output bounds.
+    pub build_history: BuildHistoryConfig,
 }
 
 impl DaemonConfig {
@@ -91,7 +93,32 @@ impl DaemonConfig {
                 "reconciliation timeouts must be 1..=86400 seconds".into(),
             ));
         }
+        if !(1..=64 * 1024 * 1024).contains(&self.build_history.log_max_bytes)
+            || !(1..=3650).contains(&self.build_history.log_retention_days)
+        {
+            return Err(ConfigError::Invalid(
+                "build logs require 1..=67108864 bytes and 1..=3650 retention days".into(),
+            ));
+        }
         Ok(())
+    }
+}
+
+/// Persistent build output policy; metadata remains until application deletion.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BuildHistoryConfig {
+    /// Maximum persisted bytes per build.
+    pub log_max_bytes: u32,
+    /// Days to retain output after completion.
+    pub log_retention_days: u32,
+}
+impl Default for BuildHistoryConfig {
+    fn default() -> Self {
+        Self {
+            log_max_bytes: 4 * 1024 * 1024,
+            log_retention_days: 30,
+        }
     }
 }
 
@@ -318,6 +345,14 @@ impl DaemonConfig {
                         self.retention.finished_operation_days.to_string(),
                     ),
                     ("Events (days)", self.retention.event_days.to_string()),
+                    (
+                        "Build output (days)",
+                        self.build_history.log_retention_days.to_string(),
+                    ),
+                    (
+                        "Build output limit (bytes)",
+                        self.build_history.log_max_bytes.to_string(),
+                    ),
                 ],
             ),
         ]

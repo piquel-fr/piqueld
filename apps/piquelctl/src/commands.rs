@@ -15,7 +15,11 @@ use piqueld_client::{
     OperationState, Page, Source,
 };
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, io::Write as _, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    io::{self, Write as _},
+    path::PathBuf,
+};
 use tokio::{signal, time};
 
 use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
@@ -42,6 +46,11 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
             )
             .await
         }
+        Command::Builds {
+            application,
+            cursor,
+        } => builds(cli, &client, application.as_deref(), cursor.as_deref()).await,
+        Command::BuildLogs { id, offset } => build_logs(cli, &client, *id, *offset).await,
         Command::Plan(args) => plan_command(cli, &client, args).await,
         Command::Apply(args) => apply(cli, &client, args).await,
         Command::Delete(args) => delete(cli, &client, args).await,
@@ -86,6 +95,57 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
             Ok(())
         }
     }
+}
+
+async fn builds(
+    cli: &Cli,
+    client: &Client,
+    application: Option<&str>,
+    cursor: Option<&str>,
+) -> Result<()> {
+    let page = client.builds(application, cursor).await?;
+    if cli.json {
+        return emit_json(&page);
+    }
+    for build in page.items {
+        writeln!(
+            io::stdout().lock(),
+            "{}  {}  {}  {:?}  {}",
+            build.id,
+            build.application_id,
+            build.service,
+            build.state,
+            build.started_at_ms
+        )?;
+    }
+    if let Some(cursor) = page.next_cursor {
+        writeln!(io::stdout().lock(), "next cursor: {cursor}")?;
+    }
+    Ok(())
+}
+
+async fn build_logs(cli: &Cli, client: &Client, id: i64, offset: i64) -> Result<()> {
+    let page = client.build_logs(id, offset).await?;
+    if cli.json {
+        return emit_json(&page);
+    }
+    // Persist original output, but never execute terminal controls when displaying it.
+    let text = page
+        .text
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect::<String>();
+    write!(io::stdout().lock(), "{text}")?;
+    if page.expired {
+        eprintln!("Build output has expired.");
+    }
+    if page.truncated {
+        eprintln!("Build output was truncated at the configured byte limit.");
+    }
+    if let Some(offset) = page.next_offset {
+        eprintln!("Continue with --offset {offset}");
+    }
+    Ok(())
 }
 
 fn build_client(cli: &Cli) -> Result<Client> {

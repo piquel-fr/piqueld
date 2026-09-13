@@ -22,3 +22,8 @@ convergence_timeout_seconds = 120
 [retention]
 finished_operation_days = 10
 event_days = 30
+
+[build_history]
+# Metadata remains until application deletion; these limits apply only to output.
+log_max_bytes = 4194304
+log_retention_days = 30

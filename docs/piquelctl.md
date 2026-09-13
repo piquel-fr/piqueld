@@ -188,3 +188,7 @@ Precedence is explicit flags, then `PIQUELD_SOCKET` / `PIQUELD_URL` /
 override replaces the entire profile transport. Simultaneous environment socket
 and URL values are rejected unless an explicit transport overrides them.
 Authentication and credentials are not profile settings yet.
+
+`piquelctl builds [--application ID] [--cursor CURSOR]` lists one page of build
+attempts. `piquelctl build-logs ID [--offset BYTE_OFFSET]` reads one bounded output
+page and prints the next offset when available. Both support `--json`.

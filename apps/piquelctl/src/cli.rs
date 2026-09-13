@@ -64,6 +64,19 @@ pub(crate) enum Command {
         #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
         since_seconds: u32,
     },
+    /// List recent build attempts, newest first.
+    Builds {
+        #[arg(long)]
+        application: Option<String>,
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Read a bounded page of persisted build output.
+    BuildLogs {
+        id: i64,
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+    },
     /// Preview creation or replacement from a TOML manifest.
     Plan(ManifestArgs),
     /// Plan, confirm, and apply a TOML manifest.

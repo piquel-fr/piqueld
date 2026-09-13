@@ -383,6 +383,14 @@ impl DockerApi for BollardDocker {
         dockerfile: &std::path::Path,
         context: &std::path::Path,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
+        self.build_image_recorded(dockerfile, context, None).await
+    }
+    async fn build_image_recorded(
+        &self,
+        dockerfile: &std::path::Path,
+        context: &std::path::Path,
+        log: Option<&crate::build::BuildLog>,
+    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         use anyhow::Context;
         let result = async {
             if !dockerfile.is_file() || !context.is_dir() {
@@ -399,7 +407,8 @@ impl DockerApi for BollardDocker {
                 .arg("--iidfile")
                 .arg(&iidfile)
                 .arg(context);
-            crate::command::LoggedCommand::run(&mut command, "build Docker image").await?;
+            crate::command::LoggedCommand::run_recorded(&mut command, "build Docker image", log)
+                .await?;
             let id = tokio::fs::read_to_string(iidfile)
                 .await
                 .context("read built image ID")?;

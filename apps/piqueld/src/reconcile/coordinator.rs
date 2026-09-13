@@ -44,6 +44,7 @@ impl<D: DockerApi> Controller<D> {
                     async move {
                         if recover {
                             self.store.recover_interrupted().await?;
+                            self.store.recover_builds().await?;
                         }
                         if full {
                             self.prune_history(finished_operation_days, event_days)
@@ -90,7 +91,7 @@ impl<D: DockerApi> Controller<D> {
                                 let token=cancellation.child_token();
                                 active.insert(id.clone(),(operation_id,token.clone()));
                                 jobs.push(async move {
-                                    let result=self.scan_application(&application,&token).await;
+                                    let result=Box::pin(self.scan_application(&application,&token)).await;
                                     (id,result)
                                 });
                             }
@@ -144,7 +145,9 @@ impl<D: DockerApi> Controller<D> {
         let applications = self.discover(true).await?;
         let mut jobs = FuturesUnordered::new();
         for (application, _) in applications {
-            jobs.push(async move { self.scan_application(&application, cancellation).await });
+            jobs.push(
+                async move { Box::pin(self.scan_application(&application, cancellation)).await },
+            );
         }
         while let Some(result) = jobs.next().await {
             result?;
@@ -347,6 +350,7 @@ impl<D: DockerApi> Controller<D> {
 
     async fn prune_history(&self, operation_days: u64, event_days: u64) -> Result<(), StoreError> {
         self.store.prune_receipts().await?;
+        self.store.prune_build_logs().await?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

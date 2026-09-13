@@ -150,7 +150,6 @@ new manifest; reconcile retries the latest operation with its saved inputs.
 
 `GET /api/v1/applications/{id}/manifest` downloads saved configuration as `application/toml`, with an attachment filename and `Cache-Control: no-store`. It does not observe Docker or resolve sources.
 
-
 `GET /api/v1/applications/{id}/logs` reads Docker container output for services
 owned by this application and daemon instance. Optional `service` filters by
 logical service name; `tail` defaults to 200 (1–1000) and `since_seconds` to 3600
@@ -168,3 +167,15 @@ deadlines and do not initialize Swarm or repair resources. Docker being unavaila
 does not block configuration saves or history reads. `/health` remains a
 process-liveness endpoint. No metrics or external registry/ingress checks are
 introduced.
+
+`GET /api/v1/builds` lists attempts newest first, with optional `application_id`,
+`cursor`, and `limit` (1–100, default 50). Each executed Git-service preparation
+creates an independent record before checkout. Image pulls do not create records.
+Outcomes are running, succeeded, failed, or interrupted. Resolved commits and
+image IDs are recorded when available; retries create new attempts.
+
+`GET /api/v1/builds/{id}/logs?offset=0` reads at most 64 KiB of output. Follow
+`next_offset` for more. Output is decoded as lossy UTF-8; offsets count original
+bytes. Truncation and expiration are explicit. Output retains the configured
+prefix, defaults to 4 MiB per attempt and expires 30 days after completion.
+Metadata survives operation pruning and is deleted with its application.
