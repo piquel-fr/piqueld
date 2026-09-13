@@ -2086,3 +2086,78 @@ async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn routed_statuses_and_media_types_are_documented_in_openapi() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let document = serde_json::to_value(piqueld::api::openapi_document()).unwrap();
+    let cases = [
+        (Method::GET, "/system/status", 200),
+        (Method::GET, "/system/configuration", 503),
+        (Method::GET, "/applications", 200),
+        (Method::GET, "/events", 200),
+        (Method::GET, "/applications/{id}", 404),
+        (Method::GET, "/applications/{id}/detail", 404),
+        (Method::GET, "/applications/{id}/status", 404),
+        (Method::GET, "/applications/{id}/deployments", 404),
+        (Method::GET, "/operations/{id}", 404),
+        (Method::POST, "/applications/apply", 400),
+        (Method::POST, "/applications/plan", 400),
+    ];
+    for (method, suffix, status) in cases {
+        let path = format!("/api/v1{suffix}");
+        let response = send_raw(
+            Target::Tcp(address),
+            method.clone(),
+            &path.replace("{id}", "app-missing"),
+            &[("content-type", "application/json")],
+            if method == Method::POST {
+                b"{}".to_vec()
+            } else {
+                Vec::new()
+            },
+        )
+        .await;
+        assert_eq!(response.status.as_u16(), status, "{method} {path}");
+        response.assert_documented(&document, &method, &path);
+    }
+    server.abort();
+}
+
+impl RawResponse {
+    fn assert_documented(&self, document: &serde_json::Value, method: &Method, path: &str) {
+        let status = self.status.as_u16().to_string();
+        let operation = &document["paths"][path][method.as_str().to_lowercase()];
+        let response = &operation["responses"][&status];
+        assert!(
+            !response.is_null(),
+            "undocumented {method} {path} -> {status}"
+        );
+        let media_type = self.headers[http::header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        assert!(
+            !response["content"][media_type].is_null(),
+            "undocumented response media type for {method} {path}: {media_type}"
+        );
+        if self.status.is_client_error() || self.status.is_server_error() {
+            let error: piqueld_core::api::ErrorBody =
+                serde_json::from_value(self.body.clone()).unwrap();
+            assert!(!error.code.is_empty());
+            assert!(!error.message.is_empty());
+            let header_id = self
+                .headers
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok())
+                .expect("request ID header");
+            assert!(!header_id.is_empty());
+            assert_eq!(error.request_id, header_id);
+        }
+    }
+}
