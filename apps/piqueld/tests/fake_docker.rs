@@ -1618,6 +1618,18 @@ mod repository_deployments {
     use piqueld::store::StoreError;
     use piqueld_core::manifest::{ApplicationManifest, GitRepository, RepositoryManifest};
 
+    impl git_fixture::GitBuildFixture {
+        pub fn failing_source(&self) -> piqueld_core::Source {
+            let mut source = self.source.clone();
+            let piqueld_core::Source::Git { build, .. } = &mut source else {
+                unreachable!()
+            };
+            let piqueld_core::manifest::Build::Docker { dockerfile, .. } = build;
+            *dockerfile = "Failfile".into();
+            source
+        }
+    }
+
     struct RepositoryFixture {
         directory: tempfile::TempDir,
     }
@@ -1784,23 +1796,14 @@ mod repository_deployments {
         repository.commit();
         let invalid = RepositoryFixture::deploy(&harness, &first.application_id).await;
         assert_eq!(invalid.error_code.as_deref(), Some("manifest_invalid"));
+        let build = git_fixture::GitBuildFixture::new();
         let mut failing = initial.clone();
         failing.spec.manifest = None;
-        failing.spec.services[0].source = piqueld_core::Source::Git {
-            repository: GitRepository {
-                url: "build-fails".into(),
-                branch: "main".into(),
-                commit: None,
-            },
-            build: piqueld_core::manifest::Build::Docker {
-                dockerfile: "Dockerfile".into(),
-                context: ".".into(),
-            },
-        };
+        failing.spec.services[0].source = build.failing_source();
         repository.write("app.json", &failing);
         repository.commit();
         let failed = RepositoryFixture::deploy(&harness, &first.application_id).await;
-        assert_eq!(failed.state, OperationState::Failed);
+        assert_eq!(failed.error_code.as_deref(), Some("git_build_failed"));
         let after = harness.store.get(&first.application_id).await.unwrap();
         assert_eq!(before.application, after.application);
         assert_eq!(before.generation, after.generation);
@@ -1828,22 +1831,13 @@ mod repository_deployments {
             .await
             .unwrap();
         harness.finish(&first).await;
+        let build = git_fixture::GitBuildFixture::new();
         let mut candidate = initial.clone();
-        candidate.spec.services[0].source = piqueld_core::Source::Git {
-            repository: GitRepository {
-                url: "build-fails".into(),
-                branch: "main".into(),
-                commit: None,
-            },
-            build: piqueld_core::manifest::Build::Docker {
-                dockerfile: "Dockerfile".into(),
-                context: ".".into(),
-            },
-        };
+        candidate.spec.services[0].source = build.failing_source();
         repository.write("app.json", &candidate);
         repository.commit();
         let failed = RepositoryFixture::deploy(&harness, &first.application_id).await;
-        assert_eq!(failed.state, OperationState::Failed);
+        assert_eq!(failed.error_code.as_deref(), Some("git_build_failed"));
         repository.write("app.json", &initial);
         repository.commit();
         let reopened = Arc::new(SqliteStore::open(&harness.database_path).await.unwrap());
@@ -1874,12 +1868,19 @@ mod repository_deployments {
     async fn bootstrap_can_pin_manifest_revision_independently_from_git_build_revision() {
         let repository = RepositoryFixture::new();
         let harness = ControllerHarness::new().await;
+        let build_repository = RepositoryFixture::new();
+        std::fs::write(
+            build_repository.directory.path().join("Dockerfile"),
+            "FROM alpine:3.20\n",
+        )
+        .unwrap();
+        let build_commit = build_repository.commit();
         let mut fetched = repository.manifest("app.json");
         fetched.spec.services[0].source = piqueld_core::Source::Git {
             repository: GitRepository {
-                url: "build-fixture".into(),
-                branch: "release".into(),
-                commit: Some("c".repeat(40)),
+                url: build_repository.directory.path().display().to_string(),
+                branch: "main".into(),
+                commit: Some(build_commit.clone()),
             },
             build: piqueld_core::manifest::Build::Docker {
                 dockerfile: "Dockerfile".into(),
@@ -1910,7 +1911,7 @@ mod repository_deployments {
             .resolved
             .unwrap();
         assert!(
-            matches!(&resolved.services[0].source, ResolvedSource::Git { commit, .. } if commit == &"c".repeat(40))
+            matches!(&resolved.services[0].source, ResolvedSource::Git { commit, .. } if commit == &build_commit)
         );
     }
 }
