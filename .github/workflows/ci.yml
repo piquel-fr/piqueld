@@ -173,7 +173,7 @@ jobs:
 
   embedded-release:
     name: embedded-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -193,15 +193,24 @@ jobs:
       - run: just build-embedded
       - run: cargo build --release --package piquelctl --locked
       - run: test -x target/release/piqueld && test -x target/release/piquelctl
-      - name: Upload release binaries
+      - name: Package and verify portable archive
+        run: |
+          scripts/package-linux-release.sh "${GITHUB_SHA}"
+          docker run --rm --volume "$PWD/dist:/artifacts:ro" ubuntu:24.04 sh -eu -c '
+            cd /tmp
+            tar -xzf /artifacts/*.tar.gz
+            cd piqueld-*
+            ./bin/piqueld --version
+            ./bin/piquelctl --version
+          '
+      - name: Upload release archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: piqueld-binaries
+          name: piqueld-linux-x86_64
           if-no-files-found: error
           path: |
-            target/release/piqueld
-            target/release/piquelctl
-            config/piqueld.example.toml
+            dist/*.tar.gz
+            dist/*.sha256
 
   nix:
     name: nix
