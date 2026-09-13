@@ -101,6 +101,11 @@ impl From<StoreError> for ApiError {
                 "request_id_conflict",
                 "request ID was already used for different input",
             ),
+            StoreError::RepositoryManaged => Self::new(
+                StatusCode::CONFLICT,
+                "repository_managed",
+                "Edit runtime configuration in the repository manifest; only its connection settings can be changed directly",
+            ),
             StoreError::Busy => Self::new(
                 StatusCode::CONFLICT,
                 "application_busy",

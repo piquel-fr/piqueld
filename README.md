@@ -21,7 +21,7 @@ operations, attempt outcomes, and informational events remain in SQLite. Deletio
 completes only after services and networks are verified absent; volumes remain.
 
 The daemon exposes a polling HTTP API over loopback TCP and a Unix socket. The
-CLI and optional read-only dashboard share domain records and HTTP contracts.
+CLI and optional dashboard share domain records and HTTP contracts.
 See [module boundaries](docs/architecture/dependency-flow.md) for the code layout.
 
 A single configured `data_dir` is the only state location and holds the Unix
@@ -43,7 +43,7 @@ The supported manifest and runtime model are documented in:
 
 | Supported | Deferred until later releases |
 | --- | --- |
-| Prebuilt images, replicas, environment, command/args, health checks, resource limits, named volumes, and mounts | Git sources, builds, registry management, credentials, and secrets |
+| Prebuilt images, Git/Docker builds, repository-backed manifests, replicas, environment, command/args, health checks, resource limits, named volumes, and mounts | Automatic deployment, registry management, credentials, and secrets |
 | Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, and the essential `piquelctl` workflow | Published ports, routes, Traefik, logs, state transfer, authentication, and remote or multi-node operation |
 | Unix-socket and loopback-TCP API transports, plus a Leptos/WASM dashboard for saving configuration, deploying, and inspecting history | Secrets, streams, and the advanced web UI |
 
@@ -82,3 +82,7 @@ SQLite, Docker, and reconciliation timing. The complete non-root development
 example is [`examples/piqueld.toml`](examples/piqueld.toml).
 See [`docs/web-ui.md`](docs/web-ui.md) for development and release dashboard
 asset commands.
+
+Applications can also build Git sources locally or fetch their manifests from a
+repository on manual Deploy. These are independent features; see
+[the manifest reference](docs/application-manifest.md) for both configurations.

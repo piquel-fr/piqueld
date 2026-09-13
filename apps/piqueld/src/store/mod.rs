@@ -6,6 +6,7 @@ mod application;
 mod deployment;
 mod event;
 mod operation;
+mod repository;
 mod status;
 
 use piqueld_core::{ApplicationId, NormalizedApplication, resource::ResolvedApplication};
@@ -71,6 +72,9 @@ pub enum StoreError {
     /// Mutation cannot run during pending work or deletion.
     #[error("application is busy; wait for its current operation to finish")]
     Busy,
+    /// Runtime fields are managed by the repository manifest.
+    #[error("application configuration is managed by its repository manifest")]
+    RepositoryManaged,
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,

@@ -162,3 +162,4 @@ pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
 mod actions;
 mod controller;
 mod coordinator;
+mod deployment;

@@ -17,6 +17,11 @@ Request receipts are committed with acceptance and expire after 24 hours,
 independently of operation and event retention. Earlier prototype schemas, including those without the distinct `superseded`
 operation state, require a fresh database.
 
+`0003_deployment_inputs.sql` adds durable candidate manifests for manual Deploy.
+Candidates and fetched commit provenance remain separate from accepted intent
+until source preparation succeeds, and are removed with their operation history.
+Existing version-1 databases are upgraded while retaining instance identity.
+
 Startup reads `PRAGMA user_version`, rejects an unsupported newer schema, and
 applies missing embedded migrations transactionally.
 

@@ -36,7 +36,7 @@ Use `nix develop` for the Rust/WASM toolchain, Nextest, Cargo Watch, Trunk,
 wasm-bindgen, Binaryen, and Tailwind. Alternatively install those tools and
 add the WASM target with `rustup target add wasm32-unknown-unknown`.
 Docker must be accessible to your user and support a single-node Swarm.
-Replace the example configuration's UID with your own before starting:
+Start the development workflow:
 
 ```console
 just dev
@@ -112,3 +112,8 @@ Service source settings explicitly select a container image or Git with a
 Dockerfile build. Git settings include repository, branch, optional commit,
 Dockerfile path, and build context relative to the repository root. Saving
 scaling or other service settings preserves the selected source.
+
+Repository manifest settings select the repository, branch, optional commit, and
+exact manifest file. Deploy fetches that file before preparing service sources.
+While backing is enabled, edit runtime configuration in Git; connection settings
+remain editable here. Configuration saved during preparation is preserved.

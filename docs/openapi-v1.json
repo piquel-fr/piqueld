@@ -433,6 +433,18 @@
         "additionalProperties": false,
         "description": "User-provided application resource lists.",
         "properties": {
+          "manifest": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RepositoryManifest",
+                "description": "Optional repository that supplies this application's manifest on Deploy."
+              }
+            ]
+          },
           "services": {
             "default": [],
             "description": "Declared services.",
@@ -2550,6 +2562,25 @@
           "application_id",
           "name",
           "generation"
+        ],
+        "type": "object"
+      },
+      "RepositoryManifest": {
+        "additionalProperties": false,
+        "description": "Independently selects the manifest used by a manual deployment.",
+        "properties": {
+          "path": {
+            "description": "Exact TOML or JSON file path relative to the repository root.",
+            "type": "string"
+          },
+          "repository": {
+            "$ref": "#/components/schemas/GitRepository",
+            "description": "Repository and revision containing the manifest."
+          }
+        },
+        "required": [
+          "repository",
+          "path"
         ],
         "type": "object"
       },

@@ -6,6 +6,7 @@
 # and is never chmodded.
 
 [server]
+# Private development state; change this path to use your user runtime directory.
 data_dir = "/tmp/piqueld-dev"
 http_listen = "127.0.0.1:7845"
 

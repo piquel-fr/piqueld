@@ -137,3 +137,13 @@ The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
 Git builds. It requires the inspected generation unless forced and supersedes
 pending work. An identical idempotency-key replay returns the original acceptance.
 Use `piquelctl deploy NAME --yes` to request and wait for deployment.
+
+When `spec.manifest` is configured, Deploy first fetches the selected manifest.
+Its `refresh` operation records `fetching_manifest` progress and a `manifest_fetched`
+event with the commit hash. Generation changes only when a changed candidate
+passes preparation; initial acceptance returns the currently stored generation.
+Failures use `manifest_not_found`, `manifest_fetch_failed`, or `manifest_invalid`.
+Direct apply may repair manifest connection settings but rejects changes to
+repository-managed runtime fields with `409 repository_managed`.
+The legacy refresh endpoint resolves stored service sources without fetching a
+new manifest; reconcile retries the latest operation with its saved inputs.

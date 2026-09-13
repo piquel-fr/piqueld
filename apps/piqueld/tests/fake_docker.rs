@@ -1611,3 +1611,307 @@ async fn mixed_sources_report_the_failing_source() {
         assert_eq!(failure.error_code.as_deref(), Some(code));
     }
 }
+
+mod repository_deployments {
+    use super::*;
+    use piqueld::application::{ApplicationError, Mutation, MutationResponse};
+    use piqueld::store::StoreError;
+    use piqueld_core::manifest::{ApplicationManifest, GitRepository, RepositoryManifest};
+
+    impl git_fixture::GitBuildFixture {
+        pub fn failing_source(&self) -> piqueld_core::Source {
+            let mut source = self.source.clone();
+            let piqueld_core::Source::Git { build, .. } = &mut source else {
+                unreachable!()
+            };
+            let piqueld_core::manifest::Build::Docker { dockerfile, .. } = build;
+            *dockerfile = "Failfile".into();
+            source
+        }
+    }
+
+    struct RepositoryFixture {
+        directory: tempfile::TempDir,
+    }
+
+    impl RepositoryFixture {
+        fn new() -> Self {
+            let fixture = Self {
+                directory: tempfile::tempdir().unwrap(),
+            };
+            fixture.git(&["init", "--initial-branch=main"]);
+            fixture
+        }
+        fn git(&self, args: &[&str]) -> String {
+            let output = std::process::Command::new("git")
+                .current_dir(self.directory.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        }
+        fn manifest(&self, path: &str) -> ApplicationManifest {
+            let mut application = manifest();
+            application.spec.manifest = Some(RepositoryManifest {
+                repository: GitRepository {
+                    url: self.directory.path().display().to_string(),
+                    branch: "main".into(),
+                    commit: None,
+                },
+                path: path.into(),
+            });
+            application
+        }
+        fn write(&self, path: &str, manifest: &ApplicationManifest) {
+            std::fs::write(
+                self.directory.path().join(path),
+                serde_json::to_vec(manifest).unwrap(),
+            )
+            .unwrap();
+        }
+        fn commit(&self) -> String {
+            self.git(&["add", "--all"]);
+            self.git(&[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ]);
+            self.git(&["rev-parse", "HEAD"])
+        }
+        async fn deploy(harness: &ControllerHarness, id: &ApplicationId) -> Operation {
+            let MutationResponse::Operation(accepted) = harness
+                .applications()
+                .accept(Mutation::Deploy { id: id.clone() }, None, false, None)
+                .await
+                .unwrap()
+            else {
+                panic!("operation expected")
+            };
+            harness
+                .controller
+                .scan(&CancellationToken::new())
+                .await
+                .unwrap();
+            harness
+                .store
+                .operation(&accepted.operation_id)
+                .await
+                .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn deploy_updates_only_selected_manifest_then_follows_its_new_path_and_disconnects() {
+        let repository = RepositoryFixture::new();
+        let harness = ControllerHarness::new().await;
+        let initial = repository.manifest("app.json");
+        let first = harness
+            .applications()
+            .apply(initial.clone().validate().unwrap(), Some(0))
+            .await
+            .unwrap();
+        harness.finish(&first).await;
+        let before = harness.pulls().await;
+        let mut next = repository.manifest("next.json");
+        next.spec.services[0].replicas = 2;
+        repository.write("app.json", &next);
+        repository.write("next.json", &next);
+        std::fs::write(
+            repository.directory.path().join("other.json"),
+            "not a manifest",
+        )
+        .unwrap();
+        repository.commit();
+        let deployed = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        assert_eq!(deployed.state, OperationState::Succeeded);
+        assert_eq!(deployed.generation, 2);
+        assert!(
+            harness.pulls().await > before,
+            "unchanged image references must be refreshed"
+        );
+        let current = harness.store.get(&first.application_id).await.unwrap();
+        assert_eq!(current.application.spec.manifest.unwrap().path, "next.json");
+        assert_eq!(current.resolved.unwrap().services[0].replicas, 2);
+        assert_eq!(harness.store.list(None, 50).await.unwrap().items.len(), 1);
+        next.spec.manifest = None;
+        next.spec.services.clear();
+        repository.write("next.json", &next);
+        std::fs::remove_file(repository.directory.path().join("app.json")).unwrap();
+        repository.commit();
+        assert_eq!(
+            RepositoryFixture::deploy(&harness, &first.application_id)
+                .await
+                .state,
+            OperationState::Succeeded
+        );
+        assert!(
+            harness
+                .store
+                .get(&first.application_id)
+                .await
+                .unwrap()
+                .application
+                .spec
+                .manifest
+                .is_none()
+        );
+        std::fs::remove_file(repository.directory.path().join("next.json")).unwrap();
+        repository.commit();
+        assert_eq!(
+            RepositoryFixture::deploy(&harness, &first.application_id)
+                .await
+                .state,
+            OperationState::Succeeded
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_invalid_and_failed_build_manifests_preserve_accepted_configuration() {
+        let repository = RepositoryFixture::new();
+        repository.commit();
+        let harness = ControllerHarness::new().await;
+        let initial = repository.manifest("app.json");
+        let first = harness
+            .applications()
+            .apply(initial.clone().validate().unwrap(), Some(0))
+            .await
+            .unwrap();
+        harness.finish(&first).await;
+        let before = harness.store.get(&first.application_id).await.unwrap();
+        let missing = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        assert_eq!(missing.error_code.as_deref(), Some("manifest_not_found"));
+        let mut invalid = initial.clone();
+        invalid.metadata.name = "different-application".into();
+        repository.write("app.json", &invalid);
+        repository.commit();
+        let invalid = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        assert_eq!(invalid.error_code.as_deref(), Some("manifest_invalid"));
+        let build = git_fixture::GitBuildFixture::new();
+        let mut failing = initial.clone();
+        failing.spec.manifest = None;
+        failing.spec.services[0].source = build.failing_source();
+        repository.write("app.json", &failing);
+        repository.commit();
+        let failed = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        assert_eq!(failed.error_code.as_deref(), Some("git_build_failed"));
+        let after = harness.store.get(&first.application_id).await.unwrap();
+        assert_eq!(before.application, after.application);
+        assert_eq!(before.generation, after.generation);
+        assert_eq!(before.resolved, after.resolved);
+        assert_eq!(harness.store.list(None, 50).await.unwrap().items.len(), 1);
+        let mut manual = initial;
+        manual.spec.services[0].replicas = 4;
+        assert!(matches!(
+            harness
+                .applications()
+                .apply(manual.validate().unwrap(), Some(1))
+                .await,
+            Err(ApplicationError::Store(StoreError::RepositoryManaged))
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_after_reopening_store_uses_fetched_manifest_and_new_deploy_fetches_again() {
+        let repository = RepositoryFixture::new();
+        let harness = ControllerHarness::new().await;
+        let initial = repository.manifest("app.json");
+        let first = harness
+            .applications()
+            .apply(initial.clone().validate().unwrap(), Some(0))
+            .await
+            .unwrap();
+        harness.finish(&first).await;
+        let build = git_fixture::GitBuildFixture::new();
+        let mut candidate = initial.clone();
+        candidate.spec.services[0].source = build.failing_source();
+        repository.write("app.json", &candidate);
+        repository.commit();
+        let failed = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        assert_eq!(failed.error_code.as_deref(), Some("git_build_failed"));
+        repository.write("app.json", &initial);
+        repository.commit();
+        let reopened = Arc::new(SqliteStore::open(&harness.database_path).await.unwrap());
+        let controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&reopened));
+        let applications = piqueld::application::Applications::new(
+            Arc::clone(&reopened),
+            controller.runtime(Arc::new(tokio::sync::Notify::new())),
+        );
+        let retry = applications
+            .reconcile(&first.application_id, None)
+            .await
+            .unwrap();
+        assert_eq!(retry.id, failed.id);
+        controller.scan(&CancellationToken::new()).await.unwrap();
+        assert_eq!(
+            reopened.operation(&retry.id).await.unwrap().state,
+            OperationState::Failed
+        );
+        assert_eq!(
+            RepositoryFixture::deploy(&harness, &first.application_id)
+                .await
+                .state,
+            OperationState::Succeeded
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_can_pin_manifest_revision_independently_from_git_build_revision() {
+        let repository = RepositoryFixture::new();
+        let harness = ControllerHarness::new().await;
+        let build_repository = RepositoryFixture::new();
+        std::fs::write(
+            build_repository.directory.path().join("Dockerfile"),
+            "FROM alpine:3.20\n",
+        )
+        .unwrap();
+        let build_commit = build_repository.commit();
+        let mut fetched = repository.manifest("app.json");
+        fetched.spec.services[0].source = piqueld_core::Source::Git {
+            repository: GitRepository {
+                url: build_repository.directory.path().display().to_string(),
+                branch: "main".into(),
+                commit: Some(build_commit.clone()),
+            },
+            build: piqueld_core::manifest::Build::Docker {
+                dockerfile: "Dockerfile".into(),
+                context: ".".into(),
+            },
+        };
+        repository.write("app.json", &fetched);
+        let pinned = repository.commit();
+        let mut bootstrap = repository.manifest("app.json");
+        bootstrap.spec.services.clear();
+        bootstrap.spec.manifest.as_mut().unwrap().repository.commit = Some(pinned);
+        fetched.metadata.name = "wrong-later-name".into();
+        repository.write("app.json", &fetched);
+        repository.commit();
+        let first = harness
+            .applications()
+            .apply(bootstrap.validate().unwrap(), Some(0))
+            .await
+            .unwrap();
+        harness.finish(&first).await;
+        let deployment = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        assert_eq!(deployment.state, OperationState::Succeeded);
+        let resolved = harness
+            .store
+            .get(&first.application_id)
+            .await
+            .unwrap()
+            .resolved
+            .unwrap();
+        assert!(
+            matches!(&resolved.services[0].source, ResolvedSource::Git { commit, .. } if commit == &build_commit)
+        );
+    }
+}
