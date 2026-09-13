@@ -70,6 +70,11 @@ relied on that default stop pruning events after upgrading; set
 `retention.event_days = 30` (and optionally `retention.daemon_event_days`) to keep
 bounded history.
 
+Migration 0007 adds application-secret metadata, encrypted versions and
+per-deployment pins. Empty pin sets are recorded too, so retries cannot silently
+pick up subsequently added values. Secret value changes do not update application
+configuration or request deployments.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

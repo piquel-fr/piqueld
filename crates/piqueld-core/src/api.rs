@@ -483,3 +483,14 @@ mod log_tests {
         );
     }
 }
+
+/// Metadata only: secret values are never returned.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SecretMetadata {
+    /// Application-scoped logical name.
+    pub name: String,
+    /// Current version, used for optimistic writes.
+    pub generation: i64,
+    /// Last update time in Unix milliseconds.
+    pub updated_at_ms: i64,
+}

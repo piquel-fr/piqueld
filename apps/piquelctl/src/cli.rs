@@ -111,6 +111,12 @@ pub(crate) enum AppCommand {
         #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
         since_seconds: u32,
     },
+    /// Manage application-scoped secret values and metadata.
+    Secret {
+        application: String,
+        #[command(subcommand)]
+        action: crate::secrets::SecretAction,
+    },
     /// Preview creation or replacement from a TOML manifest.
     Plan(ManifestArgs),
     /// Save a TOML manifest; optionally deploy with --deploy.

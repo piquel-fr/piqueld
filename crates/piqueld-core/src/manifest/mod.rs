@@ -8,7 +8,7 @@ pub mod validation;
 
 pub use input::{
     ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, Metadata, Mount,
-    RepositoryManifest, ResourceLimits, Service, Source, Volume,
+    RepositoryManifest, ResourceLimits, SecretMount, Service, Source, Volume,
 };
 pub(crate) use validation::valid_image_reference;
 pub use validation::{
@@ -93,6 +93,7 @@ fn normalize_spec(spec: &mut ValidatedSpec) {
         .sort_by(|left, right| left.name.cmp(&right.name));
     for service in &mut spec.services {
         service.mounts.sort();
+        service.secrets.sort();
     }
     spec.volumes.sort();
 }

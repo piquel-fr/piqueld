@@ -357,3 +357,18 @@ warnings, errors, and authorized prompts.
 attempts. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
 output page, or an older page before the supplied cursor. It prints the cursor
 for loading older output when available. Both support `--json`.
+
+Application secrets are write-only:
+
+```sh
+piquelctl secret notes list
+piquelctl secret notes set database-password --file ./password --yes
+printf '%s' 'new-value' | piquelctl secret notes set database-password --stdin --yes
+piquelctl secret notes delete database-password --yes
+```
+
+Prefer protected files or a secure stdin producer over literal shell values in
+real use. `--expected-generation` pins a write to inspected metadata; otherwise
+the CLI reads the current generation before confirming. `--json` returns only
+metadata. Replacement creates a new version for a later Deploy and does not
+change running deployments. Deletion refuses saved or runnable references.

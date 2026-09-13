@@ -135,6 +135,17 @@ impl BollardDocker {
             command: container.command.clone().unwrap_or_default(),
             arguments: container.args.clone().unwrap_or_default(),
             mounts: BollardDocker::observed_mounts(container),
+            secrets: container
+                .secrets
+                .iter()
+                .flatten()
+                .filter_map(|s| {
+                    Some(piqueld_core::resource::SecretFile {
+                        secret_name: s.secret_name.clone()?,
+                        target: s.file.as_ref()?.name.clone()?,
+                    })
+                })
+                .collect(),
             healthcheck: container
                 .health_check
                 .as_ref()
