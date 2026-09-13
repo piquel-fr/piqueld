@@ -61,7 +61,7 @@ pub struct Metadata {
 pub struct ApplicationSpec {
     /// Optional repository that supplies this application's manifest on Deploy.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub manifest: Option<Box<RepositoryManifest>>,
+    pub manifest: Option<RepositoryManifest>,
     /// Declared services.
     pub services: Vec<Service>,
     /// Declared named volumes.

@@ -1,4 +1,12 @@
 //! Durable candidate manifests for manual deployments.
+//!
+//! `deployment_inputs` starts with the configuration captured by Deploy. After
+//! fetching, it holds the validated manifest and repository commit; `fetched`
+//! tells retries to reuse that snapshot instead of reading a moving branch again.
+//! Deployments without repository backing also become fetched, with no commit.
+//! The candidate is copied to deployment history when fetched, but only becomes
+//! saved application configuration after source preparation succeeds, provided
+//! no newer configuration was saved in the meantime.
 use super::{NormalizedApplication, Operation, SqliteStore, StoreError, now_ms};
 use sqlx::{Sqlite, Transaction};
 

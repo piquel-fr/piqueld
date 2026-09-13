@@ -1657,14 +1657,14 @@ mod repository_deployments {
         }
         fn manifest(&self, path: &str) -> ApplicationManifest {
             let mut application = manifest();
-            application.spec.manifest = Some(Box::new(RepositoryManifest {
+            application.spec.manifest = Some(RepositoryManifest {
                 repository: GitRepository {
                     url: self.directory.path().display().to_string(),
                     branch: "main".into(),
                     commit: None,
                 },
                 path: path.into(),
-            }));
+            });
             application
         }
         fn write(&self, path: &str, manifest: &ApplicationManifest) {

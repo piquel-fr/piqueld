@@ -339,7 +339,7 @@ fn RepositorySettings() -> impl IntoView {
     let backing = context.saved.get_untracked().application.spec.manifest;
     let draft = create_rw_signal((
         backing.is_some(),
-        backing.map(|b| *b).unwrap_or(RepositoryManifest {
+        backing.unwrap_or(RepositoryManifest {
             repository: GitRepository {
                 url: String::new(),
                 branch: "main".into(),
@@ -361,7 +361,7 @@ fn RepositorySettings() -> impl IntoView {
         }
         let value = draft.get_untracked();
         let mut manifest = context.manifest();
-        manifest.spec.manifest = value.0.then(|| Box::new(value.1));
+        manifest.spec.manifest = value.0.then_some(value.1);
         context.save(
             manifest,
             Callback::new(move |_| baseline.set(draft.get_untracked())),
