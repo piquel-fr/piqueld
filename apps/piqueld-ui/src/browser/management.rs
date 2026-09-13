@@ -1,5 +1,7 @@
 //! Application editor state and page composition. Polling never replaces local edits.
 mod controls;
+mod secrets;
+use secrets::ApplicationSecrets;
 mod deployments;
 mod navigation;
 mod services;
@@ -340,11 +342,12 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         <EditorFeedback />
         <Tabs
             label="Application sections"
-            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics"]}
+            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics", "Secrets"]}
             selected={context.tab}
             class="tabs"
         />
         <ApplicationSettings />
+        <div hidden=move ||context.tab.get()!="Secrets"><ApplicationSecrets/></div>
         <div hidden={move || context.tab.get() != "Deployments"}>
             <DeploymentHistory />
         </div>

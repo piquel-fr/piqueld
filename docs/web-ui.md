@@ -47,6 +47,13 @@ loopback TCP listener. The Unix socket is API-only, and the daemon does not add
 CORS, authentication, cookies, browser persistence, telemetry, or a public
 binding.
 
+The **Secrets** tab lists names and versions, creates or replaces write-only text
+values, and deletes unreferenced secrets. Submitted values are cleared and cannot
+be read back; use the CLI for binary secret files. Each service has a separate
+secret-file reference editor. Save references, then deploy explicitly to mount
+those versions. Repository-backed applications keep references in their Git
+manifest. Secret values and unsaved references participate in navigation warnings.
+
 ## Development
 
 Use `nix develop` for the Rust/WASM toolchain, Nextest, Cargo Watch, Trunk,
