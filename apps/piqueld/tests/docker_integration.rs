@@ -127,11 +127,25 @@ impl SwarmScenario {
             labels: service_labels,
         };
         engine.ensure_service_eventually(&service).await;
+
+        Self {
+            engine,
+            app,
+            labels,
+            network,
+            volume,
+            service,
+        }
+    }
+
+    async fn assert_logs(&self) {
+        let instance = InstanceId::parse(&self.labels["io.piqueld.instance"]).unwrap();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
-            let logs = engine
+            let logs = self
+                .engine
                 .docker
-                .application_logs(&instance, &app, Some("web"), 20, 60)
+                .application_logs(&instance, &self.app, Some("web"), 20, 60)
                 .await
                 .unwrap();
             if logs.items.iter().any(|line| line.message == "log-stderr") {
@@ -152,11 +166,11 @@ impl SwarmScenario {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         assert!(
-            engine
+            self.engine
                 .docker
                 .application_logs(
                     &InstanceId::parse("another-instance").unwrap(),
-                    &app,
+                    &self.app,
                     None,
                     20,
                     60
@@ -166,15 +180,6 @@ impl SwarmScenario {
                 .items
                 .is_empty()
         );
-
-        Self {
-            engine,
-            app,
-            labels,
-            network,
-            volume,
-            service,
-        }
     }
 
     async fn add_http_service(&self) -> DesiredService {
@@ -408,6 +413,7 @@ impl SwarmScenario {
 #[ignore = "requires an isolated privileged Docker Engine"]
 async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
     let mut scenario = SwarmScenario::new().await;
+    scenario.assert_logs().await;
     let http_service = scenario.add_http_service().await;
     scenario.assert_healthchecks(&http_service).await;
     scenario.scale_and_reconnect().await;
