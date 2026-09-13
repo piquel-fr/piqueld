@@ -46,8 +46,8 @@ The data directory is the only persistent daemon state. The daemon holds an
 exclusive OS lock on the directory itself for its entire lifetime. A second
 process using that directory fails immediately, before opening the database or
 replacing the Unix socket. Process exit (including a crash) releases the lock;
-there is no stale lock file to remove. Both API listeners are bound before
-reconciliation starts.
+there is no stale lock file to remove. The Unix listener and any configured TCP
+listener are bound before reconciliation starts.
 
 The dashboard is not configurable at runtime: it is embedded when the daemon
 is built with the `embedded-ui` cargo feature and absent otherwise. It is
