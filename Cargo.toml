@@ -15,6 +15,9 @@ license = "Apache-2.0"
 repository = "https://github.com/piquel-fr/piqueld"
 
 [workspace.dependencies]
+base64 = "0.22"
+chacha20poly1305 = "0.10.1"
+zeroize = "1.8"
 # Internal
 piqueld-client = { version = "0.1.0", path = "crates/piqueld-client" }
 piqueld-core   = { version = "0.1.0", path = "crates/piqueld-core"   }

@@ -34,6 +34,18 @@ pub enum BoundaryError {
 /// Resolves accepted intent during execution and observes runtime for API reads.
 #[async_trait]
 pub trait RuntimeBoundary: Send + Sync + 'static {
+    /// Removes the supplied versions after logical-reference checks succeed.
+    async fn remove_secrets(
+        &self,
+        _application: &ApplicationId,
+        names: &[String],
+    ) -> Result<(), BoundaryError> {
+        if names.is_empty() {
+            Ok(())
+        } else {
+            Err(DockerError::Unavailable("secret removal").into())
+        }
+    }
     /// Wakes the reconciler after a mutation requests an immediate scan.
     fn trigger_reconciliation(&self) {}
     /// Resolves all mutable inputs into a complete immutable target.

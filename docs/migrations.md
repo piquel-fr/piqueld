@@ -48,3 +48,8 @@ The daemon prepares its private data directory before opening SQLite. The store
 checks the database file path. During builds, the daemon build script provisions
 a disposable migrated database for SQLx query checks; it does not open an
 operator database.
+
+The application-secrets migration adds logical metadata, encrypted versions and
+per-deployment pins. Empty pin sets are recorded too, so retries cannot silently
+pick up subsequently added values. Secret value changes do not update application
+configuration or request deployments.

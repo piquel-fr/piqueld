@@ -646,6 +646,7 @@ pub(super) fn NewService() -> impl IntoView {
         let (name, image) = fields.get_untracked();
         let mut manifest = context.manifest();
         manifest.spec.services.push(Service {
+            secrets: Vec::new(),
             name,
             source: Source::Image { image },
             replicas: 1,

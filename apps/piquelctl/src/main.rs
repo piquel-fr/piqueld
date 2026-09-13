@@ -4,6 +4,7 @@ mod cli;
 mod commands;
 mod error;
 mod output;
+mod secrets;
 mod support;
 
 use clap::Parser;

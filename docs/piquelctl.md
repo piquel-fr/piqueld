@@ -130,3 +130,18 @@ application. Use `--yes` to skip interactive confirmation, `--no-wait` to return
 after acceptance, or a longer global `--timeout` for builds. The server continues
 deployment if the CLI wait times out. `refresh` resolves only the stored service
 sources; `reconcile` retries or repairs the latest deployment snapshot and prepared target.
+
+Application secrets are write-only:
+
+```sh
+piquelctl secret notes list
+piquelctl secret notes set database-password --file ./password --yes
+printf '%s' 'new-value' | piquelctl secret notes set database-password --stdin --yes
+piquelctl secret notes delete database-password --yes
+```
+
+Prefer protected files or a secure stdin producer over literal shell values in
+real use. `--expected-generation` pins a write to inspected metadata; otherwise
+the CLI reads the current generation before confirming. `--json` returns only
+metadata. Replacement creates a new version for a later Deploy and does not
+change running deployments. Deletion refuses saved or runnable references.

@@ -53,3 +53,15 @@ The dashboard is not configurable at runtime: it is embedded when the daemon
 is built with the `embedded-ui` cargo feature and absent otherwise. It is
 served on the TCP listener only, so `server.http_listen` must be set to reach
 it; the Unix API socket serves the API alone.
+
+The first secret write creates `secrets.key` in `server.data_dir`, atomically and
+with mode 0600. It holds a 32-byte master key. Back up this key together with the
+database; losing it makes encrypted values unrecoverable. If encrypted records
+exist, a missing key is never regenerated. Restore the original key, owned by the
+daemon user with private permissions. Secret metadata remains readable without it.
+
+Secret values use authenticated XChaCha20-Poly1305 encryption, binding ciphertext
+to application, logical name and version. The implementation uses
+[RustCrypto's existing AEAD implementation](https://docs.rs/chacha20poly1305/0.10.1/chacha20poly1305/).
+Docker receives values only when provisioning a service's immutable secret file
+versions. File mounts use Docker's read-only 0444 permissions inside the container.
