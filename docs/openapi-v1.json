@@ -400,6 +400,27 @@
         "description": "Stable internal application identity. It is assigned by persistence and is not\nderived from editable application metadata.",
         "type": "string"
       },
+      "ApplicationLogs": {
+        "description": "Bounded historical container output read directly from Docker.",
+        "properties": {
+          "items": {
+            "description": "Chronologically ordered records.",
+            "items": {
+              "$ref": "#/components/schemas/LogRecord"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "description": "More output existed than the requested window or safety limit.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "ApplicationManifest": {
         "additionalProperties": false,
         "description": "Strict public application manifest request and export shape.",
@@ -1016,6 +1037,36 @@
               "status",
               "observed",
               "diagnostics"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_ApplicationLogs": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Bounded historical container output read directly from Docker.",
+            "properties": {
+              "items": {
+                "description": "Chronologically ordered records.",
+                "items": {
+                  "$ref": "#/components/schemas/LogRecord"
+                },
+                "type": "array"
+              },
+              "truncated": {
+                "description": "More output existed than the requested window or safety limit.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "items",
+              "truncated"
             ],
             "type": "object"
           }
@@ -2084,6 +2135,39 @@
         ],
         "type": "object"
       },
+      "LogRecord": {
+        "description": "One line of workload output with replica identity.",
+        "properties": {
+          "message": {
+            "description": "Text with terminal control sequences removed.",
+            "type": "string"
+          },
+          "service": {
+            "description": "Logical service name.",
+            "type": "string"
+          },
+          "stream": {
+            "description": "stdout, stderr, or console.",
+            "type": "string"
+          },
+          "task_id": {
+            "description": "Swarm task identity.",
+            "type": "string"
+          },
+          "timestamp": {
+            "description": "Docker timestamp, when supplied.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "task_id",
+          "timestamp",
+          "stream",
+          "message"
+        ],
+        "type": "object"
+      },
       "ManifestChange": {
         "description": "A change to a manifest field. Environment and process values are redacted.",
         "properties": {
@@ -2868,90 +2952,6 @@
         },
         "required": [
           "name"
-        ],
-        "type": "object"
-      },
-      "ApplicationLogs": {
-        "description": "Bounded historical container output read directly from Docker.",
-        "properties": {
-          "items": {
-            "description": "Chronologically ordered records.",
-            "items": {
-              "$ref": "#/components/schemas/LogRecord"
-            },
-            "type": "array"
-          },
-          "truncated": {
-            "description": "More output existed than the requested window or safety limit.",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "items",
-          "truncated"
-        ],
-        "type": "object"
-      },
-      "Envelope_ApplicationLogs": {
-        "description": "Successful API response envelope.",
-        "properties": {
-          "data": {
-            "description": "Bounded historical container output read directly from Docker.",
-            "properties": {
-              "items": {
-                "description": "Chronologically ordered records.",
-                "items": {
-                  "$ref": "#/components/schemas/LogRecord"
-                },
-                "type": "array"
-              },
-              "truncated": {
-                "description": "More output existed than the requested window or safety limit.",
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "items",
-              "truncated"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "data"
-        ],
-        "type": "object"
-      },
-      "LogRecord": {
-        "description": "One line of workload output with replica identity.",
-        "properties": {
-          "message": {
-            "description": "Text with terminal control sequences removed.",
-            "type": "string"
-          },
-          "service": {
-            "description": "Logical service name.",
-            "type": "string"
-          },
-          "stream": {
-            "description": "stdout, stderr, or console.",
-            "type": "string"
-          },
-          "task_id": {
-            "description": "Swarm task identity.",
-            "type": "string"
-          },
-          "timestamp": {
-            "description": "Docker timestamp, when supplied.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "service",
-          "task_id",
-          "timestamp",
-          "stream",
-          "message"
         ],
         "type": "object"
       }
@@ -3874,6 +3874,101 @@
         "summary": "Get desired and observed application state"
       }
     },
+    "/api/v1/applications/{id}/logs": {
+      "get": {
+        "operationId": "applicationLogs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "service",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tail",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since_seconds",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_ApplicationLogs"
+                }
+              }
+            },
+            "description": "Recent Docker output"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
     "/api/v1/applications/{id}/manifest": {
       "get": {
         "operationId": "downloadApplicationManifest",
@@ -4427,101 +4522,6 @@
           }
         },
         "summary": "Get daemon status"
-      }
-    },
-    "/api/v1/applications/{id}/logs": {
-      "get": {
-        "operationId": "applicationLogs",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "service",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "tail",
-            "required": false,
-            "schema": {
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "since_seconds",
-            "required": false,
-            "schema": {
-              "format": "int32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Envelope_ApplicationLogs"
-                }
-              }
-            },
-            "description": "Recent Docker output"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "502": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            },
-            "description": "Structured, sanitized error"
-          }
-        }
       }
     }
   }
