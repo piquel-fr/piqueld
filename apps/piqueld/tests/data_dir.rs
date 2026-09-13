@@ -163,6 +163,16 @@ async fn non_directory_data_path_is_rejected() {
 }
 
 #[tokio::test]
+async fn paths_without_a_dedicated_directory_are_rejected() {
+    for path in ["", ".", "./"] {
+        let error = piqueld::prepare_data_dir(std::path::Path::new(path))
+            .await
+            .expect_err("path without a dedicated directory is rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+}
+
+#[tokio::test]
 async fn root_directory_is_rejected() {
     let Err(error) = prepare_data_dir(std::path::Path::new("/")).await else {
         panic!("root data directory was accepted");

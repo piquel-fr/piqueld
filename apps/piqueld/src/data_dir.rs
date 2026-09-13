@@ -20,9 +20,10 @@ use std::{
 /// # Errors
 ///
 /// Returns an [`std::io::Error`] when the directory cannot be inspected or
-/// prepared, or when it violates the privacy requirements.
+/// prepared, contains a leading current-directory or any parent component,
+/// or violates the privacy requirements.
 pub async fn prepare_data_dir(path: &Path) -> io::Result<()> {
-    if path == Path::new("/") {
+    if path.as_os_str().is_empty() || path == Path::new("/") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "the data directory must be a dedicated private directory",
@@ -36,7 +37,12 @@ pub async fn prepare_data_dir(path: &Path) -> io::Result<()> {
         match component {
             std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
             std::path::Component::RootDir => current.push(Path::new("/")),
-            std::path::Component::CurDir => continue,
+            std::path::Component::CurDir => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the data directory cannot contain a leading current-directory component",
+                ));
+            }
             std::path::Component::ParentDir => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
