@@ -20,6 +20,9 @@ pub enum BoundaryError {
     /// A Docker runtime request failed.
     #[error("runtime request failed")]
     Runtime(#[from] DockerError),
+    /// Git checkout or image building failed, retaining internal diagnostics.
+    #[error("Git source build failed")]
+    GitBuild(#[source] anyhow::Error),
     /// Progress persistence failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -94,11 +97,6 @@ pub enum Mutation {
     },
     /// Repair accepted intent.
     Reconcile {
-        /// Stable application ID.
-        id: ApplicationId,
-    },
-    /// Explicitly resolve images again.
-    Refresh {
         /// Stable application ID.
         id: ApplicationId,
     },
@@ -246,15 +244,15 @@ impl Applications {
             .await
     }
 
-    /// Explicitly resolves current image references again.
+    /// Deploys saved configuration with fresh source resolution.
     /// # Errors
     /// Returns storage, deletion-intent, or generation errors.
-    pub async fn refresh(
+    pub async fn deploy(
         &self,
         id: &ApplicationId,
         expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        self.operation(Mutation::Refresh { id: id.clone() }, expected_generation)
+        self.operation(Mutation::Deploy { id: id.clone() }, expected_generation)
             .await
     }
 

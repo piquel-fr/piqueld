@@ -996,8 +996,8 @@ fn human_output_reports_a_closed_pipe_without_panicking() {
 }
 
 #[test]
-fn reconcile_and_refresh_target_current_intent_and_retry_transport() {
-    for action in ["reconcile", "refresh"] {
+fn reconcile_and_deploy_retry_transport() {
+    for action in ["reconcile", "deploy"] {
         let mut attempts = 0;
         let server = start_server(false, 3, move |request| {
             if request.method == "GET" {
@@ -1006,7 +1006,14 @@ fn reconcile_and_refresh_target_current_intent_and_retry_transport() {
             assert_eq!(request.method, "POST");
             assert_eq!(
                 request.path,
-                format!("/api/v1/applications/app-notes-01/{action}")
+                format!(
+                    "/api/v1/applications/app-notes-01/{action}{}",
+                    if action == "deploy" {
+                        "?expected_generation=1"
+                    } else {
+                        ""
+                    }
+                )
             );
             attempts += 1;
             if attempts == 1 {

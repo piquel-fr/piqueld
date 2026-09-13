@@ -1,6 +1,10 @@
 //! Privileged end-to-end qualification for the Docker adapter.
 
 use bollard::query_parameters::{InspectServiceOptions, UpdateServiceOptionsBuilder};
+#[path = "support/git.rs"]
+mod git_fixture;
+use git_fixture::GitBuildFixture;
+use piqueld::application::RuntimeBoundary;
 use piqueld::docker::{BollardDocker, DockerApi, DockerError};
 use piqueld_core::manifest::HealthCheck;
 use piqueld_core::resource::{DesiredNetwork, DesiredService, DesiredVolume, ResolvedSource};
@@ -294,4 +298,58 @@ async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated privileged Docker Engine"]
+async fn git_build_runs_as_a_local_swarm_image() {
+    assert_eq!(std::env::var("PIQUELD_DOCKER_ISOLATED").as_deref(), Ok("1"));
+    let socket = std::env::var("PIQUELD_DOCKER_SOCKET").unwrap();
+    let socket = std::fs::canonicalize(socket).unwrap();
+    assert_ne!(
+        socket,
+        std::fs::canonicalize("/var/run/docker.sock").unwrap()
+    );
+    let docker = BollardDocker::connect(&socket).unwrap();
+    docker.ensure_swarm(true).await.unwrap();
+    let fixture = GitBuildFixture::new();
+    let source = fixture.source.clone();
+    let manifest = serde_json::json!({"api_version":"piqueld.dev/v1alpha1", "kind":"Application", "metadata":{"name":"git-local"}, "spec":{"services":[{"name":"web", "source":source}]}});
+    let app = piqueld_core::parse_json(&manifest.to_string())
+        .unwrap()
+        .normalize(ApplicationId::parse("git-local-build").unwrap());
+    let runtime = piqueld::application::DockerRuntime::new(
+        std::sync::Arc::new(docker.clone()),
+        InstanceId::parse("git-build-test").unwrap(),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        Duration::from_secs(120),
+    );
+    let target = runtime
+        .prepare(&app, &piqueld_core::ResolutionSet::default())
+        .await
+        .unwrap();
+    docker.ensure_network(&target.networks[0]).await.unwrap();
+    let observed = docker.observe(&app.id).await.unwrap();
+    assert!(observed.networks[0].runtime_configuration_matches);
+    docker.ensure_network(&target.networks[0]).await.unwrap();
+    ensure_service_eventually(&docker, &target.services[0]).await;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let observed = docker.observe(&app.id).await.unwrap();
+            if observed
+                .services
+                .iter()
+                .any(|service| service.convergence == piqueld_core::Convergence::Converged)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("local Git-built image must converge in Swarm");
+    docker
+        .remove_service(&target.services[0].name, &target.services[0].labels)
+        .await
+        .unwrap();
 }

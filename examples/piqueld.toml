@@ -2,12 +2,10 @@
 # The daemon prepares one private data directory holding the Unix API socket
 # (piqueld.sock), the embedded database (piqueld.db), and future user data. The
 # directory is created when missing with mode 0700; an existing directory must
-# already be private (no group or other access) and is never chmodded. Prefer a
-# user-owned runtime directory such as /run/user/<uid>/piqueld over /tmp.
+# already be private (no group or other access), owned by the daemon user,
+# and is never chmodded.
 
 [server]
-# Replace 1000 with your account's UID (`id -u`); the runtime directory is
-# per-user and only exists for your own UID.
 data_dir = "/tmp/piqueld-dev"
 http_listen = "127.0.0.1:7845"
 

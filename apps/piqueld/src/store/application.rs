@@ -132,21 +132,21 @@ impl SqliteStore {
         Ok(operation)
     }
 
-    /// Starts image refresh without changing the manifest generation.
+    /// Deploys saved configuration without changing its generation.
     /// # Errors
     /// Returns storage, deletion-intent, or revision errors.
-    pub async fn request_refresh(
+    pub async fn request_deploy(
         &self,
         id: &ApplicationId,
         expected: Option<u64>,
     ) -> Result<Operation, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let result = Self::request_refresh_on(&mut tx, id, expected).await?;
+        let result = Self::request_deploy_on(&mut tx, id, expected).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(result)
     }
 
-    pub(crate) async fn request_refresh_on(
+    pub(crate) async fn request_deploy_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &ApplicationId,
         expected: Option<u64>,
@@ -165,6 +165,7 @@ impl SqliteStore {
             return Err(StoreError::IllegalTransition);
         }
         let now = now_ms();
+        // Keep the existing on-disk operation kind for deployment records.
         let operation = Self::insert_operation(tx, id, OperationKind::Refresh, now).await?;
         Self::write_status(tx, app_id, "pending", None, now).await?;
         Ok(operation)

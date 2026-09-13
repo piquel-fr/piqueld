@@ -79,10 +79,11 @@ for _attempt in {1..60}; do
       echo "docker-test requires GNU timeout to bound the test run" >&2
       exit 1
     fi
+    # Tests share one daemon and mutate its Swarm state.
     PIQUELD_DOCKER_ISOLATED=1 \
       PIQUELD_DOCKER_SOCKET="$socket_path" \
       "${test_wrapper[@]}" \
-      cargo test -p piqueld --test docker_integration -- --ignored
+      cargo test -p piqueld --test docker_integration -- --ignored --test-threads=1
     exit 0
   fi
   if [[ "$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null || true)" != "true" ]]; then

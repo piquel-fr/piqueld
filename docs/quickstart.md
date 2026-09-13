@@ -8,13 +8,13 @@ the engine can run a single-node Swarm.
 
 ```console
 just build
-just daemon --config config/piqueld.example.toml
+just daemon --config examples/piqueld.toml
 ```
 
-The example keeps its state under a user-owned runtime directory,
-`/run/user/<uid>/piqueld`, so it does not require root-owned `/run` or
-`/var/lib` directories; before starting the daemon, replace `1000` with your
-own UID (`id -u`) in `config/piqueld.example.toml` and the socket paths below. The daemon's production default is
+The example keeps its state in `/tmp/piqueld-dev` and its Unix API socket at
+`/tmp/piqueld-dev/piqueld.sock`. The daemon creates the data directory with
+mode `0700`; an existing directory must be private and owned by your user.
+The daemon's production default is
 `/etc/piqueld/config.toml`; use `--config` when running as a non-root
 developer.
 
@@ -23,13 +23,13 @@ developer.
 In a second terminal:
 
 ```console
-just run --socket /run/user/1000/piqueld/piqueld.sock status
+just run --socket /tmp/piqueld-dev/piqueld.sock status
 just run --url http://127.0.0.1:7845 status
-just run --socket /run/user/1000/piqueld/piqueld.sock plan \
+just run --socket /tmp/piqueld-dev/piqueld.sock plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
-just run --socket /run/user/1000/piqueld/piqueld.sock apply \
+just run --socket /tmp/piqueld-dev/piqueld.sock apply \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --yes
-just run --socket /run/user/1000/piqueld/piqueld.sock show notes
+just run --socket /tmp/piqueld-dev/piqueld.sock show notes
 ```
 
 `status` reports the daemon version and `--json` produces the same structured
@@ -39,9 +39,9 @@ manifest to update an existing application by name. Identical manifests schedule
 operation by default; failed attempts require explicit retry. Use the same development socket for repair, image refresh, and informational history:
 
 ```console
-just run --socket /run/user/1000/piqueld/piqueld.sock reconcile notes --yes
-just run --socket /run/user/1000/piqueld/piqueld.sock refresh notes --yes
-just run --socket /run/user/1000/piqueld/piqueld.sock events --application <application-id>
+just run --socket /tmp/piqueld-dev/piqueld.sock reconcile notes --yes
+just run --socket /tmp/piqueld-dev/piqueld.sock deploy notes --yes
+just run --socket /tmp/piqueld-dev/piqueld.sock events --application <application-id>
 ```
 
 ## Dashboard and cleanup
@@ -59,7 +59,7 @@ When finished, delete the application and note that its named volumes are
 retained:
 
 ```console
-just run --socket /run/user/1000/piqueld/piqueld.sock delete notes --yes
+just run --socket /tmp/piqueld-dev/piqueld.sock delete notes --yes
 ```
 
 The retained named volumes are deliberate so deleting an application does not

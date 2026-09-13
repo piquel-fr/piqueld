@@ -102,6 +102,12 @@ pub trait DockerApi: Send + Sync + 'static {
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError>;
     /// Pulls an image reference and returns its immutable repository digest.
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError>;
+    /// Builds local Docker inputs into an immutable image.
+    async fn build_image(
+        &self,
+        dockerfile: &Path,
+        context: &Path,
+    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError>;
     /// Reads the resources managed for one application.
     async fn observe(
         &self,

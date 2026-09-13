@@ -34,9 +34,9 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
         Command::Apply(args) => apply(cli, &client, args).await,
         Command::Delete(args) => delete(cli, &client, args).await,
         Command::Operation(args) => operation(cli, &client, args).await,
-        Command::Reconcile(args) => reconcile_or_refresh(cli, &client, args, false).await,
+        Command::Reconcile(args) => reconcile_or_deploy(cli, &client, args, false).await,
         Command::Rename(args) => rename(cli, &client, args).await,
-        Command::Refresh(args) => reconcile_or_refresh(cli, &client, args, true).await,
+        Command::Deploy(args) => reconcile_or_deploy(cli, &client, args, true).await,
         Command::Events {
             application,
             cursor,
@@ -206,12 +206,15 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
         desired_replicas(&application)
     )?;
     for service in &application.application.spec.services {
-        let image = match &service.source {
-            Source::Image { image } => image,
+        let source = match &service.source {
+            Source::Image { image } => format!("image {image}"),
+            Source::Git { repository, .. } => {
+                format!("git {} ({})", repository.url, repository.branch)
+            }
         };
         writeln!(
             io::stdout().lock(),
-            "service {}: {} replica(s), image {image}",
+            "service {}: {} replica(s), {source}",
             service.name,
             service.replicas
         )?;
@@ -502,15 +505,15 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
     }
 }
 
-async fn reconcile_or_refresh(
+async fn reconcile_or_deploy(
     cli: &Cli,
     client: &Client,
     args: &ReconcileArgs,
-    refresh: bool,
+    deploy: bool,
 ) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
-    let action = if refresh {
-        "Refresh images for"
+    let action = if deploy {
+        "Deploy"
     } else {
         "Reconcile current intent for"
     };
@@ -524,9 +527,12 @@ async fn reconcile_or_refresh(
     .await?;
     let id = application.application.id.as_str();
     let accepted = retry_transport(|| async {
-        if refresh {
+        if deploy {
             client
-                .refresh_application(id, args.expected_generation)
+                .deploy_application(
+                    id,
+                    args.expected_generation.unwrap_or(application.generation),
+                )
                 .await
         } else {
             client

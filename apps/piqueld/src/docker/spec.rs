@@ -10,7 +10,9 @@ use super::{
 impl BollardDocker {
     /// Builds the complete Docker service specification from desired state.
     pub(super) fn service_spec(desired: &DesiredService) -> Result<ServiceSpec, DockerError> {
-        if !BollardDocker::valid_digest(&desired.image) {
+        if !BollardDocker::valid_digest(&desired.image)
+            && piqueld_core::resource::Sha256Digest::parse(&desired.image).is_err()
+        {
             return Err(DockerError::Validation("validate digest-pinned image"));
         }
         Ok(ServiceSpec {

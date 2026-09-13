@@ -52,12 +52,14 @@
                 pkgs.pkg-config
                 pkgs.rustPlatform.bindgenHook
               ]
+              ++ lib.optional (builtins.elem "piqueld" binaries) pkgs.makeWrapper
               ++ lib.optionals withUi [
                 pkgs.binaryen
                 pkgs.tailwindcss_4
                 pkgs.trunk
                 pkgs.wasm-bindgen-cli_0_2_126
               ];
+              nativeCheckInputs = [ pkgs.git ];
               # Compile SQLx SQLite query macros against a disposable database
               # provisioned by the daemon build script.
               DATABASE_URL = "sqlite::memory:";
@@ -86,9 +88,12 @@
                     binary: ''install -Dm755 "target/${rustTarget}/release/${binary}" "$out/bin/${binary}"''
                   ) binaries
                 )}
-                install -Dm644 config/piqueld.example.toml \
+                install -Dm644 examples/piqueld.toml \
                   "$out/share/piqueld/piqueld.example.toml"
                 runHook postInstall
+              '';
+              postInstall = lib.optionalString (builtins.elem "piqueld" binaries) ''
+                wrapProgram "$out/bin/piqueld" --prefix PATH : ${lib.makeBinPath [ pkgs.git ]}
               '';
               doCheck = true;
             };
@@ -182,6 +187,8 @@
               cargo-watch
               binaryen
               clippy
+              docker-client
+              git
               just
               cmake
               lld

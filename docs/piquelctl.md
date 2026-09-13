@@ -16,7 +16,7 @@ piquelctl apply --file application.toml --deploy
 piquelctl delete <name-or-id>
 piquelctl operation <operation-id>
 piquelctl reconcile <name-or-id>
-piquelctl refresh <name-or-id>
+piquelctl deploy <name-or-id>
 piquelctl rename <name-or-id> <new-name>
 piquelctl events --application <application-id> --limit 50
 ```
@@ -53,8 +53,8 @@ written to stderr, so stdout remains valid JSON.
 | `delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": true }` |
 | `operation --no-wait` | `Operation` |
 | `operation` | `Operation` |
-| `reconcile` / `refresh` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
-| `reconcile --no-wait` / `refresh --no-wait` | `AcceptedOperation` |
+| `reconcile` / `deploy` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
+| `reconcile --no-wait` / `deploy --no-wait` | `AcceptedOperation` |
 | `events` | `{ "items": [Event], "next_cursor": string or null }` |
 
 The DTO fields and error envelope are defined by the versioned API and the
@@ -71,8 +71,9 @@ when Docker observation is unavailable.
 
 Mutating commands require TTY confirmation unless `--yes` is supplied. Apply,
 delete and rename accept `--force` independently of confirmation. Every explicit
-deployment creates a new snapshot, refreshes image references and supersedes prior
-work. Reconciliation retries the deployment snapshot using prepared digests.
+deployment creates a new snapshot, refreshes image references and supersedes pending
+work. Completed deployments retain their terminal state in history.
+Reconciliation retries the deployment snapshot using prepared digests.
 Unchanged healthy containers do not restart unnecessarily.
 
 Deletion removes application configuration and all its history after runtime
@@ -105,7 +106,7 @@ file afterward; the CLI does not edit files automatically.
 stable ID. Deleted applications have no retained history. Use `--cursor CURSOR` for subsequent
 pages and `--limit N` (1–100, default 50). JSON includes the next cursor.
 
-By default, apply with `--deploy`, delete, reconcile, refresh, and operation poll every 250 ms
+By default, apply with `--deploy`, delete, reconcile, deploy, and operation poll every 250 ms
 until a terminal state. Supersession returns immediately with exit code 0 and
 `outcome: "superseded"` in mutation command results (`state: "superseded"` on an
 operation record). It does not wait for the replacement to deploy. An observed
@@ -120,5 +121,5 @@ usage or input errors, 3 for conflicts, 4 for unavailable or timed
 out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.
 
-The dashboard provides application management forms. Logs, remote authentication, builds,
+The dashboard provides application management forms. Logs, remote authentication, build logs,
 registry management, and advanced interactive CLI flows remain future work.

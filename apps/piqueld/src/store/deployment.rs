@@ -288,7 +288,7 @@ mod tests {
         let store = SqliteStore::open(temp.path().join("db")).await.unwrap();
         let saved = save(&store, empty(), 0).await;
         let id = ApplicationId::parse(saved.application_id).unwrap();
-        let op = store.request_refresh(&id, Some(1)).await.unwrap();
+        let op = store.request_deploy(&id, Some(1)).await.unwrap();
         let target = piqueld_core::compile_application(
             &store.deployment_manifest(&op.id).await.unwrap(),
             piqueld_core::InstanceId::parse(store.instance_id()).unwrap(),

@@ -81,6 +81,11 @@ pub enum ActionReason {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionKind {
+    /// Resolve and build a Git source before rollout.
+    BuildGit {
+        /// Logical service requesting a build.
+        service: String,
+    },
     /// Resolve an image source.
     ResolveImage {
         /// Service whose image must be resolved.
@@ -143,7 +148,8 @@ impl ActionKind {
             | Self::RetainVolume { name } => name,
             Self::WaitForService { service }
             | Self::WaitForServiceRemoval { service }
-            | Self::ResolveImage { service, .. } => service,
+            | Self::ResolveImage { service, .. }
+            | Self::BuildGit { service } => service,
         }
     }
 
@@ -154,7 +160,8 @@ impl ActionKind {
             Self::EnsureVolume { .. } => ActionRisk::DataAdjacent,
             Self::EnsureService { .. } => ActionRisk::Availability,
             Self::RemoveService { .. } | Self::RemoveNetwork { .. } => ActionRisk::Destructive,
-            Self::ResolveImage { .. }
+            Self::BuildGit { .. }
+            | Self::ResolveImage { .. }
             | Self::EnsureNetwork { .. }
             | Self::WaitForService { .. }
             | Self::WaitForServiceRemoval { .. }
@@ -185,6 +192,7 @@ impl ActionKind {
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
+            Self::BuildGit { .. } => "build_git",
             Self::ResolveImage { .. } => "resolve_image",
             Self::EnsureNetwork { .. } => "ensure_network",
             Self::EnsureVolume { .. } => "ensure_volume",
@@ -201,6 +209,7 @@ impl ActionKind {
 impl fmt::Display for ActionKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (verb, resource) = match self {
+            Self::BuildGit { service } => ("BUILD GIT", service.as_str()),
             Self::ResolveImage { service, .. } => ("RESOLVE IMAGE", service.as_str()),
             Self::EnsureNetwork { network } => ("ENSURE NETWORK", network.name.as_str()),
             Self::EnsureVolume { volume } => ("ENSURE VOLUME", volume.name.as_str()),
@@ -357,6 +366,12 @@ impl Plan {
                 let prefix = unresolved
                     .iter()
                     .map(|requirement| match requirement {
+                        ResolutionRequirement::BuildGit { service, .. } => PlanAction::new(
+                            ActionKind::BuildGit {
+                                service: service.clone(),
+                            },
+                            ActionReason::ResolutionRequired,
+                        ),
                         ResolutionRequirement::ResolveImage { service, reference } => {
                             PlanAction::new(
                                 ActionKind::ResolveImage {

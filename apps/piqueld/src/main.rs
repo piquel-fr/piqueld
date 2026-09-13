@@ -183,7 +183,7 @@ fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> 
         Ok(config) => Ok(config),
         Err(ConfigError::Read(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             eprintln!(
-                "{} is absent; using validated built-in defaults. Developers can select the shipped example with --config config/piqueld.example.toml",
+                "{} is absent; using validated built-in defaults. Developers can select the shipped example with --config examples/piqueld.toml",
                 default_path.display()
             );
             DaemonConfig::validated_default().context("validated built-in defaults are invalid")

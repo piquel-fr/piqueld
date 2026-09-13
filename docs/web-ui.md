@@ -8,8 +8,9 @@ the database without changing running containers.
 
 **Preview** shows the planned changes. **Deploy** captures the saved configuration
 in a persisted deployment and applies it. Both buttons require all local edits
-to be saved or discarded. Every deployment supersedes its predecessor and
+to be saved or discarded. Every deployment supersedes pending work and
 refreshes image resolution, including when configuration has not changed.
+Completed deployments retain their terminal state in history.
 Retries use the captured deployment, not subsequent configuration edits.
 
 The Deployments tab lists deployment snapshots, progress, errors, and retry
@@ -43,7 +44,7 @@ just dev
 
 This watches the daemon and dashboard sources, builds the embedded bundle
 with Tailwind and Trunk, and runs the daemon using
-`config/piqueld.example.toml`. Open `http://127.0.0.1:7845/dashboard/` and
+`examples/piqueld.toml`. Open `http://127.0.0.1:7845/dashboard/` and
 refresh the browser after a rebuild. Stopping the command allows the daemon
 its graceful shutdown period before terminating any remaining processes.
 
@@ -106,3 +107,8 @@ older browsers without those primitives are outside the support target.
 Secrets, logs and streams, state transfer, and authentication remain outside the
 current dashboard scope. Event history is available through the API and CLI.
 Deployment history polls every two seconds while the page is visible.
+
+Service source settings explicitly select a container image or Git with a
+Dockerfile build. Git settings include repository, branch, optional commit,
+Dockerfile path, and build context relative to the repository root. Saving
+scaling or other service settings preserves the selected source.

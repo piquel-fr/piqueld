@@ -104,7 +104,7 @@ impl From<StoreError> for ApiError {
             StoreError::Busy => Self::new(
                 StatusCode::CONFLICT,
                 "application_busy",
-                "application is busy; wait for its operation before renaming",
+                "application is busy; wait for its current operation to finish",
             ),
             StoreError::NotFound => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
@@ -162,6 +162,11 @@ impl From<BoundaryError> for ApiError {
                 StatusCode::BAD_GATEWAY,
                 "runtime_request_failed",
                 "runtime request failed",
+            ),
+            BoundaryError::GitBuild(_) => Self::new(
+                StatusCode::BAD_GATEWAY,
+                "git_build_failed",
+                "Git source build failed",
             ),
             BoundaryError::Compilation(_) => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -310,7 +315,6 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(applications::detail))
         .routes(routes!(applications::status))
         .routes(routes!(applications::reconcile))
-        .routes(routes!(applications::refresh))
         .routes(routes!(applications::rename))
         .routes(routes!(deployments::deploy))
         .routes(routes!(deployments::list))

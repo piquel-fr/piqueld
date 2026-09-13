@@ -20,12 +20,11 @@ normalized manifest is needed.
 | GET | `/api/v1/applications/{id}/status` | Intent progress and separate runtime health |
 | POST | `/api/v1/applications/plan` | Preview a manifest without pulling images |
 | POST | `/api/v1/applications/apply` | Save configuration by name; `?deploy=true` also deploys |
-| POST | `/api/v1/applications/{id}/deploy` | Deploy the inspected saved revision |
+| POST | `/api/v1/applications/{id}/deploy` | Deploy the inspected saved revision with fresh source resolution; supersede pending work |
 | GET | `/api/v1/applications/{id}/deployments` | Deployment snapshots, newest first, three per page |
 | GET | `/api/v1/applications/{id}/deployments/{deployment}/attempts` | Retained outcomes, newest first, 100 per page |
 | DELETE | `/api/v1/applications/{id}` | Request deletion; no body |
 | POST | `/api/v1/applications/{id}/reconcile` | Repair latest intent without refreshing prepared digests |
-| POST | `/api/v1/applications/{id}/refresh` | Explicitly refresh image references |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
@@ -54,8 +53,8 @@ the manifest name, or creates one if absent. ID-based mutations still target the
 URL's ID. Force never bypasses manifest validation, resource ownership, or rename
 busy/name-collision checks. There is no authorization logic for force yet.
 
-Refresh and reconcile act on the current intent without requiring preconditions;
-they accept an optional `expected_generation` query for callers that want one.
+Reconcile acts on the current intent without requiring preconditions;
+it accepts an optional `expected_generation` query for callers that want one.
 Reconcile can continue an already-requested deletion. Preview preconditions are
 also optional. The CLI supplies apply/delete/rename preconditions automatically;
 `--yes` skips confirmation and `--force` requests the override independently.
@@ -73,8 +72,7 @@ matching healthy containers need no restart. Empty applications are valid: an
 empty deployment removes services and networks while retaining volume data.
 
 Reconciliation and retries use deployment snapshots and their prepared digests,
-never newer saved edits. Refresh uses the latest deployment configuration, not
-pending changes. Configuration saves do not supersede operations. Deployments and
+never newer saved edits. Configuration saves do not supersede operations. Deployments and
 attempt outcomes remain indefinitely until application deletion. The deployments
 response distinguishes `current_target`, `last_successful`, and mutable operation
 progress; last successful does not imply automatic rollback after a failed rollout.
@@ -99,7 +97,8 @@ intent with 409 `application_busy`, and occupied names with 409
 operation identity; a changed name advances generation and records an event.
 Update the manifest's name before subsequent name-based apply.
 
-Operations have kind `apply`, `refresh`, or `delete` and state `requested`,
+Operations have kind `apply`, `refresh` (the stored kind used by Deploy), or `delete`
+and state `requested`,
 `running`, `succeeded`, `failed`, `cancelled`, or `superseded`. New intent marks
 pending/running older operations `superseded`, separately from cancellation.
 The CLI treats supersession as success with an explicit outcome and stops waiting
@@ -133,3 +132,8 @@ The unauthenticated TCP API accepts only loopback hosts. The dashboard
 is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
 The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
 [the generated contract](openapi-v1.json).
+
+`POST /api/v1/applications/{id}/deploy` prepares all sources again, including
+Git builds. It requires the inspected generation unless forced and supersedes
+pending work. An identical idempotency-key replay returns the original acceptance.
+Use `piquelctl deploy NAME --yes` to request and wait for deployment.

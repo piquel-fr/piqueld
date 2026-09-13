@@ -95,6 +95,41 @@ impl DockerApi for BollardDocker {
         .await
     }
 
+    async fn build_image(
+        &self,
+        dockerfile: &std::path::Path,
+        context: &std::path::Path,
+    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
+        use anyhow::Context;
+        let result = async {
+            if !dockerfile.is_file() || !context.is_dir() {
+                anyhow::bail!("Dockerfile must be a file and build context must be a directory");
+            }
+            let directory = tempfile::tempdir().context("create Docker build directory")?;
+            let iidfile = directory.path().join("image-id");
+            let mut command = tokio::process::Command::new("docker");
+            command
+                .arg("--host")
+                .arg(format!("unix://{}", self.socket.display()))
+                .args(["build", "--pull", "--file"])
+                .arg(dockerfile)
+                .arg("--iidfile")
+                .arg(&iidfile)
+                .arg(context);
+            crate::command::LoggedCommand::run(&mut command, "build Docker image").await?;
+            let id = tokio::fs::read_to_string(iidfile)
+                .await
+                .context("read built image ID")?;
+            piqueld_core::resource::Sha256Digest::parse(id.trim())
+                .context("validate built image ID")
+        }
+        .await;
+        result.map_err(|source| DockerError::RequestDiagnostic {
+            operation: "build Docker image",
+            source: source.into(),
+        })
+    }
+
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         // Pulling through the Engine records RepoDigests, and resolution
         // verifies the tag was not re-pointed while the pull ran. Stream

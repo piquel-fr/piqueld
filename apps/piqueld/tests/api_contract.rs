@@ -35,7 +35,9 @@ impl RuntimeBoundary for FakeRuntime {
             .services
             .iter()
             .map(|service| {
-                let Source::Image { image } = &service.source;
+                let Source::Image { image } = &service.source else {
+                    panic!("expected image fixture")
+                };
                 let repository = image
                     .rsplit_once(':')
                     .map_or(image.as_str(), |value| value.0);
@@ -1156,7 +1158,7 @@ async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
 }
 
 #[tokio::test]
-async fn generations_refresh_reconcile_and_event_pagination_share_the_http_contract() {
+async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contract() {
     let temp = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1179,11 +1181,11 @@ async fn generations_refresh_reconcile_and_event_pagination_share_the_http_contr
     let changed = client.apply_and_deploy(&request).await.unwrap();
     assert_eq!(changed.generation, 2);
     let refreshed = client
-        .refresh_application(&first.application_id, Some(2))
+        .deploy_application(&first.application_id, 2)
         .await
         .unwrap();
     assert_eq!(refreshed.generation, 2);
-    assert_eq!(refreshed.operation_id, changed.operation_id);
+    assert_ne!(refreshed.operation_id, changed.operation_id);
     let reconciled = client
         .reconcile_application(&first.application_id, Some(2))
         .await
@@ -1216,7 +1218,7 @@ async fn generations_refresh_reconcile_and_event_pagination_share_the_http_contr
     assert_eq!(deletion.generation, 3);
     assert!(
         client
-            .refresh_application(&first.application_id, None)
+            .deploy_application(&first.application_id, 3)
             .await
             .is_err()
     );
@@ -1442,10 +1444,10 @@ async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
         .await
         .unwrap();
     let refreshed = keyed
-        .refresh_application(&accepted.application_id, Some(1))
+        .deploy_application(&accepted.application_id, 1)
         .await
         .unwrap();
-    assert_eq!(refreshed.operation_id, accepted.operation_id);
+    assert_ne!(refreshed.operation_id, accepted.operation_id);
 }
 
 #[tokio::test]
@@ -1557,7 +1559,7 @@ impl AcceptanceApi {
 }
 
 #[tokio::test]
-async fn mutations_require_preconditions_but_refresh_and_reconcile_use_current_intent() {
+async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
     let mut request = AcceptanceApi::request();
@@ -1599,7 +1601,7 @@ async fn mutations_require_preconditions_but_refresh_and_reconcile_use_current_i
     );
     let refreshed = api
         .client
-        .refresh_application(&accepted.application_id, None)
+        .deploy_application(&accepted.application_id, 2)
         .await
         .unwrap();
     assert_eq!(refreshed.generation, 2);
@@ -1617,7 +1619,7 @@ async fn mutations_require_preconditions_but_refresh_and_reconcile_use_current_i
     assert_eq!(reconciled.operation_id, deletion.operation_id);
     assert!(
         api.client
-            .refresh_application(&accepted.application_id, None)
+            .deploy_application(&accepted.application_id, 2)
             .await
             .is_err()
     );
@@ -1935,7 +1937,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
 }
 
 #[tokio::test]
-async fn refresh_after_rename_preserves_name_and_deployed_spec() {
+async fn deploy_after_rename_captures_saved_name_and_spec() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
     let accepted = api
@@ -1962,7 +1964,7 @@ async fn refresh_after_rename_preserves_name_and_deployed_spec() {
     api.client.apply_application(&edited).await.unwrap();
     let refreshed = api
         .client
-        .refresh_application(&accepted.application_id, Some(3))
+        .deploy_application(&accepted.application_id, 3)
         .await
         .unwrap();
     let snapshot = api
@@ -1971,7 +1973,7 @@ async fn refresh_after_rename_preserves_name_and_deployed_spec() {
         .await
         .unwrap();
     assert_eq!(snapshot.metadata.name, "renamed");
-    assert_eq!(snapshot.spec.services[0].replicas, 1);
+    assert_eq!(snapshot.spec.services[0].replicas, 2);
     assert_eq!(
         api.store
             .deployment_manifest(&accepted.operation_id)
