@@ -74,7 +74,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-          cache-directories: target-ui
+          cache-directories: |
+            target-ui
+            ${{ runner.temp }}/piqueld-tools
       - uses: ./.github/actions/dashboard-tools
         with:
           trunk-version: "0.21.14"
@@ -147,8 +149,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
+          cache-directories: ${{ runner.temp }}/piqueld-tools
+      - run: bash scripts/install-wasm-tools.sh
       - run: just ui-check
       - run: just check-wasm
+      # Ubuntu runners ship a matching Chrome and ChromeDriver pair.
+      - name: Run browser transport tests
+        run: CHROMEDRIVER="${CHROMEWEBDRIVER:?}/chromedriver" just test-wasm
 
   docker-integration:
     name: docker-integration
@@ -183,7 +190,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-          cache-directories: target-ui
+          cache-directories: |
+            target-ui
+            ${{ runner.temp }}/piqueld-tools
       - uses: ./.github/actions/dashboard-tools
         with:
           trunk-version: "0.21.14"
