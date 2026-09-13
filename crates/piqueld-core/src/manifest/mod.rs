@@ -1,6 +1,9 @@
 //! Public application manifests and their validated, canonical domain model.
 
+pub mod domain;
 pub mod input;
+
+use domain::{ValidatedMetadata, ValidatedSpec};
 pub mod validation;
 
 pub use input::{
@@ -13,7 +16,7 @@ pub use validation::{
     valid_repository_path,
 };
 
-use crate::ApplicationId;
+use crate::{ApplicationId, ApplicationName};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
@@ -29,35 +32,44 @@ pub const SPEC_HASH_VERSION: &str = "piqueld-spec-hash/v2";
 /// Validated domain application before canonical collection ordering.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidatedApplication {
-    name: String,
-    spec: ApplicationSpec,
+    metadata: ValidatedMetadata,
+    spec: ValidatedSpec,
 }
 
 /// Canonical desired application plus persistence-assigned identity.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+///
+/// Configuration is immutable. Export input with [`Self::to_manifest`] and
+/// validate edits before constructing a replacement.
+///
+/// ```compile_fail
+/// fn bypass_validation(app: &mut piqueld_core::NormalizedApplication) {
+///     app.spec.services.clear();
+/// }
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 pub struct NormalizedApplication {
     /// Stable application identity.
-    pub id: ApplicationId,
+    id: ApplicationId,
     /// API version string.
-    pub api_version: String,
+    api_version: String,
     /// Resource kind string.
-    pub kind: String,
+    kind: String,
     /// Canonical metadata.
-    pub metadata: Metadata,
+    metadata: ValidatedMetadata,
     /// Canonical resource specification.
-    pub spec: ApplicationSpec,
+    spec: ValidatedSpec,
 }
 
 impl ValidatedApplication {
     /// Returns the editable application name.
     #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name(&self) -> &ApplicationName {
+        &self.metadata.name
     }
 
     /// Returns the validated specification before canonical ordering.
     #[must_use]
-    pub fn spec(&self) -> &ApplicationSpec {
+    pub fn spec(&self) -> &ValidatedSpec {
         &self.spec
     }
 
@@ -70,13 +82,13 @@ impl ValidatedApplication {
             id,
             api_version: APPLICATION_API_VERSION.into(),
             kind: APPLICATION_KIND.into(),
-            metadata: Metadata { name: self.name },
+            metadata: self.metadata,
             spec,
         }
     }
 }
 
-fn normalize_spec(spec: &mut ApplicationSpec) {
+fn normalize_spec(spec: &mut ValidatedSpec) {
     spec.services
         .sort_by(|left, right| left.name.cmp(&right.name));
     for service in &mut spec.services {
@@ -86,6 +98,38 @@ fn normalize_spec(spec: &mut ApplicationSpec) {
 }
 
 impl NormalizedApplication {
+    /// Returns the storage-assigned application identity.
+    #[must_use]
+    pub fn id(&self) -> &ApplicationId {
+        &self.id
+    }
+
+    /// Returns validated application metadata.
+    #[must_use]
+    pub fn metadata(&self) -> &ValidatedMetadata {
+        &self.metadata
+    }
+
+    /// Returns the canonical, validated configuration.
+    #[must_use]
+    pub fn spec(&self) -> &ValidatedSpec {
+        &self.spec
+    }
+
+    /// Rebinds storage identity without changing validated configuration.
+    #[must_use]
+    pub fn with_id(mut self, id: ApplicationId) -> Self {
+        self.id = id;
+        self
+    }
+
+    /// Changes display identity without changing the runtime specification.
+    #[must_use]
+    pub fn with_name(mut self, name: ApplicationName) -> Self {
+        self.metadata.name = name;
+        self
+    }
+
     /// Reapplies canonical ordering. This operation is idempotent.
     #[must_use]
     pub fn normalize(mut self) -> Self {
@@ -107,7 +151,7 @@ impl NormalizedApplication {
         #[derive(Serialize)]
         struct HashEnvelope<'a> {
             hash_version: &'static str,
-            spec: &'a ApplicationSpec,
+            spec: &'a ValidatedSpec,
         }
         let mut normalized = self.clone().normalize();
         // Manifest location does not change the desired runtime resources.
@@ -140,12 +184,40 @@ impl NormalizedApplication {
         toml::to_string_pretty(&self.clone().normalize().to_manifest())
     }
 
-    fn to_manifest(&self) -> ApplicationManifest {
+    /// Exports editable input; call `validate` after changing configuration.
+    #[must_use]
+    pub fn to_manifest(&self) -> ApplicationManifest {
         ApplicationManifest {
             api_version: self.api_version.clone(),
             kind: self.kind.clone(),
-            metadata: self.metadata.clone(),
-            spec: self.spec.clone(),
+            metadata: Metadata {
+                name: self.metadata.name.to_string(),
+            },
+            spec: self.spec.to_input(),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for NormalizedApplication {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            id: ApplicationId,
+            api_version: String,
+            kind: String,
+            metadata: Metadata,
+            spec: ApplicationSpec,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        ApplicationManifest {
+            api_version: wire.api_version,
+            kind: wire.kind,
+            metadata: wire.metadata,
+            spec: wire.spec,
+        }
+        .validate()
+        .map(|validated| validated.normalize(wire.id))
+        .map_err(serde::de::Error::custom)
     }
 }

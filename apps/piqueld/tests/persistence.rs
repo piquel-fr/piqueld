@@ -28,7 +28,7 @@ fn resolved(
 ) -> piqueld_core::resource::ResolvedApplication {
     let resolutions = ResolutionSet {
         sources: [(
-            "web".into(),
+            piqueld_core::ServiceName::parse("web").unwrap(),
             ResolvedSource::Image {
                 requested: "ghcr.io/example/notes:1.4.0".into(),
                 digest_reference: format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
@@ -57,7 +57,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
         .await
         .expect("application saved");
     let stored = store
-        .get(&application.id)
+        .get(application.id())
         .await
         .expect("application readable");
     assert_eq!(stored.resolved, Some(desired.clone()));
@@ -68,7 +68,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     );
 
     let deleted = store
-        .request_delete(&application.id, None)
+        .request_delete(application.id(), None)
         .await
         .expect("deletion saved");
     assert_eq!(
@@ -76,20 +76,20 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
         OperationState::Superseded
     );
     assert_eq!(deleted.state, OperationState::Requested);
-    assert!(store.get(&application.id).await.unwrap().delete_intent);
+    assert!(store.get(application.id()).await.unwrap().delete_intent);
     drop(store);
 
     let reopened = Store::open(&database).await.expect("database reopens");
     assert_eq!(
         reopened
-            .get(&application.id)
+            .get(application.id())
             .await
             .unwrap()
             .resolved
             .unwrap(),
         desired
     );
-    assert!(reopened.get(&application.id).await.unwrap().delete_intent);
+    assert!(reopened.get(application.id()).await.unwrap().delete_intent);
     reopened
         .transition_operation(
             &deleted.id,
@@ -102,7 +102,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     let running = reopened.operation(&deleted.id).await.unwrap();
     reopened.finish_delete_operation(&running).await.unwrap();
     assert!(matches!(
-        reopened.get(&application.id).await,
+        reopened.get(application.id()).await,
         Err(StoreError::NotFound)
     ));
     assert!(matches!(
@@ -111,7 +111,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     ));
     assert!(
         reopened
-            .events(Some(&application.id), None, 100)
+            .events(Some(application.id()), None, 100)
             .await
             .unwrap()
             .items
@@ -134,9 +134,12 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
         )
         .await
         .unwrap();
-    let mut replacement = application.clone();
+    let mut replacement = application.to_manifest();
     replacement.spec.services[0].replicas = 2;
-    let replacement = replacement.normalize();
+    let replacement = replacement
+        .validate()
+        .unwrap()
+        .normalize(application.id().clone());
     let replaced = store
         .save_application(
             &replacement,
@@ -151,7 +154,7 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
         OperationState::Superseded
     );
     assert_eq!(
-        store.get(&application.id).await.unwrap().application,
+        store.get(application.id()).await.unwrap().application,
         replacement
     );
     store
@@ -215,7 +218,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
             .await
             .expect("database can be inspected");
     sqlx::query("UPDATE applications SET desired_json='{}' WHERE id=?1")
-        .bind(corrupt.id.as_str())
+        .bind(corrupt.id().as_str())
         .execute(&mut connection)
         .await
         .expect("row can be corrupted");
@@ -226,17 +229,17 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         .await
         .expect("summary listing does not read manifest documents");
     assert_eq!(summaries.items.len(), 2);
-    assert_eq!(summaries.items[0].id, corrupt.id);
-    assert_eq!(summaries.items[1].id, healthy.id);
+    assert_eq!(&summaries.items[0].id, corrupt.id());
+    assert_eq!(&summaries.items[1].id, healthy.id());
 
     let page = store
         .list(None, 50)
         .await
         .expect("listing tolerates a corrupt row");
     assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].application.id, healthy.id);
+    assert_eq!(page.items[0].application.id(), healthy.id());
     assert_eq!(page.next_cursor, None);
-    assert!(store.get(&corrupt.id).await.is_err());
+    assert!(store.get(corrupt.id()).await.is_err());
 
     // A corrupt row inside a full page must not suppress the pagination
     // cursor: quarantined rows still consume page slots, so the surviving
@@ -261,9 +264,9 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         first_page
             .items
             .iter()
-            .map(|application| application.application.id.as_str())
+            .map(|application| application.application.id().as_str())
             .collect::<Vec<_>>(),
-        vec![healthy.id.as_str()],
+        vec![healthy.id().as_str()],
         "the corrupt row is quarantined inside the full page"
     );
     let next_cursor = first_page.next_cursor.expect("full page reports a cursor");
@@ -276,9 +279,9 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         second_page
             .items
             .iter()
-            .map(|application| application.application.id.as_str())
+            .map(|application| application.application.id().as_str())
             .collect::<Vec<_>>(),
-        vec![third.id.as_str(), fourth.id.as_str()],
+        vec![third.id().as_str(), fourth.id().as_str()],
         "the remaining healthy application follows the quarantined page"
     );
 }
@@ -295,13 +298,13 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
         .save_application(&app, Some(&desired), Some(0))
         .await
         .unwrap();
-    let second = store.request_deploy(&app.id, Some(1)).await.unwrap();
+    let second = store.request_deploy(app.id(), Some(1)).await.unwrap();
     store.prune_finished_operations(i64::MAX).await.unwrap();
     assert!(store.operation(&first.id).await.is_ok());
     assert!(store.operation(&second.id).await.is_ok());
     assert!(store.prepared_target(&first.id).await.unwrap().is_some());
     assert!(store.prepared_target(&second.id).await.unwrap().is_none());
-    let events = store.events(Some(&app.id), None, 100).await.unwrap();
+    let events = store.events(Some(app.id()), None, 100).await.unwrap();
     assert!(
         events
             .items
@@ -318,6 +321,6 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
             .items
             .is_empty()
     );
-    assert!(store.get(&app.id).await.is_ok());
+    assert!(store.get(app.id()).await.is_ok());
     assert!(store.operation(&second.id).await.is_ok());
 }

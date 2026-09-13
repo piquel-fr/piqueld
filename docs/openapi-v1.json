@@ -450,6 +450,10 @@
         ],
         "type": "object"
       },
+      "ApplicationName": {
+        "description": "User-facing logical application name.",
+        "type": "string"
+      },
       "ApplicationSpec": {
         "additionalProperties": false,
         "description": "User-provided application resource lists.",
@@ -2310,7 +2314,7 @@
         "type": "object"
       },
       "NormalizedApplication": {
-        "description": "Canonical desired application plus persistence-assigned identity.",
+        "description": "Canonical desired application plus persistence-assigned identity.\n\nConfiguration is immutable. Export input with [`Self::to_manifest`] and\nvalidate edits before constructing a replacement.\n\n```compile_fail\nfn bypass_validation(app: &mut piqueld_core::NormalizedApplication) {\n    app.spec.services.clear();\n}\n```",
         "properties": {
           "api_version": {
             "description": "API version string.",
@@ -2325,11 +2329,11 @@
             "type": "string"
           },
           "metadata": {
-            "$ref": "#/components/schemas/Metadata",
+            "$ref": "#/components/schemas/ValidatedMetadata",
             "description": "Canonical metadata."
           },
           "spec": {
-            "$ref": "#/components/schemas/ApplicationSpec",
+            "$ref": "#/components/schemas/ValidatedSpec",
             "description": "Canonical resource specification."
           }
         },
@@ -2964,6 +2968,10 @@
         ],
         "type": "object"
       },
+      "ServiceName": {
+        "description": "Logical service name, distinct from an application or volume name.\n\n```compile_fail\nuse piqueld_core::{ServiceName, VolumeName};\nlet volume: VolumeName = ServiceName::parse(\"data\").unwrap();\n```",
+        "type": "string"
+      },
       "Sha256Digest": {
         "description": "Explicitly tagged lowercase SHA-256 digest.",
         "type": "string"
@@ -3046,6 +3054,172 @@
         ],
         "type": "object"
       },
+      "ValidatedMetadata": {
+        "description": "Validated application metadata.",
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/ApplicationName",
+            "description": "User-facing application name."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "ValidatedMount": {
+        "description": "A persistent volume mount in a service.",
+        "properties": {
+          "read_only": {
+            "description": "Whether the mount is read-only.",
+            "type": "boolean"
+          },
+          "target": {
+            "description": "Container target path.",
+            "type": "string"
+          },
+          "volume": {
+            "$ref": "#/components/schemas/VolumeName",
+            "description": "Referenced logical volume name."
+          }
+        },
+        "required": [
+          "volume",
+          "target",
+          "read_only"
+        ],
+        "type": "object"
+      },
+      "ValidatedService": {
+        "description": "Validated application service.",
+        "properties": {
+          "arguments": {
+            "description": "Arguments passed to the command.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "description": "Container entrypoint command.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "environment": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Environment variables keyed by name.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "healthcheck": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HealthCheck",
+                "description": "Optional container health check."
+              }
+            ]
+          },
+          "mounts": {
+            "description": "Persistent volume mounts.",
+            "items": {
+              "$ref": "#/components/schemas/ValidatedMount"
+            },
+            "type": "array"
+          },
+          "name": {
+            "$ref": "#/components/schemas/ServiceName",
+            "description": "Logical service name."
+          },
+          "replicas": {
+            "description": "Desired replica count.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "resources": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ResourceLimits",
+                "description": "Optional CPU and memory limits."
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source",
+            "description": "Explicit image or build source."
+          }
+        },
+        "required": [
+          "name",
+          "source",
+          "replicas",
+          "environment",
+          "command",
+          "arguments",
+          "mounts"
+        ],
+        "type": "object"
+      },
+      "ValidatedSpec": {
+        "description": "Validated application resource lists.",
+        "properties": {
+          "manifest": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RepositoryManifest",
+                "description": "Optional repository that supplies this application's manifest on Deploy."
+              }
+            ]
+          },
+          "services": {
+            "description": "Declared services.",
+            "items": {
+              "$ref": "#/components/schemas/ValidatedService"
+            },
+            "type": "array"
+          },
+          "volumes": {
+            "description": "Declared named volumes.",
+            "items": {
+              "$ref": "#/components/schemas/ValidatedVolume"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "services",
+          "volumes"
+        ],
+        "type": "object"
+      },
+      "ValidatedVolume": {
+        "description": "Validated named volume.",
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/VolumeName",
+            "description": "Logical volume name."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "Volume": {
         "additionalProperties": false,
         "description": "User-declared named volume.",
@@ -3059,6 +3233,10 @@
           "name"
         ],
         "type": "object"
+      },
+      "VolumeName": {
+        "description": "Logical volume name, including references from service mounts.",
+        "type": "string"
       }
     }
   },

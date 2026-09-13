@@ -44,7 +44,7 @@ impl Store {
         let (current, latest) = Self::mutation_snapshot(&mut tx, &mutation).await?;
         if let Mutation::Apply { application, .. } | Mutation::Save { application, .. } = &mutation
             && let Some(current) = &current
-            && current.application.spec.manifest.is_some()
+            && current.application.spec().manifest.is_some()
             && current.application.spec_hash() != application.spec_hash()
         {
             return Err(StoreError::RepositoryManaged);
@@ -138,14 +138,14 @@ impl Store {
                 expected_application_id,
                 deploy,
             } => {
-                application.id = Self::application_identity(
+                application = application.with_id(Self::application_identity(
                     current.as_ref(),
                     expected_application_id.as_deref(),
-                )?;
+                )?);
                 let mut saved =
                     Self::save_configuration_on(tx, &application, expected_generation).await?;
                 if deploy {
-                    let op = Self::request_deploy_on(tx, &application.id, Some(saved.generation))
+                    let op = Self::request_deploy_on(tx, application.id(), Some(saved.generation))
                         .await?;
                     Self::insert_deployment_on(tx, &op, &application).await?;
                     saved.operation_id = Some(op.id);
@@ -204,12 +204,13 @@ impl Store {
         current: Option<&StoredApplication>,
         expected: Option<&str>,
     ) -> Result<ApplicationId, StoreError> {
-        if expected.is_some_and(|id| current.is_none_or(|app| app.application.id.as_str() != id)) {
+        if expected.is_some_and(|id| current.is_none_or(|app| app.application.id().as_str() != id))
+        {
             return Err(StoreError::IdentityConflict);
         }
         Ok(current.map_or_else(
             || ApplicationId::parse(super::new_id("app")).expect("valid generated ID"),
-            |app| app.application.id.clone(),
+            |app| app.application.id().clone(),
         ))
     }
 
@@ -221,8 +222,10 @@ impl Store {
         latest: Option<Operation>,
         expected_generation: Option<u64>,
     ) -> Result<(MutationResponse, bool), StoreError> {
-        application.id =
-            Self::application_identity(current.as_ref(), expected_application_id.as_deref())?;
+        application = application.with_id(Self::application_identity(
+            current.as_ref(),
+            expected_application_id.as_deref(),
+        )?);
         let identical = current
             .as_ref()
             .is_some_and(|app| !app.delete_intent && app.application == application);
@@ -244,7 +247,7 @@ impl Store {
     ) -> Result<(Option<StoredApplication>, Option<Operation>), StoreError> {
         let (id, name) = match mutation {
             Mutation::Apply { application, .. } | Mutation::Save { application, .. } => {
-                (None, Some(application.metadata.name.as_str()))
+                (None, Some(application.metadata().name.as_str()))
             }
             Mutation::Deploy { id }
             | Mutation::Delete { id }
@@ -255,7 +258,7 @@ impl Store {
             .fetch_optional(&mut **tx).await.map_err(StoreError::database)?.map(ApplicationRow::decode).transpose()?;
         let application_id = current
             .as_ref()
-            .map(|app| app.application.id.as_str())
+            .map(|app| app.application.id().as_str())
             .or(id);
         let latest_id = sqlx::query_scalar!(r#"SELECT id AS "id!" FROM operations WHERE application_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1"#,application_id)
             .fetch_optional(&mut **tx).await.map_err(StoreError::database)?;
@@ -275,13 +278,13 @@ impl Store {
         now: i64,
     ) -> Result<(MutationResponse, bool), StoreError> {
         let mut app = current;
-        if app.application.spec.manifest.is_some() {
+        if app.application.spec().manifest.is_some() {
             return Err(StoreError::RepositoryManaged);
         }
         if app.delete_intent || latest.as_ref().is_some_and(|op| !op.state.terminal()) {
             return Err(StoreError::Busy);
         }
-        let generation = if app.application.metadata.name == name {
+        let generation = if app.application.metadata().name.as_str() == name {
             app.generation
         } else {
             app.generation
@@ -289,8 +292,11 @@ impl Store {
                 .ok_or(StoreError::InvalidInput)?
         };
         let revision = i64::try_from(generation).map_err(StoreError::invalid_input)?;
-        let old_name = app.application.metadata.name.clone();
-        app.application.metadata.name.clone_from(&name);
+        let old_name = app.application.metadata().name.clone();
+        app.application = app.application.with_name(
+            piqueld_core::ApplicationName::parse(name.clone())
+                .map_err(StoreError::invalid_input)?,
+        );
         if let Some(target) = app.resolved.as_mut() {
             target.name.clone_from(&name);
         }
@@ -308,7 +314,7 @@ impl Store {
         if let Some(op) = latest {
             sqlx::query!("UPDATE operations SET target_json=CASE WHEN target_json IS NULL THEN NULL ELSE json_set(target_json,'$.name',?1) END WHERE id=?2",name,op.id).execute(&mut **tx).await.map_err(StoreError::database)?;
         }
-        if old_name != name {
+        if old_name.as_str() != name {
             let message = format!("renamed {old_name} to {name}");
             sqlx::query!("INSERT INTO events(application_id,generation,kind,message,created_at_ms) VALUES(?1,?2,'application_renamed',?3,?4)",app_id,revision,message,now).execute(&mut **tx).await.map_err(StoreError::database)?;
         }

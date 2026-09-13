@@ -14,7 +14,7 @@ impl<D: DockerApi> Controller<D> {
         if input.fetched {
             return Ok(input.application);
         }
-        let Some(backing) = &input.application.spec.manifest else {
+        let Some(backing) = &input.application.spec().manifest else {
             self.store
                 .save_deployment_input(operation, &input.application, None)
                 .await?;
@@ -75,7 +75,7 @@ impl<D: DockerApi> Controller<D> {
             }
         })?;
         let application = parsed.normalize(operation.application_id.clone());
-        if application.metadata.name != input.application.metadata.name {
+        if application.metadata().name != input.application.metadata().name {
             return Err(OperationError::ManifestInvalid);
         }
         self.check_current(operation).await?;

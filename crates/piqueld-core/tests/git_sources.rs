@@ -19,7 +19,7 @@ fn git_sources_validate_paths_and_explicit_build_backend() {
     let Source::Git {
         build: Build::Docker { context, .. },
         ..
-    } = &parsed.spec.services[0].source
+    } = &parsed.spec().services[0].source
     else {
         panic!("Git source expected")
     };
@@ -64,9 +64,9 @@ fn git_resolution_retains_commit_and_local_image_and_rejects_mismatched_inputs()
     let mut resolutions = ResolutionSet::default();
     let image_id = Sha256Digest::parse(format!("sha256:{}", "a".repeat(64))).unwrap();
     resolutions.sources.insert(
-        "web".into(),
+        piqueld_core::ServiceName::parse("web").unwrap(),
         ResolvedSource::Git {
-            requested: app.spec.services[0].source.clone(),
+            requested: app.spec().services[0].source.clone(),
             commit: "b".repeat(40),
             image_id: image_id.clone(),
         },
@@ -75,11 +75,12 @@ fn git_resolution_retains_commit_and_local_image_and_rejects_mismatched_inputs()
     let resolved = compile_application(&app, instance.clone(), &resolutions).unwrap();
     assert_eq!(resolved.services[0].image, image_id.as_str());
     assert_eq!(resolved.reusable_resolutions(&app), resolutions);
-    let mut changed = app.clone();
+    let mut changed = app.to_manifest();
     let Source::Git { repository, .. } = &mut changed.spec.services[0].source else {
         unreachable!()
     };
     repository.commit = Some("c".repeat(40));
+    let changed = changed.validate().unwrap().normalize(app.id().clone());
     assert!(compile_application(&changed, instance, &resolutions).is_err());
     assert!(resolved.reusable_resolutions(&changed).sources.is_empty());
 }

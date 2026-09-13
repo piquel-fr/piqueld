@@ -17,11 +17,11 @@ pub(super) fn ServiceList() -> impl IntoView {
                 context
                     .saved
                     .with(|app| {
-                        if app.application.spec.services.is_empty() {
+                        if app.application.to_manifest().spec.services.is_empty() {
                             return view! { <p class="empty-state">"No services yet."</p> }
                                 .into_view();
                         }
-                        app.application
+                        app.application.to_manifest()
                             .spec
                             .services
                             .clone()
@@ -36,7 +36,7 @@ pub(super) fn ServiceList() -> impl IntoView {
                                         class="application-row service-row"
                                         href={format!(
                                             "/dashboard/applications/{}/services/{}",
-                                            app.application.id,
+                                            app.application.id(),
                                             service.name,
                                         )}
                                     >
@@ -63,6 +63,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let context = editor();
     if !context.saved.with_untracked(|app| {
         app.application
+            .to_manifest()
             .spec
             .services
             .iter()
@@ -73,7 +74,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let app_href = context.saved.with_untracked(|app| {
         format!(
             "/dashboard/applications/{}?tab=services",
-            app.application.id
+            app.application.id()
         )
     });
     let navigate = use_navigate();
@@ -96,7 +97,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let managed = move || {
         context
             .saved
-            .with(|app| app.application.spec.manifest.is_some())
+            .with(|app| app.application.to_manifest().spec.manifest.is_some())
     };
     let selected = create_rw_signal(Section::General);
     let groups = Section::ALL
@@ -113,7 +114,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
         <header class="application-heading">
             <h1 class="service-heading">
                 <A href={app_href}>
-                    {move || context.saved.with(|app| app.application.metadata.name.clone())}
+                    {move || context.saved.with(|app| app.application.to_manifest().metadata.name.clone())}
                 </A>
                 <span class="path-separator">"/"</span>
                 {name}

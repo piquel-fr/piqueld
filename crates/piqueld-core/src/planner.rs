@@ -368,14 +368,14 @@ impl Plan {
                     .map(|requirement| match requirement {
                         ResolutionRequirement::BuildGit { service, .. } => PlanAction::new(
                             ActionKind::BuildGit {
-                                service: service.clone(),
+                                service: service.to_string(),
                             },
                             ActionReason::ResolutionRequired,
                         ),
                         ResolutionRequirement::ResolveImage { service, reference } => {
                             PlanAction::new(
                                 ActionKind::ResolveImage {
-                                    service: service.clone(),
+                                    service: service.to_string(),
                                     reference: reference.clone(),
                                 },
                                 ActionReason::ResolutionRequired,

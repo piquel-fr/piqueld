@@ -443,13 +443,13 @@ async fn git_build_runs_as_a_local_swarm_image() {
         .await
         .unwrap();
     docker.ensure_network(&target.networks[0]).await.unwrap();
-    let observed = docker.observe(&app.id).await.unwrap();
+    let observed = docker.observe(app.id()).await.unwrap();
     assert!(observed.networks[0].runtime_configuration_matches);
     docker.ensure_network(&target.networks[0]).await.unwrap();
     engine.ensure_service_eventually(&target.services[0]).await;
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let observed = docker.observe(&app.id).await.unwrap();
+            let observed = docker.observe(app.id()).await.unwrap();
             if observed
                 .services
                 .iter()

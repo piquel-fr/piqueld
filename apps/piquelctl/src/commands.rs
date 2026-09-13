@@ -196,7 +196,7 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
 async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
     let application = resolve_application(client, name_or_id).await?;
     let status = client
-        .application_status(application.application.id.as_str())
+        .application_status(application.application.id().as_str())
         .await?;
     if cli.json {
         return emit_json(&json!({"application": application, "status": status}));
@@ -204,8 +204,8 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
     writeln!(
         cli.output(),
         "{} ({})",
-        application.application.metadata.name,
-        application.application.id
+        application.application.metadata().name,
+        application.application.id()
     )?;
     writeln!(
         cli.output(),
@@ -222,7 +222,7 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
             .map_or_else(|| "none".to_owned(), |value| value.to_string())
     )?;
     writeln!(cli.output(), "Replicas: {}", desired_replicas(&application))?;
-    for service in &application.application.spec.services {
+    for service in &application.application.spec().services {
         let source = match &service.source {
             Source::Image { image } => format!("image {image}"),
             Source::Git { repository, .. } => {
@@ -236,10 +236,10 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
             service.replicas
         )?;
     }
-    if !application.application.spec.volumes.is_empty() {
+    if !application.application.spec().volumes.is_empty() {
         let volumes = application
             .application
-            .spec
+            .spec()
             .volumes
             .iter()
             .map(|volume| volume.name.as_str())
@@ -373,7 +373,8 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     if !cli.quiet {
         eprintln!(
             "deleting {} ({}): managed services and network are removed; named volumes are retained",
-            application.application.metadata.name, application.application.id
+            application.application.metadata().name,
+            application.application.id()
         );
     }
     confirm(
@@ -381,14 +382,14 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
         args.yes,
         &format!(
             "Delete application {:?}? Named volumes will be retained. [y/N] ",
-            application.application.metadata.name
+            application.application.metadata().name
         ),
     )
     .await?;
 
     let accepted = retry_transport(|| {
         client.delete_application_with_preconditions(
-            application.application.id.as_str(),
+            application.application.id().as_str(),
             (!args.force).then_some(args.expected_generation.unwrap_or(application.generation)),
             args.force,
         )
@@ -577,11 +578,11 @@ async fn reconcile_or_deploy(
         args.yes,
         &format!(
             "{action} application {:?}? [y/N] ",
-            application.application.metadata.name
+            application.application.metadata().name
         ),
     )
     .await?;
-    let id = application.application.id.as_str();
+    let id = application.application.id().as_str();
     let accepted = retry_transport(|| async {
         if deploy {
             client
@@ -624,7 +625,8 @@ async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
         args.yes,
         &format!(
             "Rename application {:?} to {:?}? [y/N] ",
-            application.application.metadata.name, args.new_name
+            application.application.metadata().name,
+            args.new_name
         ),
     )
     .await?;
@@ -635,7 +637,7 @@ async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
     };
     let renamed = retry_transport(|| {
         client.rename_application_with_force(
-            application.application.id.as_str(),
+            application.application.id().as_str(),
             &request,
             args.force,
         )
@@ -647,7 +649,7 @@ async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
         writeln!(
             cli.output(),
             "Renamed {} to {} (generation {}).",
-            application.application.metadata.name,
+            application.application.metadata().name,
             renamed.name,
             renamed.generation
         )?;

@@ -23,11 +23,11 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         context.error.set(None);
         spawn_local(async move {
             let mut result = client
-                .deploy_application(app.application.id.as_str(), app.generation)
+                .deploy_application(app.application.id().as_str(), app.generation)
                 .await;
             if result.as_ref().is_err_and(transport_failure) {
                 result = client
-                    .deploy_application(app.application.id.as_str(), app.generation)
+                    .deploy_application(app.application.id().as_str(), app.generation)
                     .await;
             }
             match result {
@@ -48,7 +48,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         let request = ApplyApplicationRequest {
             manifest: context.manifest(),
             expected_generation: Some(app.generation),
-            expected_application_id: Some(app.application.id.to_string()),
+            expected_application_id: Some(app.application.id().to_string()),
         };
         context.busy.set(true);
         context.error.set(None);
@@ -88,7 +88,7 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
     let loading = create_rw_signal(false);
     let id = context
         .saved
-        .with_untracked(|a| a.application.id.to_string());
+        .with_untracked(|a| a.application.id().to_string());
     context.poll_deployments(id.clone(), history, cursor, paginated, error, loading);
     let more = move |_| {
         let id = id.clone();
@@ -292,7 +292,7 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
         {move || {
             deployment
                 .get()
-                .application
+                .application.to_manifest()
                 .spec
                 .services
                 .into_iter()
@@ -304,7 +304,7 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
             {move || {
                 deployment
                     .get()
-                    .application
+                    .application.to_manifest()
                     .spec
                     .volumes
                     .into_iter()

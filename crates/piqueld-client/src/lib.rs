@@ -31,7 +31,9 @@ pub use piqueld_core::manifest::{
     RepositoryManifest, ResourceLimits, Service, Source, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
-pub use piqueld_core::{ApplicationId, ValidatedApplication, ValidationError, ValidationErrors};
+pub use piqueld_core::{
+    ApplicationId, ApplicationName, ValidatedApplication, ValidationError, ValidationErrors,
+};
 pub use piqueld_core::{ApplicationState, Convergence, Operation, OperationKind, OperationState};
 pub use system::SystemStatus;
 
@@ -49,7 +51,7 @@ pub use piqueld_core::api::{API_PREFIX, ApplicationLogs, Envelope, ErrorBody, Lo
 /// Returns field-level validation errors when the manifest is malformed or
 /// outside the supported application schema.
 pub fn application_name_from_toml(input: &str) -> Result<String, ValidationErrors> {
-    piqueld_core::parse_toml(input).map(|application| application.name().to_owned())
+    piqueld_core::parse_toml(input).map(|application| application.name().to_string())
 }
 
 #[derive(Debug, Error)]

@@ -279,7 +279,7 @@ pub(super) async fn plan(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
-    let current = state.store.find_by_name(manifest.name()).await?;
+    let current = state.store.find_by_name(manifest.name().as_str()).await?;
     crate::store::Store::check_generation(
         expected,
         current.as_ref().map_or(0, |app| app.generation),
@@ -287,20 +287,20 @@ pub(super) async fn plan(
     if let Some(expected_id) = expected_id
         && current
             .as_ref()
-            .is_none_or(|app| app.application.id.as_str() != expected_id)
+            .is_none_or(|app| app.application.id().as_str() != expected_id)
     {
         return Err(StoreError::IdentityConflict.into());
     }
     let id = current.as_ref().map_or_else(
         || ApplicationId::parse("preview-application").expect("valid preview ID"),
-        |app| app.application.id.clone(),
+        |app| app.application.id().clone(),
     );
     let application = manifest.normalize(id.clone());
     let plan = preview_plan(&state, &application, current.as_ref()).await?;
     let operation = if let Some(current) = &current {
         state
             .store
-            .latest_operation_for_application(&current.application.id)
+            .latest_operation_for_application(current.application.id())
             .await?
     } else {
         None
@@ -319,7 +319,7 @@ pub(super) async fn plan(
         generation: current.as_ref().map_or(0, |app| app.generation),
         identical: baseline
             .as_ref()
-            .is_some_and(|app| app.spec == application.spec),
+            .is_some_and(|app| app.spec() == application.spec()),
         operation,
         changes: ManifestChange::between(baseline.as_ref(), &application),
         plan,

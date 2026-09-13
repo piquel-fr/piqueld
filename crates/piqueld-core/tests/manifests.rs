@@ -37,7 +37,7 @@ image = "ghcr.io/example/notes:1"
 fn image_manifest_parses_from_both_supported_formats() {
     let toml = parse_toml(TOML).expect("valid TOML manifest");
     let json = parse_json(JSON).expect("valid JSON manifest");
-    assert_eq!(toml.name(), "notes");
+    assert_eq!(toml.name().as_str(), "notes");
     assert_eq!(toml.spec(), json.spec());
 }
 
@@ -48,7 +48,7 @@ fn normalization_is_canonical_and_round_trips() {
     let exported = normalized.export_toml().unwrap();
     let reparsed = parse_toml(&exported)
         .unwrap()
-        .normalize(normalized.id.clone());
+        .normalize(normalized.id().clone());
     assert_eq!(normalized, reparsed);
     let renormalized = reparsed.clone().normalize();
     assert_eq!(renormalized, reparsed);
@@ -61,8 +61,8 @@ fn spec_hash_is_pinned_and_ignores_metadata() {
 
     let renamed = parse_toml(&valid_manifest("renamed"))
         .unwrap()
-        .normalize(app.id.clone());
-    assert_ne!(renamed.metadata.name, app.metadata.name);
+        .normalize(app.id().clone());
+    assert_ne!(renamed.metadata().name, app.metadata().name);
 
     // Metadata is outside the v2 envelope: a cosmetic rename keeps the hash
     // only when the spec matches; the fixture spec differs from prebuilt's, so
@@ -72,7 +72,7 @@ fn spec_hash_is_pinned_and_ignores_metadata() {
     manifest_with_other_name.push('\n');
     let other_named = parse_toml(&manifest_with_other_name)
         .unwrap()
-        .normalize(app.id.clone());
+        .normalize(app.id().clone());
     assert_eq!(other_named.spec_hash(), app.spec_hash());
 }
 
@@ -244,7 +244,7 @@ fn registry_host_case_is_canonicalized_and_ipv6_is_rejected() {
         let app = parse_toml(&uppercased)
             .expect("uppercase registry hosts are accepted")
             .normalize(ApplicationId::parse("app-notes-01").unwrap());
-        match &app.spec.services[0].source {
+        match &app.spec().services[0].source {
             piqueld_core::manifest::Source::Image { image } => {
                 assert_eq!(image, canonical);
             }
@@ -624,4 +624,39 @@ proptest! {
             prop_assert_eq!(app.spec_hash(), app.clone().normalize().spec_hash());
         }
     }
+}
+
+#[test]
+fn normalized_deserialization_revalidates_and_canonicalizes_configuration() {
+    let original = parse_toml(&valid_manifest("notes"))
+        .unwrap()
+        .normalize(ApplicationId::parse("app-domain-01").unwrap());
+    let mut wire = serde_json::to_value(&original).unwrap();
+    let mut later = wire["spec"]["services"][0].clone();
+    later["name"] = "z-last".into();
+    let mut earlier = later.clone();
+    earlier["name"] = "a-first".into();
+    wire["spec"]["services"] = serde_json::json!([later, earlier]);
+    let decoded: piqueld_core::NormalizedApplication =
+        serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(decoded.spec().services[0].name.as_str(), "a-first");
+    assert_eq!(decoded.spec().services[1].name.as_str(), "z-last");
+    assert_eq!(decoded.id(), original.id());
+    let expected = decoded
+        .to_manifest()
+        .validate()
+        .unwrap()
+        .normalize(original.id().clone());
+    assert_eq!(decoded.spec_hash(), expected.spec_hash());
+
+    for pointer in ["/metadata/name", "/spec/services/0/name"] {
+        let mut malformed = wire.clone();
+        *malformed.pointer_mut(pointer).unwrap() = "INVALID".into();
+        assert!(serde_json::from_value::<piqueld_core::NormalizedApplication>(malformed).is_err());
+    }
+    wire["spec"]["services"][0]["mounts"] = serde_json::json!([
+        {"volume": "undeclared", "target": "/data", "read_only": false}
+    ]);
+    let error = serde_json::from_value::<piqueld_core::NormalizedApplication>(wire).unwrap_err();
+    assert!(error.to_string().contains("mount"), "{error}");
 }

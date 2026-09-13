@@ -160,7 +160,7 @@ impl<D: DockerApi> Controller<D> {
                 },
             }
         };
-        let ownership = self.ownership_labels(&application.application.id);
+        let ownership = self.ownership_labels(application.application.id());
         if operation.kind != OperationKind::Delete
             && !self
                 .store
@@ -272,12 +272,9 @@ impl<D: DockerApi> Controller<D> {
         )
         .with_progress(Arc::clone(&self.store), operation.id.clone());
         let snapshot = self.store.deployment_manifest(&operation.id).await?;
-        let mut manifest = self.deployment_manifest(operation, &snapshot).await?;
+        let manifest = self.deployment_manifest(operation, &snapshot).await?;
         // A rename changes display metadata without rewriting deployment history.
-        manifest
-            .metadata
-            .name
-            .clone_from(&application.application.metadata.name);
+        let manifest = manifest.with_name(application.application.metadata().name.clone());
         let reusable = if operation.kind == OperationKind::Refresh {
             piqueld_core::ResolutionSet::default()
         } else {
