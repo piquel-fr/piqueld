@@ -18,7 +18,8 @@
 # --all-features` compiles everything it would and adds lints on top.
 #
 # Nix validates package builds and their sandboxed tests on both supported
-# native architectures. Each architecture restores its own Nix store cache.
+# native architectures. The KVM-dependent NixOS VM test runs only on x86_64.
+# Each architecture restores its own Nix store cache.
 #
 # Speed comes from Swatinem/rust-cache in every compiling job (keyed per job
 # against Cargo.lock), prebuilt tool downloads instead of `cargo install`,
@@ -224,9 +225,6 @@ jobs:
             runner: blacksmith-4vcpu-ubuntu-2404-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
-        with:
-          tool: just
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
@@ -237,5 +235,16 @@ jobs:
           gc-max-store-size-linux: 4294967296
       - name: Evaluate every flake output
         run: nix flake show --all-systems
-      - name: Validate all native packages and flake checks
-        run: just nix-check
+      - name: Validate native packages and sandboxed checks
+        run: |
+          nix build -L \
+            ".#checks.${{ matrix.system }}.package" \
+            ".#checks.${{ matrix.system }}.daemon-package" \
+            ".#checks.${{ matrix.system }}.cli-package" \
+            ".#checks.${{ matrix.system }}.formatting" \
+            ".#checks.${{ matrix.system }}.dependency-boundary"
+      # ARM package tests do not need nested virtualization. Keep the VM test
+      # on x86_64, where the installer configures access to KVM.
+      - name: Validate the NixOS service in a VM
+        if: matrix.system == 'x86_64-linux'
+        run: nix build -L --out-link result-vm .#checks.x86_64-linux.nixos-service
