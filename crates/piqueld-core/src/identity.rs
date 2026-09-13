@@ -1,30 +1,14 @@
 //! Stable application identity and deterministic Docker-safe names.
 
-use serde::{Deserialize, Deserializer, Serialize, de};
+use crate::names::validated_string;
 use sha2::{Digest, Sha256};
-use std::{fmt, str::FromStr};
-use thiserror::Error;
-use utoipa::ToSchema;
 
-/// An error returned when an application identifier violates its storage invariant.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("application IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens")]
-pub struct ApplicationIdError;
-
-/// Stable internal application identity. It is assigned by persistence and is not
-/// derived from editable application metadata.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-#[serde(transparent)]
-pub struct ApplicationId(String);
-
-impl ApplicationId {
-    /// Parses a storage-assigned identifier.
-    ///
-    /// # Errors
-    /// Returns an error when the identifier is outside its safe alphabet or length.
-    pub fn parse(value: impl Into<String>) -> Result<Self, ApplicationIdError> {
-        let value = value.into();
-        if (8..=64).contains(&value.len())
+validated_string!(
+    /// Stable internal application identity. It is assigned by persistence and is not
+    /// derived from editable application metadata.
+    ApplicationId, ApplicationIdError,
+    "application IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
+    |value: &str| (8..=64).contains(&value.len())
             && value
                 .bytes()
                 .next()
@@ -36,42 +20,7 @@ impl ApplicationId {
             && value
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        {
-            Ok(Self(value))
-        } else {
-            Err(ApplicationIdError)
-        }
-    }
-
-    /// Returns the persisted wire representation.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for ApplicationId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(value).map_err(de::Error::custom)
-    }
-}
-
-impl fmt::Display for ApplicationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl FromStr for ApplicationId {
-    type Err = ApplicationIdError;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
+);
 
 /// Managed Docker resource category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

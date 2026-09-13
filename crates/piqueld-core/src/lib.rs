@@ -9,6 +9,11 @@ pub mod event;
 pub mod identity;
 pub use event::Event;
 pub mod manifest;
+pub mod names;
+pub use names::{
+    ApplicationName, ApplicationNameError, ServiceName, ServiceNameError, VolumeName,
+    VolumeNameError,
+};
 pub mod operation;
 pub mod planner;
 mod preview;
