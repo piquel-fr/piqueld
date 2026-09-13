@@ -40,6 +40,12 @@ pub(crate) enum Command {
         /// Application name or stable ID.
         name_or_id: String,
     },
+    /// Manage application-scoped secret values and metadata.
+    Secret {
+        application: String,
+        #[command(subcommand)]
+        action: crate::secrets::SecretAction,
+    },
     /// Preview creation or replacement from a TOML manifest.
     Plan(ManifestArgs),
     /// Plan, confirm, and apply a TOML manifest.

@@ -6,6 +6,7 @@ pub mod config;
 pub mod docker;
 pub mod operations;
 pub mod reconcile;
+mod secrets;
 pub mod store;
 
 mod command;

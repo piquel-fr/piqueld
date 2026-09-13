@@ -52,6 +52,29 @@ impl BollardDocker {
 
 #[async_trait]
 impl DockerApi for BollardDocker {
+    async fn ensure_secret(
+        &self,
+        name: &str,
+        value: &[u8],
+        ownership: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        bounded(
+            "ensure secret",
+            Box::pin(self.provision_secret(name, value, ownership)),
+        )
+        .await
+    }
+    async fn remove_secrets(
+        &self,
+        names: &[String],
+        ownership: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        bounded(
+            "remove secrets",
+            Box::pin(self.remove_owned_secrets(names, ownership)),
+        )
+        .await
+    }
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError> {
         bounded("ensure Docker Swarm", async {
             let info =
@@ -519,7 +542,17 @@ impl DockerApi for BollardDocker {
                         ))
                         .await,
                 )?;
-                let spec = Self::service_spec(desired)?;
+                let mut spec = Self::service_spec(desired)?;
+                if !desired.secrets.is_empty() {
+                    let references = self.secret_references(desired).await?;
+                    spec.task_template
+                        .as_mut()
+                        .expect("task spec")
+                        .container_spec
+                        .as_mut()
+                        .expect("container spec")
+                        .secrets = Some(references);
+                }
                 match matches.into_iter().find(|s| {
                     s.spec.as_ref().and_then(|s| s.name.as_deref()) == Some(&desired.name)
                 }) {

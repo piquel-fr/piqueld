@@ -22,6 +22,7 @@ fn instance() -> InstanceId {
 
 fn resolutions() -> ResolutionSet {
     ResolutionSet {
+        secret_names: std::collections::BTreeMap::default(),
         sources: [(
             "web".into(),
             ResolvedSource::Image {
@@ -58,6 +59,7 @@ fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedAp
             .services
             .iter()
             .map(|service| ObservedService {
+                secrets: Vec::new(),
                 name: service.name.clone(),
                 image: service.image.clone(),
                 replicas: service.replicas,
@@ -284,6 +286,7 @@ fn desired_identity_matrices_reject_non_canonical_resources() {
 
     let resolved = resolutions().sources.get("web").unwrap().clone();
     let service = DesiredService {
+        secrets: Vec::new(),
         logical_name: "web".into(),
         name: piqueld_core::docker_resource_name(
             &id,

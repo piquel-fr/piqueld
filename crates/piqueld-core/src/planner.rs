@@ -819,6 +819,9 @@ fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<Strin
     if found.arguments != desired.arguments {
         fields.push("arguments".into());
     }
+    if !unordered_eq(&found.secrets, &desired.secrets) {
+        fields.push("secrets".into());
+    }
     if !unordered_eq(&found.mounts, &desired.mounts) {
         fields.push("mounts".into());
     }

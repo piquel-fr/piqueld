@@ -149,3 +149,18 @@ The legacy refresh endpoint resolves stored service sources without fetching a
 new manifest; reconcile retries the latest operation with its saved inputs.
 
 `GET /api/v1/applications/{id}/manifest` downloads saved configuration as `application/toml`, with an attachment filename and `Cache-Control: no-store`. It does not observe Docker or resolve sources.
+
+Application secret endpoints expose metadata only:
+
+- `GET /api/v1/applications/{id}/secrets` lists names, current generations and update times.
+- `PUT /api/v1/applications/{id}/secrets/{name}` accepts an `application/octet-stream`
+  value of 1–512000 bytes. `X-Expected-Generation: 0` creates; a current generation
+  replaces. Each application supports at most 100 logical secrets.
+- `DELETE` at the same path requires `X-Expected-Generation` and refuses references
+  in saved configuration, the current runnable deployment, or the active target.
+  It removes Docker versions before removing encrypted records. A version conflict
+  returns 409; missing or invalid key material returns 503 for value-dependent work.
+
+Values never appear in responses, manifests or deployment snapshots. Deployments
+pin immutable versions during effective-input preparation; retries preserve those
+pins. Earlier ciphertext versions remain until logical-secret or application deletion.
