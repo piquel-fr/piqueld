@@ -42,7 +42,12 @@ One async controller overlaps pending work. Internal global limits allow two
 image resolutions, eight observations, and one resource mutation request. Timers
 consume no I/O slot. These limits are not configurable.
 
-The data directory is the only persistent daemon state.
+The data directory is the only persistent daemon state. The daemon holds an
+exclusive OS lock on the directory itself for its entire lifetime. A second
+process using that directory fails immediately, before opening the database or
+replacing the Unix socket. Process exit (including a crash) releases the lock;
+there is no stale lock file to remove. The Unix listener and any configured TCP
+listener are bound before reconciliation starts.
 
 The dashboard is not configurable at runtime: it is embedded when the daemon
 is built with the `embedded-ui` cargo feature and absent otherwise. It is
