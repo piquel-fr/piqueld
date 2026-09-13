@@ -39,6 +39,7 @@ fn git_sources_validate_paths_and_explicit_build_backend() {
     }
     for (field, value) in [
         ("branch", "--upload-pack=bad"),
+        ("branch", "@"),
         ("branch", "main~1"),
         ("commit", "HEAD"),
         ("url", "--help"),
