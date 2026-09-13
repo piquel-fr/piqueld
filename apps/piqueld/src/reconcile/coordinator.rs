@@ -177,7 +177,7 @@ impl<D: DockerApi> Controller<D> {
             .saturating_add(delay)
     }
 
-    #[tracing::instrument(skip_all, fields(application_id = %application.application.id, generation = application.generation))]
+    #[tracing::instrument(skip_all, fields(application_id = %application.application.id(), generation = application.generation))]
     async fn scan_application(
         &self,
         application: &StoredApplication,

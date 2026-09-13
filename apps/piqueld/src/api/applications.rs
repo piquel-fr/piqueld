@@ -831,14 +831,9 @@ pub(super) async fn manifest_download(
         .application;
     let filename = format!(
         "attachment; filename=\"{}.toml\"",
-        application.metadata.name
+        application.metadata().name
     );
-    let manifest = piqueld_core::manifest::ApplicationManifest {
-        api_version: "piqueld.dev/v1alpha1".into(),
-        kind: "Application".into(),
-        metadata: application.metadata,
-        spec: application.spec,
-    };
+    let manifest = application.to_manifest();
     let body = toml::to_string_pretty(&manifest).map_err(|error| {
         tracing::error!(?error, "serialize saved manifest");
         ApiError::new(

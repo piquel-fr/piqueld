@@ -1969,9 +1969,14 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
     let (application_id, operation_id) = {
         let mut harness = ControllerHarness::new().await;
-        harness.application.spec.services[0]
+        let mut manifest = harness.application.to_manifest();
+        manifest.spec.services[0]
             .environment
             .insert("TOKEN".into(), "must-not-appear-in-traces".into());
+        harness.application = manifest
+            .validate()
+            .unwrap()
+            .normalize(harness.application.id().clone());
         harness.resolved = compile_application(
             &harness.application,
             InstanceId::parse(harness.store.instance_id()).unwrap(),
@@ -1984,7 +1989,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
             .scan(&CancellationToken::new())
             .await
             .unwrap();
-        (harness.application.id.to_string(), operation.id)
+        (harness.application.id().to_string(), operation.id)
     };
     let text = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
     assert!(!text.contains("must-not-appear-in-traces"));

@@ -266,7 +266,7 @@ async fn logs(
 ) -> Result<()> {
     let app = resolve_application(client, name_or_id).await?;
     let logs = client
-        .application_logs(app.application.id.as_str(), service, tail, since_seconds)
+        .application_logs(app.application.id().as_str(), service, tail, since_seconds)
         .await?;
     if cli.json {
         return emit_json(&logs);

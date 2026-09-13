@@ -17,7 +17,7 @@ pub(super) fn ApplicationLogs() -> impl IntoView {
     on_cleanup(move || cleanup.set(false));
     let id = context
         .saved
-        .with_untracked(|a| a.application.id.to_string());
+        .with_untracked(|a| a.application.id().to_string());
     spawn_local(async move {
         let mut elapsed = 5;
         while alive.get() {
