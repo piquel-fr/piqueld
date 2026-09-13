@@ -120,8 +120,7 @@ impl From<crate::docker::DockerError> for OperationError {
                 Self::ImageResolutionFailed(operation)
             }
             crate::docker::DockerError::Request(operation)
-            | crate::docker::DockerError::RequestSource { operation, .. }
-            | crate::docker::DockerError::RequestDiagnostic { operation, .. } => {
+            | crate::docker::DockerError::RequestSource { operation, .. } => {
                 Self::DockerRequestFailed(operation)
             }
         }

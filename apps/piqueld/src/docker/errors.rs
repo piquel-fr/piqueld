@@ -11,7 +11,7 @@ pub enum DockerError {
         operation: &'static str,
         /// The underlying engine failure.
         #[source]
-        source: bollard::errors::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     /// The engine is reachable but is not an active Swarm manager.
     #[error("Docker Engine is not an active Swarm manager")]
@@ -43,29 +43,26 @@ pub enum DockerError {
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     Request(&'static str),
-    /// A Docker request failed, retaining the engine error for diagnostics.
+    /// A Docker request failed, retaining its underlying cause for diagnostics.
     #[error("Docker request failed while {operation}")]
     RequestSource {
         /// The operation attempted against Docker.
         operation: &'static str,
-        /// The underlying engine failure.
-        #[source]
-        source: bollard::errors::Error,
-    },
-    /// A raw Engine response failed, retaining bounded diagnostic context.
-    #[error("Docker request failed while {operation}")]
-    RequestDiagnostic {
-        /// The operation attempted against Docker.
-        operation: &'static str,
-        /// Bounded internal response detail.
+        /// The internal failure; public formatting excludes this detail.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 }
 
 impl DockerError {
-    pub(super) fn unavailable(operation: &'static str, source: bollard::errors::Error) -> Self {
-        Self::UnavailableSource { operation, source }
+    pub(super) fn unavailable(
+        operation: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::UnavailableSource {
+            operation,
+            source: Box::new(source),
+        }
     }
 
     pub(super) fn image_resolution(
@@ -75,7 +72,13 @@ impl DockerError {
         Self::ImageResolutionSource { operation, source }
     }
 
-    pub(super) fn request(operation: &'static str, source: bollard::errors::Error) -> Self {
-        Self::RequestSource { operation, source }
+    pub(super) fn request(
+        operation: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::RequestSource {
+            operation,
+            source: Box::new(source),
+        }
     }
 }
