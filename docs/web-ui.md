@@ -139,3 +139,5 @@ Repository manifest settings select the repository, branch, optional commit, and
 exact manifest file. Deploy fetches that file before preparing service sources.
 While backing is enabled, edit runtime configuration in Git; connection settings
 remain editable here. Configuration saved during preparation is preserved.
+
+**Download saved manifest** exports the current server-saved configuration as TOML. Unsaved form edits and runtime/deployment state are excluded. Repository connection settings are preserved; the download does not fetch Git or require Docker. Original comments and formatting are not retained.

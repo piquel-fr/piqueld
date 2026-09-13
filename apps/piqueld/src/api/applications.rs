@@ -9,7 +9,7 @@ use axum::{
         Path, Query, State,
         rejection::{BytesRejection, QueryRejection},
     },
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use piqueld_core::api::{
@@ -810,4 +810,47 @@ impl ForceQuery {
             )
         })
     }
+}
+
+/// Download only saved configuration; runtime availability is irrelevant.
+#[utoipa::path(get,path="/api/v1/applications/{id}/manifest",operation_id="downloadApplicationManifest",
+    params(("id"=String,Path)),
+    responses((status=200,description="Saved application configuration",body=String,content_type="application/toml"),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn manifest_download(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let application = state
+        .store
+        .get(&ApplicationId::parse(&id)?)
+        .await?
+        .application;
+    let filename = format!(
+        "attachment; filename=\"{}.toml\"",
+        application.metadata.name
+    );
+    let manifest = piqueld_core::manifest::ApplicationManifest {
+        api_version: "piqueld.dev/v1alpha1".into(),
+        kind: "Application".into(),
+        metadata: application.metadata,
+        spec: application.spec,
+    };
+    let body = toml::to_string_pretty(&manifest).map_err(|error| {
+        tracing::error!(?error, "serialize saved manifest");
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "manifest_serialization_failed",
+            "Could not render saved configuration",
+        )
+    })?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/toml".to_owned()),
+            (header::CONTENT_DISPOSITION, filename),
+            (header::CACHE_CONTROL, "no-store".to_owned()),
+        ],
+        body,
+    ))
 }

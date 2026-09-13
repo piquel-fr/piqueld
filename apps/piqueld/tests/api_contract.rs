@@ -2033,3 +2033,56 @@ async fn unavailable_observation_does_not_claim_services_are_missing() {
     );
     assert!(detail.observed.services.iter().all(|s| s.diagnostics.is_empty() && s.convergence != piqueld_core::Convergence::Failed));
 }
+
+#[tokio::test]
+async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    api.runtime
+        .unavailable
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut request = AcceptanceApi::request();
+    request.manifest.spec.services[0]
+        .environment
+        .insert("MESSAGE".into(), "quotes \" and newline\n".into());
+    request.manifest.spec.manifest = Some(piqueld_core::manifest::RepositoryManifest {
+        repository: piqueld_core::manifest::GitRepository {
+            url: "https://example.com/repo.git".into(),
+            branch: "main".into(),
+            commit: None,
+        },
+        path: "infra/app.toml".into(),
+    });
+    let saved = api.client.apply_application(&request).await.unwrap();
+    let response = router(ApiState::new(api.store.clone(), api.runtime.clone()))
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/applications/{}/manifest",
+                    saved.application_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "application/toml");
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(
+        response.headers()["content-disposition"],
+        "attachment; filename=\"notes.toml\""
+    );
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let downloaded: ApplicationManifest =
+        toml::from_str(std::str::from_utf8(&bytes).unwrap()).unwrap();
+    assert_eq!(downloaded, request.manifest);
+    assert!(
+        api.client
+            .deployments(&saved.application_id, None)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+}
