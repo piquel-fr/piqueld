@@ -1,0 +1,299 @@
+@layer components {
+    .sidebar {
+        position: fixed;
+        inset: 0 auto 0 0;
+        width: 216px;
+        display: flex;
+        flex-direction: column;
+        padding: 24px 12px 16px;
+        background: #09090b;
+        border-right: 1px solid var(--line);
+    }
+
+    .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px 28px;
+        font-size: 18px;
+        font-weight: 650;
+        color: var(--ink);
+        text-decoration: none;
+    }
+
+    .brand-mark {
+        display: grid;
+        place-items: center;
+        width: 27px;
+        height: 27px;
+        border: 1px solid #544073;
+        border-radius: 7px;
+        color: #d0baf4;
+        background: #282036;
+        font-size: 21px;
+    }
+
+    .sidebar nav {
+        display: grid;
+        gap: 4px;
+    }
+
+    .nav-link {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 9px 12px;
+        color: var(--muted);
+        border-radius: 6px;
+        text-decoration: none;
+        font-size: 13px;
+    }
+
+    .nav-link>span {
+        width: 18px;
+        font-size: 18px;
+        text-align: center;
+    }
+
+    .nav-link:hover {
+        background: var(--surface);
+        color: var(--ink);
+    }
+
+    .nav-link.active {
+        background: #221d2d;
+        color: #d6c4f4;
+    }
+
+    .sidebar-status {
+        margin-top: auto;
+        padding: 16px 10px 0;
+        border-top: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .sidebar-status p {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 11px;
+        color: var(--muted);
+    }
+
+    .sidebar-status p span {
+        width: 6px;
+        height: 6px;
+    }
+
+    .sidebar-status button {
+        font-size: 11px;
+        padding: 4px 7px;
+    }
+
+    .dashboard-main {
+        margin-left: 216px;
+        padding: 30px 36px;
+        max-width: 1600px;
+        min-height: 100vh;
+    }
+
+    .page-heading,.section-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 20px;
+    }
+
+    .section-heading h2,.section-heading h3 {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0;
+    }
+
+    .section-heading {
+        margin: 24px 0 12px;
+    }
+
+    .metrics {
+        display: grid;
+        grid-template-columns: repeat(3,minmax(0,1fr));
+        gap: 12px;
+        margin: 24px 0 32px;
+    }
+
+    .metric {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 16px 20px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        text-decoration: none;
+        color: var(--ink);
+    }
+
+    .metric span {
+        color: var(--muted);
+        font-size: 12px;
+    }
+
+    .metric strong {
+        font-size: 28px;
+        line-height: 1;
+        font-weight: 550;
+    }
+
+    .directory,.deployment-table {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        overflow: hidden;
+        background: var(--surface);
+    }
+
+    .application-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        text-decoration: none;
+        color: var(--ink);
+        border-bottom: 1px solid var(--line);
+    }
+
+    .application-row:last-child,.deployment-row:last-child {
+        border-bottom: 0;
+    }
+
+    .application-row strong {
+        flex: 1;
+        overflow-wrap: anywhere;
+        font-weight: 550;
+    }
+
+    .app-icon {
+        display: grid;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--muted);
+    }
+
+    .row-arrow {
+        margin-left: 12px;
+        color: var(--muted);
+    }
+
+    .application-row:hover,.deployment-row:not(.table-heading):hover {
+        background: var(--surface-muted);
+    }
+
+    .deployment-row {
+        display: grid;
+        grid-template-columns: minmax(0,2fr) minmax(100px,1fr) 80px minmax(150px,1.4fr);
+        align-items: center;
+        gap: 16px;
+        padding: 13px 16px;
+        border-bottom: 1px solid var(--line);
+        text-decoration: none;
+        color: var(--muted);
+        font-size: 12px;
+    }
+
+    .deployment-row strong {
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 550;
+        overflow-wrap: anywhere;
+    }
+
+    .table-heading {
+        background: #151517;
+        padding-top: 9px;
+        padding-bottom: 9px;
+        font-size: 11px;
+    }
+
+    @media(max-width:900px) {
+        .sidebar {
+            width: 180px;
+        }
+
+        .dashboard-main {
+            margin-left: 180px;
+            padding: 24px;
+        }
+
+        .sidebar-status {
+            flex-wrap: wrap;
+        }
+
+        .deployment-row {
+            grid-template-columns: minmax(0,1fr) 100px 55px;
+            gap: 10px;
+        }
+
+        .deployment-row>span:last-child {
+            display: none;
+        }
+    }
+
+    @media(max-width:600px) {
+        .sidebar {
+            position: static;
+            width: 100%;
+            padding: 12px;
+            border-right: 0;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .brand {
+            padding: 0 4px 12px;
+        }
+
+        .sidebar nav {
+            display: flex;
+            gap: 4px;
+        }
+
+        .nav-link {
+            font-size: 12px;
+            padding: 7px;
+            gap: 6px;
+        }
+
+        .sidebar-status {
+            display: none;
+        }
+
+        .dashboard-main {
+            margin: 0;
+            padding: 20px 16px;
+        }
+
+        .page-heading {
+            gap: 8px;
+        }
+
+        .page-heading h1 {
+            font-size: 20px;
+        }
+
+        .metrics {
+            gap: 8px;
+        }
+
+        .metric {
+            padding: 12px;
+        }
+
+        .metric strong {
+            font-size: 24px;
+        }
+    }
+}

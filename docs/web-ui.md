@@ -1,7 +1,7 @@
 # Application dashboard
 
 The Leptos dashboard manages application configuration through forms. Create an
-empty application, add services and named volumes, and edit images, replicas,
+empty application in a modal, add services in a modal and declare named volumes, and edit images, replicas,
 environment variables, commands, arguments, mounts, health checks, and resource
 limits. Each settings group has its own **Save Changes** button. Saving updates
 the database without changing running containers.
@@ -13,8 +13,25 @@ refreshes image resolution, including when configuration has not changed.
 Completed deployments retain their terminal state in history.
 Retries use the captured deployment, not subsequent configuration edits.
 
-The Deployments tab lists deployment snapshots, progress, errors, and retry
-attempts. Current target, last successful deployment, and observed runtime health
+The piqueld logo links to the home page. The sidebar links to Applications and
+Host settings. The home page and
+Applications show the three most recent deployments across applications; each
+row opens that deployment in its application history. Applications also has a
+compact, clickable directory.
+
+Applications have one main tab row: Overview (the default), Source, Services,
+Volumes, Deployments, and Diagnostics. Services contains the compact service list
+and observed runtime services. Reconciliation diagnostics appear in Diagnostics.
+Each service row opens a service page
+headed by application / service, with tabs for source and scaling, environment,
+command and arguments, volume mounts, health checks, and resource limits.
+Service form drafts are retained when switching tabs. Selecting None for a
+health check hides its remaining fields.
+The pencil beside the application name opens its rename form. The Overview
+tab contains the application ID, state, generation, and runtime data.
+The Deployments tab lists expandable deployment rows with Details, Snapshot,
+and Attempts sections. Attempts load when first opened; refresh and older-attempt
+controls appear below the list. Operation IDs appear only in deployment Details. Current target, last successful deployment, and observed runtime health
 are distinct. History remains until the application is deleted. Deploying an
 empty application removes its runtime services and network. Removing volumes or
 deleting an application retains Docker volume data; deleting an application
@@ -54,6 +71,12 @@ Compile the browser client and dashboard without building assets with:
 cargo check --package piqueld-ui --target wasm32-unknown-unknown
 ```
 
+The browser modules separate dashboard navigation and lists, editor state,
+configuration forms, deployment history, navigation guards, and shared controls.
+Styles are split into theme, dashboard layout, and editor rules. To format view
+macros as well as Rust, run `leptosfmt` from `apps/piqueld-ui` (it reads the local
+`leptosfmt.toml`), followed by `cargo fmt --all`.
+
 ## Production assets
 
 The source files `apps/piqueld-ui/index.html`, `tailwind.css`, and the Rust UI
@@ -85,7 +108,7 @@ receive the SPA shell. Content-hashed asset filenames are served with
 immutable caching; the shell is always revalidated.
 
 The dashboard performs one initial refresh, then bounded pagination and
-application-status reads. Background polls run every 15 seconds after success and back off
+application-status and recent-deployment reads. Background polls run every 15 seconds after success and back off
 to at most 120 seconds after failures. Polls pause while the document is
 hidden, never overlap, and a manual refresh remains available. A failed refresh
 keeps the last successful view visible and marks it stale.
@@ -96,8 +119,7 @@ as healthy.
 
 Accessibility coverage includes semantic headings and lists, a skip link,
 keyboard-operable buttons, visible focus, live status/error regions, responsive
-layouts for narrow widths, and light/dark color tokens with contrast-oriented
-status colors.
+layouts for narrow widths, and a permanent dark palette with contrast-oriented status colors.
 
 The supported browser baseline is a current evergreen Chromium, Firefox,
 Safari, or Edge release with WebAssembly, ES modules, Fetch, and standard CSS
@@ -106,7 +128,7 @@ older browsers without those primitives are outside the support target.
 
 Secrets, logs and streams, state transfer, and authentication remain outside the
 current dashboard scope. Event history is available through the API and CLI.
-Deployment history polls every two seconds while the page is visible.
+Deployment history polls every two seconds while its tab and the page are visible.
 
 Service source settings explicitly select a container image or Git with a
 Dockerfile build. Git settings include repository, branch, optional commit,
