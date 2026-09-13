@@ -261,7 +261,11 @@ pub fn web_router(state: ApiState, ui_assets: UiAssets) -> Router {
             .route("/dashboard", get(ui::redirect))
             .fallback(move |request: Request| ui_fallback(bundle, request)),
     };
-    finish_router(router, state, openapi)
+    let router = finish_router(router, state, openapi);
+    match ui_assets {
+        UiAssets::Disabled => router,
+        UiAssets::Embedded(_) => router.layer(middleware::from_fn(ui::security_headers)),
+    }
 }
 
 /// Builds the liveness-only route set. It is intentionally not part of Utoipa.
