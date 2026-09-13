@@ -13,6 +13,12 @@
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
     {
+      nixosModules.default = { lib, pkgs, ... }: {
+        imports = [ ./nix/module.nix ];
+        services.piqueld.package = lib.mkDefault self.packages.${pkgs.system}.combined;
+        services.piqueld.cliPackage = lib.mkDefault self.packages.${pkgs.system}.cli;
+      };
+
       packages = forAllSystems (
         system:
         let
@@ -127,6 +133,12 @@
           pkgs = nixpkgs.legacyPackages.${system};
         in
         {
+          nixos-service = import ./nix/vm-test.nix {
+            inherit pkgs;
+            module = self.nixosModules.default;
+            daemon = self.packages.${system}.daemon;
+            cli = self.packages.${system}.cli;
+          };
           package = self.packages.${system}.default;
           daemon-package = self.packages.${system}.daemon;
           cli-package = self.packages.${system}.cli;
