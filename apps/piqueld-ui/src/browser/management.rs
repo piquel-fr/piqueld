@@ -1,5 +1,7 @@
 //! Application editor state and page composition. Polling never replaces local edits.
 mod controls;
+mod logs;
+use logs::ApplicationLogs;
 mod deployments;
 mod navigation;
 mod services;
@@ -340,11 +342,12 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         <EditorFeedback />
         <Tabs
             label="Application sections"
-            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics"]}
+            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics", "Logs"]}
             selected={context.tab}
             class="tabs"
         />
         <ApplicationSettings />
+        <leptos::Show when=move ||context.tab.get()=="Logs"><ApplicationLogs/></leptos::Show>
         <div hidden={move || context.tab.get() != "Deployments"}>
             <DeploymentHistory />
         </div>

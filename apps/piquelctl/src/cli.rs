@@ -54,6 +54,16 @@ pub(crate) enum Command {
         /// Application name or stable ID.
         name_or_id: String,
     },
+    /// Read a bounded snapshot of Docker application logs.
+    Logs {
+        name_or_id: String,
+        #[arg(long)]
+        service: Option<String>,
+        #[arg(long,default_value_t=200,value_parser=clap::value_parser!(u16).range(1..=1000))]
+        tail: u16,
+        #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
+        since_seconds: u32,
+    },
     /// Preview creation or replacement from a TOML manifest.
     Plan(ManifestArgs),
     /// Plan, confirm, and apply a TOML manifest.

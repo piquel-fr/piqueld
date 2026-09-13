@@ -59,6 +59,23 @@ impl<D> DockerRuntime<D> {
 
 #[async_trait]
 impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
+    async fn logs(
+        &self,
+        id: &piqueld_core::ApplicationId,
+        service: Option<&str>,
+        tail: u16,
+        since: u32,
+    ) -> Result<piqueld_core::api::ApplicationLogs, BoundaryError> {
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            self.docker
+                .application_logs(&self.instance_id, id, service, tail, since),
+        )
+        .await
+        .map_err(|_| DockerError::Unavailable("read application logs"))?
+        .map_err(BoundaryError::from)
+    }
+
     fn trigger_reconciliation(&self) {
         self.wake.notify_one();
     }

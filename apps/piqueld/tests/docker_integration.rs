@@ -112,7 +112,10 @@ impl SwarmScenario {
             replicas: 1,
             environment: BTreeMap::new(),
             command: vec!["/bin/sh".into()],
-            arguments: vec!["-c".into(), "while true; do sleep 5; done".into()],
+            arguments: vec![
+                "-c".into(),
+                "echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
+            ],
             mounts: vec![],
             healthcheck: Some(HealthCheck::Command {
                 command: vec!["true".into()],
@@ -124,6 +127,45 @@ impl SwarmScenario {
             labels: service_labels,
         };
         engine.ensure_service_eventually(&service).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let logs = engine
+                .docker
+                .application_logs(&instance, &app, Some("web"), 20, 60)
+                .await
+                .unwrap();
+            if logs.items.iter().any(|line| line.message == "log-stderr") {
+                assert!(
+                    logs.items
+                        .iter()
+                        .any(|line| line.message == "log-stdout" && line.stream == "stdout")
+                );
+                assert!(logs.items.iter().all(|line| line.service == "web"
+                    && !line.task_id.is_empty()
+                    && !line.timestamp.is_empty()));
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "container output did not appear"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(
+            engine
+                .docker
+                .application_logs(
+                    &InstanceId::parse("another-instance").unwrap(),
+                    &app,
+                    None,
+                    20,
+                    60
+                )
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
 
         Self {
             engine,

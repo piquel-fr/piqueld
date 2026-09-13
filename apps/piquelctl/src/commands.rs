@@ -26,6 +26,40 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
         Command::Status => status(cli, &client).await,
         Command::List => list(cli, &client).await,
         Command::Show { name_or_id } => show(cli, &client, name_or_id).await,
+        Command::Logs {
+            name_or_id,
+            service,
+            tail,
+            since_seconds,
+        } => {
+            let app = resolve_application(&client, name_or_id).await?;
+            let logs = client
+                .application_logs(
+                    app.application.id.as_str(),
+                    service.as_deref(),
+                    *tail,
+                    *since_seconds,
+                )
+                .await?;
+            if cli.json {
+                return emit_json(&logs);
+            }
+            for log in logs.items {
+                writeln!(
+                    io::stdout().lock(),
+                    "{} {} {} {} | {}",
+                    log.timestamp,
+                    log.service,
+                    log.task_id,
+                    log.stream,
+                    log.message
+                )?;
+            }
+            if logs.truncated {
+                eprintln!("Log snapshot was truncated; narrow the service or time window.");
+            }
+            Ok(())
+        }
         Command::Plan(args) => plan_command(cli, &client, args).await,
         Command::Apply(args) => apply(cli, &client, args).await,
         Command::Delete(args) => delete(cli, &client, args).await,

@@ -28,7 +28,7 @@ use piqueld_core::resource::{
     valid_logical_name,
 };
 use piqueld_core::{
-    ApplicationId, ObservedApplication, ResourceKind, docker_resource_name,
+    ApplicationId, InstanceId, ObservedApplication, ResourceKind, docker_resource_name,
     docker_resource_readable_prefix,
 };
 use std::{
@@ -77,6 +77,7 @@ pub struct BollardDocker {
 
 mod engine;
 mod limited;
+mod logs;
 pub(crate) use limited::LimitedDocker;
 mod errors;
 mod identity;
@@ -98,6 +99,18 @@ pub enum SwarmState {
 #[async_trait]
 /// The runtime operations required by the reconciler.
 pub trait DockerApi: Send + Sync + 'static {
+    /// Reads a bounded historical log window without storing it in piqueld.
+    async fn application_logs(
+        &self,
+        _instance: &InstanceId,
+        _application: &ApplicationId,
+        _service: Option<&str>,
+        _tail: u16,
+        _since: u32,
+    ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
+        Err(DockerError::Unavailable("application logs unavailable"))
+    }
+
     /// Ensures that Docker is an active, compatible Swarm manager.
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError>;
     /// Pulls an image reference and returns its immutable repository digest.

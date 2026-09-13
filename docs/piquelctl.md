@@ -137,6 +137,10 @@ disables color. `--quiet` suppresses successful human output and progress while
 preserving errors and explicit JSON results. `--noninteractive` refuses prompts
 even on a terminal; destructive commands still need `--yes`.
 
+`piquelctl logs NAME_OR_ID [--service NAME] [--tail 200] [--since-seconds 3600]`
+reads a recent Docker snapshot with timestamps, service, task, and stream labels.
+`--json` returns the structured records and a truncation indicator.
+
 ## Connection profiles
 
 Select a named connection with `--profile NAME` or `PIQUELD_PROFILE`.

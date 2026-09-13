@@ -31,6 +31,24 @@ impl<D> LimitedDocker<D> {
 }
 #[async_trait]
 impl<D: DockerApi> DockerApi for LimitedDocker<D> {
+    async fn application_logs(
+        &self,
+        instance: &piqueld_core::InstanceId,
+        application: &ApplicationId,
+        service: Option<&str>,
+        tail: u16,
+        since: u32,
+    ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
+        let _permit = self
+            .observations
+            .acquire()
+            .await
+            .expect("semaphore never closed");
+        self.inner
+            .application_logs(instance, application, service, tail, since)
+            .await
+    }
+
     async fn ensure_swarm(&self, auto: bool) -> Result<SwarmState, DockerError> {
         self.inner.ensure_swarm(auto).await
     }
