@@ -1,8 +1,7 @@
 //! Durable operation records; execution policy belongs to the controller.
 
 use super::{
-    ApplicationId, Operation, OperationKind, OperationState, SqliteStore, StoreError, new_id,
-    now_ms,
+    ApplicationId, Operation, OperationKind, OperationState, Store, StoreError, new_id, now_ms,
 };
 use serde::Deserialize;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
@@ -54,7 +53,7 @@ impl OperationRow {
     }
 }
 
-impl SqliteStore {
+impl Store {
     /// Fetches an operation, including cancelled history.
     ///
     /// # Errors

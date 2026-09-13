@@ -6,7 +6,7 @@ use piqueld::api::{ApiState, UiAssets};
 use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::reconcile::Controller;
-use piqueld::store::SqliteStore;
+use piqueld::store::Store;
 use std::{
     os::unix::fs::{FileTypeExt, PermissionsExt},
     path::PathBuf,
@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
     let unix_listener = bind_unix_api(config.server.socket_path()).await?;
 
     let store = Arc::new(
-        SqliteStore::open(config.server.database_path())
+        Store::open(config.server.database_path())
             .await
             .context("failed to open control-plane state")?,
     );

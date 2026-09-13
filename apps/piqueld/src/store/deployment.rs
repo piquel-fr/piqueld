@@ -1,9 +1,9 @@
 //! Saved configuration and immutable deployment inputs. Saving never creates work.
-use super::{ApplicationId, NormalizedApplication, Operation, SqliteStore, StoreError, now_ms};
+use super::{ApplicationId, NormalizedApplication, Operation, Store, StoreError, now_ms};
 use piqueld_core::api::{DeploymentView, Page, SavedApplication};
 use sqlx::{Sqlite, Transaction};
 
-impl SqliteStore {
+impl Store {
     pub(super) async fn save_configuration_on(
         tx: &mut Transaction<'_, Sqlite>,
         app: &NormalizedApplication,
@@ -162,11 +162,7 @@ mod tests {
         piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='empty'\n[spec]").unwrap().normalize(ApplicationId::parse("app-empty-test").unwrap())
     }
 
-    async fn save(
-        store: &SqliteStore,
-        app: NormalizedApplication,
-        generation: u64,
-    ) -> SavedApplication {
+    async fn save(store: &Store, app: NormalizedApplication, generation: u64) -> SavedApplication {
         let (MutationResponse::Saved(saved), wake) = store
             .accept(
                 Mutation::Save {
@@ -191,7 +187,7 @@ mod tests {
     async fn saved_changes_cannot_enter_deployments_or_retries_after_restart() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("db");
-        let store = SqliteStore::open(&path).await.unwrap();
+        let store = Store::open(&path).await.unwrap();
         let saved = save(&store, empty(), 0).await;
         let id = ApplicationId::parse(&saved.application_id).unwrap();
         assert_eq!(
@@ -238,7 +234,7 @@ mod tests {
         let changed = save(&store, edited, 1).await;
         assert_eq!(changed.generation, 2);
         drop(store);
-        let store = SqliteStore::open(&path).await.unwrap();
+        let store = Store::open(&path).await.unwrap();
         store.recover_interrupted().await.unwrap();
         let op = store.operation(&deploy.operation_id).await.unwrap();
         let attempts = store.deployment_attempts(&op.id, None, 100).await.unwrap();
@@ -285,7 +281,7 @@ mod tests {
     #[tokio::test]
     async fn failure_survives_success_and_empty_target_has_no_resources() {
         let temp = tempfile::tempdir().unwrap();
-        let store = SqliteStore::open(temp.path().join("db")).await.unwrap();
+        let store = Store::open(temp.path().join("db")).await.unwrap();
         let saved = save(&store, empty(), 0).await;
         let id = ApplicationId::parse(saved.application_id).unwrap();
         let op = store.request_deploy(&id, Some(1)).await.unwrap();

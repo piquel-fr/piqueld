@@ -5,7 +5,7 @@ pub use runtime::DockerRuntime;
 
 use crate::{
     docker::DockerError,
-    store::{SqliteStore, StoreError, StoredApplication},
+    store::{Store, StoreError, StoredApplication},
 };
 use async_trait::async_trait;
 use piqueld_core::{
@@ -144,14 +144,14 @@ impl Mutation {
 #[derive(Clone)]
 pub struct Applications {
     pub(crate) configuration: Option<piqueld_core::api::HostConfiguration>,
-    pub(crate) store: Arc<SqliteStore>,
+    pub(crate) store: Arc<Store>,
     pub(crate) runtime: Arc<dyn RuntimeBoundary>,
 }
 
 impl Applications {
     /// Creates the application service.
     #[must_use]
-    pub fn new(store: Arc<SqliteStore>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
+    pub fn new(store: Arc<Store>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
         Self {
             store,
             runtime,

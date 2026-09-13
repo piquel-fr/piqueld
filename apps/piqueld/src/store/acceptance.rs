@@ -1,5 +1,5 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
-use super::{ApplicationRow, OperationKind, SqliteStore, StoreError, now_ms};
+use super::{ApplicationRow, OperationKind, Store, StoreError, now_ms};
 use super::{Operation, StoredApplication};
 use crate::application::{Mutation, MutationResponse};
 use piqueld_core::ApplicationId;
@@ -7,7 +7,7 @@ use piqueld_core::api::{AcceptedOperation, RenamedApplication};
 use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
-impl SqliteStore {
+impl Store {
     /// Commits a mutation and its optional replay receipt in one transaction.
     /// `expected_generation` compares the inspected intent revision; zero means
     /// the application must be absent, and `None` omits the revision check.

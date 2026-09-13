@@ -2,11 +2,11 @@
 use super::{
     ApplicationId, ApplicationPage, ApplicationRow, ApplicationStatus, ApplicationSummaryPage,
     ApplicationSummaryRow, NormalizedApplication, Operation, OperationKind, ResolvedApplication,
-    SqliteStore, StoreError, StoredApplication, now_ms, page_limit,
+    Store, StoreError, StoredApplication, now_ms, page_limit,
 };
 use sqlx::{Sqlite, Transaction};
 
-impl SqliteStore {
+impl Store {
     fn application_cursor(cursor: Option<&str>) -> Result<Option<ApplicationId>, StoreError> {
         cursor
             .map(|value| {

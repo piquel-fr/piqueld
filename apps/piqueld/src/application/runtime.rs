@@ -26,7 +26,7 @@ pub struct DockerRuntime<D> {
     // Set only for execution, never API previews. Records the source-preparation
     // phase and service names in the existing operation row so polling/events
     // can explain a slow or failed pull; it is not an execution journal.
-    progress: Option<(Arc<crate::store::SqliteStore>, String)>,
+    progress: Option<(Arc<crate::store::Store>, String)>,
 }
 
 impl<D> DockerRuntime<D> {
@@ -49,7 +49,7 @@ impl<D> DockerRuntime<D> {
     /// Associates source preparation with the operation whose status is reported.
     pub(crate) fn with_progress(
         mut self,
-        store: Arc<crate::store::SqliteStore>,
+        store: Arc<crate::store::Store>,
         operation_id: String,
     ) -> Self {
         self.progress = Some((store, operation_id));

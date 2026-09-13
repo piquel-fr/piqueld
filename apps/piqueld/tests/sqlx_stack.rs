@@ -1,17 +1,17 @@
 //! Integrated `SQLx` `SQLite` migration evidence.
 
-use piqueld::store::{SCHEMA_VERSION, SqliteStore};
+use piqueld::store::{SCHEMA_VERSION, Store};
 use sqlx::{Connection, sqlite::SqliteConnection};
 
 #[tokio::test]
 async fn sqlx_applies_migrations_and_preserves_instance_identity() {
     let directory = tempfile::tempdir().unwrap();
     let database_path = directory.path().join("sqlx-validation.db");
-    let store = SqliteStore::open(&database_path).await.unwrap();
+    let store = Store::open(&database_path).await.unwrap();
     let instance_id = store.instance_id().to_owned();
     drop(store);
 
-    let reopened = SqliteStore::open(&database_path).await.unwrap();
+    let reopened = Store::open(&database_path).await.unwrap();
     assert_eq!(reopened.instance_id(), instance_id);
 
     let url = format!("sqlite://{}?mode=rwc", database_path.display());
@@ -72,7 +72,7 @@ async fn upgrades_legacy_configuration_to_latest_recoverable_deployment() {
     sqlx::query("UPDATE operations SET state='failed',error_code='runtime_unavailable',error_message='runtime unavailable' WHERE id='op-second'").execute(&mut connection).await.unwrap();
     connection.close().await.unwrap();
 
-    let store = SqliteStore::open(&database_path).await.unwrap();
+    let store = Store::open(&database_path).await.unwrap();
     assert_eq!(store.instance_id(), "instance-legacy");
     assert_eq!(
         store.deployment_manifest("op-second").await.unwrap(),

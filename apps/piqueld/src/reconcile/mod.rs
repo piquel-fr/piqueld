@@ -4,7 +4,7 @@ use crate::{
     docker::{DockerApi, DockerError},
     operations::OperationError,
     store::{
-        ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, OperationState, SqliteStore,
+        ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, OperationState, Store,
         StoreError, StoredApplication,
     },
 };
@@ -22,14 +22,14 @@ pub struct Controller<D> {
     docker: Arc<crate::docker::LimitedDocker<D>>,
     mutations: tokio::sync::Mutex<()>,
     prepare_timeout: Duration,
-    store: Arc<SqliteStore>,
+    store: Arc<Store>,
     retry: RetryPolicy,
 }
 
 impl<D> Controller<D> {
     /// Creates a controller with the default retry policy.
     #[must_use]
-    pub fn new(docker: Arc<D>, store: Arc<SqliteStore>) -> Self {
+    pub fn new(docker: Arc<D>, store: Arc<Store>) -> Self {
         Self {
             docker: Arc::new(crate::docker::LimitedDocker::new(docker)),
             mutations: tokio::sync::Mutex::new(()),
