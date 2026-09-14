@@ -1,11 +1,23 @@
 //! Errors encountered while reconciling application operations.
 
 /// Sanitized failure returned while executing a durable operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum OperationError {
-    /// The durable operation journal could not be read or updated.
+    /// Docker failure with its complete diagnostic cause chain.
+    #[error("{}", .0.operation_classification())]
+    Docker(#[source] crate::docker::DockerError),
+    /// Durable operation failure with its storage cause.
     #[error("operation journal is unavailable")]
-    JournalUnavailable,
+    Journal(#[source] crate::store::StoreError),
+    /// Repository input could not be located or decoded.
+    #[error("{}", if *.not_found { "manifest not found" } else { "repository manifest is invalid or its application name does not match" })]
+    ManifestInput {
+        /// Whether the input was absent rather than invalid.
+        not_found: bool,
+        /// Internal I/O, validation, or checkout diagnostic.
+        #[source]
+        source: anyhow::Error,
+    },
     /// Operation execution was cancelled.
     #[error("operation was cancelled")]
     Cancelled,
@@ -35,7 +47,7 @@ pub enum OperationError {
     ImageResolutionRejected(&'static str),
     /// Git source preparation failed before rollout.
     #[error("Git source build failed")]
-    GitBuildFailed,
+    GitBuildFailed(#[source] anyhow::Error),
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     DockerRequestFailed(&'static str),
@@ -47,7 +59,7 @@ pub enum OperationError {
     ManifestNotFound,
     /// Repository access failed before reading its manifest.
     #[error("could not fetch the manifest repository")]
-    ManifestFetchFailed,
+    ManifestFetchFailed(#[source] anyhow::Error),
     /// The fetched manifest is invalid or selects another application.
     #[error("repository manifest is invalid or its application name does not match")]
     ManifestInvalid,
@@ -65,10 +77,19 @@ pub enum OperationError {
 impl OperationError {
     /// Returns the stable machine-readable failure code.
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
-            Self::GitBuildFailed => "git_build_failed",
-            Self::JournalUnavailable => "journal_unavailable",
+            Self::Docker(error) => error.operation_classification().code(),
+            Self::Journal(_) => "journal_unavailable",
+            Self::ManifestInput {
+                not_found: true, ..
+            }
+            | Self::ManifestNotFound => "manifest_not_found",
+            Self::ManifestInput {
+                not_found: false, ..
+            }
+            | Self::ManifestInvalid => "manifest_invalid",
+            Self::GitBuildFailed(_) => "git_build_failed",
             Self::Cancelled => "cancelled",
             Self::Superseded => "superseded",
             Self::OwnershipConflict => "ownership_conflict",
@@ -80,9 +101,7 @@ impl OperationError {
             Self::ImageResolutionRejected(_) => "image_resolution_rejected",
             Self::DockerRequestFailed(_) => "docker_request_failed",
             Self::ValidationFailed(_) => "validation_failed",
-            Self::ManifestNotFound => "manifest_not_found",
-            Self::ManifestFetchFailed => "manifest_fetch_failed",
-            Self::ManifestInvalid => "manifest_invalid",
+            Self::ManifestFetchFailed(_) => "manifest_fetch_failed",
             Self::ServiceUpdateFailed => "service_update_failed",
             Self::PlanBlocked(_) => "plan_blocked",
             Self::ConvergenceTimeout => "convergence_timeout",
@@ -98,30 +117,43 @@ impl OperationError {
 
 impl From<crate::docker::DockerError> for OperationError {
     fn from(error: crate::docker::DockerError) -> Self {
-        tracing::warn!(error=?error,"Docker execution error");
-        match error {
-            crate::docker::DockerError::OwnershipConflict => Self::OwnershipConflict,
-            crate::docker::DockerError::ConfigurationConflict => Self::DockerConfigurationConflict,
-            crate::docker::DockerError::Validation(operation) => Self::ValidationFailed(operation),
-            crate::docker::DockerError::NotManager => Self::SwarmManagerUnavailable,
-            crate::docker::DockerError::IncompatibleSwarm => Self::SwarmTopologyUnsupported,
+        Self::Docker(error)
+    }
+}
+
+impl crate::docker::DockerError {
+    /// Projects a safe public classification without consuming the cause.
+    fn operation_classification(&self) -> OperationError {
+        use OperationError as Failure;
+        match self {
+            crate::docker::DockerError::OwnershipConflict => Failure::OwnershipConflict,
+            crate::docker::DockerError::ConfigurationConflict => {
+                Failure::DockerConfigurationConflict
+            }
+            crate::docker::DockerError::Validation(operation) => {
+                Failure::ValidationFailed(operation)
+            }
+            crate::docker::DockerError::NotManager => Failure::SwarmManagerUnavailable,
+            crate::docker::DockerError::IncompatibleSwarm => Failure::SwarmTopologyUnsupported,
             crate::docker::DockerError::Unavailable(operation)
             | crate::docker::DockerError::UnavailableSource { operation, .. } => {
-                Self::DockerUnavailable(operation)
+                Failure::DockerUnavailable(operation)
             }
             crate::docker::DockerError::ImageResolutionSource {
                 operation,
-                ref source,
-            } if matches!(source,bollard::errors::Error::DockerResponseServerError {status_code:400..=407 | 409..=428 | 430..=499,..}) => {
-                Self::ImageResolutionRejected(operation)
-            }
+                source:
+                    bollard::errors::Error::DockerResponseServerError {
+                        status_code: 400..=407 | 409..=428 | 430..=499,
+                        ..
+                    },
+            } => Failure::ImageResolutionRejected(operation),
             crate::docker::DockerError::ImageResolution(operation)
             | crate::docker::DockerError::ImageResolutionSource { operation, .. } => {
-                Self::ImageResolutionFailed(operation)
+                Failure::ImageResolutionFailed(operation)
             }
             crate::docker::DockerError::Request(operation)
             | crate::docker::DockerError::RequestSource { operation, .. } => {
-                Self::DockerRequestFailed(operation)
+                Failure::DockerRequestFailed(operation)
             }
         }
     }
@@ -129,7 +161,73 @@ impl From<crate::docker::DockerError> for OperationError {
 
 impl From<crate::store::StoreError> for OperationError {
     fn from(error: crate::store::StoreError) -> Self {
-        tracing::error!(error = ?error, "could not read or update reconciliation state");
-        Self::JournalUnavailable
+        Self::Journal(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OperationError;
+    use crate::docker::DockerError;
+    use std::error::Error;
+
+    #[test]
+    fn operation_errors_retain_causes_without_exposing_them_publicly() {
+        let diagnostic = "token=internal-secret";
+        let error = OperationError::from(DockerError::RequestSource {
+            operation: "inspect service",
+            source: Box::new(std::io::Error::other(diagnostic)),
+        });
+        assert_eq!(error.code(), "docker_request_failed");
+        assert!(!error.message().contains(diagnostic));
+        let cause = error.source().unwrap().source().unwrap();
+        assert!(cause.is::<std::io::Error>());
+        assert_eq!(cause.to_string(), diagnostic);
+
+        let journal = OperationError::from(crate::store::StoreError::DatabaseSource(
+            sqlx::Error::PoolClosed,
+        ));
+        assert_eq!(journal.code(), "journal_unavailable");
+        assert!(
+            journal
+                .source()
+                .unwrap()
+                .source()
+                .unwrap()
+                .is::<sqlx::Error>()
+        );
+
+        let git = OperationError::GitBuildFailed(anyhow::anyhow!(diagnostic));
+        assert_eq!(git.code(), "git_build_failed");
+        assert_eq!(git.source().unwrap().to_string(), diagnostic);
+        assert!(!git.message().contains(diagnostic));
+    }
+
+    #[test]
+    fn registry_failures_keep_classification_and_original_status() {
+        for (status_code, expected) in [
+            (401, "image_resolution_rejected"),
+            (408, "image_resolution_failed"),
+            (429, "image_resolution_failed"),
+            (500, "image_resolution_failed"),
+        ] {
+            let error = OperationError::from(DockerError::ImageResolutionSource {
+                operation: "pull image",
+                source: bollard::errors::Error::DockerResponseServerError {
+                    status_code,
+                    message: "internal registry diagnostic".into(),
+                },
+            });
+            assert_eq!(error.code(), expected);
+            assert!(
+                error
+                    .source()
+                    .unwrap()
+                    .source()
+                    .unwrap()
+                    .is::<bollard::errors::Error>()
+            );
+            assert!(!error.message().contains("internal registry diagnostic"));
+        }
     }
 }

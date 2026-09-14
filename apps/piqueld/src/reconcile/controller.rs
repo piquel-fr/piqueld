@@ -108,14 +108,14 @@ impl<D: DockerApi> Controller<D> {
                 }
             }
             Err(error) if operation.kind == OperationKind::Delete => {
-                tracing::warn!(code = error.code(), "deletion will be retried");
+                tracing::warn!(code = error.code(), error = ?error, "deletion will be retried");
                 self.store
                     .record_operation_error(operation, error.code(), &error.message())
                     .await
             }
             Err(error) => {
-                tracing::error!(code = error.code(), "operation failed");
-                self.record_failure(operation, error).await?;
+                tracing::error!(code = error.code(), error = ?error, "operation failed");
+                self.record_failure(operation, &error).await?;
                 self.store
                     .transition_operation(
                         &operation.id,
@@ -299,7 +299,7 @@ impl<D: DockerApi> Controller<D> {
                     }
                     crate::application::BoundaryError::GitBuild(error) => {
                         tracing::warn!(error = ?error, "Git source build failed");
-                        OperationError::GitBuildFailed
+                        OperationError::GitBuildFailed(error)
                     }
                     crate::application::BoundaryError::Compilation(errors) => {
                         tracing::error!(?errors, "application compilation failed");
@@ -332,7 +332,7 @@ impl<D: DockerApi> Controller<D> {
     async fn record_failure(
         &self,
         operation: &Operation,
-        error: OperationError,
+        error: &OperationError,
     ) -> Result<(), StoreError> {
         self.store
             .set_status_for_operation(
