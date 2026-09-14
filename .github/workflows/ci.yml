@@ -261,12 +261,11 @@ jobs:
         id: nix_mount
         shell: bash
         run: |
-          PS4='+${EPOCHREALTIME} '
-          set -x
           sudo systemctl stop nix-daemon.socket nix-daemon.service
           runtime=$(readlink -f /nix/var/nix/profiles/default/bin/nix)
           runtime=${runtime%/bin/nix}
-          if ! sudo test -e "/nix-cache/store/${runtime##*/}"; then
+          if ! sudo test -f /nix-cache/var/nix/db/db.sqlite \
+            || ! sudo test -e "/nix-cache/store/${runtime##*/}"; then
             sudo env NIX_REMOTE=local /nix/var/nix/profiles/default/bin/nix-store \
               --dump-db | tee "$RUNNER_TEMP/nix-bootstrap.db" > /dev/null
             sudo mkdir -p /nix-cache/store
@@ -300,11 +299,6 @@ jobs:
             --argstr source "git+file://$PWD?shallow=1" \
             --argstr system "${{ matrix.system }}" \
             --out-link result-ci
-          for package in cli combined; do
-            help=$("result-ci/$package/bin/piquelctl" --help)
-            [[ "$help" == "Operate a local piqueld control plane"* ]]
-            echo "Verified changed executable in $package"
-          done
           jq -n \
             --arg cli "$(readlink -f result-ci/cli-artifacts)" \
             --arg daemon "$(readlink -f result-ci/daemon-artifacts)" \

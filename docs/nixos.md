@@ -81,7 +81,8 @@ Blacksmith persistent disks retain the complete store, including build tools,
 without uploading and downloading an archive for every job. Disks are keyed
 by architecture and Git ref. New disks can seed from the previous Actions
 cache; old unrooted outputs are reclaimed when disk usage exceeds 32 GiB.
-The CI wrapper uses `--impure` only to read the
+Temporary builds use local runner storage, and the Nix daemon starts after
+the cached store is mounted. The CI wrapper uses `--impure` only to read the
 local cache index and resolve its immutable store paths; ordinary flake builds
 remain independent of that index. Cold caches still require full compilation.
 
