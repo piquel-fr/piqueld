@@ -89,8 +89,8 @@ so `trunk`, `wasm-bindgen-cli`, `binaryen`, and `tailwindcss` must be on the
 path:
 
 ```console
-cargo build --release --package piqueld --features embedded-ui --locked
-# or: just build-embedded
+cargo build --release --package piqueld --bin piqueld --features embedded-ui --locked
+# Build both the embedded daemon and CLI: just build-embedded
 ```
 
 There is no runtime UI configuration: the dashboard exists exactly when the
