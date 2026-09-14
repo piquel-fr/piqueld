@@ -110,9 +110,7 @@ pub trait DockerApi: Send + Sync + 'static {
     ) -> Result<piqueld_core::api::ApplicationLogs, DockerError>;
 
     /// Probes Engine reachability independently of Swarm configuration.
-    async fn ping(&self) -> Result<(), DockerError> {
-        Err(DockerError::Unavailable("Docker ping is not implemented"))
-    }
+    async fn ping(&self) -> Result<(), DockerError>;
 
     /// Ensures that Docker is an active, compatible Swarm manager.
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError>;

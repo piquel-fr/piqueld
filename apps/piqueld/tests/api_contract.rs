@@ -2328,9 +2328,17 @@ async fn readiness_distinguishes_engine_reachability_and_does_not_gate_saves() {
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let readiness = api.client.system_readiness().await.unwrap();
     assert!(!readiness.ready);
-    assert!(readiness.database.ready);
-    assert!(readiness.docker.ready);
-    assert!(!readiness.swarm.ready);
+    assert!(matches!(
+        readiness.database,
+        piqueld_core::api::DependencyStatus::Ready
+    ));
+    assert!(matches!(
+        readiness.docker,
+        piqueld_core::api::DependencyStatus::Ready
+    ));
+    assert!(
+        matches!(readiness.swarm, piqueld_core::api::DependencyStatus::Failed { message } if message == "A compatible single-node Swarm manager is required")
+    );
     let response = router(ApiState::new(api.store.clone(), api.runtime.clone()))
         .oneshot(
             Request::builder()

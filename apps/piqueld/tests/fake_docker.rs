@@ -199,6 +199,10 @@ impl DockerApi for FakeDocker {
         Ok(piqueld_core::api::ApplicationLogs::default())
     }
 
+    async fn ping(&self) -> Result<(), DockerError> {
+        Ok(())
+    }
+
     async fn ensure_swarm(&self, _auto_initialize: bool) -> Result<SwarmState, DockerError> {
         Ok(SwarmState::Ready)
     }

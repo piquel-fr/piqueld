@@ -1,6 +1,6 @@
 use http::Method;
 
-pub use piqueld_core::api::SystemStatus;
+pub use piqueld_core::api::{DependencyStatus, SystemStatus};
 
 use crate::{Client, ClientError};
 

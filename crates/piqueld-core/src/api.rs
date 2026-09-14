@@ -305,19 +305,26 @@ pub struct LogRecord {
 
 /// One diagnostic dependency probe, independent of application health.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-pub struct DependencyStatus {
-    /// Whether this dependency is usable.
-    pub ready: bool,
-    /// Explanation when the probe fails.
-    pub message: Option<String>,
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DependencyStatus {
+    /// The dependency is usable.
+    Ready,
+    /// The probe failed with a safe explanation.
+    Failed {
+        /// Explanation when the probe fails.
+        message: String,
+    },
 }
 impl DependencyStatus {
     /// Creates a dependency verdict with a safe failure explanation.
     #[must_use]
     pub fn new(ready: bool, failure: &str) -> Self {
-        Self {
-            ready,
-            message: (!ready).then(|| failure.to_owned()),
+        if ready {
+            Self::Ready
+        } else {
+            Self::Failed {
+                message: failure.to_owned(),
+            }
         }
     }
 }

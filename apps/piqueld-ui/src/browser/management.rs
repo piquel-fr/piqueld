@@ -442,7 +442,7 @@ pub(super) fn HostPage() -> impl IntoView {
             <div>
                 <h2>"Host settings"</h2>
             </div>
-        </header><section class="settings-card"><h3>"Deployment readiness"</h3><p class="help">"Diagnostic only. Saved configuration remains editable when Docker is unavailable."</p><button disabled=move ||checking.get() on:click=move |_|refresh(())>"Refresh readiness"</button>{move ||readiness_error.get().map(|e|view!{<p class="form-error">{e}</p>})}{move ||readiness.get().map(|status|[ ("Database",status.database),("Docker Engine",status.docker),("Swarm manager",status.swarm)].into_iter().map(|(name,probe)|view!{<p><strong>{name}</strong>" — "{probe.message.unwrap_or_else(||"Ready".into())}</p>}).collect_view())}</section>
+        </header><section class="settings-card"><h3>"Deployment readiness"</h3><p class="help">"Diagnostic only. Saved configuration remains editable when Docker is unavailable."</p><button disabled=move ||checking.get() on:click=move |_|refresh(())>"Refresh readiness"</button>{move ||readiness_error.get().map(|e|view!{<p class="form-error">{e}</p>})}{move ||readiness.get().map(|status|[ ("Database",status.database),("Docker Engine",status.docker),("Swarm manager",status.swarm)].into_iter().map(|(name,probe)|view!{<p><strong>{name}</strong>" — "{match probe { piqueld_client::system::DependencyStatus::Ready => "Ready".into(), piqueld_client::system::DependencyStatus::Failed { message } => message }}</p>}).collect_view())}</section>
         {move || error.get().map(|e| view! { <p class="form-error">{e}</p> })}
         {move || {
             settings
