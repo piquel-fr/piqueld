@@ -11,11 +11,30 @@ Import the flake module and enable the service:
 
 The default package embeds the dashboard. `services.piqueld.package` can select
 `inputs.piqueld.packages.${pkgs.system}.daemon` for API-only operation.
-The CLI is installed by default when the daemon is enabled; set
-`installCli = false` to omit it. For a remote-management machine with only the
-CLI, import the module and set `services.piqueld.installCli = true;` while
-leaving `services.piqueld.enable = false;`. This does not enable Docker or
-create the daemon service or user.
+The default module installs the CLI when the daemon is enabled; set
+`programs.piquelctl.enable = false` to omit it. For a remote-management machine
+with only the CLI, import `inputs.piqueld.nixosModules.piquelctl` and enable
+`programs.piquelctl`. This module does not enable Docker or create the daemon
+service or user.
+
+Connection profiles use the same typed-settings style as the daemon:
+
+```nix
+{
+  imports = [ inputs.piqueld.nixosModules.piquelctl ];
+  programs.piquelctl = {
+    enable = true;
+    settings.profiles.production = {
+      url = "http://127.0.0.1:7845";
+      timeout = "2m";
+    };
+  };
+}
+```
+
+Each profile must set exactly one of `socket` or `url`; `timeout` is optional.
+The generated profiles file is selected by default while preserving the CLI's
+`--profiles-file` and `PIQUELD_PROFILES_FILE` overrides.
 
 `dataDir` defaults to `/var/lib/piqueld`, with mode 0700. Its derived socket is
 `piqueld.sock` (0600) and database is `piqueld.db`. Run the local CLI as root or

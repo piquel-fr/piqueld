@@ -19,16 +19,6 @@ in
       type = lib.types.package;
       description = "Daemon package, optionally with its embedded dashboard.";
     };
-    cliPackage = lib.mkOption {
-      type = lib.types.package;
-      description = "Package containing piquelctl.";
-    };
-    installCli = lib.mkOption {
-      type = lib.types.bool;
-      default = cfg.enable;
-      defaultText = lib.literalExpression "config.services.piqueld.enable";
-      description = "Install piquelctl system-wide, independently of the daemon.";
-    };
     dataDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/piqueld";
@@ -84,59 +74,56 @@ in
       description = "Typed daemon TOML settings. dataDir controls server.data_dir. Never put credentials here: these settings enter the Nix store.";
     };
   };
-  config = lib.mkMerge [
-    { environment.systemPackages = lib.optional cfg.installCli cfg.cliPackage; }
-    (lib.mkIf cfg.enable {
-      assertions = [
-        {
-          assertion =
-            lib.hasPrefix "/var/lib/" cfg.dataDir
-            && lib.all (part: part != "" && part != "." && part != "..") (
-              lib.splitString "/" (lib.removePrefix "/var/lib/" cfg.dataDir)
-            );
-          message = "services.piqueld.dataDir must be a dedicated directory below /var/lib";
-        }
+  config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion =
+          lib.hasPrefix "/var/lib/" cfg.dataDir
+          && lib.all (part: part != "" && part != "." && part != "..") (
+            lib.splitString "/" (lib.removePrefix "/var/lib/" cfg.dataDir)
+          );
+        message = "services.piqueld.dataDir must be a dedicated directory below /var/lib";
+      }
+    ];
+    users.groups.piqueld = { };
+    users.users.piqueld = {
+      isSystemUser = true;
+      group = "piqueld";
+      extraGroups = [ "docker" ];
+      home = cfg.dataDir;
+    };
+    virtualisation.docker.enable = true;
+    systemd.services.piqueld = {
+      description = "piqueld application control plane";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "docker.service" ];
+      requires = [ "docker.service" ];
+      path = [
+        pkgs.git
+        pkgs.openssh
+        pkgs.docker-client
       ];
-      users.groups.piqueld = { };
-      users.users.piqueld = {
-        isSystemUser = true;
-        group = "piqueld";
-        extraGroups = [ "docker" ];
-        home = cfg.dataDir;
+      serviceConfig = {
+        ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
+        User = "piqueld";
+        Group = "piqueld";
+        SupplementaryGroups = [ "docker" ];
+        StateDirectory = lib.removePrefix "/var/lib/" cfg.dataDir;
+        StateDirectoryMode = "0700";
+        UMask = "0077";
+        Restart = "on-failure";
+        RestartSec = "5s";
+        TimeoutStopSec = "180s";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictSUIDSGID = true;
+        ReadWritePaths = [ cfg.dataDir ];
       };
-      virtualisation.docker.enable = true;
-      systemd.services.piqueld = {
-        description = "piqueld application control plane";
-        wantedBy = [ "multi-user.target" ];
-        after = [ "docker.service" ];
-        requires = [ "docker.service" ];
-        path = [
-          pkgs.git
-          pkgs.openssh
-          pkgs.docker-client
-        ];
-        serviceConfig = {
-          ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
-          User = "piqueld";
-          Group = "piqueld";
-          SupplementaryGroups = [ "docker" ];
-          StateDirectory = lib.removePrefix "/var/lib/" cfg.dataDir;
-          StateDirectoryMode = "0700";
-          UMask = "0077";
-          Restart = "on-failure";
-          RestartSec = "5s";
-          TimeoutStopSec = "180s";
-          NoNewPrivileges = true;
-          PrivateTmp = true;
-          ProtectSystem = "strict";
-          ProtectHome = true;
-          ProtectKernelTunables = true;
-          ProtectKernelModules = true;
-          ProtectControlGroups = true;
-          RestrictSUIDSGID = true;
-          ReadWritePaths = [ cfg.dataDir ];
-        };
-      };
-    })
-  ];
+    };
+  };
 }
