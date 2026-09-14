@@ -12,13 +12,9 @@
 #   ui-check / check-wasm -> wasm-ui
 #   docker-test       -> docker-integration
 #   build-embedded    -> embedded-release
-#   nix-check         -> nix
 #
 # `check` is deliberately not a separate job: `clippy --all-targets
 # --all-features` compiles everything it would and adds lints on top.
-#
-# Nix validates package builds, sandboxed tests, and the KVM-dependent NixOS
-# VM test on x86_64, restoring a persistent Nix store cache.
 #
 # Speed comes from Swatinem/rust-cache in every compiling job (keyed per job
 # against Cargo.lock), prebuilt tool downloads instead of `cargo install`,
@@ -233,107 +229,3 @@ jobs:
             target/release/piqueld
             target/release/piquelctl
             config/piqueld.example.toml
-
-  nix:
-    name: nix (x86_64-linux)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Prepare local build directory
-        run: sudo install -d -m 0755 /var/lib/nix-builds
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          start-daemon: false
-          extra-conf: |
-            build-dir = /var/lib/nix-builds
-      - name: Mount persistent Nix store
-        uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc # v1
-        with:
-          key: piqueld-nix-x86_64-linux-${{ github.ref }}
-          path: /nix-cache
-      - name: Check persistent store
-        id: nix_cache
-        shell: bash
-        run: |
-          if sudo test -f /nix-cache/var/nix/db/db.sqlite; then
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Start Nix for cold-cache seeding
-        if: steps.nix_cache.outputs.hit != 'true'
-        run: sudo systemctl start nix-daemon.socket nix-daemon.service
-      # Seed a new disk from the existing archive cache once. Warm jobs mount
-      # the store directly, avoiding archive transfer and toolchain downloads.
-      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
-        if: steps.nix_cache.outputs.hit != 'true'
-        with:
-          primary-key: nix-x86_64-linux-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-${{ github.sha }}
-          restore-prefixes-first-match: |
-            nix-x86_64-linux-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-
-            nix-x86_64-linux-
-          save: false
-      - name: Activate persistent Nix store
-        id: nix_mount
-        shell: bash
-        run: |
-          sudo systemctl stop nix-daemon.socket nix-daemon.service
-          runtime=$(readlink -f /nix/var/nix/profiles/default/bin/nix)
-          runtime=${runtime%/bin/nix}
-          if ! sudo test -f /nix-cache/var/nix/db/db.sqlite \
-            || ! sudo test -e "/nix-cache/store/${runtime##*/}"; then
-            sudo env NIX_REMOTE=local /nix/var/nix/profiles/default/bin/nix-store \
-              --dump-db | tee "$RUNNER_TEMP/nix-bootstrap.db" > /dev/null
-            sudo mkdir -p /nix-cache/store
-            # Store paths are immutable: skip existing directories entirely.
-            for path in /nix/store/*; do
-              if ! sudo test -e "/nix-cache/store/${path##*/}"; then
-                sudo cp -a "$path" /nix-cache/store/
-              fi
-            done
-            sudo rsync -a --ignore-existing --exclude=/nix/db /nix/var/ /nix-cache/var/
-            sudo mkdir -p /nix-cache/var/nix/db
-            # Keep the freshly installed runtime after an installer update.
-            sudo cp -a /nix/var/nix/profiles/default* /nix-cache/var/nix/profiles/
-          fi
-          sudo chown root:root /nix-cache
-          sudo mount --bind /nix-cache /nix
-          echo "bound=true" >> "$GITHUB_OUTPUT"
-          if [[ -f "$RUNNER_TEMP/nix-bootstrap.db" ]]; then
-            cat "$RUNNER_TEMP/nix-bootstrap.db" | sudo env NIX_REMOTE=local \
-              /nix/var/nix/profiles/default/bin/nix-store --load-db
-          fi
-          sudo systemctl start nix-daemon.socket nix-daemon.service
-      - name: Evaluate every flake output
-        run: nix flake show --all-systems
-      # The CI wrapper retains workspace artifacts as well as dependencies,
-      # and lets the VM overlap with the remaining package builds and tests.
-      - name: Validate native packages and sandboxed checks
-        shell: bash
-        run: |
-          nix build -L --impure --file nix/ci.nix \
-            --argstr source "git+file://$PWD?shallow=1" \
-            --argstr system "x86_64-linux" \
-            --out-link result-ci
-          jq -n \
-            --arg cli "$(readlink -f result-ci/cli-artifacts)" \
-            --arg daemon "$(readlink -f result-ci/daemon-artifacts)" \
-            --arg combined "$(readlink -f result-ci/combined-artifacts)" \
-            '{cli: $cli, daemon: $daemon, combined: $combined}' \
-            | sudo tee /nix/var/piqueld-artifacts.json > /dev/null
-      - name: Release persistent Nix store
-        if: always() && steps.nix_mount.outputs.bound == 'true'
-        shell: bash
-        run: |
-          # Reclaim old outputs only when needed; retain the hot toolchain on
-          # ordinary runs instead of downloading it again after every GC.
-          if [[ "${{ job.status }}" == success ]]; then
-            ceiling=34359738368
-            used=$(df -B1 --output=used /nix-cache | tail -n1)
-            if (( used > ceiling )); then
-              nix store gc --max "$((used - ceiling))"
-            fi
-          fi
-          sudo systemctl stop nix-daemon.socket nix-daemon.service
-          sudo umount /nix
-          # Installer cleanup uses its original store after the cache unmounts.
-          sudo systemctl start nix-daemon.socket nix-daemon.service

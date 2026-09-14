@@ -1,5 +1,5 @@
 {
-  description = "piqueld development environment and workspace checks";
+  description = "piqueld packages and development environment";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   inputs.crane.url = "github:ipetkov/crane";
@@ -65,14 +65,16 @@
               pkgs.pkg-config
               pkgs.rustPlatform.bindgenHook
             ];
-            nativeCheckInputs = [ pkgs.git ];
             DATABASE_URL = "sqlite::memory:";
+            # Rust validation runs outside Nix; package builds only produce the
+            # requested binaries.
+            doCheck = false;
             # Keep release optimization, but avoid repeating whole-program LTO
             # for every package and test executable in native Nix builds.
             CARGO_PROFILE_RELEASE_LTO = "false";
           };
-          # These artifacts feed builds and tests, never `cargo check`. Crane's
-          # default check pass compiles a separate set of metadata we don't use.
+          # These artifacts feed builds, never `cargo check`. Crane's default
+          # check pass compiles a separate set of metadata we don't use.
           buildDepsOnly =
             args:
             craneLib.buildDepsOnly (
@@ -156,7 +158,6 @@
                   "--locked "
                   + lib.concatMapStringsSep " " (binary: "--package ${binary}") binaries
                   + lib.optionalString withUi " --features embedded-ui";
-                # Use the same flags for dependency compilation and real tests.
                 CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
               };
             in
@@ -164,10 +165,7 @@
               args
               // {
                 inherit cargoArtifacts;
-                # generate_openapi is tested, but is not a shipped binary.
                 cargoBuildExtraArgs = lib.concatMapStringsSep " " (binary: "--bin ${binary}") binaries;
-                # Nix sandbox ownership prevents this host-only startup test.
-                cargoTestExtraArgs = lib.optionalString (builtins.elem "piqueld" binaries) "-- --skip=competing_daemon_preserves_database_and_live_socket";
                 nativeBuildInputs =
                   commonArgs.nativeBuildInputs ++ lib.optional (builtins.elem "piqueld" binaries) pkgs.makeWrapper;
                 installPhaseCommand = ''
@@ -212,79 +210,6 @@
             cargoArtifacts = daemonDeps;
           };
           default = self.packages.${system}.combined;
-          # CI roots these build-time inputs explicitly before cache GC.
-          dependencies = pkgs.linkFarm "piqueld-dependencies" [
-            {
-              name = "cli";
-              path = cliDeps;
-            }
-            {
-              name = "daemon";
-              path = daemonDeps;
-            }
-            {
-              name = "ui";
-              path = uiDeps;
-            }
-          ];
-        }
-      );
-
-      checks = forAllSystems (
-        system:
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-        in
-        {
-          nixos-service = import ./nix/vm-test.nix {
-            inherit pkgs;
-            module = self.nixosModules.default;
-            daemon = self.packages.${system}.daemon;
-            cli = self.packages.${system}.cli;
-          };
-          package = self.packages.${system}.default;
-          daemon-package = self.packages.${system}.daemon;
-          cli-package = self.packages.${system}.cli;
-          formatting =
-            pkgs.runCommand "piqueld-formatting"
-              {
-                nativeBuildInputs = [
-                  pkgs.cargo
-                  pkgs.rustfmt
-                  pkgs.nixfmt
-                ];
-                src = pkgs.lib.cleanSource self;
-              }
-              ''
-                cp -R "$src" source
-                chmod -R u+w source
-                cd source
-                cargo fmt --check
-                nixfmt --check flake.nix nix/ci.nix nix/vm-test.nix
-                touch "$out"
-              '';
-          # cargo tree must resolve the crates.io dependency graph, so the
-          # check vendors all sources up front and stays sandbox-safe.
-          dependency-boundary = pkgs.stdenv.mkDerivation {
-            name = "piqueld-dependency-boundary";
-            src = pkgs.lib.cleanSource self;
-            nativeBuildInputs = [
-              pkgs.cargo
-              pkgs.rustPlatform.cargoSetupHook
-            ];
-            cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-              name = "piqueld-dependency-boundary-deps";
-              src = pkgs.lib.cleanSource self;
-              hash = "sha256-PsiPM+QJ1eFNfsBeS7awo3RkRYJS26gD6SqFgHafmeI=";
-            };
-            dontConfigure = true;
-            buildPhase = ''
-              bash scripts/check-dependency-boundaries.sh
-            '';
-            installPhase = ''
-              touch "$out"
-            '';
-          };
         }
       );
 

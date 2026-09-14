@@ -56,44 +56,6 @@ are present on the service PATH. Configure SSH credentials and known hosts for
 the service user, not the interactive operator; host home directories are protected.
 Never put credential values into Nix settings, which are stored in the Nix store.
 
-Validate service startup, private paths, Swarm initialization, CLI access, and
-restart with `nix build .#checks.x86_64-linux.nixos-service` (requires KVM or
-software virtualization). Configuration and package changes require rebuilding
-NixOS; application state remains under `dataDir`.
-
-Nix packages and development shells support x86_64 Linux. CI builds and tests
-all three packages and runs the NixOS VM test on every PR and push to main.
-Crane caches the CLI, daemon, and WebAssembly dependency graphs separately;
-the combined package shares the daemon artifacts. Dependency builds omit Crane's
-preliminary `cargo check` pass:
-these artifacts are consumed by builds and tests, which compile and validate
-the dependencies themselves. Application edits
-reuse these artifacts while manifest, lockfile, or toolchain changes can require
-fresh dependency builds. The dashboard has its own build, so daemon-only edits
-also reuse its distribution. Documentation and CI files are excluded from
-package sources.
-
-`nix/ci.nix` also retains the previous successful workspace build artifacts,
-allowing Cargo's incremental compiler to reuse unchanged application code.
-The artifact index travels with the Nix store cache; missing artifacts fall
-back to dependency-only builds. Sources receive newer timestamps than the
-archives so Cargo must validate current code. Each snapshot is self-contained,
-avoiding an ever-growing chain of previous builds.
-
-CI roots these artifacts and the dashboard distribution in `result-ci`.
-Blacksmith persistent disks retain the complete store, including build tools,
-without uploading and downloading an archive for every job. Disks are keyed
-by architecture and Git ref. New disks can seed from the previous Actions
-cache; old unrooted outputs are reclaimed when disk usage exceeds 32 GiB.
-Temporary builds use local runner storage, and the Nix daemon starts after
-the cached store is mounted. The CI wrapper uses `--impure` only to read the
-local cache index and resolve its immutable store paths; ordinary flake builds
-remain independent of that index. Cold caches still require full compilation.
-
-Nix release builds retain release optimization but disable thin LTO, avoiding
-whole-program optimization for every package and test executable. The regular
-Cargo release profile is unchanged. Nix uses a 4-vCPU runner; other CI jobs
-use 2-vCPU runners. Nix starts the VM test as soon as its daemon and CLI
-packages are ready,
-allowing it to overlap with the combined package's build and tests. Each VM
-receives four vCPUs to parallelize boot-time service startup.
+Nix packages and development shells support x86_64 Linux. Configuration and
+package changes require rebuilding NixOS; application state remains under
+`dataDir`.

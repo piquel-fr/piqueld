@@ -50,8 +50,8 @@ The supported manifest and runtime model are documented in:
 ## Development
 
 Use a Rust 1.96-or-newer toolchain directly. Nix is optional; `nix develop`
-provides a reproducible development shell and the flake contains deployment
-checks. The ordinary command is:
+provides a reproducible development shell and the flake contains deployable
+packages. The ordinary command is:
 
 ```console
 just
@@ -77,11 +77,11 @@ Both `just test` and `just docker-test` use nextest and emit JUnit XML at
 `target/nextest/<profile>/junit.xml` (`default` locally). CI selects separate
 `ci` and `docker-ci` profiles, runs all selected tests even after failures,
 and preserves reports as workflow artifacts. Blacksmith automatically discovers
-these XML files for test analytics. Doc, browser, and Nix checks use separate
-runners and are not included in these nextest reports.
+these XML files for test analytics. Doc and browser checks use separate runners
+and are not included in these nextest reports.
 
-The reproducible Nix package and checks can be evaluated explicitly with
-`just nix-check`.
+The reproducible Nix package can be built with `nix build`; use `nix develop`
+for the development shell.
 
 The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
 another host configuration. Configuration only covers local paths, listeners,
