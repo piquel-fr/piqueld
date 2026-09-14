@@ -6,6 +6,8 @@
 }:
 pkgs.testers.runNixOSTest {
   name = "piqueld-service";
+  # Boot services concurrently on the native CI runners.
+  defaults.virtualisation.cores = 4;
   nodes.machine = { ... }: {
     imports = [ module ];
     services.piqueld = {

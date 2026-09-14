@@ -234,25 +234,19 @@ jobs:
             nix-${{ matrix.system }}-
           # Save rooted outputs rather than several GiB of unused store paths.
           gc-max-store-size-linux: 0
-      # Build-time artifacts are not referenced by installed binaries. Root
-      # them so cache GC retains compiled dependencies for the next commit.
-      - name: Cache compiled Cargo dependencies
-        run: nix build -L --out-link result-dependencies ".#packages.${{ matrix.system }}.dependencies"
       - name: Evaluate every flake output
         run: nix flake show --all-systems
-      # Let the VM start as soon as its daemon and CLI are ready, while the
-      # combined package can still be compiling or testing in parallel.
+      # The CI wrapper retains workspace artifacts as well as dependencies,
+      # and lets the VM overlap with the remaining package builds and tests.
       - name: Validate native packages and sandboxed checks
         run: |
-          checks=(
-            ".#checks.${{ matrix.system }}.package"
-            ".#checks.${{ matrix.system }}.daemon-package"
-            ".#checks.${{ matrix.system }}.cli-package"
-            ".#checks.${{ matrix.system }}.formatting"
-            ".#checks.${{ matrix.system }}.dependency-boundary"
-          )
-          # Native ARM validation does not require nested virtualization.
-          if [[ "${{ matrix.system }}" == x86_64-linux ]]; then
-            checks+=(".#checks.x86_64-linux.nixos-service")
-          fi
-          nix build -L "${checks[@]}"
+          nix build -L --impure --file nix/ci.nix \
+            --argstr source "git+file://$PWD" \
+            --argstr system "${{ matrix.system }}" \
+            --out-link result-ci
+          jq -n \
+            --arg cli "$(readlink -f result-ci/cli-artifacts)" \
+            --arg daemon "$(readlink -f result-ci/daemon-artifacts)" \
+            --arg combined "$(readlink -f result-ci/combined-artifacts)" \
+            '{cli: $cli, daemon: $daemon, combined: $combined}' \
+            | sudo tee /nix/var/piqueld-artifacts.json > /dev/null

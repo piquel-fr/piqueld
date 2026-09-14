@@ -236,7 +236,7 @@
                 chmod -R u+w source
                 cd source
                 cargo fmt --check
-                nixfmt --check flake.nix
+                nixfmt --check flake.nix nix/ci.nix nix/vm-test.nix
                 touch "$out"
               '';
           # cargo tree must resolve the crates.io dependency graph, so the

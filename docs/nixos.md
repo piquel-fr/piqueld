@@ -69,16 +69,21 @@ fresh dependency builds. The dashboard has its own build, so daemon-only edits
 also reuse its distribution. Documentation and CI files are excluded from
 package sources.
 
-The `packages.<system>.dependencies` output roots the compiled Cargo artifacts
-before CI saves its Nix store cache. CI collects unrooted store paths to keep
-cache transfer small. Keep that output rooted: installed binaries
-do not retain references to their build-time dependencies, so cache garbage
-collection could otherwise delete them. A warm build still compiles changed
-workspace crates, links release binaries, and runs tests; cold builds are not
-expected to finish within a minute.
+`nix/ci.nix` also retains the previous successful workspace build artifacts,
+allowing Cargo's incremental compiler to reuse unchanged application code.
+The artifact index travels with the Nix store cache; missing artifacts fall
+back to dependency-only builds. Sources receive newer timestamps than the
+archives so Cargo must validate current code. Each snapshot is self-contained,
+avoiding an ever-growing chain of previous builds.
+
+CI roots these artifacts and the dashboard distribution in `result-ci` before
+collecting unrooted store paths. The CI wrapper uses `--impure` only to read the
+local cache index and resolve its immutable store paths; ordinary flake builds
+remain independent of that index. Cold caches still require full compilation.
 
 Nix release builds retain release optimization but disable thin LTO, avoiding
 whole-program optimization for every package and test executable. The regular
 Cargo release profile is unchanged. Native Nix CI uses 32-vCPU runners and
 starts the x86_64 VM test as soon as its daemon and CLI packages are ready,
-allowing it to overlap with the combined package's build and tests.
+allowing it to overlap with the combined package's build and tests. Each VM
+receives four vCPUs to parallelize boot-time service startup.
