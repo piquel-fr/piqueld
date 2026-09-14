@@ -68,6 +68,9 @@
             ];
             nativeCheckInputs = [ pkgs.git ];
             DATABASE_URL = "sqlite::memory:";
+            # Keep release optimization, but avoid repeating whole-program LTO
+            # for every package and test executable in native Nix builds.
+            CARGO_PROFILE_RELEASE_LTO = "false";
           };
           wasmArgs = commonArgs // {
             pname = "piqueld-ui";
@@ -136,6 +139,8 @@
               args
               // {
                 inherit cargoArtifacts;
+                # generate_openapi is tested, but is not a shipped binary.
+                cargoBuildExtraArgs = lib.concatMapStringsSep " " (binary: "--bin ${binary}") binaries;
                 # Nix sandbox ownership prevents this host-only startup test.
                 cargoTestExtraArgs = lib.optionalString (builtins.elem "piqueld" binaries) "-- --skip=competing_daemon_preserves_database_and_live_socket";
                 nativeBuildInputs =

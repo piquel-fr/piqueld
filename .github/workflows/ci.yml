@@ -232,7 +232,8 @@ jobs:
           restore-prefixes-first-match: |
             nix-${{ matrix.system }}-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-
             nix-${{ matrix.system }}-
-          gc-max-store-size-linux: 4294967296
+          # Save rooted outputs rather than several GiB of unused store paths.
+          gc-max-store-size-linux: 0
       # Build-time artifacts are not referenced by installed binaries. Root
       # them so cache GC retains compiled dependencies for the next commit.
       - name: Cache compiled Cargo dependencies

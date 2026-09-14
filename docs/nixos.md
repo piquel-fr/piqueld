@@ -70,8 +70,15 @@ also reuse its distribution. Documentation and CI files are excluded from
 package sources.
 
 The `packages.<system>.dependencies` output roots the compiled Cargo artifacts
-before CI saves its Nix store cache. Keep that output rooted: installed binaries
+before CI saves its Nix store cache. CI collects unrooted store paths to keep
+cache transfer small. Keep that output rooted: installed binaries
 do not retain references to their build-time dependencies, so cache garbage
 collection could otherwise delete them. A warm build still compiles changed
 workspace crates, links release binaries, and runs tests; cold builds are not
 expected to finish within a minute.
+
+Nix release builds retain release optimization but disable thin LTO, avoiding
+whole-program optimization for every package and test executable. The regular
+Cargo release profile is unchanged. Native Nix CI uses 32-vCPU runners and
+starts the x86_64 VM test as soon as its daemon and CLI packages are ready,
+allowing it to overlap with the combined package's build and tests.
