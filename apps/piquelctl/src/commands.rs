@@ -273,7 +273,7 @@ async fn logs(
     }
     for log in logs.items {
         writeln!(
-            io::stdout().lock(),
+            cli.output(),
             "{} {} {} {} | {}",
             log.timestamp,
             log.service,
@@ -282,7 +282,7 @@ async fn logs(
             log.message
         )?;
     }
-    if logs.truncated {
+    if logs.truncated && !cli.quiet {
         eprintln!("Log snapshot was truncated; narrow the service or time window.");
     }
     Ok(())
