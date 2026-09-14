@@ -65,33 +65,6 @@
         color: #d6c4f4;
     }
 
-    .sidebar-status {
-        margin-top: auto;
-        padding: 16px 10px 0;
-        border-top: 1px solid var(--line);
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-
-    .sidebar-status p {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        font-size: 11px;
-        color: var(--muted);
-    }
-
-    .sidebar-status p span {
-        width: 6px;
-        height: 6px;
-    }
-
-    .sidebar-status button {
-        font-size: 11px;
-        padding: 4px 7px;
-    }
-
     .dashboard-main {
         margin-left: 216px;
         padding: 30px 36px;
@@ -145,6 +118,132 @@
         font-size: 28px;
         line-height: 1;
         font-weight: 550;
+    }
+
+    .readiness-panel {
+        padding: 16px;
+        margin-bottom: 32px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+    }
+
+    .readiness-heading {
+        align-items: flex-start;
+        margin: 0 0 16px;
+    }
+
+    .readiness-heading p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+    }
+
+    .readiness-summary {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        margin: 0 0 12px;
+        padding: 5px 9px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+    }
+
+    .readiness-summary.ready,
+    .readiness-dependency[data-state="ready"] .readiness-state {
+        color: var(--ok);
+        background: var(--ok-bg);
+    }
+
+    .readiness-summary.failed,
+    .readiness-dependency[data-state="failed"] .readiness-state {
+        color: var(--bad);
+        background: var(--bad-bg);
+    }
+
+    .readiness-summary.pending {
+        color: var(--pending);
+        background: var(--pending-bg);
+    }
+
+    .readiness-dependency[data-state="pending"] .readiness-state {
+        color: var(--pending);
+        background: var(--pending-bg);
+    }
+
+    .readiness-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentcolor;
+    }
+
+    .readiness-dependencies {
+        display: grid;
+        grid-template-columns: repeat(4,minmax(0,1fr));
+        gap: 12px;
+    }
+
+    .readiness-dependency {
+        min-width: 0;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface-muted);
+    }
+
+    .readiness-dependency[data-state="ready"] {
+        border-color: color-mix(in srgb,var(--ok) 45%,var(--line));
+    }
+
+    .readiness-dependency[data-state="failed"] {
+        border-color: color-mix(in srgb,var(--bad) 60%,var(--line));
+    }
+
+    .readiness-dependency[data-state="pending"] {
+        border-color: color-mix(in srgb,var(--pending) 45%,var(--line));
+    }
+
+    .readiness-dependency header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+    }
+
+    .readiness-dependency strong {
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    .readiness-state {
+        display: inline-flex;
+        align-items: center;
+        flex-shrink: 0;
+        gap: 6px;
+        padding: 3px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+    }
+
+    .readiness-dependency p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        overflow-wrap: anywhere;
+    }
+
+    .readiness-error {
+        margin: 0 0 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--bad);
+        border-radius: 6px;
+        color: var(--bad);
+        background: var(--bad-bg);
+        font-size: 12px;
+        overflow-wrap: anywhere;
     }
 
     .directory,.deployment-table {
@@ -229,8 +328,8 @@
             padding: 24px;
         }
 
-        .sidebar-status {
-            flex-wrap: wrap;
+        .readiness-dependencies {
+            grid-template-columns: repeat(2,minmax(0,1fr));
         }
 
         .deployment-row {
@@ -267,10 +366,6 @@
             gap: 6px;
         }
 
-        .sidebar-status {
-            display: none;
-        }
-
         .dashboard-main {
             margin: 0;
             padding: 20px 16px;
@@ -286,6 +381,10 @@
 
         .metrics {
             gap: 8px;
+        }
+
+        .readiness-dependencies {
+            grid-template-columns: 1fr;
         }
 
         .metric {

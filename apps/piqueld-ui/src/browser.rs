@@ -18,6 +18,7 @@ use leptos::{
     view, window_event_listener,
 };
 use leptos_router::{A, Outlet, Redirect, Route, Router, Routes, TrailingSlash, use_params_map};
+use piqueld_client::system::ReadinessStatus;
 use piqueld_client::{
     ApplicationDetailView, ApplicationStatusView, ApplicationSummary, Client, ClientError,
     ListApplicationsOptions, Page, SystemStatus,
@@ -40,6 +41,7 @@ struct ApplicationRow {
 #[derive(Clone, Debug)]
 struct DashboardSnapshot {
     system: SystemStatus,
+    readiness: Result<ReadinessStatus, String>,
     applications: Vec<ApplicationRow>,
     incomplete: bool,
 }
@@ -58,6 +60,8 @@ struct DashboardSignals {
     data_state: RwSignal<DataState>,
     refresh_error: RwSignal<Option<String>>,
     refreshing: RwSignal<bool>,
+    readiness: RwSignal<Option<ReadinessStatus>>,
+    readiness_error: RwSignal<Option<String>>,
     pagination_incomplete: RwSignal<bool>,
     selected_id: RwSignal<Option<String>>,
     detail: RwSignal<Option<ApplicationDetailView>>,
@@ -75,6 +79,8 @@ impl DashboardSignals {
             data_state: create_rw_signal(DataState::Loading),
             refresh_error: create_rw_signal(None),
             refreshing: create_rw_signal(false),
+            readiness: create_rw_signal(None),
+            readiness_error: create_rw_signal(None),
             pagination_incomplete: create_rw_signal(false),
             selected_id: create_rw_signal(None),
             detail: create_rw_signal(None),
@@ -187,7 +193,7 @@ fn DashboardLayout() -> impl IntoView {
         <a class="skip-link" href="#dashboard-main">
             "Skip to main content"
         </a>
-        {dashboard_header(&context)}
+        {dashboard_header()}
 
         <main id="dashboard-main" class="dashboard-main" tabindex="-1">
             {refresh_error(&context)}
@@ -264,14 +270,12 @@ fn NotFoundPage() -> impl IntoView {
 
 fn refresh_error(context: &DashboardContext) -> View {
     let signals = context.signals;
-    let refresh = Rc::clone(&context.refresh);
     view! {
         {move || {
             signals
                 .refresh_error
                 .get()
                 .map(|message| {
-                    let retry = Rc::clone(&refresh);
                     view! {
                         <div
                             class="mb-4 rounded-xl border border-line border-l-4 border-l-bad bg-surface p-4 shadow-panel"
@@ -286,13 +290,6 @@ fn refresh_error(context: &DashboardContext) -> View {
                                 }}
                             </h2>
                             <p class="mb-2">{message}</p>
-                            <button
-                                class="rounded-md border border-line bg-surface px-3 py-2 font-bold text-accent-strong hover:border-accent"
-                                type="button"
-                                on:click={move |_| retry()}
-                            >
-                                "Try again"
-                            </button>
                         </div>
                     }
                 })
@@ -342,6 +339,16 @@ fn start_refresh(
             Ok(snapshot) => {
                 controller.borrow_mut().record_success();
                 signals.system.set(Some(snapshot.system));
+                match snapshot.readiness {
+                    Ok(readiness) => {
+                        signals.readiness.set(Some(readiness));
+                        signals.readiness_error.set(None);
+                    }
+                    Err(error) => {
+                        signals.readiness.set(None);
+                        signals.readiness_error.set(Some(error));
+                    }
+                }
                 signals.applications.set(snapshot.applications);
                 signals.pagination_incomplete.set(snapshot.incomplete);
                 signals.connection.set(ConnectionState::Reachable);
@@ -371,6 +378,8 @@ fn start_refresh(
             }
             Err(failure) => {
                 controller.borrow_mut().record_failure();
+                signals.readiness.set(None);
+                signals.readiness_error.set(None);
                 signals.connection.set(if failure.unreachable {
                     ConnectionState::Unreachable
                 } else {
@@ -433,6 +442,10 @@ async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailur
         .system_status()
         .await
         .map_err(|error| load_failure(&error))?;
+    let readiness = client
+        .system_readiness()
+        .await
+        .map_err(|error| client_error_message(&error));
     let mut pagination = PaginationState::new();
     let mut cursor = None;
     let mut applications = Vec::new();
@@ -480,6 +493,7 @@ async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailur
     }
     Ok(DashboardSnapshot {
         system,
+        readiness,
         applications,
         incomplete: pagination.incomplete(),
     })
@@ -515,16 +529,6 @@ fn connection_label(state: ConnectionState) -> &'static str {
         ConnectionState::Reachable => "Reachable",
         ConnectionState::Failed => "Request failed",
         ConnectionState::Unreachable => "Unreachable",
-    }
-}
-
-fn status_dot_class(state: ConnectionState) -> &'static str {
-    match state {
-        ConnectionState::Reachable => "inline-block h-3 w-3 rounded-full bg-ok",
-        ConnectionState::Failed | ConnectionState::Unreachable => {
-            "inline-block h-3 w-3 rounded-full bg-bad"
-        }
-        ConnectionState::Loading => "inline-block h-3 w-3 rounded-full bg-pending",
     }
 }
 

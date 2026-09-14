@@ -408,27 +408,6 @@ fn DeleteApplication() -> impl IntoView {
 
 #[component]
 pub(super) fn HostPage() -> impl IntoView {
-    let readiness = create_rw_signal(None);
-    let readiness_error = create_rw_signal(None::<String>);
-    let checking = create_rw_signal(false);
-    let refresh = move |_| {
-        if checking.get_untracked() {
-            return;
-        }
-        checking.set(true);
-        spawn_local(async move {
-            match Client::browser().system_readiness().await {
-                Ok(status) => {
-                    readiness.set(Some(status));
-                    readiness_error.set(None);
-                }
-                Err(error) => readiness_error.set(Some(client_error_message(&error))),
-            }
-            checking.set(false);
-        });
-    };
-    refresh(());
-
     let settings = create_rw_signal(None);
     let error = create_rw_signal(None::<String>);
     spawn_local(async move {
@@ -442,7 +421,7 @@ pub(super) fn HostPage() -> impl IntoView {
             <div>
                 <h2>"Host settings"</h2>
             </div>
-        </header><section class="settings-card"><h3>"Deployment readiness"</h3><p class="help">"Diagnostic only. Saved configuration remains editable when Docker is unavailable."</p><button disabled=move ||checking.get() on:click=move |_|refresh(())>"Refresh readiness"</button>{move ||readiness_error.get().map(|e|view!{<p class="form-error">{e}</p>})}{move ||readiness.get().map(|status|[ ("Database",status.database),("Docker Engine",status.docker),("Swarm manager",status.swarm)].into_iter().map(|(name,probe)|view!{<p><strong>{name}</strong>" — "{match probe { piqueld_client::system::DependencyStatus::Ready => "Ready".into(), piqueld_client::system::DependencyStatus::Failed { message } => message }}</p>}).collect_view())}</section>
+        </header>
         {move || error.get().map(|e| view! { <p class="form-error">{e}</p> })}
         {move || {
             settings
