@@ -324,14 +324,15 @@ impl DockerApi for BollardDocker {
     }
 
     async fn ping(&self) -> Result<(), DockerError> {
-        bounded("ping Docker", async {
-            self.docker
-                .ping()
-                .await
-                .map(|_| ())
-                .map_err(|error| DockerError::unavailable("ping Docker", error))
-        })
-        .await
+        DockerTimeout::Request
+            .run("ping Docker", async {
+                self.docker
+                    .ping()
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| DockerError::unavailable("ping Docker", error))
+            })
+            .await
     }
 
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError> {
