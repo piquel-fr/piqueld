@@ -257,8 +257,11 @@ jobs:
         id: nix_mount
         shell: bash
         run: |
+          PS4='+${EPOCHREALTIME} '
+          set -x
           sudo systemctl stop nix-daemon.socket nix-daemon.service
-          runtime=$(readlink -f /nix/var/nix/profiles/default)
+          runtime=$(readlink -f /nix/var/nix/profiles/default/bin/nix)
+          runtime=${runtime%/bin/nix}
           if ! sudo test -e "/nix-cache/store/${runtime##*/}"; then
             sudo env NIX_REMOTE=local /nix/var/nix/profiles/default/bin/nix-store \
               --dump-db | tee "$RUNNER_TEMP/nix-bootstrap.db" > /dev/null
@@ -295,7 +298,7 @@ jobs:
             --out-link result-ci
           for package in cli combined; do
             help=$("result-ci/$package/bin/piquelctl" --help)
-            [[ "$help" == "Verify fast Nix store activation"* ]]
+            [[ "$help" == "Operate a local piqueld control plane"* ]]
             echo "Verified changed executable in $package"
           done
           jq -n \
