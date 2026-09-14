@@ -241,7 +241,7 @@ jobs:
       - name: Validate native packages and sandboxed checks
         run: |
           nix build -L --impure --file nix/ci.nix \
-            --argstr source "git+file://$PWD" \
+            --argstr source "git+file://$PWD?shallow=1" \
             --argstr system "${{ matrix.system }}" \
             --out-link result-ci
           jq -n \
