@@ -60,10 +60,11 @@ boundary:
 ui-check:
     @cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
 
-# Release daemon with the dashboard bundle compiled in; the build script
-# invokes Tailwind and Trunk itself.
+# Release daemon and CLI; the daemon build script invokes Tailwind and Trunk.
+# Select only the shipped binaries to avoid optimizing the OpenAPI generator,
+# and build them together so Cargo can share dependencies and schedule both.
 build-embedded:
-    @cargo build --release --package piqueld --features embedded-ui --locked
+    @cargo build --release --package piqueld --package piquelctl --bin piqueld --bin piquelctl --features piqueld/embedded-ui --locked
 
 daemon-embedded *ARGS:
     @cargo run --package piqueld --bin piqueld --features embedded-ui -- {{ARGS}}

@@ -242,7 +242,6 @@ jobs:
           tailwindcss-sha256: "dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a"
           binaryen-version: "132"
       - run: just build-embedded
-      - run: cargo build --release --package piquelctl --locked
       - run: test -x target/release/piqueld && test -x target/release/piquelctl
       - name: Upload release binaries
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
