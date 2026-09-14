@@ -44,6 +44,7 @@ utoipa-axum.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 piqueld-client.workspace = true
 http.workspace = true
 http-body-util.workspace = true

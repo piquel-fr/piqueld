@@ -38,6 +38,10 @@ test-wasm:
 test:
     @cargo nextest run --locked --workspace
 
+# Verify the real embedded bundle and run daemon tests with its generated CSP.
+test-embedded:
+    @cargo nextest run --locked --package piqueld --features embedded-ui
+
 doc-test:
     @cargo test --locked --doc --workspace
 

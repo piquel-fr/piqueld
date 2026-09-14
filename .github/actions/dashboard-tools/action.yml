@@ -28,8 +28,12 @@ runs:
       run: |
         set -euo pipefail
         temp="${RUNNER_TEMP:?}"
-        bindir="$temp/bin"
+        bindir="$temp/piqueld-tools/dashboard-${{ inputs.trunk-version }}-${{ inputs.tailwindcss-version }}-${{ inputs.tailwindcss-sha256 }}-${{ inputs.binaryen-version }}"
         mkdir -p "$bindir"
+        echo "$bindir" >> "$GITHUB_PATH"
+        if [[ -x "$bindir/trunk" && -x "$bindir/tailwindcss" ]]; then
+          exit 0
+        fi
 
         fetch() {
           curl --fail --location --silent --show-error -o "$2" "$1"
@@ -48,13 +52,15 @@ runs:
 
         tar -xzf "$temp/trunk.tar.gz" -C "$bindir" trunk
         chmod +x "$bindir/tailwindcss" "$bindir/trunk"
-        echo "$bindir" >> "$GITHUB_PATH"
       shell: bash
     - name: Install wasm-opt
       run: |
         set -euo pipefail
         temp="${RUNNER_TEMP:?}"
-        bindir="$temp/bin"
+        bindir="$temp/piqueld-tools/dashboard-${{ inputs.trunk-version }}-${{ inputs.tailwindcss-version }}-${{ inputs.tailwindcss-sha256 }}-${{ inputs.binaryen-version }}"
+        if [[ -x "$bindir/wasm-opt" ]]; then
+          exit 0
+        fi
         version="${{ inputs.binaryen-version }}"
         fetch() {
           curl --fail --location --silent --show-error -o "$2" "$1"
