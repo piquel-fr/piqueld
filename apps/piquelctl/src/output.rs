@@ -182,8 +182,17 @@ pub(crate) struct HumanOutput {
 impl HumanOutput {
     /// API change values may contain serialized configuration; human output unwraps it.
     fn value(value: &str) -> String {
-        serde_json::from_str(value)
-            .map_or_else(|_| value.to_owned(), |value| Self::configuration(&value))
+        let value = serde_json::from_str(value)
+            .map_or_else(|_| value.to_owned(), |value| Self::configuration(&value));
+        let mut escaped = String::with_capacity(value.len());
+        for character in value.chars() {
+            if character.is_control() {
+                escaped.extend(character.escape_default());
+            } else {
+                escaped.push(character);
+            }
+        }
+        escaped
     }
 
     fn configuration(value: &serde_json::Value) -> String {
@@ -331,9 +340,7 @@ impl Progress {
                 .map_or_else(String::new, |r| format!(" · {r}"))
         );
         let elapsed = self.started.elapsed().as_secs();
-        if self.last.as_ref() == Some(&line)
-            && (matches!(self.style, ProgressStyle::Plain) || elapsed == self.last_second)
-        {
+        if self.repeated_this_second(&line, elapsed) {
             return;
         }
         if matches!(self.style, ProgressStyle::Plain) {
@@ -355,6 +362,10 @@ impl Progress {
         self.last = Some(line);
         self.last_second = elapsed;
     }
+
+    fn repeated_this_second(&self, line: &str, elapsed: u64) -> bool {
+        self.last.as_deref() == Some(line) && self.last_second == elapsed
+    }
 }
 impl Drop for Progress {
     fn drop(&mut self) {
@@ -366,7 +377,8 @@ impl Drop for Progress {
 
 #[cfg(test)]
 mod presentation_tests {
-    use super::HumanOutput;
+    use super::{HumanOutput, Progress, ProgressStyle};
+    use std::time::Instant;
 
     #[test]
     fn preview_configuration_is_readable() {
@@ -377,6 +389,10 @@ mod presentation_tests {
         assert_eq!(HumanOutput::value("[]"), "none");
         assert_eq!(HumanOutput::value("null"), "none");
         assert_eq!(HumanOutput::value("<redacted>"), "<redacted>");
+        assert_eq!(
+            HumanOutput::value(r#""café\n\u001b[31m""#),
+            r"café\n\u{1b}[31m"
+        );
     }
 
     #[test]
@@ -395,5 +411,20 @@ mod presentation_tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn plain_progress_repeats_when_the_elapsed_second_changes() {
+        let progress = Progress {
+            quiet: false,
+            style: ProgressStyle::Plain,
+            started: Instant::now(),
+            last: Some("running".into()),
+            drawn: false,
+            last_second: 1,
+        };
+
+        assert!(progress.repeated_this_second("running", 1));
+        assert!(!progress.repeated_this_second("running", 2));
     }
 }
