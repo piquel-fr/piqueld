@@ -225,10 +225,12 @@ jobs:
             runner: blacksmith-32vcpu-ubuntu-2404-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare local build directory
+        run: sudo install -d -m 0755 /var/lib/nix-builds
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           extra-conf: |
-            build-dir = /tmp
+            build-dir = /var/lib/nix-builds
       - name: Mount persistent Nix store
         uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc # v1
         with:
