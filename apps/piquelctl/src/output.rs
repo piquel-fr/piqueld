@@ -39,9 +39,16 @@ pub(crate) fn render_plan(plan: &PlanView, output: &mut impl Write) -> io::Resul
         writeln!(output, "\nChanges:")?;
         for change in &plan.changes {
             let (marker, value) = match (&change.before, &change.after) {
-                (None, Some(after)) => ('+', after.clone()),
-                (Some(before), None) => ('-', before.clone()),
-                (Some(before), Some(after)) => ('~', format!("{before} → {after}")),
+                (None, Some(after)) => ('+', HumanOutput::value(after)),
+                (Some(before), None) => ('-', HumanOutput::value(before)),
+                (Some(before), Some(after)) => (
+                    '~',
+                    format!(
+                        "{} → {}",
+                        HumanOutput::value(before),
+                        HumanOutput::value(after)
+                    ),
+                ),
                 (None, None) => ('~', "absent".into()),
             };
             writeln!(output, "  {marker} {:<32} {}", change.field, value)?;
@@ -172,6 +179,71 @@ pub(crate) struct HumanOutput {
     quiet: bool,
     color: bool,
 }
+impl HumanOutput {
+    /// API change values may contain serialized configuration; human output unwraps it.
+    fn value(value: &str) -> String {
+        serde_json::from_str(value)
+            .map_or_else(|_| value.to_owned(), |value| Self::configuration(&value))
+    }
+
+    fn configuration(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::Null => "none".into(),
+            serde_json::Value::String(value) => value.clone(),
+            serde_json::Value::Array(values) if values.is_empty() => "none".into(),
+            serde_json::Value::Array(values) => values
+                .iter()
+                .map(Self::configuration)
+                .collect::<Vec<_>>()
+                .join(", "),
+            serde_json::Value::Object(values) => {
+                if values.get("type").and_then(serde_json::Value::as_str) == Some("image")
+                    && let Some(image) = values.get("image").and_then(serde_json::Value::as_str)
+                {
+                    return format!("image {image}");
+                }
+                if values.is_empty() {
+                    return "none".into();
+                }
+                values
+                    .iter()
+                    .map(|(key, value)| {
+                        format!("{}: {}", key.replace('_', " "), Self::configuration(value))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+            value => value.to_string(),
+        }
+    }
+
+    fn line(line: &str, output: &mut impl Write) -> io::Result<()> {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        let change_color = match trimmed.as_bytes().get(..2) {
+            Some(b"+ ") => Some("32"),
+            Some(b"- ") => Some("31"),
+            Some(b"~ ") => Some("33"),
+            _ => None,
+        };
+        if let Some(color) = change_color {
+            let end = trimmed[2..]
+                .find(char::is_whitespace)
+                .map_or(trimmed.trim_end().len(), |end| end + 2);
+            let (field, value) = line.split_at(indent + end);
+            return write!(output, "\x1b[{color}m{field}\x1b[0m{value}");
+        }
+        // Labels are standalone words followed by a colon, never colons inside values.
+        if let Some(end) = trimmed
+            .find(':')
+            .filter(|end| !trimmed[..*end].contains(char::is_whitespace))
+        {
+            let (label, value) = line.split_at(indent + end + 1);
+            return write!(output, "\x1b[1;36m{label}\x1b[0m{value}");
+        }
+        output.write_all(line.as_bytes())
+    }
+}
 impl Cli {
     pub(crate) fn output(&self) -> HumanOutput {
         HumanOutput {
@@ -201,11 +273,7 @@ impl Write for HumanOutput {
         let mut output = io::stdout().lock();
         for line in text.split_inclusive('\n') {
             if self.color {
-                let split = line
-                    .find([':', '\t'])
-                    .unwrap_or_else(|| line.trim_end().len());
-                let (label, value) = line.split_at(split);
-                write!(output, "\x1b[1;36m{label}\x1b[0m{value}")?;
+                Self::line(line, &mut output)?;
             } else {
                 output.write_all(line.as_bytes())?;
             }
@@ -292,6 +360,40 @@ impl Drop for Progress {
     fn drop(&mut self) {
         if self.drawn {
             eprintln!();
+        }
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::HumanOutput;
+
+    #[test]
+    fn preview_configuration_is_readable() {
+        assert_eq!(
+            HumanOutput::value(r#"{"image":"nginx:alpine","type":"image"}"#),
+            "image nginx:alpine"
+        );
+        assert_eq!(HumanOutput::value("[]"), "none");
+        assert_eq!(HumanOutput::value("null"), "none");
+        assert_eq!(HumanOutput::value("<redacted>"), "<redacted>");
+    }
+
+    #[test]
+    fn change_colors_end_before_values_and_their_colons() {
+        for (marker, color) in [("+", "32"), ("-", "31"), ("~", "33")] {
+            let mut output = Vec::new();
+            HumanOutput::line(
+                &format!("  {marker} services.web.source   image nginx:alpine\n"),
+                &mut output,
+            )
+            .unwrap();
+            assert_eq!(
+                String::from_utf8(output).unwrap(),
+                format!(
+                    "\x1b[{color}m  {marker} services.web.source\x1b[0m   image nginx:alpine\n"
+                )
+            );
         }
     }
 }
