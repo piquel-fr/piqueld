@@ -226,14 +226,45 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Mount persistent Nix store
+        uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc # v1
+        with:
+          key: piqueld-nix-${{ matrix.system }}-${{ github.ref }}
+          path: /nix-cache
+      - name: Check persistent store
+        id: nix_cache
+        shell: bash
+        run: |
+          if sudo test -f /nix-cache/var/nix/db/db.sqlite; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Seed a new disk from the existing archive cache once. Warm jobs mount
+      # the store directly, avoiding archive transfer and toolchain downloads.
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        if: steps.nix_cache.outputs.hit != 'true'
         with:
           primary-key: nix-${{ matrix.system }}-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-${{ github.sha }}
           restore-prefixes-first-match: |
             nix-${{ matrix.system }}-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-
             nix-${{ matrix.system }}-
-          # Save rooted outputs rather than several GiB of unused store paths.
-          gc-max-store-size-linux: 0
+          save: false
+      - name: Activate persistent Nix store
+        id: nix_mount
+        shell: bash
+        run: |
+          sudo systemctl stop nix-daemon.socket nix-daemon.service
+          sudo env NIX_REMOTE=local /nix/var/nix/profiles/default/bin/nix-store \
+            --dump-db | tee "$RUNNER_TEMP/nix-bootstrap.db" > /dev/null
+          sudo rsync -a --ignore-existing --exclude=/var/nix/db /nix/ /nix-cache/
+          sudo mkdir -p /nix-cache/var/nix/db
+          # Keep the freshly installed Nix runtime, even after an installer update.
+          sudo cp -a /nix/var/nix/profiles/default* /nix-cache/var/nix/profiles/
+          sudo chown root:root /nix-cache
+          sudo mount --bind /nix-cache /nix
+          echo "bound=true" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/nix-bootstrap.db" | sudo env NIX_REMOTE=local \
+            /nix/var/nix/profiles/default/bin/nix-store --load-db
+          sudo systemctl start nix-daemon.socket nix-daemon.service
       - name: Evaluate every flake output
         run: nix flake show --all-systems
       # The CI wrapper retains workspace artifacts as well as dependencies,
@@ -247,7 +278,7 @@ jobs:
             --out-link result-ci
           for package in cli combined; do
             help=$("result-ci/$package/bin/piquelctl" --help)
-            [[ "$help" == "Verify incremental Nix cache freshness"* ]]
+            [[ "$help" == "Operate a local piqueld control plane"* ]]
             echo "Verified changed executable in $package"
           done
           jq -n \
@@ -256,3 +287,19 @@ jobs:
             --arg combined "$(readlink -f result-ci/combined-artifacts)" \
             '{cli: $cli, daemon: $daemon, combined: $combined}' \
             | sudo tee /nix/var/piqueld-artifacts.json > /dev/null
+      - name: Release persistent Nix store
+        if: always() && steps.nix_mount.outputs.bound == 'true'
+        shell: bash
+        run: |
+          # Reclaim old outputs only when needed; retain the hot toolchain on
+          # ordinary runs instead of downloading it again after every GC.
+          if [[ "${{ job.status }}" == success ]]; then
+            used=$(df -B1 --output=used /nix-cache | tail -n1)
+            if (( used > 34359738368 )); then
+              nix store gc --max "$((used - 17179869184))"
+            fi
+          fi
+          sudo systemctl stop nix-daemon.socket nix-daemon.service
+          sudo umount /nix
+          # Installer cleanup uses its original store after the cache unmounts.
+          sudo systemctl start nix-daemon.socket nix-daemon.service

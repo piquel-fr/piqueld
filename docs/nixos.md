@@ -76,8 +76,12 @@ back to dependency-only builds. Sources receive newer timestamps than the
 archives so Cargo must validate current code. Each snapshot is self-contained,
 avoiding an ever-growing chain of previous builds.
 
-CI roots these artifacts and the dashboard distribution in `result-ci` before
-collecting unrooted store paths. The CI wrapper uses `--impure` only to read the
+CI roots these artifacts and the dashboard distribution in `result-ci`.
+Blacksmith persistent disks retain the complete store, including build tools,
+without uploading and downloading an archive for every job. Disks are keyed
+by architecture and Git ref. New disks can seed from the previous Actions
+cache; old unrooted outputs are reclaimed when disk usage exceeds 32 GiB.
+The CI wrapper uses `--impure` only to read the
 local cache index and resolve its immutable store paths; ordinary flake builds
 remain independent of that index. Cold caches still require full compilation.
 
