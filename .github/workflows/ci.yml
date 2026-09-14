@@ -336,9 +336,10 @@ jobs:
           # Reclaim old outputs only when needed; retain the hot toolchain on
           # ordinary runs instead of downloading it again after every GC.
           if [[ "${{ job.status }}" == success ]]; then
+            ceiling=34359738368
             used=$(df -B1 --output=used /nix-cache | tail -n1)
-            if (( used > 34359738368 )); then
-              nix store gc --max "$((used - 17179869184))"
+            if (( used > ceiling )); then
+              nix store gc --max "$((used - ceiling))"
             fi
           fi
           sudo systemctl stop nix-daemon.socket nix-daemon.service
