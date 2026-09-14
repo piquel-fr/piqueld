@@ -52,7 +52,7 @@ pub(super) async fn readiness(State(state): State<ApiState>) -> impl IntoRespons
     use piqueld_core::api::{DependencyStatus, ReadinessStatus};
     let (database, runtime) = tokio::join!(
         tokio::time::timeout(std::time::Duration::from_secs(2), state.store.probe()),
-        tokio::time::timeout(std::time::Duration::from_secs(5), state.runtime.readiness())
+        tokio::time::timeout(std::time::Duration::from_secs(6), state.runtime.readiness())
     );
     let database = database.is_ok_and(|r| r.is_ok());
     let (docker, swarm) = runtime.unwrap_or((false, false));
