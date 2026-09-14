@@ -42,14 +42,10 @@ impl BollardDocker {
             .map_err(|e| DockerError::request("list log tasks", e))?;
         let mut result = ApplicationLogs::default();
         let mut bytes = 0usize;
-        let since = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .saturating_sub(u64::from(since));
-        let since = i32::try_from(since).unwrap_or(i32::MAX);
+        let since = Self::log_since(since);
         'tasks: for task in tasks.iter().take(256) {
             let Some(task_id) = task.id.as_ref() else {
+                result.truncated = true;
                 continue;
             };
             let Some(container) = task
@@ -58,9 +54,11 @@ impl BollardDocker {
                 .and_then(|s| s.container_status.as_ref())
                 .and_then(|s| s.container_id.as_ref())
             else {
+                result.truncated = true;
                 continue;
             };
             let Some(service) = task.service_id.as_ref().and_then(|id| services.get(id)) else {
+                result.truncated = true;
                 continue;
             };
             let mut logs = self.docker.logs(
@@ -81,7 +79,10 @@ impl BollardDocker {
                     Err(bollard::errors::Error::DockerResponseServerError {
                         status_code: 404,
                         ..
-                    }) => break,
+                    }) => {
+                        result.truncated = true;
+                        break;
+                    }
                     Err(error) => return Err(DockerError::request("read container logs", error)),
                 };
                 let stream = match &item {
@@ -119,6 +120,16 @@ impl BollardDocker {
         result.items.drain(..excess);
         Ok(result)
     }
+
+    fn log_since(window: u32) -> i32 {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(u64::from(window));
+        i32::try_from(timestamp).unwrap_or(i32::MAX)
+    }
+
     async fn log_services(
         &self,
         instance: &InstanceId,

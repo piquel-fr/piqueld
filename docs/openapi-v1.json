@@ -3899,8 +3899,10 @@
             "name": "tail",
             "required": false,
             "schema": {
+              "default": 200,
               "format": "int32",
-              "minimum": 0,
+              "maximum": 1000,
+              "minimum": 1,
               "type": "integer"
             }
           },
@@ -3909,8 +3911,10 @@
             "name": "since_seconds",
             "required": false,
             "schema": {
+              "default": 3600,
               "format": "int32",
-              "minimum": 0,
+              "maximum": 86400,
+              "minimum": 1,
               "type": "integer"
             }
           }

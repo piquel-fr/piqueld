@@ -13,7 +13,9 @@ use piqueld_core::{
 #[into_params(parameter_in=Query)]
 pub(super) struct LogQuery {
     service: Option<String>,
+    #[param(minimum = 1, maximum = 1000, default = 200)]
     tail: u16,
+    #[param(minimum = 1, maximum = 86400, default = 3600)]
     since_seconds: u32,
 }
 impl Default for LogQuery {

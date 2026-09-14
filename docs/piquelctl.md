@@ -10,6 +10,7 @@ default.
 piquelctl status
 piquelctl list
 piquelctl show <name-or-id>
+piquelctl logs <name-or-id> [--service <name>]
 piquelctl plan --file application.toml
 piquelctl apply --file application.toml
 piquelctl apply --file application.toml --deploy
@@ -44,6 +45,7 @@ written to stderr, so stdout remains valid JSON.
 | `status` | `SystemStatus` |
 | `list` | `{ "items": [{ "application": ApplicationSummary, "status": ApplicationStatusView }], "next_cursor": null }` |
 | `show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
+| `logs` | `ApplicationLogs` |
 | `plan` | `PlanView` |
 | `rename` | `RenamedApplication` |
 | `apply` | `SavedApplication` with null `operation_id` |
@@ -121,8 +123,8 @@ usage or input errors, 3 for conflicts, 4 for unavailable or timed
 out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.
 
-The dashboard provides application management forms. Logs, remote authentication, build logs,
-registry management, and advanced interactive CLI flows remain future work.
+The dashboard provides application management forms and recent application logs. Remote
+authentication, build logs, registry management, and advanced interactive CLI flows remain future work.
 
 `deploy` fetches repository-backed configuration when configured, then explicitly
 resolves image or Git build sources. It supersedes pending work for the selected

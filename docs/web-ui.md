@@ -126,7 +126,7 @@ Safari, or Edge release with WebAssembly, ES modules, Fetch, and standard CSS
 media-query support. Internet Explorer, JavaScript-disabled browsing, and
 older browsers without those primitives are outside the support target.
 
-Secrets, logs and streams, state transfer, and authentication remain outside the
+Secrets, streaming logs, state transfer, and authentication remain outside the
 current dashboard scope. Event history is available through the API and CLI.
 Deployment history polls every two seconds while its tab and the page are visible.
 

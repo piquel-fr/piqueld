@@ -38,6 +38,11 @@ pub(super) fn ApplicationLogs() -> impl IntoView {
                 if !alive.get() {
                     break;
                 }
+                if service.get_untracked() != filter {
+                    refresh.set(true);
+                    loading.set(false);
+                    continue;
+                }
                 match result {
                     Ok(value) => {
                         logs.set(Some(value));
