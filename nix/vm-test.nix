@@ -11,7 +11,6 @@ pkgs.testers.runNixOSTest {
     services.piqueld = {
       enable = true;
       package = daemon;
-      cliPackage = cli;
       dataDir = "/var/lib/piqueld-test";
     };
     environment.systemPackages = [ pkgs.curl ];
@@ -20,9 +19,13 @@ pkgs.testers.runNixOSTest {
   };
   nodes.client = { ... }: {
     imports = [ module ];
-    services.piqueld = {
-      installCli = true;
-      cliPackage = cli;
+    programs.piquelctl = {
+      enable = true;
+      package = cli;
+      settings.profiles.machine = {
+        socket = "/tmp/configured-missing.sock";
+        timeout = "10s";
+      };
     };
   };
   testScript = ''
@@ -35,6 +38,8 @@ pkgs.testers.runNixOSTest {
     machine.fail("su nobody -s /bin/sh -c 'curl --fail --max-time 5 http://127.0.0.1:7845/api/v1/system/status'")
     machine.fail("su nobody -s /bin/sh -c 'piquelctl --socket /var/lib/piqueld-test/piqueld.sock status'")
     client.succeed("piquelctl --help")
+    status, _ = client.execute("piquelctl --profile machine status")
+    assert status == 4
     client.succeed("test ! -e /etc/systemd/system/piqueld.service")
     client.succeed("test ! -e /etc/systemd/system/docker.service")
     client.fail("id piqueld")

@@ -9,6 +9,13 @@ use std::{path::PathBuf, time::Duration};
     about = "Operate a local piqueld control plane"
 )]
 pub(crate) struct Cli {
+    /// Named connection in the profiles file (or `PIQUELD_PROFILE`).
+    #[arg(long, global = true)]
+    pub(crate) profile: Option<String>,
+    /// Profiles file (or `PIQUELD_PROFILES_FILE`); defaults to the user configuration directory.
+    #[arg(long, global = true)]
+    pub(crate) profiles_file: Option<PathBuf>,
+
     /// Unix socket path. The default is the daemon's local socket.
     #[arg(long, global = true, value_name = "PATH", conflicts_with = "url")]
     pub(crate) socket: Option<PathBuf>,

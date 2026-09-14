@@ -13,10 +13,24 @@
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
     {
-      nixosModules.default = { lib, pkgs, ... }: {
-        imports = [ ./nix/module.nix ];
-        services.piqueld.package = lib.mkDefault self.packages.${pkgs.system}.combined;
-        services.piqueld.cliPackage = lib.mkDefault self.packages.${pkgs.system}.cli;
+      nixosModules = {
+        piqueld = { lib, pkgs, ... }: {
+          imports = [ ./nix/module.nix ];
+          services.piqueld.package = lib.mkDefault self.packages.${pkgs.system}.combined;
+        };
+        piquelctl = { lib, pkgs, ... }: {
+          imports = [ ./nix/cli-module.nix ];
+          programs.piquelctl.package = lib.mkDefault self.packages.${pkgs.system}.cli;
+        };
+        default =
+          { config, lib, ... }:
+          {
+            imports = [
+              self.nixosModules.piqueld
+              self.nixosModules.piquelctl
+            ];
+            programs.piquelctl.enable = lib.mkDefault config.services.piqueld.enable;
+          };
       };
 
       packages = forAllSystems (
@@ -101,8 +115,10 @@
                     binary: ''install -Dm755 "target/${rustTarget}/release/${binary}" "$out/bin/${binary}"''
                   ) binaries
                 )}
-                install -Dm644 examples/piqueld.toml \
-                  "$out/share/piqueld/piqueld.example.toml"
+                ${lib.optionalString (builtins.elem "piqueld" binaries) ''
+                  install -Dm644 examples/piqueld.toml \
+                    "$out/share/piqueld/piqueld.example.toml"
+                ''}
                 runHook postInstall
               '';
               postInstall = lib.optionalString (builtins.elem "piqueld" binaries) ''
@@ -177,7 +193,7 @@
             cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
               name = "piqueld-dependency-boundary-deps";
               src = pkgs.lib.cleanSource self;
-              hash = "sha256-P/bwWIZ/M+G4pSLg1u59KD3LCKkkKvlqK8olNisz85o=";
+              hash = "sha256-PsiPM+QJ1eFNfsBeS7awo3RkRYJS26gD6SqFgHafmeI=";
             };
             dontConfigure = true;
             buildPhase = ''
