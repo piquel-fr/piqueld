@@ -12,6 +12,265 @@ const NETWORK_INSPECT_ATTEMPTS: usize = 10;
 const NETWORK_INSPECT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl BollardDocker {
+    /// Inspects networks and retains their ID-to-name mapping for services.
+    async fn snapshot_networks(
+        &self,
+        application: &ApplicationId,
+    ) -> Result<(Vec<ObservedNetwork>, HashMap<String, String>), DockerError> {
+        let mut raw_networks = Self::map_request(
+            "list networks",
+            self.docker
+                .list_networks(Some(
+                    ListNetworksOptionsBuilder::default()
+                        .filters(&Self::application_label_filter(application))
+                        .build(),
+                ))
+                .await,
+        )?;
+        let named_networks = Self::map_request(
+            "list networks by name",
+            self.docker
+                .list_networks(Some(
+                    ListNetworksOptionsBuilder::default()
+                        .filters(&Self::application_name_filter(application))
+                        .build(),
+                ))
+                .await,
+        )?;
+        let mut seen_networks = raw_networks
+            .iter()
+            .map(|network| (network.id.clone(), network.name.clone()))
+            .collect::<BTreeSet<_>>();
+        raw_networks.extend(
+            named_networks
+                .into_iter()
+                .filter(|network| seen_networks.insert((network.id.clone(), network.name.clone()))),
+        );
+        let mut inspections = stream::iter(
+            raw_networks
+                .into_iter()
+                .filter_map(|network| network.id.or(network.name)),
+        )
+        .map(|id| async {
+            let inspected = self.inspect_network_complete(&id).await;
+            (id, inspected)
+        })
+        .buffer_unordered(OBSERVATION_INSPECT_CONCURRENCY);
+        let mut raw_networks = Vec::new();
+        while let Some((id, inspected)) = inspections.next().await {
+            match inspected {
+                Ok(Some(network)) => raw_networks.push(network),
+                Ok(None) => {
+                    tracing::debug!(network_id = %id, "network vanished during observation");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let network_names = raw_networks
+            .iter()
+            .filter_map(|network| Some((network.id.clone()?, network.name.clone()?)))
+            .collect::<HashMap<_, _>>();
+        let networks = raw_networks
+            .into_iter()
+            .filter_map(|network| {
+                let runtime_configuration_matches = Self::network_configuration_matches(&network);
+                let name = network.name?;
+                Some(ObservedNetwork {
+                    name,
+                    runtime_configuration_matches,
+                    labels: network.labels.unwrap_or_default().into_iter().collect(),
+                })
+            })
+            .filter(|r| Self::relevant(&r.name, &r.labels, application))
+            .collect();
+        Ok((networks, network_names))
+    }
+
+    async fn snapshot_volumes(
+        &self,
+        application: &ApplicationId,
+    ) -> Result<Vec<ObservedVolume>, DockerError> {
+        let mut raw_volumes = Self::map_request(
+            "list volumes",
+            self.docker
+                .list_volumes(Some(
+                    ListVolumesOptionsBuilder::default()
+                        .filters(&Self::application_label_filter(application))
+                        .build(),
+                ))
+                .await,
+        )?
+        .volumes
+        .unwrap_or_default();
+        let named_volumes = Self::map_request(
+            "list volumes by name",
+            self.docker
+                .list_volumes(Some(
+                    ListVolumesOptionsBuilder::default()
+                        .filters(&Self::application_name_filter(application))
+                        .build(),
+                ))
+                .await,
+        )?
+        .volumes
+        .unwrap_or_default();
+        let mut seen_volumes = raw_volumes
+            .iter()
+            .map(|volume| volume.name.clone())
+            .collect::<BTreeSet<_>>();
+        raw_volumes.extend(
+            named_volumes
+                .into_iter()
+                .filter(|volume| seen_volumes.insert(volume.name.clone())),
+        );
+        let volumes = raw_volumes
+            .into_iter()
+            .map(|volume| {
+                let runtime_configuration_matches = Self::volume_configuration_matches(&volume);
+                ObservedVolume {
+                    name: volume.name,
+                    runtime_configuration_matches,
+                    labels: volume.labels.into_iter().collect(),
+                }
+            })
+            .filter(|r| Self::relevant(&r.name, &r.labels, application))
+            .collect();
+        Ok(volumes)
+    }
+
+    async fn inspect_application_services(
+        &self,
+        application: &ApplicationId,
+    ) -> Result<(Vec<bollard::models::Service>, Vec<String>), DockerError> {
+        let mut listed_services = Self::map_request(
+            "list services",
+            self.docker
+                .list_services(Some(
+                    ListServicesOptionsBuilder::default()
+                        .filters(&Self::application_label_filter(application))
+                        .status(true)
+                        .build(),
+                ))
+                .await,
+        )?;
+        let named_services = Self::map_request(
+            "list services by name",
+            self.docker
+                .list_services(Some(
+                    ListServicesOptionsBuilder::default()
+                        .filters(&Self::application_name_filter(application))
+                        .status(true)
+                        .build(),
+                ))
+                .await,
+        )?;
+        let mut seen_services = listed_services
+            .iter()
+            .map(|service| service.id.clone())
+            .collect::<BTreeSet<_>>();
+        listed_services.extend(
+            named_services
+                .into_iter()
+                .filter(|service| seen_services.insert(service.id.clone())),
+        );
+        let service_names = listed_services
+            .iter()
+            .filter_map(|service| service.spec.as_ref()?.name.clone())
+            .collect::<Vec<_>>();
+        // Complete inspections run concurrently so one slow service cannot
+        // serialize the whole snapshot.
+        let mut inspections =
+            stream::iter(listed_services.into_iter().filter_map(|listed| listed.id))
+                .map(|id| async {
+                    let inspected = self.inspect_service_wire(&id).await;
+                    (id, inspected)
+                })
+                .buffer_unordered(OBSERVATION_INSPECT_CONCURRENCY);
+        let mut raw_services = Vec::new();
+        while let Some((id, inspected)) = inspections.next().await {
+            match inspected {
+                Ok(Some(service)) => raw_services.push(service),
+                Ok(None) => {
+                    tracing::debug!(service_id = %id, "service vanished during observation");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok((raw_services, service_names))
+    }
+
+    async fn snapshot_services(
+        &self,
+        application: &ApplicationId,
+        network_names: &HashMap<String, String>,
+    ) -> Result<Vec<piqueld_core::ObservedService>, DockerError> {
+        let (raw_services, service_names) = self.inspect_application_services(application).await?;
+        let all_tasks = if service_names.is_empty() {
+            // Empty name filters rely on undocumented daemon behavior and
+            // there is nothing to list for.
+            Vec::new()
+        } else {
+            Self::map_request(
+                "list tasks",
+                self.docker
+                    .list_tasks(Some(
+                        ListTasksOptionsBuilder::default()
+                            .filters(&HashMap::from([("service", service_names)]))
+                            .build(),
+                    ))
+                    .await,
+            )?
+        };
+        let health_by_container = self
+            .observe_running_health(&raw_services, &all_tasks)
+            .await?;
+        let mut services = raw_services
+            .into_iter()
+            .filter_map(|service| {
+                let id = service.id.clone()?;
+                let spec = service.spec?;
+                let name = spec.name.clone()?;
+                let labels: BTreeMap<_, _> = spec
+                    .labels
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                if !Self::relevant(&name, &labels, application) {
+                    return None;
+                }
+                let tasks = all_tasks
+                    .iter()
+                    .filter(|task| task.service_id.as_deref() == Some(&id))
+                    .map(|task| {
+                        let healthy = task
+                            .status
+                            .as_ref()
+                            .and_then(|status| status.container_status.as_ref())
+                            .and_then(|container| container.container_id.as_deref())
+                            .and_then(|container| {
+                                health_by_container.get(container).copied().flatten()
+                            });
+                        Self::observe_task(task, healthy)
+                    })
+                    .collect::<Vec<_>>();
+                Some(Self::observe_service(
+                    &spec,
+                    tasks,
+                    service.update_status.and_then(|u| u.state),
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for service in &mut services {
+            for target in &mut service.networks {
+                if let Some(name) = network_names.get(target) {
+                    *target = name.clone();
+                }
+            }
+        }
+        Ok(services)
+    }
+
     /// List responses can omit immutable network fields, so reconciliation
     /// decisions must use a complete inspection of the selected resource.
     async fn inspect_network_complete(
@@ -170,241 +429,15 @@ impl DockerApi for BollardDocker {
         }
     }
 
-    // Keep the correlated resource snapshot in one boundary operation so all
-    // resource IDs can be normalized before service comparisons.
-    #[allow(clippy::too_many_lines)]
     async fn observe(
         &self,
         application: &ApplicationId,
     ) -> Result<ObservedApplication, DockerError> {
+        // One deadline covers every phase, including complete resource inspections.
         bounded("observe application", async {
-            let mut raw_networks = Self::map_request(
-                "list networks",
-                self.docker
-                    .list_networks(Some(
-                        ListNetworksOptionsBuilder::default()
-                            .filters(&Self::application_label_filter(application))
-                            .build(),
-                    ))
-                    .await,
-            )?;
-            let named_networks = Self::map_request(
-                "list networks by name",
-                self.docker
-                    .list_networks(Some(
-                        ListNetworksOptionsBuilder::default()
-                            .filters(&Self::application_name_filter(application))
-                            .build(),
-                    ))
-                    .await,
-            )?;
-            let mut seen_networks = raw_networks
-                .iter()
-                .map(|network| (network.id.clone(), network.name.clone()))
-                .collect::<BTreeSet<_>>();
-            raw_networks.extend(named_networks.into_iter().filter(|network| {
-                seen_networks.insert((network.id.clone(), network.name.clone()))
-            }));
-            let mut inspections = stream::iter(
-                raw_networks
-                    .into_iter()
-                    .filter_map(|network| network.id.or(network.name)),
-            )
-            .map(|id| async {
-                let inspected = self.inspect_network_complete(&id).await;
-                (id, inspected)
-            })
-            .buffer_unordered(OBSERVATION_INSPECT_CONCURRENCY);
-            let mut raw_networks = Vec::new();
-            while let Some((id, inspected)) = inspections.next().await {
-                match inspected {
-                    Ok(Some(network)) => raw_networks.push(network),
-                    Ok(None) => {
-                        tracing::debug!(network_id = %id, "network vanished during observation");
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            let network_names = raw_networks
-                .iter()
-                .filter_map(|network| Some((network.id.clone()?, network.name.clone()?)))
-                .collect::<HashMap<_, _>>();
-            let networks = raw_networks
-                .into_iter()
-                .filter_map(|network| {
-                    let runtime_configuration_matches =
-                        Self::network_configuration_matches(&network);
-                    let name = network.name?;
-                    Some(ObservedNetwork {
-                        name,
-                        runtime_configuration_matches,
-                        labels: network.labels.unwrap_or_default().into_iter().collect(),
-                    })
-                })
-                .filter(|r| Self::relevant(&r.name, &r.labels, application))
-                .collect();
-            let mut raw_volumes = Self::map_request(
-                "list volumes",
-                self.docker
-                    .list_volumes(Some(
-                        ListVolumesOptionsBuilder::default()
-                            .filters(&Self::application_label_filter(application))
-                            .build(),
-                    ))
-                    .await,
-            )?
-            .volumes
-            .unwrap_or_default();
-            let named_volumes = Self::map_request(
-                "list volumes by name",
-                self.docker
-                    .list_volumes(Some(
-                        ListVolumesOptionsBuilder::default()
-                            .filters(&Self::application_name_filter(application))
-                            .build(),
-                    ))
-                    .await,
-            )?
-            .volumes
-            .unwrap_or_default();
-            let mut seen_volumes = raw_volumes
-                .iter()
-                .map(|volume| volume.name.clone())
-                .collect::<BTreeSet<_>>();
-            raw_volumes.extend(
-                named_volumes
-                    .into_iter()
-                    .filter(|volume| seen_volumes.insert(volume.name.clone())),
-            );
-            let volumes = raw_volumes
-                .into_iter()
-                .map(|volume| {
-                    let runtime_configuration_matches = Self::volume_configuration_matches(&volume);
-                    ObservedVolume {
-                        name: volume.name,
-                        runtime_configuration_matches,
-                        labels: volume.labels.into_iter().collect(),
-                    }
-                })
-                .filter(|r| Self::relevant(&r.name, &r.labels, application))
-                .collect();
-            let mut listed_services = Self::map_request(
-                "list services",
-                self.docker
-                    .list_services(Some(
-                        ListServicesOptionsBuilder::default()
-                            .filters(&Self::application_label_filter(application))
-                            .status(true)
-                            .build(),
-                    ))
-                    .await,
-            )?;
-            let named_services = Self::map_request(
-                "list services by name",
-                self.docker
-                    .list_services(Some(
-                        ListServicesOptionsBuilder::default()
-                            .filters(&Self::application_name_filter(application))
-                            .status(true)
-                            .build(),
-                    ))
-                    .await,
-            )?;
-            let mut seen_services = listed_services
-                .iter()
-                .map(|service| service.id.clone())
-                .collect::<BTreeSet<_>>();
-            listed_services.extend(
-                named_services
-                    .into_iter()
-                    .filter(|service| seen_services.insert(service.id.clone())),
-            );
-            let service_names = listed_services
-                .iter()
-                .filter_map(|service| service.spec.as_ref()?.name.clone())
-                .collect::<Vec<_>>();
-            // Complete inspections run concurrently so one slow service cannot
-            // serialize the whole snapshot.
-            let mut inspections =
-                stream::iter(listed_services.into_iter().filter_map(|listed| listed.id))
-                    .map(|id| async {
-                        let inspected = self.inspect_service_wire(&id).await;
-                        (id, inspected)
-                    })
-                    .buffer_unordered(OBSERVATION_INSPECT_CONCURRENCY);
-            let mut raw_services = Vec::new();
-            while let Some((id, inspected)) = inspections.next().await {
-                match inspected {
-                    Ok(Some(service)) => raw_services.push(service),
-                    Ok(None) => {
-                        tracing::debug!(service_id = %id, "service vanished during observation");
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            let all_tasks = if service_names.is_empty() {
-                // Empty name filters rely on undocumented daemon behavior and
-                // there is nothing to list for.
-                Vec::new()
-            } else {
-                Self::map_request(
-                    "list tasks",
-                    self.docker
-                        .list_tasks(Some(
-                            ListTasksOptionsBuilder::default()
-                                .filters(&HashMap::from([("service", service_names)]))
-                                .build(),
-                        ))
-                        .await,
-                )?
-            };
-            let health_by_container = self
-                .observe_running_health(&raw_services, &all_tasks)
-                .await?;
-            let mut services = raw_services
-                .into_iter()
-                .filter_map(|service| {
-                    let id = service.id.clone()?;
-                    let spec = service.spec?;
-                    let name = spec.name.clone()?;
-                    let labels: BTreeMap<_, _> = spec
-                        .labels
-                        .clone()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect();
-                    if !Self::relevant(&name, &labels, application) {
-                        return None;
-                    }
-                    let tasks = all_tasks
-                        .iter()
-                        .filter(|task| task.service_id.as_deref() == Some(&id))
-                        .map(|task| {
-                            let healthy = task
-                                .status
-                                .as_ref()
-                                .and_then(|status| status.container_status.as_ref())
-                                .and_then(|container| container.container_id.as_deref())
-                                .and_then(|container| {
-                                    health_by_container.get(container).copied().flatten()
-                                });
-                            Self::observe_task(task, healthy)
-                        })
-                        .collect::<Vec<_>>();
-                    Some(Self::observe_service(
-                        &spec,
-                        tasks,
-                        service.update_status.and_then(|u| u.state),
-                    ))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            for service in &mut services {
-                for target in &mut service.networks {
-                    if let Some(name) = network_names.get(target) {
-                        *target = name.clone();
-                    }
-                }
-            }
+            let (networks, network_names) = self.snapshot_networks(application).await?;
+            let volumes = self.snapshot_volumes(application).await?;
+            let services = self.snapshot_services(application, &network_names).await?;
             Ok(ObservedApplication {
                 networks,
                 volumes,
