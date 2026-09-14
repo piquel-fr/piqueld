@@ -32,33 +32,15 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
             tail,
             since_seconds,
         } => {
-            let app = resolve_application(&client, name_or_id).await?;
-            let logs = client
-                .application_logs(
-                    app.application.id.as_str(),
-                    service.as_deref(),
-                    *tail,
-                    *since_seconds,
-                )
-                .await?;
-            if cli.json {
-                return emit_json(&logs);
-            }
-            for log in logs.items {
-                writeln!(
-                    io::stdout().lock(),
-                    "{} {} {} {} | {}",
-                    log.timestamp,
-                    log.service,
-                    log.task_id,
-                    log.stream,
-                    log.message
-                )?;
-            }
-            if logs.truncated {
-                eprintln!("Log snapshot was truncated; narrow the service or time window.");
-            }
-            Ok(())
+            logs(
+                cli,
+                &client,
+                name_or_id,
+                service.as_deref(),
+                *tail,
+                *since_seconds,
+            )
+            .await
         }
         Command::Plan(args) => plan_command(cli, &client, args).await,
         Command::Apply(args) => apply(cli, &client, args).await,
@@ -270,6 +252,38 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
     }
     if let Some(message) = status.message {
         eprintln!("diagnostic: {message}");
+    }
+    Ok(())
+}
+
+async fn logs(
+    cli: &Cli,
+    client: &Client,
+    name_or_id: &str,
+    service: Option<&str>,
+    tail: u16,
+    since_seconds: u32,
+) -> Result<()> {
+    let app = resolve_application(client, name_or_id).await?;
+    let logs = client
+        .application_logs(app.application.id.as_str(), service, tail, since_seconds)
+        .await?;
+    if cli.json {
+        return emit_json(&logs);
+    }
+    for log in logs.items {
+        writeln!(
+            io::stdout().lock(),
+            "{} {} {} {} | {}",
+            log.timestamp,
+            log.service,
+            log.task_id,
+            log.stream,
+            log.message
+        )?;
+    }
+    if logs.truncated {
+        eprintln!("Log snapshot was truncated; narrow the service or time window.");
     }
     Ok(())
 }

@@ -102,14 +102,12 @@ pub trait DockerApi: Send + Sync + 'static {
     /// Reads a bounded historical log window without storing it in piqueld.
     async fn application_logs(
         &self,
-        _instance: &InstanceId,
-        _application: &ApplicationId,
-        _service: Option<&str>,
-        _tail: u16,
-        _since: u32,
-    ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
-        Err(DockerError::Unavailable("application logs unavailable"))
-    }
+        instance: &InstanceId,
+        application: &ApplicationId,
+        service: Option<&str>,
+        tail: u16,
+        since: u32,
+    ) -> Result<piqueld_core::api::ApplicationLogs, DockerError>;
 
     /// Ensures that Docker is an active, compatible Swarm manager.
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError>;
