@@ -55,7 +55,7 @@ pub enum DockerError {
 }
 
 impl DockerError {
-    pub(super) fn unavailable(
+    pub(crate) fn unavailable(
         operation: &'static str,
         source: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {

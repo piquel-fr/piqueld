@@ -5,7 +5,7 @@
 //! those two limits around the shared Docker implementation (including test
 //! fakes). Mutations pass through unchanged: the controller serializes them.
 //! Cancelling a request drops its permit, allowing the next waiter to proceed.
-use super::{DockerApi, DockerError, SwarmState};
+use super::{DockerApi, DockerError, DockerTimeout, SwarmState};
 use async_trait::async_trait;
 use piqueld_core::{
     ApplicationId, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
@@ -57,12 +57,16 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         self.inner.ensure_swarm(auto).await
     }
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
-        let _permit = self
-            .images
-            .acquire()
+        DockerTimeout::ImageResolution
+            .run("resolve image", async {
+                let _permit = self
+                    .images
+                    .acquire()
+                    .await
+                    .expect("semaphore is never closed");
+                self.inner.resolve_image(reference).await
+            })
             .await
-            .expect("semaphore is never closed");
-        self.inner.resolve_image(reference).await
     }
     async fn build_image(
         &self,
@@ -77,12 +81,16 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         self.inner.build_image(dockerfile, context).await
     }
     async fn observe(&self, id: &ApplicationId) -> Result<ObservedApplication, DockerError> {
-        let _permit = self
-            .observations
-            .acquire()
+        DockerTimeout::Request
+            .run("observe application", async {
+                let _permit = self
+                    .observations
+                    .acquire()
+                    .await
+                    .expect("semaphore is never closed");
+                self.inner.observe(id).await
+            })
             .await
-            .expect("semaphore is never closed");
-        self.inner.observe(id).await
     }
     async fn ensure_network(&self, value: &DesiredNetwork) -> Result<(), DockerError> {
         self.inner.ensure_network(value).await
@@ -106,5 +114,31 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
         self.inner.remove_network(name, ownership).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_budget_includes_waiting_for_a_permit() {
+        use std::error::Error;
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("docker.sock");
+        let _listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let docker = LimitedDocker::new(Arc::new(
+            super::super::BollardDocker::connect(&socket).unwrap(),
+        ));
+        let permits = docker.observations.acquire_many(8).await.unwrap();
+        let started = tokio::time::Instant::now();
+        let error = docker
+            .observe(&ApplicationId::parse("app-queued").unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(started.elapsed(), DockerTimeout::Request.duration());
+        assert!(error.source().unwrap().is::<tokio::time::error::Elapsed>());
+        drop(permits);
+        assert_eq!(docker.observations.available_permits(), 8);
     }
 }
