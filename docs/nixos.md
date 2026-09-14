@@ -60,3 +60,18 @@ Validate service startup, private paths, Swarm initialization, CLI access, and
 restart with `nix build .#checks.x86_64-linux.nixos-service` (requires KVM or
 software virtualization). Configuration and package changes require rebuilding
 NixOS; application state remains under `dataDir`.
+
+CI builds and tests all three packages on both native architectures on every
+PR and push to main; the NixOS VM test runs on x86_64. Crane splits native and
+WebAssembly dependency compilation into cached derivations. Application edits
+reuse these artifacts while manifest, lockfile, or toolchain changes can require
+fresh dependency builds. The dashboard has its own build, so daemon-only edits
+also reuse its distribution. Documentation and CI files are excluded from
+package sources.
+
+The `packages.<system>.dependencies` output roots the compiled Cargo artifacts
+before CI saves its Nix store cache. Keep that output rooted: installed binaries
+do not retain references to their build-time dependencies, so cache garbage
+collection could otherwise delete them. A warm build still compiles changed
+workspace crates, links release binaries, and runs tests; cold builds are not
+expected to finish within a minute.

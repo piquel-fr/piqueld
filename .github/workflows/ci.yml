@@ -228,11 +228,15 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
-          primary-key: nix-${{ matrix.system }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'flake.nix') }}-${{ github.sha }}
+          primary-key: nix-${{ matrix.system }}-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-${{ github.sha }}
           restore-prefixes-first-match: |
-            nix-${{ matrix.system }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'flake.nix') }}-
+            nix-${{ matrix.system }}-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-
             nix-${{ matrix.system }}-
           gc-max-store-size-linux: 4294967296
+      # Build-time artifacts are not referenced by installed binaries. Root
+      # them so cache GC retains compiled dependencies for the next commit.
+      - name: Cache compiled Cargo dependencies
+        run: nix build -L --out-link result-dependencies ".#packages.${{ matrix.system }}.dependencies"
       - name: Evaluate every flake output
         run: nix flake show --all-systems
       - name: Validate native packages and sandboxed checks
