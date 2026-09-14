@@ -25,6 +25,7 @@ use crate::store::StoreError;
 mod applications;
 mod deployments;
 mod events;
+mod logs;
 mod openapi;
 mod operations;
 mod system;
@@ -330,6 +331,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(deployments::list))
         .routes(routes!(deployments::attempts))
         .routes(routes!(events::list))
+        .routes(routes!(logs::get))
         .routes(routes!(operations::get))
 }
 

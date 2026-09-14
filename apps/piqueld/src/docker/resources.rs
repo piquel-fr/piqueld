@@ -52,6 +52,18 @@ impl BollardDocker {
 
 #[async_trait]
 impl DockerApi for BollardDocker {
+    async fn application_logs(
+        &self,
+        instance: &super::InstanceId,
+        application: &ApplicationId,
+        service: Option<&str>,
+        tail: u16,
+        since: u32,
+    ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
+        self.read_logs(instance, application, service, tail, since)
+            .await
+    }
+
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError> {
         bounded("ensure Docker Swarm", async {
             let info =

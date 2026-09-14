@@ -126,7 +126,7 @@ Safari, or Edge release with WebAssembly, ES modules, Fetch, and standard CSS
 media-query support. Internet Explorer, JavaScript-disabled browsing, and
 older browsers without those primitives are outside the support target.
 
-Secrets, logs and streams, state transfer, and authentication remain outside the
+Secrets, streaming logs, state transfer, and authentication remain outside the
 current dashboard scope. Event history is available through the API and CLI.
 Deployment history polls every two seconds while its tab and the page are visible.
 
@@ -141,3 +141,8 @@ While backing is enabled, edit runtime configuration in Git; connection settings
 remain editable here. Configuration saved during preparation is preserved.
 
 **Download saved manifest** exports the current server-saved configuration as TOML. Unsaved form edits and runtime/deployment state are excluded. Repository connection settings are preserved; the download does not fetch Git or require Docker. Original comments and formatting are not retained.
+
+
+The application's Logs tab reads recent output directly from Docker. Refresh is
+manual by default; optional five-second polling runs only while the tab and page
+are visible. Output is a bounded snapshot, not an accumulated daemon log archive.

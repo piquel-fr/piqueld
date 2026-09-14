@@ -451,3 +451,36 @@ impl Client {
         path
     }
 }
+
+impl Client {
+    /// Reads a bounded historical Docker log window.
+    /// # Errors
+    /// Returns transport, validation or Docker errors.
+    pub async fn application_logs(
+        &self,
+        id: &str,
+        service: Option<&str>,
+        tail: u16,
+        since_seconds: u32,
+    ) -> Result<piqueld_core::api::ApplicationLogs, ClientError> {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query
+            .append_pair("tail", &tail.to_string())
+            .append_pair("since_seconds", &since_seconds.to_string());
+        if let Some(service) = service {
+            query.append_pair("service", service);
+        }
+        self.send::<_, ()>(
+            http::Method::GET,
+            &format!(
+                "{}/applications/{}/logs?{}",
+                crate::API_PREFIX,
+                id,
+                query.finish()
+            ),
+            None,
+            &[],
+        )
+        .await
+    }
+}

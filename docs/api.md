@@ -149,3 +149,12 @@ The legacy refresh endpoint resolves stored service sources without fetching a
 new manifest; reconcile retries the latest operation with its saved inputs.
 
 `GET /api/v1/applications/{id}/manifest` downloads saved configuration as `application/toml`, with an attachment filename and `Cache-Control: no-store`. It does not observe Docker or resolve sources.
+
+
+`GET /api/v1/applications/{id}/logs` reads Docker container output for services
+owned by this application and daemon instance. Optional `service` filters by
+logical service name; `tail` defaults to 200 (1–1000) and `since_seconds` to 3600
+(1–86400). Records include timestamp, service, task ID, stream and message.
+Snapshots are capped at 1 MiB of collected text and 256 tasks, with `truncated`
+indicating a partial result. Docker retains the source logs; removed containers
+have no available history. No output is stored by piqueld.

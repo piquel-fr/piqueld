@@ -25,6 +25,27 @@ struct FakeRuntime {
 
 #[async_trait]
 impl RuntimeBoundary for FakeRuntime {
+    async fn logs(
+        &self,
+        _application: &piqueld_core::ApplicationId,
+        service: Option<&str>,
+        tail: u16,
+        since: u32,
+    ) -> Result<piqueld_core::api::ApplicationLogs, BoundaryError> {
+        self.check_available().await?;
+        assert_eq!((service, tail, since), (Some("web"), 5, 60));
+        Ok(piqueld_core::api::ApplicationLogs {
+            items: vec![piqueld_core::api::LogRecord {
+                service: "web".into(),
+                task_id: "task-1".into(),
+                timestamp: "2026-09-13T12:00:00Z".into(),
+                stream: "stdout".into(),
+                message: "hello".into(),
+            }],
+            truncated: false,
+        })
+    }
+
     async fn prepare(
         &self,
         application: &NormalizedApplication,
@@ -2261,4 +2282,31 @@ impl RawResponse {
             assert_eq!(error.request_id, header_id);
         }
     }
+}
+
+#[tokio::test]
+async fn application_log_snapshot_validates_bounds_and_preserves_task_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let app = create_and_inspect(&client, &manifest()).await;
+    let logs = client
+        .application_logs(&app.application_id, Some("web"), 5, 60)
+        .await
+        .unwrap();
+    assert_eq!(logs.items[0].task_id, "task-1");
+    assert_eq!(logs.items[0].message, "hello");
+    assert!(!logs.truncated);
+    for (tail, since) in [(0, 60), (1001, 60), (5, 0), (5, 86401)] {
+        let error = client
+            .application_logs(&app.application_id, Some("web"), tail, since)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, piqueld_client::ClientError::Api { status, .. } if status.as_u16() == 400)
+        );
+    }
+    server.abort();
 }

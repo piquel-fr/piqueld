@@ -34,6 +34,17 @@ pub enum BoundaryError {
 /// Resolves accepted intent during execution and observes runtime for API reads.
 #[async_trait]
 pub trait RuntimeBoundary: Send + Sync + 'static {
+    /// Reads recent workload logs from Docker.
+    async fn logs(
+        &self,
+        _id: &ApplicationId,
+        _service: Option<&str>,
+        _tail: u16,
+        _since: u32,
+    ) -> Result<piqueld_core::api::ApplicationLogs, BoundaryError> {
+        Err(DockerError::Unavailable("application logs unavailable").into())
+    }
+
     /// Wakes the reconciler after a mutation requests an immediate scan.
     fn trigger_reconciliation(&self) {}
     /// Resolves all mutable inputs into a complete immutable target.

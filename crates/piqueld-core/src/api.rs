@@ -279,3 +279,26 @@ pub struct HostConfiguration {
     /// Settings grouped by server, Docker, reconciliation and retention.
     pub groups: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 }
+
+/// Bounded historical container output read directly from Docker.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
+pub struct ApplicationLogs {
+    /// Chronologically ordered records.
+    pub items: Vec<LogRecord>,
+    /// More output existed than the requested window or safety limit.
+    pub truncated: bool,
+}
+/// One line of workload output with replica identity.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct LogRecord {
+    /// Logical service name.
+    pub service: String,
+    /// Swarm task identity.
+    pub task_id: String,
+    /// Docker timestamp, when supplied.
+    pub timestamp: String,
+    /// stdout, stderr, or console.
+    pub stream: String,
+    /// Text with terminal control sequences removed.
+    pub message: String,
+}

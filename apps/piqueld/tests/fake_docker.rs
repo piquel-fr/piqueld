@@ -188,6 +188,17 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
 
 #[async_trait]
 impl DockerApi for FakeDocker {
+    async fn application_logs(
+        &self,
+        _instance: &InstanceId,
+        _application: &ApplicationId,
+        _service: Option<&str>,
+        _tail: u16,
+        _since: u32,
+    ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
+        Ok(piqueld_core::api::ApplicationLogs::default())
+    }
+
     async fn ensure_swarm(&self, _auto_initialize: bool) -> Result<SwarmState, DockerError> {
         Ok(SwarmState::Ready)
     }
