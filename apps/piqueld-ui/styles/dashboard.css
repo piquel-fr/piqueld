@@ -139,32 +139,14 @@
         font-size: 12px;
     }
 
-    .readiness-summary {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-        margin: 0 0 12px;
-        padding: 5px 9px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 700;
-    }
-
-    .readiness-summary.ready,
     .readiness-dependency[data-state="ready"] .readiness-state {
         color: var(--ok);
         background: var(--ok-bg);
     }
 
-    .readiness-summary.failed,
     .readiness-dependency[data-state="failed"] .readiness-state {
         color: var(--bad);
         background: var(--bad-bg);
-    }
-
-    .readiness-summary.pending {
-        color: var(--pending);
-        background: var(--pending-bg);
     }
 
     .readiness-dependency[data-state="pending"] .readiness-state {

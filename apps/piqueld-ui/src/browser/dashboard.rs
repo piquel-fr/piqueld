@@ -124,34 +124,6 @@ fn ReadinessPanel() -> impl IntoView {
                         .get()
                         .map(|error| view! { <p class="readiness-error">"Readiness check failed: " {error}</p> })
                 }}
-                {move || {
-                    let (summary_class, summary_text) = match (
-                        signals.connection.get(),
-                        signals.readiness.get(),
-                    ) {
-                        (ConnectionState::Loading, _) => {
-                            ("readiness-summary pending", "Checking system status")
-                        }
-                        (ConnectionState::Reachable, Some(status)) if status.ready => {
-                            ("readiness-summary ready", "Ready to deploy")
-                        }
-                        (ConnectionState::Reachable, Some(_)) => {
-                            ("readiness-summary failed", "Deployment blocked")
-                        }
-                        (ConnectionState::Reachable, None) => {
-                            ("readiness-summary failed", "Readiness unavailable")
-                        }
-                        (ConnectionState::Failed | ConnectionState::Unreachable, _) => {
-                            ("readiness-summary failed", "Deployment status unavailable")
-                        }
-                    };
-                    view! {
-                        <p class={summary_class} role="status">
-                            <span class="readiness-dot" aria-hidden="true"></span>
-                            {summary_text}
-                        </p>
-                    }
-                }}
                 <div class="readiness-dependencies">
                     {move || connection_readiness(signals.connection.get())}
                     {move || {
