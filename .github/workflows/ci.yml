@@ -239,11 +239,17 @@ jobs:
       # The CI wrapper retains workspace artifacts as well as dependencies,
       # and lets the VM overlap with the remaining package builds and tests.
       - name: Validate native packages and sandboxed checks
+        shell: bash
         run: |
           nix build -L --impure --file nix/ci.nix \
             --argstr source "git+file://$PWD?shallow=1" \
             --argstr system "${{ matrix.system }}" \
             --out-link result-ci
+          for package in cli combined; do
+            help=$("result-ci/$package/bin/piquelctl" --help)
+            [[ "$help" == "Verify incremental Nix cache freshness"* ]]
+            echo "Verified changed executable in $package"
+          done
           jq -n \
             --arg cli "$(readlink -f result-ci/cli-artifacts)" \
             --arg daemon "$(readlink -f result-ci/daemon-artifacts)" \

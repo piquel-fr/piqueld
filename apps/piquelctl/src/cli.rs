@@ -6,7 +6,7 @@ use std::{path::PathBuf, time::Duration};
 #[command(
     name = "piquelctl",
     version,
-    about = "Operate a local piqueld control plane"
+    about = "Verify incremental Nix cache freshness"
 )]
 pub(crate) struct Cli {
     /// Named connection in the profiles file (or `PIQUELD_PROFILE`).
