@@ -6,7 +6,9 @@ declare -a child_pids=()
 cleanup() {
     local child deadline
 
-    trap - EXIT INT TERM
+    trap - EXIT
+    # Repeated signals must not interrupt cleanup and orphan the daemon.
+    trap '' INT TERM HUP
 
     # Each process is started in its own session so cargo-watch's cargo run
     # child and its build-script children are stopped with their supervisors.
@@ -42,7 +44,7 @@ handle_signal() {
 }
 
 trap cleanup EXIT
-trap handle_signal INT TERM
+trap handle_signal INT TERM HUP
 
 mkdir -p apps/piqueld-ui/generated
 
@@ -50,11 +52,16 @@ mkdir -p apps/piqueld-ui/generated
 # too: every dashboard edit re-runs the build script (Tailwind + Trunk) and
 # restarts the daemon. The build script's own outputs are ignored so a rebuild
 # cannot trigger itself.
+# Keep the command in the session managed by cleanup: cargo-watch otherwise
+# creates another session that survives if the watcher exits first. Exec makes
+# cargo (and then the daemon) the watcher's direct child, so reloads still stop
+# and reap the daemon before starting its replacement.
 setsid cargo watch \
+    --no-process-group \
     --watch apps/piqueld --watch apps/piqueld-ui --watch crates \
     --watch Cargo.toml --watch Cargo.lock \
     --ignore 'apps/piqueld-ui/generated' \
-    --exec 'run --package piqueld --bin piqueld --features embedded-ui -- --config examples/piqueld.toml' &
+    --shell 'exec cargo run --package piqueld --bin piqueld --features embedded-ui -- --config examples/piqueld.toml' &
 child_pids+=("$!")
 
 set +e
