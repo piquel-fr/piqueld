@@ -51,7 +51,7 @@ The supported manifest and runtime model are documented in:
 
 Use a Rust 1.96-or-newer toolchain directly. Nix is optional; `nix develop`
 provides a reproducible development shell and the flake contains deployable
-packages. macOS supports the CLI on Apple Silicon and Intel: use
+packages. macOS supports the CLI on Apple Silicon: use
 `just validate-cli` for CLI development and `nix build .#cli` for the Apple
 Silicon Nix package.
 See [macOS installation](docs/piquelctl.md#installation-on-macos) for Cargo

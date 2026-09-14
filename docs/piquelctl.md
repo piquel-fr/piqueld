@@ -6,7 +6,7 @@ default.
 
 ## Installation on macOS
 
-The CLI supports Apple Silicon and Intel Macs. With Rust 1.96 or newer and
+The CLI supports Apple Silicon Macs. With Rust 1.96 or newer and
 Apple's Command Line Tools installed, build and install from the repository:
 
 ```console
@@ -18,9 +18,8 @@ On Apple Silicon, Nix users can run `nix build .#cli` or
 daemon and dashboard packages are Linux
 only. `nix develop` provides the CLI development tools, and `just validate-cli`
 lints and tests the CLI and its shared client/core crates. `just build-cli`
-builds the release binary. The pinned nixpkgs no longer supports Intel Macs;
-use the Cargo installation above on Intel. CI runs these checks on both Mac
-architectures and uploads a CLI binary for each.
+builds the release binary. CI runs these checks on `macos-latest`, verifies the
+Nix package, and uploads an Apple Silicon CLI binary.
 
 The daemon still runs on Linux. To reach it from a Mac, forward its loopback HTTP
 port over SSH (using the port configured on your host):
