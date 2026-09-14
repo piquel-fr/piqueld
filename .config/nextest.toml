@@ -1,0 +1,15 @@
+# Emit structured results for local runs as well as Blacksmith CI analytics.
+[profile.default.junit]
+path = "junit.xml"
+
+[profile.ci]
+fail-fast = false
+
+[profile.ci.junit]
+report-name = "piqueld-workspace"
+
+[profile.docker-ci]
+fail-fast = false
+
+[profile.docker-ci.junit]
+report-name = "piqueld-docker-integration"

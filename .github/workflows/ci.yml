@@ -96,7 +96,19 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-      - run: just test
+      - name: Run workspace tests
+        env:
+          NEXTEST_PROFILE: ci
+        run: |
+          rm -f target/nextest/ci/junit.xml
+          just test
+      - name: Preserve workspace test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: junit-workspace
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
       - run: just doc-test
 
   deny:
@@ -164,18 +176,30 @@ jobs:
       # The wrapper bounds cargo invocation inside the script; compilation is
       # already warm through the prebuild below.
       PIQUELD_DOCKER_TEST_TIMEOUT: 30m
+      NEXTEST_PROFILE: docker-ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
         with:
-          tool: just
+          tool: just,cargo-nextest
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
       # Compile before the isolated Docker-in-Docker daemon starts so the
       # inner cargo invocation is instant.
-      - run: cargo test --locked -p piqueld --test docker_integration --no-run
-      - run: just docker-test
+      - name: Compile Docker integration tests
+        run: |
+          rm -f target/nextest/docker-ci/junit.xml
+          cargo nextest run --locked -p piqueld --test docker_integration --no-run
+      - name: Run Docker integration tests
+        run: just docker-test
+      - name: Preserve Docker test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: junit-docker-integration
+          path: target/nextest/docker-ci/junit.xml
+          if-no-files-found: warn
 
   embedded-release:
     name: embedded-release
