@@ -258,24 +258,29 @@ jobs:
         shell: bash
         run: |
           sudo systemctl stop nix-daemon.socket nix-daemon.service
-          sudo env NIX_REMOTE=local /nix/var/nix/profiles/default/bin/nix-store \
-            --dump-db | tee "$RUNNER_TEMP/nix-bootstrap.db" > /dev/null
-          sudo mkdir -p /nix-cache/store
-          # Store paths are immutable: skip existing directories entirely.
-          for path in /nix/store/*; do
-            if ! sudo test -e "/nix-cache/store/${path##*/}"; then
-              sudo cp -a "$path" /nix-cache/store/
-            fi
-          done
-          sudo rsync -a --ignore-existing --exclude=/nix/db /nix/var/ /nix-cache/var/
-          sudo mkdir -p /nix-cache/var/nix/db
-          # Keep the freshly installed Nix runtime, even after an installer update.
-          sudo cp -a /nix/var/nix/profiles/default* /nix-cache/var/nix/profiles/
+          runtime=$(readlink -f /nix/var/nix/profiles/default)
+          if ! sudo test -e "/nix-cache/store/${runtime##*/}"; then
+            sudo env NIX_REMOTE=local /nix/var/nix/profiles/default/bin/nix-store \
+              --dump-db | tee "$RUNNER_TEMP/nix-bootstrap.db" > /dev/null
+            sudo mkdir -p /nix-cache/store
+            # Store paths are immutable: skip existing directories entirely.
+            for path in /nix/store/*; do
+              if ! sudo test -e "/nix-cache/store/${path##*/}"; then
+                sudo cp -a "$path" /nix-cache/store/
+              fi
+            done
+            sudo rsync -a --ignore-existing --exclude=/nix/db /nix/var/ /nix-cache/var/
+            sudo mkdir -p /nix-cache/var/nix/db
+            # Keep the freshly installed runtime after an installer update.
+            sudo cp -a /nix/var/nix/profiles/default* /nix-cache/var/nix/profiles/
+          fi
           sudo chown root:root /nix-cache
           sudo mount --bind /nix-cache /nix
           echo "bound=true" >> "$GITHUB_OUTPUT"
-          cat "$RUNNER_TEMP/nix-bootstrap.db" | sudo env NIX_REMOTE=local \
-            /nix/var/nix/profiles/default/bin/nix-store --load-db
+          if [[ -f "$RUNNER_TEMP/nix-bootstrap.db" ]]; then
+            cat "$RUNNER_TEMP/nix-bootstrap.db" | sudo env NIX_REMOTE=local \
+              /nix/var/nix/profiles/default/bin/nix-store --load-db
+          fi
           sudo systemctl start nix-daemon.socket nix-daemon.service
       - name: Evaluate every flake output
         run: nix flake show --all-systems
@@ -290,7 +295,7 @@ jobs:
             --out-link result-ci
           for package in cli combined; do
             help=$("result-ci/$package/bin/piquelctl" --help)
-            [[ "$help" == "Operate a local piqueld control plane"* ]]
+            [[ "$help" == "Verify fast Nix store activation"* ]]
             echo "Verified changed executable in $package"
           done
           jq -n \
