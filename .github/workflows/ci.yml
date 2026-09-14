@@ -17,9 +17,8 @@
 # `check` is deliberately not a separate job: `clippy --all-targets
 # --all-features` compiles everything it would and adds lints on top.
 #
-# Nix validates package builds and their sandboxed tests on both supported
-# native architectures. The KVM-dependent NixOS VM test runs only on x86_64.
-# Each architecture restores its own Nix store cache.
+# Nix validates package builds, sandboxed tests, and the KVM-dependent NixOS
+# VM test on x86_64, restoring a persistent Nix store cache.
 #
 # Speed comes from Swatinem/rust-cache in every compiling job (keyed per job
 # against Cargo.lock), prebuilt tool downloads instead of `cargo install`,
@@ -236,17 +235,9 @@ jobs:
             config/piqueld.example.toml
 
   nix:
-    name: nix (${{ matrix.system }})
-    runs-on: ${{ matrix.runner }}
+    name: nix (x86_64-linux)
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - system: x86_64-linux
-            runner: blacksmith-2vcpu-ubuntu-2404
-          - system: aarch64-linux
-            runner: blacksmith-2vcpu-ubuntu-2404-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Prepare local build directory
@@ -259,7 +250,7 @@ jobs:
       - name: Mount persistent Nix store
         uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc # v1
         with:
-          key: piqueld-nix-${{ matrix.system }}-${{ github.ref }}
+          key: piqueld-nix-x86_64-linux-${{ github.ref }}
           path: /nix-cache
       - name: Check persistent store
         id: nix_cache
@@ -276,10 +267,10 @@ jobs:
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         if: steps.nix_cache.outputs.hit != 'true'
         with:
-          primary-key: nix-${{ matrix.system }}-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-${{ github.sha }}
+          primary-key: nix-x86_64-linux-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-${{ github.sha }}
           restore-prefixes-first-match: |
-            nix-${{ matrix.system }}-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-
-            nix-${{ matrix.system }}-
+            nix-x86_64-linux-${{ hashFiles('flake.lock', '**/Cargo.toml', 'Cargo.lock') }}-
+            nix-x86_64-linux-
           save: false
       - name: Activate persistent Nix store
         id: nix_mount
@@ -321,7 +312,7 @@ jobs:
         run: |
           nix build -L --impure --file nix/ci.nix \
             --argstr source "git+file://$PWD?shallow=1" \
-            --argstr system "${{ matrix.system }}" \
+            --argstr system "x86_64-linux" \
             --out-link result-ci
           jq -n \
             --arg cli "$(readlink -f result-ci/cli-artifacts)" \

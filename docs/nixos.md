@@ -61,8 +61,8 @@ restart with `nix build .#checks.x86_64-linux.nixos-service` (requires KVM or
 software virtualization). Configuration and package changes require rebuilding
 NixOS; application state remains under `dataDir`.
 
-CI builds and tests all three packages on both native architectures on every
-PR and push to main; the NixOS VM test runs on x86_64. Crane splits native and
+Nix packages and development shells support x86_64 Linux. CI builds and tests
+all three packages and runs the NixOS VM test on every PR and push to main. Crane splits native and
 WebAssembly dependency compilation into cached derivations. Application edits
 reuse these artifacts while manifest, lockfile, or toolchain changes can require
 fresh dependency builds. The dashboard has its own build, so daemon-only edits
@@ -88,7 +88,6 @@ remain independent of that index. Cold caches still require full compilation.
 
 Nix release builds retain release optimization but disable thin LTO, avoiding
 whole-program optimization for every package and test executable. The regular
-Cargo release profile is unchanged. All CI jobs use 2-vCPU runners and
-starts the x86_64 VM test as soon as its daemon and CLI packages are ready,
+Cargo release profile is unchanged. All CI jobs use 2-vCPU runners. Nix starts the VM test as soon as its daemon and CLI packages are ready,
 allowing it to overlap with the combined package's build and tests. Each VM
 receives four vCPUs to parallelize boot-time service startup.

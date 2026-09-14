@@ -86,9 +86,9 @@ pkgs.linkFarm "piqueld-ci" (
       name = "dependencies";
       path = flake.packages.${system}.dependencies;
     }
+    {
+      name = "nixos-service";
+      path = vm;
+    }
   ]
-  ++ lib.optional (system == "x86_64-linux") {
-    name = "nixos-service";
-    path = vm;
-  }
 )
