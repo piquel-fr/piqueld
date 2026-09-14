@@ -226,6 +226,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          extra-conf: |
+            build-dir = /tmp
       - name: Mount persistent Nix store
         uses: useblacksmith/stickydisk@25e27b93b68733b532d9af6b201df28ffaf7dbfc # v1
         with:
@@ -255,7 +258,14 @@ jobs:
           sudo systemctl stop nix-daemon.socket nix-daemon.service
           sudo env NIX_REMOTE=local /nix/var/nix/profiles/default/bin/nix-store \
             --dump-db | tee "$RUNNER_TEMP/nix-bootstrap.db" > /dev/null
-          sudo rsync -a --ignore-existing --exclude=/var/nix/db /nix/ /nix-cache/
+          sudo mkdir -p /nix-cache/store
+          # Store paths are immutable: skip existing directories entirely.
+          for path in /nix/store/*; do
+            if ! sudo test -e "/nix-cache/store/${path##*/}"; then
+              sudo cp -a "$path" /nix-cache/store/
+            fi
+          done
+          sudo rsync -a --ignore-existing --exclude=/nix/db /nix/var/ /nix-cache/var/
           sudo mkdir -p /nix-cache/var/nix/db
           # Keep the freshly installed Nix runtime, even after an installer update.
           sudo cp -a /nix/var/nix/profiles/default* /nix-cache/var/nix/profiles/
@@ -278,7 +288,7 @@ jobs:
             --out-link result-ci
           for package in cli combined; do
             help=$("result-ci/$package/bin/piquelctl" --help)
-            [[ "$help" == "Verify persistent Nix cache freshness"* ]]
+            [[ "$help" == "Operate a local piqueld control plane"* ]]
             echo "Verified changed executable in $package"
           done
           jq -n \
