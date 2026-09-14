@@ -46,6 +46,13 @@ impl RuntimeBoundary for FakeRuntime {
         })
     }
 
+    async fn readiness(&self) -> (bool, bool) {
+        (
+            true,
+            !self.unavailable.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
     async fn prepare(
         &self,
         application: &NormalizedApplication,
@@ -2309,4 +2316,42 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
         );
     }
     server.abort();
+}
+
+#[tokio::test]
+async fn readiness_distinguishes_engine_reachability_and_does_not_gate_saves() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    assert!(api.client.system_readiness().await.unwrap().ready);
+    api.runtime
+        .unavailable
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let readiness = api.client.system_readiness().await.unwrap();
+    assert!(!readiness.ready);
+    assert!(matches!(
+        readiness.database,
+        piqueld_core::api::DependencyStatus::Ready
+    ));
+    assert!(matches!(
+        readiness.docker,
+        piqueld_core::api::DependencyStatus::Ready
+    ));
+    assert!(
+        matches!(readiness.swarm, piqueld_core::api::DependencyStatus::Failed { message } if message == "A compatible single-node Swarm manager is required")
+    );
+    let response = router(ApiState::new(api.store.clone(), api.runtime.clone()))
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/system/readiness")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    api.client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    assert_eq!(api.client.system_status().await.unwrap().status, "running");
 }

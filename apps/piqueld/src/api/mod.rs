@@ -316,6 +316,7 @@ fn finish_router(
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .routes(routes!(system::status))
+        .routes(routes!(system::readiness))
         .routes(routes!(system::configuration))
         .routes(routes!(openapi::openapi))
         .routes(routes!(applications::list))

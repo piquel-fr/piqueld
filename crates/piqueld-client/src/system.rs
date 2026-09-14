@@ -1,6 +1,6 @@
 use http::Method;
 
-pub use piqueld_core::api::SystemStatus;
+pub use piqueld_core::api::{DependencyStatus, ReadinessStatus, SystemStatus};
 
 use crate::{Client, ClientError};
 
@@ -34,5 +34,29 @@ impl Client {
             &[],
         )
         .await
+    }
+}
+
+impl Client {
+    /// Reads diagnostic readiness, including a structured 503 response.
+    /// # Errors
+    /// Returns transport or decoding errors.
+    pub async fn system_readiness(
+        &self,
+    ) -> Result<piqueld_core::api::ReadinessStatus, ClientError> {
+        let (status, bytes) = self
+            .exchange(
+                Method::GET,
+                &format!("{}/system/readiness", crate::API_PREFIX),
+                Vec::new(),
+                &[],
+            )
+            .await?;
+        if !status.is_success() && status != http::StatusCode::SERVICE_UNAVAILABLE {
+            return Err(crate::client::api_error(status, &bytes));
+        }
+        serde_json::from_slice::<crate::Envelope<piqueld_core::api::ReadinessStatus>>(&bytes)
+            .map(|envelope| envelope.data)
+            .map_err(|source| ClientError::Decode { source })
     }
 }

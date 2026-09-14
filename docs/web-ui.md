@@ -146,3 +146,8 @@ remain editable here. Configuration saved during preparation is preserved.
 The application's Logs tab reads recent output directly from Docker. Refresh is
 manual by default; optional five-second polling runs only while the tab and page
 are visible. Output is a bounded snapshot, not an accumulated daemon log archive.
+
+The main overview groups daemon connectivity with deployment readiness for
+SQLite, Docker reachability, and Swarm suitability. Green and red labels state
+each result in text, and one refresh updates the complete dashboard status.
+These diagnostics never disable configuration controls.

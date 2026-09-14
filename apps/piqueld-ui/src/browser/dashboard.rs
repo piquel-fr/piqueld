@@ -1,16 +1,12 @@
 //! Dashboard navigation, application directory, and recent deployments.
-use super::{
-    DashboardContext, connection_label, dashboard_context, health_class, management, row_health,
-    status_dot_class,
-};
-use crate::state::{ApplicationHealth, DataState};
+use super::{connection_label, dashboard_context, health_class, management, row_health};
+use crate::state::{ApplicationHealth, ConnectionState, DataState};
 use leptos::{CollectView, IntoView, SignalGet, View, component, view};
 use leptos_router::A;
+use piqueld_client::system::DependencyStatus;
 use std::rc::Rc;
 
-pub(super) fn dashboard_header(context: &DashboardContext) -> View {
-    let signals = context.signals;
-    let refresh = Rc::clone(&context.refresh);
+pub(super) fn dashboard_header() -> View {
     let location = leptos_router::use_location();
     view! {
         <aside class="sidebar">
@@ -46,15 +42,6 @@ pub(super) fn dashboard_header(context: &DashboardContext) -> View {
                     "Host settings"
                 </A>
             </nav>
-            <div class="sidebar-status">
-                <p role="status">
-                    <span class={move || status_dot_class(signals.connection.get())}></span>
-                    {move || connection_label(signals.connection.get())}
-                </p>
-                <button disabled={move || signals.refreshing.get()} on:click={move |_| refresh()}>
-                    {move || if signals.refreshing.get() { "Refreshing…" } else { "Refresh" }}
-                </button>
-            </div>
         </aside>
     }
     .into_view()
@@ -105,8 +92,97 @@ pub(super) fn OverviewPage() -> impl IntoView {
                 </strong>
             </div>
         </div>
+        <ReadinessPanel />
         <RecentDeployments />
     }
+}
+
+#[component]
+fn ReadinessPanel() -> impl IntoView {
+    let context = dashboard_context();
+    let signals = context.signals;
+    let refresh = Rc::clone(&context.refresh);
+
+    view! {
+        <section class="readiness-panel" aria-labelledby="system-readiness-heading">
+            <header class="section-heading readiness-heading">
+                <div>
+                    <h2 id="system-readiness-heading">"System status"</h2>
+                    <p>"Daemon connectivity and the services required to deploy applications."</p>
+                </div>
+                <button
+                    disabled={move || signals.refreshing.get()}
+                    on:click={move |_| refresh()}
+                >
+                    {move || if signals.refreshing.get() { "Refreshing…" } else { "Refresh" }}
+                </button>
+            </header>
+            <div aria-live="polite">
+                {move || {
+                    signals
+                        .readiness_error
+                        .get()
+                        .map(|error| view! { <p class="readiness-error">"Readiness check failed: " {error}</p> })
+                }}
+                <div class="readiness-dependencies">
+                    {move || connection_readiness(signals.connection.get())}
+                    {move || {
+                        signals.readiness.get().map(|status| {
+                            view! {
+                                {dependency_readiness("Database", status.database)}
+                                {dependency_readiness("Docker Engine", status.docker)}
+                                {dependency_readiness("Swarm manager", status.swarm)}
+                            }
+                        })
+                    }}
+                </div>
+            </div>
+        </section>
+    }
+}
+
+fn connection_readiness(state: ConnectionState) -> View {
+    let (visual_state, message) = match state {
+        ConnectionState::Loading => ("pending", "Waiting for the daemon"),
+        ConnectionState::Reachable => ("ready", "The API is responding"),
+        ConnectionState::Failed => ("failed", "The daemon returned an error"),
+        ConnectionState::Unreachable => ("failed", "The dashboard cannot connect to piqueld"),
+    };
+    readiness_card(
+        "piqueld daemon",
+        visual_state,
+        connection_label(state),
+        message,
+    )
+}
+
+fn dependency_readiness(name: &'static str, status: DependencyStatus) -> View {
+    let (state, label, message) = match status {
+        DependencyStatus::Ready => ("ready", "Ready", "Available".to_owned()),
+        DependencyStatus::Failed { message } => ("failed", "Failed", message),
+    };
+    readiness_card(name, state, label, &message)
+}
+
+fn readiness_card(
+    name: &'static str,
+    state: &'static str,
+    label: &'static str,
+    message: &str,
+) -> View {
+    view! {
+        <article class="readiness-dependency" data-state={state}>
+            <header>
+                <strong>{name}</strong>
+                <span class="readiness-state">
+                    <span class="readiness-dot" aria-hidden="true"></span>
+                    {label}
+                </span>
+            </header>
+            <p>{message.to_owned()}</p>
+        </article>
+    }
+    .into_view()
 }
 
 #[component]

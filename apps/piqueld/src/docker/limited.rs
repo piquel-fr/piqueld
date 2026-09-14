@@ -49,6 +49,10 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
             .await
     }
 
+    async fn ping(&self) -> Result<(), DockerError> {
+        self.inner.ping().await
+    }
+
     async fn ensure_swarm(&self, auto: bool) -> Result<SwarmState, DockerError> {
         self.inner.ensure_swarm(auto).await
     }

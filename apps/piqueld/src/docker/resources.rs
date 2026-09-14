@@ -64,6 +64,17 @@ impl DockerApi for BollardDocker {
             .await
     }
 
+    async fn ping(&self) -> Result<(), DockerError> {
+        bounded("ping Docker", async {
+            self.docker
+                .ping()
+                .await
+                .map(|_| ())
+                .map_err(|error| DockerError::unavailable("ping Docker", error))
+        })
+        .await
+    }
+
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError> {
         bounded("ensure Docker Swarm", async {
             let info =
