@@ -220,9 +220,9 @@ jobs:
       matrix:
         include:
           - system: x86_64-linux
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: blacksmith-32vcpu-ubuntu-2404
           - system: aarch64-linux
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: blacksmith-32vcpu-ubuntu-2404-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
@@ -239,16 +239,19 @@ jobs:
         run: nix build -L --out-link result-dependencies ".#packages.${{ matrix.system }}.dependencies"
       - name: Evaluate every flake output
         run: nix flake show --all-systems
+      # Let the VM start as soon as its daemon and CLI are ready, while the
+      # combined package can still be compiling or testing in parallel.
       - name: Validate native packages and sandboxed checks
         run: |
-          nix build -L \
-            ".#checks.${{ matrix.system }}.package" \
-            ".#checks.${{ matrix.system }}.daemon-package" \
-            ".#checks.${{ matrix.system }}.cli-package" \
-            ".#checks.${{ matrix.system }}.formatting" \
+          checks=(
+            ".#checks.${{ matrix.system }}.package"
+            ".#checks.${{ matrix.system }}.daemon-package"
+            ".#checks.${{ matrix.system }}.cli-package"
+            ".#checks.${{ matrix.system }}.formatting"
             ".#checks.${{ matrix.system }}.dependency-boundary"
-      # ARM package tests do not need nested virtualization. Keep the VM test
-      # on x86_64, where the installer configures access to KVM.
-      - name: Validate the NixOS service in a VM
-        if: matrix.system == 'x86_64-linux'
-        run: nix build -L --out-link result-vm .#checks.x86_64-linux.nixos-service
+          )
+          # Native ARM validation does not require nested virtualization.
+          if [[ "${{ matrix.system }}" == x86_64-linux ]]; then
+            checks+=(".#checks.x86_64-linux.nixos-service")
+          fi
+          nix build -L "${checks[@]}"
