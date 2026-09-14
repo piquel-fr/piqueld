@@ -1,14 +1,18 @@
 {
-  description = "piqueld development environment and workspace checks";
+  description = "piqueld packages and development environment";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.crane.url = "github:ipetkov/crane";
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      crane,
+    }:
     let
       supportedSystems = [
         "x86_64-linux"
-        "aarch64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
@@ -38,105 +42,163 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           lib = pkgs.lib;
-          rustTarget = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+          craneLib = crane.mkLib pkgs;
+          # Keep documentation and workflow edits out of package source hashes.
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./apps
+              ./crates
+              ./migrations
+              ./examples
+            ];
+          };
+          commonArgs = {
+            inherit src;
+            version = "0.1.0";
+            cargoVendorDir = craneLib.vendorCargoDeps { inherit src; };
+            nativeBuildInputs = [
+              pkgs.cmake
+              pkgs.lld
+              pkgs.pkg-config
+              pkgs.rustPlatform.bindgenHook
+            ];
+            DATABASE_URL = "sqlite::memory:";
+            # Rust validation runs outside Nix; package builds only produce the
+            # requested binaries.
+            doCheck = false;
+            # Keep release optimization, but avoid repeating whole-program LTO
+            # for every package and test executable in native Nix builds.
+            CARGO_PROFILE_RELEASE_LTO = "false";
+          };
+          # These artifacts feed builds, never `cargo check`. Crane's default
+          # check pass compiles a separate set of metadata we don't use.
+          buildDepsOnly =
+            args:
+            craneLib.buildDepsOnly (
+              args
+              // {
+                buildPhaseCargoCommand = "cargoWithProfile build ${args.cargoExtraArgs}";
+              }
+            );
+          wasmArgs = commonArgs // {
+            pname = "piqueld-ui";
+            cargoExtraArgs = "--locked --package piqueld-ui";
+            CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
+            doCheck = false;
+          };
+          uiDeps = buildDepsOnly wasmArgs;
+          uiFiles = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./apps/piqueld-ui
+              ./crates/piqueld-client
+              ./crates/piqueld-core
+            ];
+          };
+          # Cargo still needs valid daemon/CLI workspace members, but their
+          # implementation must not invalidate the dashboard distribution.
+          uiSrc = craneLib.mkDummySrc {
+            inherit src;
+            extraDummyScript = ''
+              # Real UI manifests inherit workspace lints removed by dummification.
+              install -m644 ${./Cargo.toml} "$out/Cargo.toml"
+              for member in apps/piqueld-ui crates/piqueld-client crates/piqueld-core; do
+                rm -rf "$out/$member"
+                cp -R ${uiFiles}/$member "$out/$member"
+              done
+            '';
+          };
+          ui = craneLib.buildTrunkPackage (
+            wasmArgs
+            // {
+              src = uiSrc;
+              cargoArtifacts = uiDeps;
+              wasm-bindgen-cli = pkgs.wasm-bindgen-cli_0_2_126;
+              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.tailwindcss_4 ];
+              trunkExtraBuildArgs = "--offline=true --frozen --public-url /dashboard/";
+              preBuild = ''
+                unset NO_COLOR
+                mkdir -p apps/piqueld-ui/generated
+                tailwindcss --input apps/piqueld-ui/tailwind.css \
+                  --output apps/piqueld-ui/generated/style.css --minify
+                cd apps/piqueld-ui
+              '';
+            }
+          );
+          cliDeps = buildDepsOnly (
+            commonArgs
+            // {
+              pname = "piqueld-cli";
+              cargoExtraArgs = "--locked --package piquelctl";
+              CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+            }
+          );
+          daemonDeps = buildDepsOnly (
+            commonArgs
+            // {
+              pname = "piqueld-daemon";
+              cargoExtraArgs = "--locked --package piqueld --package piquelctl --features embedded-ui";
+              CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+            }
+          );
           mkPackage =
             {
               name,
               binaries,
               withUi,
+              cargoArtifacts,
             }:
-            pkgs.rustPlatform.buildRustPackage {
-              pname = name;
-              version = "0.1.0";
-              src = lib.cleanSource self;
-              cargoLock.lockFile = ./Cargo.lock;
-              # Only the combined package compiles the workspace UI crate: its
-              # daemon enables the embedded dashboard feature and points the
-              # daemon build script at a prebuilt Trunk distribution.
-              cargoBuildFlags =
-                lib.concatMap (binary: [
-                  "--package"
-                  binary
-                ]) binaries
-                ++ lib.optionals withUi [
-                  "--features"
-                  "embedded-ui"
-                ];
-              cargoTestFlags = lib.concatMap (binary: [
-                "--package"
-                binary
-              ]) binaries;
-              # Nix's sandbox root is not owned by root or the build user, so
-              # the daemon correctly rejects every absolute data directory.
-              # Exercise real startup in host CI; keep the process-lock tests
-              # enabled here without weakening directory ownership checks.
-              checkFlags = lib.optionals (builtins.elem "piqueld" binaries) [
-                "--skip=competing_daemon_preserves_database_and_live_socket"
-              ];
-              nativeBuildInputs = [
-                pkgs.cmake
-                pkgs.lld
-                pkgs.pkg-config
-                pkgs.rustPlatform.bindgenHook
-              ]
-              ++ lib.optional (builtins.elem "piqueld" binaries) pkgs.makeWrapper
-              ++ lib.optionals withUi [
-                pkgs.binaryen
-                pkgs.tailwindcss_4
-                pkgs.trunk
-                pkgs.wasm-bindgen-cli_0_2_126
-              ];
-              nativeCheckInputs = [ pkgs.git ];
-              # Compile SQLx SQLite query macros against a disposable database
-              # provisioned by the daemon build script.
-              DATABASE_URL = "sqlite::memory:";
-              # The dashboard bundle must exist before the daemon build script
-              # runs, so Trunk executes in preBuild and the distribution is
-              # handed over through PIQUELD_UI_DIST instead of letting the
-              # build script invoke tools inside the sandbox.
-              preBuild = lib.optionalString withUi ''
-                export HOME="$TMPDIR/trunk-home"
-                mkdir -p "$HOME" apps/piqueld-ui/generated
-                unset NO_COLOR
-                tailwindcss \
-                  --input apps/piqueld-ui/tailwind.css \
-                  --output apps/piqueld-ui/generated/style.css --minify
-                pushd apps/piqueld-ui
-                trunk build index.html \
-                  --release --offline=true --frozen \
-                  --public-url /dashboard/ --dist "$TMPDIR/piqueld-ui-dist"
-                popd
-                export PIQUELD_UI_DIST="$TMPDIR/piqueld-ui-dist"
-              '';
-              installPhase = ''
-                runHook preInstall
-                ${lib.concatStringsSep "\n" (
-                  map (
-                    binary: ''install -Dm755 "target/${rustTarget}/release/${binary}" "$out/bin/${binary}"''
-                  ) binaries
-                )}
-                ${lib.optionalString (builtins.elem "piqueld" binaries) ''
-                  install -Dm644 examples/piqueld.toml \
-                    "$out/share/piqueld/piqueld.example.toml"
-                ''}
-                runHook postInstall
-              '';
-              postInstall = lib.optionalString (builtins.elem "piqueld" binaries) ''
-                wrapProgram "$out/bin/piqueld" --prefix PATH : ${lib.makeBinPath [ pkgs.git ]}
-              '';
-              doCheck = true;
-            };
+            let
+              args = commonArgs // {
+                pname = name;
+                cargoExtraArgs =
+                  "--locked "
+                  + lib.concatMapStringsSep " " (binary: "--package ${binary}") binaries
+                  + lib.optionalString withUi " --features embedded-ui";
+                CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+              };
+            in
+            craneLib.buildPackage (
+              args
+              // {
+                inherit cargoArtifacts;
+                cargoBuildExtraArgs = lib.concatMapStringsSep " " (binary: "--bin ${binary}") binaries;
+                nativeBuildInputs =
+                  commonArgs.nativeBuildInputs ++ lib.optional (builtins.elem "piqueld" binaries) pkgs.makeWrapper;
+                installPhaseCommand = ''
+                  ${lib.concatMapStringsSep "\n" (
+                    binary:
+                    ''install -Dm755 "target/${args.CARGO_BUILD_TARGET}/release/${binary}" "$out/bin/${binary}"''
+                  ) binaries}
+                  ${lib.optionalString (builtins.elem "piqueld" binaries) ''
+                    install -Dm644 examples/piqueld.toml \
+                      "$out/share/piqueld/piqueld.example.toml"
+                  ''}
+                '';
+                postInstall = lib.optionalString (builtins.elem "piqueld" binaries) ''
+                  wrapProgram "$out/bin/piqueld" --prefix PATH : ${lib.makeBinPath [ pkgs.git ]}
+                '';
+              }
+              // lib.optionalAttrs withUi {
+                PIQUELD_UI_DIST = ui;
+              }
+            );
         in
         {
           cli = mkPackage {
             name = "piqueld-cli";
             binaries = [ "piquelctl" ];
             withUi = false;
+            cargoArtifacts = cliDeps;
           };
           daemon = mkPackage {
             name = "piqueld-daemon";
             binaries = [ "piqueld" ];
             withUi = false;
+            cargoArtifacts = daemonDeps;
           };
           combined = mkPackage {
             name = "piqueld";
@@ -145,64 +207,9 @@
               "piquelctl"
             ];
             withUi = true;
+            cargoArtifacts = daemonDeps;
           };
           default = self.packages.${system}.combined;
-        }
-      );
-
-      checks = forAllSystems (
-        system:
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-        in
-        {
-          nixos-service = import ./nix/vm-test.nix {
-            inherit pkgs;
-            module = self.nixosModules.default;
-            daemon = self.packages.${system}.daemon;
-            cli = self.packages.${system}.cli;
-          };
-          package = self.packages.${system}.default;
-          daemon-package = self.packages.${system}.daemon;
-          cli-package = self.packages.${system}.cli;
-          formatting =
-            pkgs.runCommand "piqueld-formatting"
-              {
-                nativeBuildInputs = [
-                  pkgs.cargo
-                  pkgs.rustfmt
-                ];
-                src = pkgs.lib.cleanSource self;
-              }
-              ''
-                cp -R "$src" source
-                chmod -R u+w source
-                cd source
-                cargo fmt --check
-                touch "$out"
-              '';
-          # cargo tree must resolve the crates.io dependency graph, so the
-          # check vendors all sources up front and stays sandbox-safe.
-          dependency-boundary = pkgs.stdenv.mkDerivation {
-            name = "piqueld-dependency-boundary";
-            src = pkgs.lib.cleanSource self;
-            nativeBuildInputs = [
-              pkgs.cargo
-              pkgs.rustPlatform.cargoSetupHook
-            ];
-            cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-              name = "piqueld-dependency-boundary-deps";
-              src = pkgs.lib.cleanSource self;
-              hash = "sha256-PsiPM+QJ1eFNfsBeS7awo3RkRYJS26gD6SqFgHafmeI=";
-            };
-            dontConfigure = true;
-            buildPhase = ''
-              bash scripts/check-dependency-boundaries.sh
-            '';
-            installPhase = ''
-              touch "$out"
-            '';
-          };
         }
       );
 

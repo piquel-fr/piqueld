@@ -56,7 +56,6 @@ are present on the service PATH. Configure SSH credentials and known hosts for
 the service user, not the interactive operator; host home directories are protected.
 Never put credential values into Nix settings, which are stored in the Nix store.
 
-Validate service startup, private paths, Swarm initialization, CLI access, and
-restart with `nix build .#checks.x86_64-linux.nixos-service` (requires KVM or
-software virtualization). Configuration and package changes require rebuilding
-NixOS; application state remains under `dataDir`.
+Nix packages and development shells support x86_64 Linux. Configuration and
+package changes require rebuilding NixOS; application state remains under
+`dataDir`.

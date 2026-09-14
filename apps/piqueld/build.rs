@@ -135,6 +135,7 @@ fn embed_migrations(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
 ///
 /// `PIQUELD_UI_DIST` supplies a prebuilt Trunk distribution and skips tool
 /// invocation entirely; hermetic packagers such as Nix use that escape hatch.
+/// A separate bundle lets packagers reuse the dashboard after daemon-only edits.
 fn embed_dashboard(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
     let ui_dir = manifest_dir
         .parent()

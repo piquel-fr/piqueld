@@ -72,7 +72,7 @@ for _attempt in {1..60}; do
   then
     docker exec "$container_id" chmod 666 /piqueld-socket/docker.sock
     # A hung test must not hang the harness forever; --kill-after forces a
-    # SIGKILL when cargo test ignores the initial SIGTERM.
+    # SIGKILL when the test runner ignores the initial SIGTERM.
     if command -v timeout >/dev/null 2>&1; then
       test_wrapper=(timeout --kill-after=30s "${PIQUELD_DOCKER_TEST_TIMEOUT:-15m}")
     else
@@ -83,7 +83,7 @@ for _attempt in {1..60}; do
     PIQUELD_DOCKER_ISOLATED=1 \
       PIQUELD_DOCKER_SOCKET="$socket_path" \
       "${test_wrapper[@]}" \
-      cargo test -p piqueld --test docker_integration -- --ignored --test-threads=1
+      cargo nextest run --locked -p piqueld --test docker_integration --run-ignored only --test-threads=1
     exit 0
   fi
   if [[ "$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null || true)" != "true" ]]; then

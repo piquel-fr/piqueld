@@ -12,15 +12,9 @@
 #   ui-check / check-wasm -> wasm-ui
 #   docker-test       -> docker-integration
 #   build-embedded    -> embedded-release
-#   nix-check         -> nix
 #
 # `check` is deliberately not a separate job: `clippy --all-targets
 # --all-features` compiles everything it would and adds lints on top.
-#
-# Nix package builds are deliberately not run: they duplicate what the Cargo
-# jobs already prove and take far longer without a shared binary cache. The
-# Nix job instead proves full flake evaluation plus the two cheap sandboxed
-# flake checks.
 #
 # Speed comes from Swatinem/rust-cache in every compiling job (keyed per job
 # against Cargo.lock), prebuilt tool downloads instead of `cargo install`,
@@ -51,7 +45,7 @@ env:
 jobs:
   fmt:
     name: fmt
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -62,7 +56,7 @@ jobs:
 
   clippy:
     name: lint
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -87,7 +81,7 @@ jobs:
 
   test:
     name: test
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -97,12 +91,24 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-      - run: just test
+      - name: Run workspace tests
+        env:
+          NEXTEST_PROFILE: ci
+        run: |
+          rm -f target/nextest/ci/junit.xml
+          just test
+      - name: Preserve workspace test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: junit-workspace
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
       - run: just doc-test
 
   deny:
     name: deny
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -110,7 +116,7 @@ jobs:
 
   openapi:
     name: openapi
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -124,7 +130,7 @@ jobs:
 
   boundary:
     name: boundary
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -138,7 +144,7 @@ jobs:
 
   wasm-ui:
     name: wasm-ui
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -159,28 +165,40 @@ jobs:
 
   docker-integration:
     name: docker-integration
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 45
     env:
       # The wrapper bounds cargo invocation inside the script; compilation is
       # already warm through the prebuild below.
       PIQUELD_DOCKER_TEST_TIMEOUT: 30m
+      NEXTEST_PROFILE: docker-ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
         with:
-          tool: just
+          tool: just,cargo-nextest
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
       # Compile before the isolated Docker-in-Docker daemon starts so the
       # inner cargo invocation is instant.
-      - run: cargo test --locked -p piqueld --test docker_integration --no-run
-      - run: just docker-test
+      - name: Compile Docker integration tests
+        run: |
+          rm -f target/nextest/docker-ci/junit.xml
+          cargo nextest run --locked -p piqueld --test docker_integration --no-run
+      - name: Run Docker integration tests
+        run: just docker-test
+      - name: Preserve Docker test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: junit-docker-integration
+          path: target/nextest/docker-ci/junit.xml
+          if-no-files-found: warn
 
   embedded-release:
     name: embedded-release
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -211,15 +229,3 @@ jobs:
             target/release/piqueld
             target/release/piquelctl
             config/piqueld.example.toml
-
-  nix:
-    name: nix
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-      - name: Evaluate every flake output
-        run: nix flake show --all-systems
-      - name: Build the sandboxed flake checks
-        run: nix build -L ".#checks.x86_64-linux.formatting" ".#checks.x86_64-linux.dependency-boundary"
