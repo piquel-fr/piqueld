@@ -13,6 +13,7 @@
     let
       supportedSystems = [
         "x86_64-linux"
+        "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
@@ -59,7 +60,7 @@
             inherit src;
             version = "0.1.0";
             cargoVendorDir = craneLib.vendorCargoDeps { inherit src; };
-            nativeBuildInputs = [
+            nativeBuildInputs = lib.optionals pkgs.stdenv.isLinux [
               pkgs.cmake
               pkgs.lld
               pkgs.pkg-config
@@ -194,6 +195,11 @@
             withUi = false;
             cargoArtifacts = cliDeps;
           };
+          # The daemon depends on Linux; macOS exposes only the CLI.
+          default =
+            if pkgs.stdenv.isDarwin then self.packages.${system}.cli else self.packages.${system}.combined;
+        }
+        // lib.optionalAttrs pkgs.stdenv.isLinux {
           daemon = mkPackage {
             name = "piqueld-daemon";
             binaries = [ "piqueld" ];
@@ -209,7 +215,6 @@
             withUi = true;
             cargoArtifacts = daemonDeps;
           };
-          default = self.packages.${system}.combined;
         }
       );
 
@@ -222,27 +227,31 @@
           default = pkgs.mkShell {
             # The unpinned nixpkgs toolchain can differ from rust-toolchain.toml;
             # rustup users get the pinned one automatically inside the repo.
-            packages = with pkgs; [
-              cargo
-              cargo-deny
-              cargo-nextest
-              cargo-watch
-              binaryen
-              clippy
-              docker-client
-              git
-              just
-              cmake
-              lld
-              pkg-config
-              procps
-              util-linux
-              rustc
-              rustfmt
-              tailwindcss_4
-              trunk
-              wasm-bindgen-cli_0_2_126
-            ];
+            packages =
+              with pkgs;
+              [
+                cargo
+                cargo-nextest
+                clippy
+                git
+                just
+                rustc
+                rustfmt
+              ]
+              ++ lib.optionals stdenv.isLinux [
+                cargo-deny
+                cargo-watch
+                binaryen
+                docker-client
+                cmake
+                lld
+                pkg-config
+                procps
+                util-linux
+                tailwindcss_4
+                trunk
+                wasm-bindgen-cli_0_2_126
+              ];
           };
         }
       );

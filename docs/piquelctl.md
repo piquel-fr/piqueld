@@ -4,6 +4,36 @@
 public `piqueld-client` contracts and talks to the daemon over a Unix socket by
 default.
 
+## Installation on macOS
+
+The CLI supports Apple Silicon and Intel Macs. With Rust 1.96 or newer and
+Apple's Command Line Tools installed, build and install from the repository:
+
+```console
+cargo install --path apps/piquelctl --locked
+```
+
+On Apple Silicon, Nix users can run `nix build .#cli` or
+`nix run .#cli -- --help`. On macOS the default flake package is also the CLI;
+daemon and dashboard packages are Linux
+only. `nix develop` provides the CLI development tools, and `just validate-cli`
+lints and tests the CLI and its shared client/core crates. `just build-cli`
+builds the release binary. The pinned nixpkgs no longer supports Intel Macs;
+use the Cargo installation above on Intel. CI runs these checks on both Mac
+architectures and uploads a CLI binary for each.
+
+The daemon still runs on Linux. To reach it from a Mac, forward its loopback HTTP
+port over SSH (using the port configured on your host):
+
+```console
+ssh -N -L 7845:127.0.0.1:7845 user@linux-host
+# In another terminal:
+piquelctl --url http://127.0.0.1:7845 status
+```
+
+Profiles use the same `$XDG_CONFIG_HOME/piqueld/profiles.toml` location on both
+platforms, falling back to `~/.config/piqueld/profiles.toml`.
+
 ## Commands
 
 ```console

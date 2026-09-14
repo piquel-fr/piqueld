@@ -130,6 +130,48 @@ jobs:
           if-no-files-found: warn
       - run: just doc-test
 
+  macos-cli:
+    name: cli (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
+        with:
+          tool: just,cargo-nextest
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+      - run: just validate-cli
+        env:
+          NEXTEST_PROFILE: ci
+      - name: Preserve CLI test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: junit-cli-${{ matrix.os }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+      - run: just build-cli
+      - run: ./target/release/piquelctl --help
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: piquelctl-${{ matrix.os }}
+          path: target/release/piquelctl
+          if-no-files-found: error
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa
+        if: matrix.os == 'macos-15'
+      - name: Build Apple Silicon Nix CLI package
+        if: matrix.os == 'macos-15'
+        run: |
+          nix build .#cli
+          ./result/bin/piquelctl --help
+
   deny:
     name: deny
     runs-on: blacksmith-2vcpu-ubuntu-2404
