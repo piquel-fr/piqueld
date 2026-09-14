@@ -88,7 +88,7 @@ remain independent of that index. Cold caches still require full compilation.
 
 Nix release builds retain release optimization but disable thin LTO, avoiding
 whole-program optimization for every package and test executable. The regular
-Cargo release profile is unchanged. Native Nix CI uses 32-vCPU runners and
+Cargo release profile is unchanged. All CI jobs use 2-vCPU runners and
 starts the x86_64 VM test as soon as its daemon and CLI packages are ready,
 allowing it to overlap with the combined package's build and tests. Each VM
 receives four vCPUs to parallelize boot-time service startup.
