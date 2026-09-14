@@ -134,6 +134,8 @@ where
             while served < expected_requests && !stop_for_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        // BSD sockets inherit the listener's nonblocking mode.
+                        stream.set_nonblocking(false).expect("blocking request I/O");
                         served += 1;
                         deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
                         serve_stream(stream, &records_for_thread, &handler_for_thread);
@@ -162,6 +164,8 @@ where
             while served < expected_requests && !stop_for_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        // BSD sockets inherit the listener's nonblocking mode.
+                        stream.set_nonblocking(false).expect("blocking request I/O");
                         served += 1;
                         deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
                         serve_stream(stream, &records_for_thread, &handler_for_thread);
