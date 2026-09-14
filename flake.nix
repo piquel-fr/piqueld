@@ -166,6 +166,7 @@
               args
               // {
                 inherit cargoArtifacts;
+                meta.mainProgram = builtins.head binaries;
                 cargoBuildExtraArgs = lib.concatMapStringsSep " " (binary: "--bin ${binary}") binaries;
                 nativeBuildInputs =
                   commonArgs.nativeBuildInputs ++ lib.optional (builtins.elem "piqueld" binaries) pkgs.makeWrapper;

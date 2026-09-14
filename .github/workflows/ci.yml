@@ -170,7 +170,7 @@ jobs:
         if: matrix.os == 'macos-15'
         run: |
           nix build .#cli
-          ./result/bin/piquelctl --help
+          nix run .#cli -- --help
 
   deny:
     name: deny
