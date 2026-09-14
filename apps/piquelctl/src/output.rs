@@ -5,36 +5,24 @@ use crate::{
 use piqueld_client::{ActionReason, ActionRisk, Operation, PlanView};
 use serde::Serialize;
 use serde_json::json;
-use std::io::{self, Write};
-
-pub(crate) fn report_operation(operation: &Operation) {
-    let phase = operation.phase.as_deref().map(humanize).unwrap_or_default();
-    match (phase.is_empty(), operation.resource.as_deref()) {
-        (true, None) => eprintln!("  {}", operation.state),
-        (false, None) => eprintln!("  {:<10} · {phase}", operation.state),
-        (true, Some(resource)) => eprintln!("  {:<10} · {resource}", operation.state),
-        (false, Some(resource)) => {
-            eprintln!("  {:<10} · {phase} · {resource}", operation.state);
-        }
-    }
-}
+use std::io::{self, IsTerminal, Write};
 
 pub(crate) fn render_operation(cli: &Cli, operation: &Operation) -> Result<()> {
     if cli.json {
         return emit_json(operation);
     }
     writeln!(
-        io::stdout().lock(),
+        cli.output(),
         "Operation: {}\n  State:       {}\n  Application: {}",
         operation.id,
         operation.state,
         operation.application_id
     )?;
     if let Some(phase) = operation.phase.as_deref() {
-        writeln!(io::stdout().lock(), "  Phase:       {}", humanize(phase))?;
+        writeln!(cli.output(), "  Phase:       {}", humanize(phase))?;
     }
     if let Some(resource) = operation.resource.as_deref() {
-        writeln!(io::stdout().lock(), "  Resource:    {resource}")?;
+        writeln!(cli.output(), "  Resource:    {resource}")?;
     }
     if let Some(message) = &operation.error_message {
         eprintln!("\nDiagnostic: {message}");
@@ -51,9 +39,16 @@ pub(crate) fn render_plan(plan: &PlanView, output: &mut impl Write) -> io::Resul
         writeln!(output, "\nChanges:")?;
         for change in &plan.changes {
             let (marker, value) = match (&change.before, &change.after) {
-                (None, Some(after)) => ('+', after.clone()),
-                (Some(before), None) => ('-', before.clone()),
-                (Some(before), Some(after)) => ('~', format!("{before} → {after}")),
+                (None, Some(after)) => ('+', HumanOutput::value(after)),
+                (Some(before), None) => ('-', HumanOutput::value(before)),
+                (Some(before), Some(after)) => (
+                    '~',
+                    format!(
+                        "{} → {}",
+                        HumanOutput::value(before),
+                        HumanOutput::value(after)
+                    ),
+                ),
                 (None, None) => ('~', "absent".into()),
             };
             writeln!(output, "  {marker} {:<32} {}", change.field, value)?;
@@ -177,4 +172,259 @@ pub(crate) fn emit_json<T: Serialize>(value: &T) -> Result<()> {
         CliError::new(ErrorKind::General, format!("could not write JSON: {error}"))
     })?;
     Ok(())
+}
+
+/// Human output has a single formatting boundary; JSON bypasses it entirely.
+pub(crate) struct HumanOutput {
+    quiet: bool,
+    color: bool,
+}
+impl HumanOutput {
+    /// API change values may contain serialized configuration; human output unwraps it.
+    fn value(value: &str) -> String {
+        let value = serde_json::from_str(value)
+            .map_or_else(|_| value.to_owned(), |value| Self::configuration(&value));
+        let mut escaped = String::with_capacity(value.len());
+        for character in value.chars() {
+            if character.is_control() {
+                escaped.extend(character.escape_default());
+            } else {
+                escaped.push(character);
+            }
+        }
+        escaped
+    }
+
+    fn configuration(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::Null => "none".into(),
+            serde_json::Value::String(value) => value.clone(),
+            serde_json::Value::Array(values) if values.is_empty() => "none".into(),
+            serde_json::Value::Array(values) => values
+                .iter()
+                .map(Self::configuration)
+                .collect::<Vec<_>>()
+                .join(", "),
+            serde_json::Value::Object(values) => {
+                if values.get("type").and_then(serde_json::Value::as_str) == Some("image")
+                    && let Some(image) = values.get("image").and_then(serde_json::Value::as_str)
+                {
+                    return format!("image {image}");
+                }
+                if values.is_empty() {
+                    return "none".into();
+                }
+                values
+                    .iter()
+                    .map(|(key, value)| {
+                        format!("{}: {}", key.replace('_', " "), Self::configuration(value))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+            value => value.to_string(),
+        }
+    }
+
+    fn line(line: &str, output: &mut impl Write) -> io::Result<()> {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        let change_color = match trimmed.as_bytes().get(..2) {
+            Some(b"+ ") => Some("32"),
+            Some(b"- ") => Some("31"),
+            Some(b"~ ") => Some("33"),
+            _ => None,
+        };
+        if let Some(color) = change_color {
+            let end = trimmed[2..]
+                .find(char::is_whitespace)
+                .map_or(trimmed.trim_end().len(), |end| end + 2);
+            let (field, value) = line.split_at(indent + end);
+            return write!(output, "\x1b[{color}m{field}\x1b[0m{value}");
+        }
+        // Labels are standalone words followed by a colon, never colons inside values.
+        if let Some(end) = trimmed
+            .find(':')
+            .filter(|end| !trimmed[..*end].contains(char::is_whitespace))
+        {
+            let (label, value) = line.split_at(indent + end + 1);
+            return write!(output, "\x1b[1;36m{label}\x1b[0m{value}");
+        }
+        output.write_all(line.as_bytes())
+    }
+}
+impl Cli {
+    pub(crate) fn output(&self) -> HumanOutput {
+        HumanOutput {
+            quiet: self.quiet,
+            color: io::stdout().is_terminal()
+                && std::env::var_os("NO_COLOR").is_none()
+                && std::env::var("TERM").as_deref() != Ok("dumb"),
+        }
+    }
+}
+impl Write for HumanOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.quiet {
+            Ok(bytes.len())
+        } else {
+            io::stdout().lock().write(bytes)
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        io::stdout().lock().flush()
+    }
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> io::Result<()> {
+        if self.quiet {
+            return Ok(());
+        }
+        let text = args.to_string();
+        let mut output = io::stdout().lock();
+        for line in text.split_inclusive('\n') {
+            if self.color {
+                Self::line(line, &mut output)?;
+            } else {
+                output.write_all(line.as_bytes())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+enum ProgressStyle {
+    Plain,
+    Terminal,
+    Color,
+}
+
+pub(crate) struct Progress {
+    quiet: bool,
+    style: ProgressStyle,
+    started: std::time::Instant,
+    last: Option<String>,
+    drawn: bool,
+    last_second: u64,
+}
+impl Progress {
+    pub(crate) fn new(cli: &Cli, id: &str) -> Self {
+        let terminal = io::stderr().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb");
+        if !cli.quiet {
+            eprintln!("\nProgress: {id}");
+        }
+        Self {
+            quiet: cli.quiet,
+            style: if !terminal {
+                ProgressStyle::Plain
+            } else if std::env::var_os("NO_COLOR").is_some() {
+                ProgressStyle::Terminal
+            } else {
+                ProgressStyle::Color
+            },
+            started: std::time::Instant::now(),
+            last: None,
+            drawn: false,
+            last_second: 0,
+        }
+    }
+    pub(crate) fn update(&mut self, operation: &Operation) {
+        if self.quiet {
+            return;
+        }
+        let line = format!(
+            "{:<10} · {}{}",
+            operation.state,
+            operation.phase.as_deref().map(humanize).unwrap_or_default(),
+            operation
+                .resource
+                .as_ref()
+                .map_or_else(String::new, |r| format!(" · {r}"))
+        );
+        let elapsed = self.started.elapsed().as_secs();
+        if self.repeated_this_second(&line, elapsed) {
+            return;
+        }
+        if matches!(self.style, ProgressStyle::Plain) {
+            eprintln!("  {line}  [{elapsed}s]");
+        } else {
+            let code = match operation.state {
+                piqueld_client::OperationState::Succeeded => "1;32",
+                piqueld_client::OperationState::Failed => "1;31",
+                _ => "1;36",
+            };
+            if matches!(self.style, ProgressStyle::Color) {
+                eprint!("\r\x1b[2K  \x1b[{code}m{line}\x1b[0m  [{elapsed}s]");
+            } else {
+                eprint!("\r\x1b[2K  {line}  [{elapsed}s]");
+            }
+            let _ = io::stderr().flush();
+            self.drawn = true;
+        }
+        self.last = Some(line);
+        self.last_second = elapsed;
+    }
+
+    fn repeated_this_second(&self, line: &str, elapsed: u64) -> bool {
+        self.last.as_deref() == Some(line) && self.last_second == elapsed
+    }
+}
+impl Drop for Progress {
+    fn drop(&mut self) {
+        if self.drawn {
+            eprintln!();
+        }
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::{HumanOutput, Progress, ProgressStyle};
+    use std::time::Instant;
+
+    #[test]
+    fn preview_configuration_is_readable() {
+        assert_eq!(
+            HumanOutput::value(r#"{"image":"nginx:alpine","type":"image"}"#),
+            "image nginx:alpine"
+        );
+        assert_eq!(HumanOutput::value("[]"), "none");
+        assert_eq!(HumanOutput::value("null"), "none");
+        assert_eq!(HumanOutput::value("<redacted>"), "<redacted>");
+        assert_eq!(
+            HumanOutput::value(r#""café\n\u001b[31m""#),
+            r"café\n\u{1b}[31m"
+        );
+    }
+
+    #[test]
+    fn change_colors_end_before_values_and_their_colons() {
+        for (marker, color) in [("+", "32"), ("-", "31"), ("~", "33")] {
+            let mut output = Vec::new();
+            HumanOutput::line(
+                &format!("  {marker} services.web.source   image nginx:alpine\n"),
+                &mut output,
+            )
+            .unwrap();
+            assert_eq!(
+                String::from_utf8(output).unwrap(),
+                format!(
+                    "\x1b[{color}m  {marker} services.web.source\x1b[0m   image nginx:alpine\n"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn plain_progress_repeats_when_the_elapsed_second_changes() {
+        let progress = Progress {
+            quiet: false,
+            style: ProgressStyle::Plain,
+            started: Instant::now(),
+            last: Some("running".into()),
+            drawn: false,
+            last_second: 1,
+        };
+
+        assert!(progress.repeated_this_second("running", 1));
+        assert!(!progress.repeated_this_second("running", 2));
+    }
 }

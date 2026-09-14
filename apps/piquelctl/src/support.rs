@@ -41,11 +41,11 @@ pub(crate) async fn interaction_changed() {
     INTERACTION_CHANGED.notified().await;
 }
 
-pub(crate) async fn confirm(yes: bool, prompt: &str) -> Result<()> {
+pub(crate) async fn confirm(noninteractive: bool, yes: bool, prompt: &str) -> Result<()> {
     if yes {
         return Ok(());
     }
-    if !io::stdin().is_terminal() {
+    if noninteractive || !io::stdin().is_terminal() {
         return Err(CliError::new(
             ErrorKind::Input,
             "confirmation is required in a non-interactive terminal; pass --yes",

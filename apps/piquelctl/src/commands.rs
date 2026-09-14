@@ -3,7 +3,7 @@ use crate::{
         ApplyArgs, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs, ReconcileArgs, RenameArgs,
     },
     error::{CliError, ErrorKind, Result},
-    output::{blocked_plan_error, emit_json, render_operation, render_plan, report_operation},
+    output::{Progress, blocked_plan_error, emit_json, render_operation, render_plan},
     support::{
         confirm, desired_replicas, looks_like_application_id, manifest_name, read_manifest,
         retry_transport,
@@ -15,11 +15,7 @@ use piqueld_client::{
     OperationState, Page, Source,
 };
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeSet,
-    io::{self, Write as _},
-    path::PathBuf,
-};
+use std::{collections::BTreeSet, io::Write as _, path::PathBuf};
 use tokio::{signal, time};
 
 use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
@@ -50,7 +46,7 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
             }
             for event in page.items {
                 writeln!(
-                    io::stdout().lock(),
+                    cli.output(),
                     "{}\t{}\t{}\t{}\tattempt {}\t{}",
                     event.id,
                     event.created_at_ms,
@@ -69,7 +65,7 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
                 )?;
             }
             if let Some(cursor) = page.next_cursor {
-                writeln!(io::stdout().lock(), "next cursor: {cursor}")?;
+                writeln!(cli.output(), "next cursor: {cursor}")?;
             }
             Ok(())
         }
@@ -97,18 +93,14 @@ async fn status(cli: &Cli, client: &Client) -> Result<()> {
         return emit_json(&status);
     }
     writeln!(
-        io::stdout().lock(),
+        cli.output(),
         "daemon {} (version {}, API {}, instance {})",
         status.status,
         status.daemon_version,
         status.api_version,
         status.instance_id
     )?;
-    writeln!(
-        io::stdout().lock(),
-        "transport: {}",
-        transport_description(cli)
-    )?;
+    writeln!(cli.output(), "transport: {}", transport_description(cli))?;
     Ok(())
 }
 
@@ -147,20 +139,33 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
         return emit_json(&json!({"items": items, "next_cursor": Value::Null}));
     }
     if rows.is_empty() {
-        writeln!(io::stdout().lock(), "No applications.")?;
+        writeln!(cli.output(), "No applications.")?;
     } else {
+        let width = rows
+            .iter()
+            .map(|(a, _)| a.name.len())
+            .max()
+            .unwrap_or(4)
+            .max(4);
+        writeln!(
+            cli.output(),
+            "{:<width$}  {:<12}  {:>10}  ID",
+            "NAME",
+            "STATE",
+            "GENERATION"
+        )?;
         for (application, status) in rows {
             let state = status.as_ref().map_or_else(
                 || "unavailable".to_owned(),
                 |status| status.state.to_string(),
             );
             writeln!(
-                io::stdout().lock(),
-                "{}\t{}\tgeneration {}\t{}",
+                cli.output(),
+                "{:<width$}  {:<12}  {:>10}  {}",
                 application.name,
-                application.id,
-                application.generation,
                 state,
+                application.generation,
+                application.id,
             )?;
             if let Some(status) = status
                 && let Some(message) = &status.message
@@ -181,30 +186,26 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
         return emit_json(&json!({"application": application, "status": status}));
     }
     writeln!(
-        io::stdout().lock(),
+        cli.output(),
         "{} ({})",
         application.application.metadata.name,
         application.application.id
     )?;
     writeln!(
-        io::stdout().lock(),
-        "intent state {}, observed runtime {}",
+        cli.output(),
+        "\nIntent: {}\nRuntime: {}",
         status.state,
         status.runtime_health.as_deref().unwrap_or("unknown")
     )?;
     writeln!(
-        io::stdout().lock(),
-        "intent generation {}, resolved target generation {}",
+        cli.output(),
+        "Configuration revision: {}\nResolved revision: {}",
         application.generation,
         application
             .resolved_generation
             .map_or_else(|| "none".to_owned(), |value| value.to_string())
     )?;
-    writeln!(
-        io::stdout().lock(),
-        "desired replicas: {}",
-        desired_replicas(&application)
-    )?;
+    writeln!(cli.output(), "Replicas: {}", desired_replicas(&application))?;
     for service in &application.application.spec.services {
         let source = match &service.source {
             Source::Image { image } => format!("image {image}"),
@@ -213,8 +214,8 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
             }
         };
         writeln!(
-            io::stdout().lock(),
-            "service {}: {} replica(s), {source}",
+            cli.output(),
+            "\nService: {}\n  Replicas: {}\n  Source: {source}",
             service.name,
             service.replicas
         )?;
@@ -229,7 +230,7 @@ async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ");
         writeln!(
-            io::stdout().lock(),
+            cli.output(),
             "named volumes: {volumes} (retained on deletion)"
         )?;
     }
@@ -251,7 +252,7 @@ async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result
         }
         return Ok(());
     }
-    render_plan(&plan, &mut io::stdout()).map_err(|error| {
+    render_plan(&plan, &mut cli.output()).map_err(|error| {
         CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
     })?;
     if plan.plan.is_blocked() {
@@ -272,7 +273,12 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     } else {
         "Save"
     };
-    confirm(args.yes, &format!("{action} application {name:?}? [y/N] ")).await?;
+    confirm(
+        cli.noninteractive,
+        args.yes,
+        &format!("{action} application {name:?}? [y/N] "),
+    )
+    .await?;
     let saved = retry_transport(|| {
         client.apply_application_toml_with_preconditions(
             &manifest,
@@ -288,7 +294,7 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
             return emit_json(&saved);
         }
         writeln!(
-            io::stdout().lock(),
+            cli.output(),
             "Saved application {} (configuration revision {}). Not deployed.",
             saved.application_id,
             saved.generation
@@ -300,13 +306,13 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
             return emit_json(&saved);
         }
         writeln!(
-            io::stdout().lock(),
+            cli.output(),
             "Accepted deployment {operation_id} for application {}",
             saved.application_id
         )?;
         return Ok(());
     }
-    let operation = wait_for_operation(client, operation_id, None).await?;
+    let operation = wait_for_operation(cli, client, operation_id, None).await?;
     if cli.json {
         emit_json(&json!({"saved":saved,"outcome":operation.state,"operation":operation}))
     } else {
@@ -316,11 +322,14 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
 
 async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
-    eprintln!(
-        "deleting {} ({}): managed services and network are removed; named volumes are retained",
-        application.application.metadata.name, application.application.id
-    );
+    if !cli.quiet {
+        eprintln!(
+            "deleting {} ({}): managed services and network are removed; named volumes are retained",
+            application.application.metadata.name, application.application.id
+        );
+    }
     confirm(
+        cli.noninteractive,
         args.yes,
         &format!(
             "Delete application {:?}? Named volumes will be retained. [y/N] ",
@@ -343,13 +352,19 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
             return emit_json(&json!({"accepted": accepted, "volumes_retained": true}));
         }
         writeln!(
-            io::stdout().lock(),
+            cli.output(),
             "accepted operation {} (named volumes retained)",
             accepted.operation_id
         )?;
         return Ok(());
     }
-    wait_for_deletion(client, &accepted.application_id, &accepted.operation_id).await?;
+    wait_for_deletion(
+        cli,
+        client,
+        &accepted.application_id,
+        &accepted.operation_id,
+    )
+    .await?;
     if cli.json {
         return emit_json(&json!({
             "accepted": accepted,
@@ -358,7 +373,7 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
         }));
     }
     writeln!(
-        io::stdout().lock(),
+        cli.output(),
         "application {} deleted (named volumes retained)",
         accepted.application_id
     )?;
@@ -371,7 +386,7 @@ async fn operation(cli: &Cli, client: &Client, args: &OperationArgs) -> Result<(
         render_operation(cli, &initial)?;
         return Ok(());
     }
-    let operation = wait_for_operation(client, &args.operation_id, None).await?;
+    let operation = wait_for_operation(cli, client, &args.operation_id, None).await?;
     render_operation(cli, &operation)
 }
 
@@ -449,28 +464,20 @@ async fn resolve_application(client: &Client, name_or_id: &str) -> Result<Applic
 }
 
 async fn wait_for_operation(
+    cli: &Cli,
     client: &Client,
     operation_id: &str,
     initial: Option<Operation>,
 ) -> Result<Operation> {
     let wait = async {
         let mut current = initial;
-        let mut last_progress = None;
-        eprintln!("\nProgress: {operation_id}");
+        let mut progress = Progress::new(cli, operation_id);
         loop {
             let operation = match current.take() {
                 Some(operation) => operation,
                 None => client.operation(operation_id).await?,
             };
-            let progress = (
-                operation.state,
-                operation.phase.clone(),
-                operation.resource.clone(),
-            );
-            if last_progress.as_ref() != Some(&progress) {
-                report_operation(&operation);
-                last_progress = Some(progress);
-            }
+            progress.update(&operation);
             if operation.state.terminal() {
                 return finish_operation(operation);
             }
@@ -518,6 +525,7 @@ async fn reconcile_or_deploy(
         "Reconcile current intent for"
     };
     confirm(
+        cli.noninteractive,
         args.yes,
         &format!(
             "{action} application {:?}? [y/N] ",
@@ -546,14 +554,14 @@ async fn reconcile_or_deploy(
             return emit_json(&accepted);
         }
         writeln!(
-            io::stdout().lock(),
+            cli.output(),
             "accepted operation {} for application {}",
             accepted.operation_id,
             accepted.application_id
         )?;
         return Ok(());
     }
-    let operation = wait_for_operation(client, &accepted.operation_id, None).await?;
+    let operation = wait_for_operation(cli, client, &accepted.operation_id, None).await?;
     if cli.json {
         emit_json(&json!({"accepted":accepted,"outcome":operation.state,"operation":operation}))
     } else {
@@ -564,6 +572,7 @@ async fn reconcile_or_deploy(
 async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
     confirm(
+        cli.noninteractive,
         args.yes,
         &format!(
             "Rename application {:?} to {:?}? [y/N] ",
@@ -588,22 +597,25 @@ async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
         emit_json(&renamed)?;
     } else {
         writeln!(
-            io::stdout().lock(),
+            cli.output(),
             "Renamed {} to {} (generation {}).",
             application.application.metadata.name,
             renamed.name,
             renamed.generation
         )?;
     }
-    eprintln!(
-        "Update metadata.name to {:?} in your manifest file before applying it again.",
-        renamed.name
-    );
+    if !cli.quiet {
+        eprintln!(
+            "Update metadata.name to {:?} in your manifest file before applying it again.",
+            renamed.name
+        );
+    }
     Ok(())
 }
 
-async fn wait_for_deletion(client: &Client, id: &str, operation_id: &str) -> Result<()> {
+async fn wait_for_deletion(cli: &Cli, client: &Client, id: &str, operation_id: &str) -> Result<()> {
     let wait = async {
+        let mut progress = Progress::new(cli, operation_id);
         loop {
             match client.application(id).await {
                 Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => return Ok(()),
@@ -612,7 +624,7 @@ async fn wait_for_deletion(client: &Client, id: &str, operation_id: &str) -> Res
             }
             match client.operation(operation_id).await {
                 Ok(operation) => {
-                    report_operation(&operation);
+                    progress.update(&operation);
                     if operation.state.terminal() {
                         finish_operation(operation)?;
                     }
