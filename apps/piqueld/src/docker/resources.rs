@@ -124,7 +124,7 @@ impl DockerApi for BollardDocker {
                 .context("validate built image ID")
         }
         .await;
-        result.map_err(|source| DockerError::RequestDiagnostic {
+        result.map_err(|source| DockerError::RequestSource {
             operation: "build Docker image",
             source: source.into(),
         })

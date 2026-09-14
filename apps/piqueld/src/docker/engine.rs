@@ -38,7 +38,7 @@ impl ServiceWireError {
                     .filter(|character| !character.is_control())
                     .take(2_048)
                     .collect();
-                DockerError::RequestDiagnostic {
+                DockerError::RequestSource {
                     operation,
                     source: Box::new(ServiceResponseDiagnostic { status, message }),
                 }
@@ -91,12 +91,18 @@ impl BollardDocker {
         spec: Option<&ServiceSpec>,
     ) -> Result<Vec<u8>, ServiceWireError> {
         let body = if let Some(spec) = spec {
-            let mut value = serde_json::to_value(spec).map_err(|_| {
-                ServiceWireError::Public(DockerError::Request("serialize service specification"))
+            let mut value = serde_json::to_value(spec).map_err(|source| {
+                ServiceWireError::Public(DockerError::request(
+                    "serialize service specification",
+                    source,
+                ))
             })?;
             Self::rename_swarm_healthcheck(&mut value, "HealthCheck", "Healthcheck");
-            serde_json::to_vec(&value).map_err(|_| {
-                ServiceWireError::Public(DockerError::Request("serialize service specification"))
+            serde_json::to_vec(&value).map_err(|source| {
+                ServiceWireError::Public(DockerError::request(
+                    "serialize service specification",
+                    source,
+                ))
             })?
         } else {
             Vec::new()
@@ -105,11 +111,17 @@ impl BollardDocker {
         let deadline = tokio::time::Instant::now() + SERVICE_REQUEST_TIMEOUT;
         let stream = tokio::time::timeout_at(deadline, UnixStream::connect(self.socket.as_ref()))
             .await
-            .map_err(|_| {
-                ServiceWireError::Public(DockerError::Unavailable("connect to Docker Engine"))
+            .map_err(|source| {
+                ServiceWireError::Public(DockerError::unavailable(
+                    "connect to Docker Engine",
+                    source,
+                ))
             })?
-            .map_err(|_| {
-                ServiceWireError::Public(DockerError::Unavailable("connect to Docker Engine"))
+            .map_err(|source| {
+                ServiceWireError::Public(DockerError::unavailable(
+                    "connect to Docker Engine",
+                    source,
+                ))
             })?;
         let (mut sender, connection) = match tokio::time::timeout_at(
             deadline,
@@ -118,14 +130,16 @@ impl BollardDocker {
         .await
         {
             // Elapsed deadlines are unavailability, like every other timeout.
-            Err(_) => {
-                return Err(ServiceWireError::Public(DockerError::Unavailable(
+            Err(source) => {
+                return Err(ServiceWireError::Public(DockerError::unavailable(
                     "open Docker service connection",
+                    source,
                 )));
             }
-            Ok(Err(_)) => {
-                return Err(ServiceWireError::Public(DockerError::Request(
+            Ok(Err(source)) => {
+                return Err(ServiceWireError::Public(DockerError::request(
                     "open Docker service connection",
+                    source,
                 )));
             }
             Ok(Ok(parts)) => parts,
@@ -134,7 +148,9 @@ impl BollardDocker {
         // it must run concurrently for the sender to make progress. Always
         // abort and join it after the request so no driver survives a timeout.
         let driver = tokio::spawn(async move {
-            let _ = connection.await;
+            if let Err(source) = connection.await {
+                tracing::debug!(error = ?source, "Docker service connection driver failed");
+            }
         });
         let result = tokio::time::timeout_at(deadline, async {
             let request = Request::builder()
@@ -146,41 +162,64 @@ impl BollardDocker {
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::CONNECTION, "close")
                 .body(Full::new(Bytes::from(body)))
-                .map_err(|_| {
-                    ServiceWireError::Public(DockerError::Request("build Docker service request"))
+                .map_err(|source| {
+                    ServiceWireError::Public(DockerError::request(
+                        "build Docker service request",
+                        source,
+                    ))
                 })?;
-            let response = sender.send_request(request).await.map_err(|_| {
-                ServiceWireError::Public(DockerError::Request("send Docker service request"))
+            let response = sender.send_request(request).await.map_err(|source| {
+                ServiceWireError::Public(DockerError::request(
+                    "send Docker service request",
+                    source,
+                ))
             })?;
-            let status = response.status();
-            let mut response = response.into_body();
-            let mut body = Vec::new();
-            while let Some(frame) = response.frame().await {
-                let frame = frame.map_err(|_| {
-                    ServiceWireError::Public(DockerError::Request("read Docker service response"))
-                })?;
-                let Ok(data) = frame.into_data() else {
-                    continue;
-                };
-                if body.len().saturating_add(data.len()) > MAX_SERVICE_RESPONSE_BYTES {
-                    return Err(ServiceWireError::Public(DockerError::Request(
-                        "read Docker service response",
-                    )));
-                }
-                body.extend_from_slice(&data);
-            }
-            if status.is_success() {
-                Ok(body)
-            } else {
-                Err(ServiceWireError::Response { status, body })
-            }
+            Self::read_service_response(response).await
         })
         .await;
         driver.abort();
-        let _ = driver.await;
-        result.map_err(|_| {
-            ServiceWireError::Public(DockerError::Unavailable("request Docker service"))
+        if let Err(source) = driver.await
+            && !source.is_cancelled()
+        {
+            return Err(ServiceWireError::Public(DockerError::request(
+                "join Docker service connection",
+                source,
+            )));
+        }
+        result.map_err(|source| {
+            ServiceWireError::Public(DockerError::unavailable("request Docker service", source))
         })?
+    }
+
+    /// Collects a bounded response while retaining transport failures.
+    async fn read_service_response(
+        response: hyper::Response<hyper::body::Incoming>,
+    ) -> Result<Vec<u8>, ServiceWireError> {
+        let status = response.status();
+        let mut response = response.into_body();
+        let mut body = Vec::new();
+        while let Some(frame) = response.frame().await {
+            let frame = frame.map_err(|source| {
+                ServiceWireError::Public(DockerError::request(
+                    "read Docker service response",
+                    source,
+                ))
+            })?;
+            let Ok(data) = frame.into_data() else {
+                continue;
+            };
+            if body.len().saturating_add(data.len()) > MAX_SERVICE_RESPONSE_BYTES {
+                return Err(ServiceWireError::Public(DockerError::Request(
+                    "read Docker service response",
+                )));
+            }
+            body.extend_from_slice(&data);
+        }
+        if status.is_success() {
+            Ok(body)
+        } else {
+            Err(ServiceWireError::Response { status, body })
+        }
     }
 
     /// Inspects the complete service representation, restoring Bollard's
@@ -200,11 +239,11 @@ impl BollardDocker {
             Err(error) => return Err(error.sanitized("inspect service")),
         };
         let mut value: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|_| DockerError::Request("decode service response"))?;
+            .map_err(|source| DockerError::request("decode service response", source))?;
         Self::rename_swarm_healthcheck(&mut value, "Healthcheck", "HealthCheck");
         serde_json::from_value(value)
             .map(Some)
-            .map_err(|_| DockerError::Request("decode service response"))
+            .map_err(|source| DockerError::request("decode service response", source))
     }
 
     pub(super) async fn create_service_wire(&self, spec: &ServiceSpec) -> Result<(), DockerError> {
@@ -245,8 +284,8 @@ impl BollardDocker {
                     let refreshed =
                         tokio::time::timeout_at(deadline, self.inspect_service_wire(name))
                             .await
-                            .map_err(|_| {
-                                DockerError::Unavailable("refresh the service version")
+                            .map_err(|source| {
+                                DockerError::unavailable("refresh the service version", source)
                             })??;
                     version = refreshed
                         .and_then(|service| service.version)
@@ -333,6 +372,95 @@ impl BollardDocker {
 #[cfg(test)]
 mod tests {
     use super::{BollardDocker, ServiceWireError, StatusCode};
+
+    struct EngineStub {
+        docker: BollardDocker,
+        task: tokio::task::JoinHandle<()>,
+        _directory: tempfile::TempDir,
+    }
+
+    impl EngineStub {
+        fn respond(body: &'static str, declared_length: usize) -> Self {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("docker.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let docker = BollardDocker::connect(&socket).unwrap();
+            let task = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {declared_length}\r\nConnection: close\r\n\r\n{body}"
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+            });
+            Self {
+                docker,
+                task,
+                _directory: directory,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_engine_retains_io_cause_and_public_classification() {
+        use std::error::Error;
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("docker.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let docker = BollardDocker::connect(&socket).unwrap();
+        drop(listener);
+        std::fs::remove_file(socket).unwrap();
+        let error = docker.inspect_service_wire("test").await.unwrap_err();
+        let source = error
+            .source()
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap();
+        assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(
+            crate::operations::OperationError::from(error).code(),
+            "docker_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_service_response_retains_decode_cause() {
+        use std::error::Error;
+        let engine = EngineStub::respond("not JSON", 8);
+        let error = engine
+            .docker
+            .inspect_service_wire("test")
+            .await
+            .unwrap_err();
+        engine.task.await.unwrap();
+        assert!(error.source().unwrap().is::<serde_json::Error>());
+        assert_eq!(
+            error.to_string(),
+            "Docker request failed while decode service response"
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_service_body_retains_transport_cause() {
+        use std::error::Error;
+        let engine = EngineStub::respond("{", 20);
+        let error = engine
+            .docker
+            .inspect_service_wire("test")
+            .await
+            .unwrap_err();
+        engine.task.await.unwrap();
+        assert!(error.source().unwrap().is::<hyper::Error>());
+        assert_eq!(
+            crate::operations::OperationError::from(error).code(),
+            "docker_request_failed"
+        );
+    }
 
     #[test]
     fn update_retry_requires_the_exact_transient_daemon_response() {
