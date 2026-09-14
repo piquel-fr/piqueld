@@ -278,7 +278,7 @@ jobs:
             --out-link result-ci
           for package in cli combined; do
             help=$("result-ci/$package/bin/piquelctl" --help)
-            [[ "$help" == "Operate a local piqueld control plane"* ]]
+            [[ "$help" == "Verify persistent Nix cache freshness"* ]]
             echo "Verified changed executable in $package"
           done
           jq -n \
