@@ -73,3 +73,10 @@ service observation inspects complete specifications. Raw engine error sources
 remain in daemon logs; durable diagnostics are sanitized. Focused fake-runtime
 tests cover execution; `just docker-test` is the separate privileged Docker
 qualification against an isolated Docker-in-Docker daemon.
+
+Operation logs carry application ID, operation ID, generation, and operation kind.
+At `info`, the daemon reports operation start and completion with outcome and
+duration. Enable `RUST_LOG=piqueld=debug` for preparation/convergence phases,
+Docker actions, observations, and retry timing. Manifest values and runtime
+configuration are not recorded as span fields. Persisted failures and API error
+messages retain their sanitized codes and messages.

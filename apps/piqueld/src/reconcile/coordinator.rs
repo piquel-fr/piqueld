@@ -4,6 +4,7 @@ use super::{
 };
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::collections::HashMap;
+use tracing::Instrument;
 
 type Discovered = (bool, Vec<(StoredApplication, String)>);
 
@@ -70,14 +71,15 @@ impl<D: DockerApi> Controller<D> {
                                 if full && health_active.insert(id.clone()) {
                                     let health_id=id.clone();
                                     let health_operation=operation_id.clone();
+                                    let span = tracing::debug_span!("application_health", application_id = %id, operation_id = %operation_id, generation = application.generation);
                                     health_jobs.push(async move {
                                         let result=async {
                                             self.maintain_active(&health_id,&health_operation).await?;
                                             let observed=self.docker.observe(&health_id).await.map_err(super::OperationError::from)?;
                                             self.store.record_health(&health_operation,&observed).await.map_err(super::OperationError::from)
                                         }.await;
-                                        (health_id,result)
-                                    });
+                                        (health_id,health_operation,application.generation,result)
+                                    }.instrument(span));
                                 }
 
                                 if let Some((current,token))=active.get(&id) {
@@ -96,9 +98,9 @@ impl<D: DockerApi> Controller<D> {
                         Err(error)=>tracing::error!(%error,"application discovery failed"),
                     }
                 }
-                Some((id,result))=health_jobs.next(), if !health_jobs.is_empty()=> {
+                Some((id,operation_id,generation,result))=health_jobs.next(), if !health_jobs.is_empty()=> {
                     health_active.remove(&id);
-                    if let Err(error)=result { tracing::warn!(application_id=%id,%error,"health reporting failed"); }
+                    if let Err(error)=result { tracing::warn!(application_id=%id,%operation_id,generation,%error,"health reporting failed"); }
                 }
                 Some((id,result))=jobs.next(), if !jobs.is_empty()=> {
                     active.remove(&id);
@@ -175,6 +177,7 @@ impl<D: DockerApi> Controller<D> {
             .saturating_add(delay)
     }
 
+    #[tracing::instrument(skip_all, fields(application_id = %application.application.id, generation = application.generation))]
     async fn scan_application(
         &self,
         application: &StoredApplication,
