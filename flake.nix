@@ -71,13 +71,23 @@
             # for every package and test executable in native Nix builds.
             CARGO_PROFILE_RELEASE_LTO = "false";
           };
+          # These artifacts feed builds and tests, never `cargo check`. Crane's
+          # default check pass compiles a separate set of metadata we don't use.
+          buildDepsOnly =
+            args:
+            craneLib.buildDepsOnly (
+              args
+              // {
+                buildPhaseCargoCommand = "cargoWithProfile build ${args.cargoExtraArgs}";
+              }
+            );
           wasmArgs = commonArgs // {
             pname = "piqueld-ui";
             cargoExtraArgs = "--locked --package piqueld-ui";
             CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
             doCheck = false;
           };
-          uiDeps = craneLib.buildDepsOnly wasmArgs;
+          uiDeps = buildDepsOnly wasmArgs;
           uiFiles = lib.fileset.toSource {
             root = ./.;
             fileset = lib.fileset.unions [
@@ -116,11 +126,28 @@
               '';
             }
           );
+          cliDeps = buildDepsOnly (
+            commonArgs
+            // {
+              pname = "piqueld-cli";
+              cargoExtraArgs = "--locked --package piquelctl";
+              CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+            }
+          );
+          daemonDeps = buildDepsOnly (
+            commonArgs
+            // {
+              pname = "piqueld-daemon";
+              cargoExtraArgs = "--locked --package piqueld --package piquelctl --features embedded-ui";
+              CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+            }
+          );
           mkPackage =
             {
               name,
               binaries,
               withUi,
+              cargoArtifacts,
             }:
             let
               args = commonArgs // {
@@ -132,7 +159,6 @@
                 # Use the same flags for dependency compilation and real tests.
                 CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
               };
-              cargoArtifacts = craneLib.buildDepsOnly args;
             in
             craneLib.buildPackage (
               args
@@ -168,11 +194,13 @@
             name = "piqueld-cli";
             binaries = [ "piquelctl" ];
             withUi = false;
+            cargoArtifacts = cliDeps;
           };
           daemon = mkPackage {
             name = "piqueld-daemon";
             binaries = [ "piqueld" ];
             withUi = false;
+            cargoArtifacts = daemonDeps;
           };
           combined = mkPackage {
             name = "piqueld";
@@ -181,21 +209,18 @@
               "piquelctl"
             ];
             withUi = true;
+            cargoArtifacts = daemonDeps;
           };
           default = self.packages.${system}.combined;
           # CI roots these build-time inputs explicitly before cache GC.
           dependencies = pkgs.linkFarm "piqueld-dependencies" [
             {
               name = "cli";
-              path = self.packages.${system}.cli.cargoArtifacts;
+              path = cliDeps;
             }
             {
               name = "daemon";
-              path = self.packages.${system}.daemon.cargoArtifacts;
-            }
-            {
-              name = "combined";
-              path = self.packages.${system}.combined.cargoArtifacts;
+              path = daemonDeps;
             }
             {
               name = "ui";
