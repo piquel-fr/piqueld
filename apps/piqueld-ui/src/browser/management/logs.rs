@@ -62,7 +62,7 @@ pub(super) fn ApplicationLogs() -> impl IntoView {
         {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}
         {move ||logs.get().map(|logs|view!{
             {logs.truncated.then(||view!{<p class="help">"Snapshot truncated. Filter by service to narrow the output."</p>})}
-            <pre class="application-logs">{if logs.items.is_empty(){"No recent output available.".into()}else{logs.items.into_iter().map(|line|format!("{} {} {} {} | {}",line.timestamp,line.service,line.task_id,line.stream,line.message)).collect::<Vec<_>>().join("\n")}}</pre>
+            <pre class="application-logs" tabindex="0" role="region" aria-label="Application log output">{if logs.items.is_empty(){"No recent output available.".into()}else{logs.items.into_iter().map(|line|format!("{} {} {} {} | {}",line.timestamp,line.service,line.task_id,line.stream,line.message)).collect::<Vec<_>>().join("\n")}}</pre>
         })}
     </section>}
 }
