@@ -41,3 +41,7 @@ pub use resource::{
 };
 
 pub use operation::{ApplicationState, Operation, OperationKind, OperationState};
+
+/// Typed generated Docker resource names.
+pub mod docker_names;
+pub use docker_names::{DockerNetworkName, DockerServiceName, DockerVolumeName};
