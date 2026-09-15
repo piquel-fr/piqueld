@@ -29,10 +29,11 @@ fn resolved(
     let resolutions = ResolutionSet {
         sources: [(
             piqueld_core::ServiceName::parse("web").unwrap(),
-            ResolvedSource::Image {
-                requested: "ghcr.io/example/notes:1.4.0".into(),
-                digest_reference: format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
-            },
+            ResolvedSource::parse_image(
+                "ghcr.io/example/notes:1.4.0",
+                format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
+            )
+            .unwrap(),
         )]
         .into_iter()
         .collect(),

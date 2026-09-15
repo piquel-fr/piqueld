@@ -45,3 +45,7 @@ pub use operation::{ApplicationState, Operation, OperationKind, OperationState};
 /// Typed generated Docker resource names.
 pub mod docker_names;
 pub use docker_names::{DockerNetworkName, DockerServiceName, DockerVolumeName};
+
+/// Checked image references used by runtime compilation.
+pub mod images;
+pub use images::{ImageReference, ImmutableImage, RepositoryDigest};

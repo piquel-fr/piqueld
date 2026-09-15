@@ -10,11 +10,6 @@ use super::{
 impl BollardDocker {
     /// Builds the complete Docker service specification from desired state.
     pub(super) fn service_spec(desired: &DesiredService) -> Result<ServiceSpec, DockerError> {
-        if !BollardDocker::valid_digest(&desired.image)
-            && piqueld_core::resource::Sha256Digest::parse(&desired.image).is_err()
-        {
-            return Err(DockerError::Validation("validate digest-pinned image"));
-        }
         Ok(ServiceSpec {
             name: Some(desired.name.to_string()),
             labels: Some(desired.labels.clone().into_iter().collect()),
@@ -34,7 +29,7 @@ impl BollardDocker {
     fn task_spec(desired: &DesiredService) -> Result<TaskSpec, DockerError> {
         Ok(TaskSpec {
             container_spec: Some(TaskSpecContainerSpec {
-                image: Some(desired.image.clone()),
+                image: Some(desired.image.to_string()),
                 command: BollardDocker::nonempty(&desired.command),
                 args: BollardDocker::nonempty(&desired.arguments),
                 env: Some(

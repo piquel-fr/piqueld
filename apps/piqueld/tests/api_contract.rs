@@ -11,7 +11,7 @@ use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
     manifest::{ApplicationManifest, Source},
     planner::ActionKind,
-    resource::ResolvedSource,
+    resource::{ResolvedSource, image_repository},
 };
 use std::{collections::BTreeMap, future::IntoFuture, sync::Arc};
 use tempfile::TempDir;
@@ -66,15 +66,15 @@ impl RuntimeBoundary for FakeRuntime {
                 let Source::Image { image } = &service.source else {
                     panic!("expected image fixture")
                 };
-                let repository = image
-                    .rsplit_once(':')
-                    .map_or(image.as_str(), |value| value.0);
+                let repository =
+                    image_repository(image).expect("validated fixture image has a repository");
                 (
                     service.name.clone(),
-                    ResolvedSource::Image {
-                        requested: image.clone(),
-                        digest_reference: format!("{repository}@sha256:{}", "a".repeat(64)),
-                    },
+                    ResolvedSource::parse_image(
+                        image.clone(),
+                        format!("{repository}@sha256:{}", "a".repeat(64)),
+                    )
+                    .unwrap(),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -114,6 +114,28 @@ fn manifest() -> ApplicationManifest {
         }]}
     }))
     .expect("fixture is valid")
+}
+
+#[tokio::test]
+async fn fake_runtime_accepts_digest_pinned_requested_images() {
+    let mut input = manifest();
+    let Source::Image { image } = &mut input.spec.services[0].source else {
+        panic!("expected image fixture")
+    };
+    *image = format!("ghcr.io/example/notes@sha256:{}", "b".repeat(64));
+    let application = input
+        .validate()
+        .unwrap()
+        .normalize(piqueld_core::ApplicationId::parse("app-digest-fixture").unwrap());
+    let runtime = FakeRuntime {
+        instance: InstanceId::parse("test").unwrap(),
+        unavailable: std::sync::atomic::AtomicBool::new(false),
+    };
+
+    runtime
+        .prepare(&application, &ResolutionSet::default())
+        .await
+        .expect("digest-pinned image resolves");
 }
 
 async fn state(temp: &TempDir) -> ApiState {
@@ -1223,6 +1245,15 @@ async fn served_openapi_document_matches_the_generated_snapshot_and_resolves_ref
     let generated =
         serde_json::to_value(piqueld::api::openapi_document()).expect("document serializes");
     assert_eq!(document_response.body, generated);
+    for schema in ["ImageReference", "RepositoryDigest", "ImmutableImage"] {
+        assert!(
+            generated
+                .pointer(&format!("/components/schemas/{schema}/pattern"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|pattern| !pattern.is_empty()),
+            "{schema} must expose its validation pattern"
+        );
+    }
 
     let text = serde_json::to_string(&generated).expect("document stringifies");
     let mut unresolved = Vec::new();
@@ -1273,7 +1304,9 @@ async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
     piqueld::prepare_data_dir(data_dir.strip_prefix(&cwd).expect("fixture is below cwd"))
         .await
         .expect("data dir prepares");
-    let socket_path = data_dir.join("contract.sock");
+    // Keep the socket path short enough for Unix even in deeply nested worktrees.
+    let socket_dir = tempfile::tempdir().expect("socket directory");
+    let socket_path = socket_dir.path().join("contract.sock");
     let listener = tokio::net::UnixListener::bind(&socket_path).expect("unix binds");
     let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
     let client = Client::unix(&socket_path);

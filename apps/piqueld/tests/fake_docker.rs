@@ -85,6 +85,19 @@ struct RegistryView {
     registry: Arc<Mutex<RegistryState>>,
 }
 
+struct FixedImageSource(Vec<String>);
+
+#[async_trait]
+impl ImageSource for FixedImageSource {
+    async fn repo_digests(&self, _reference: &str) -> Result<Option<Vec<String>>, DockerError> {
+        Ok(Some(self.0.clone()))
+    }
+
+    async fn pull(&self, _reference: &str) -> Result<(), DockerError> {
+        Ok(())
+    }
+}
+
 impl FakeDocker {
     fn with_observed(observed: ObservedApplication) -> Self {
         Self {
@@ -164,7 +177,7 @@ impl ImageSource for RegistryView {
 fn observed_service(desired: &DesiredService) -> ObservedService {
     ObservedService {
         name: desired.name.to_string(),
-        image: desired.image.clone(),
+        image: desired.image.to_string(),
         replicas: desired.replicas,
         environment: desired.environment.clone(),
         command: desired.command.clone(),
@@ -405,10 +418,11 @@ async fn fixture_store(
     let resolutions = ResolutionSet {
         sources: [(
             piqueld_core::ServiceName::parse("web").unwrap(),
-            ResolvedSource::Image {
-                requested: "ghcr.io/example/notes:1.4.0".into(),
-                digest_reference: format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
-            },
+            ResolvedSource::parse_image(
+                "ghcr.io/example/notes:1.4.0",
+                format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
+            )
+            .unwrap(),
         )]
         .into_iter()
         .collect(),
@@ -455,10 +469,11 @@ impl ControllerHarness {
         let resolutions = ResolutionSet {
             sources: [(
                 piqueld_core::ServiceName::parse("web").unwrap(),
-                ResolvedSource::Image {
-                    requested: "ghcr.io/example/notes:1.4.0".into(),
-                    digest_reference: format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
-                },
+                ResolvedSource::parse_image(
+                    "ghcr.io/example/notes:1.4.0",
+                    format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
+                )
+                .unwrap(),
             )]
             .into_iter()
             .collect(),
@@ -915,6 +930,20 @@ async fn image_resolution_repairs_a_single_tag_flip_through_a_retry() {
         registry.pulls.get("ghcr.io/example/notes:1.4.0"),
         Some(&2),
         "the flipped resolution must retry the whole pull exactly once"
+    );
+}
+
+#[tokio::test]
+async fn image_resolution_preserves_a_requested_digest() {
+    let requested = format!("ghcr.io/example/notes@sha256:{}", "b".repeat(64));
+    let source = FixedImageSource(vec![
+        format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
+        requested.clone(),
+    ]);
+
+    assert_eq!(
+        resolve_image_digest(&source, &requested).await.unwrap(),
+        requested
     );
 }
 
@@ -1381,6 +1410,7 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
     assert!(
         app.resolved.unwrap().services[0]
             .image
+            .as_str()
             .ends_with(&"a".repeat(64))
     );
     let refreshed = applications
@@ -1395,7 +1425,7 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
         .unwrap()
         .resolved
         .unwrap();
-    assert!(before.services[0].image.ends_with(&"b".repeat(64)));
+    assert!(before.services[0].image.as_str().ends_with(&"b".repeat(64)));
     let renamed = applications
         .accept(
             piqueld::application::Mutation::Rename {

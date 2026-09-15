@@ -7,7 +7,8 @@ use crate::{
     ResourceKind, ServiceName, VolumeName, docker_resource_name,
     manifest::{HealthCheck, NormalizedApplication, ResourceLimits, Source, valid_image_reference},
 };
-use serde::{Deserialize, Deserializer, Serialize, de};
+use crate::{ImageReference, ImmutableImage, RepositoryDigest};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use utoipa::ToSchema;
 
@@ -54,10 +55,9 @@ pub enum ResolvedSource {
     /// A requested image resolved to an immutable repository digest.
     Image {
         /// The image reference requested by the user.
-        requested: String,
+        requested: ImageReference,
         /// The immutable image reference used at runtime.
-        #[serde(deserialize_with = "deserialize_digest_reference")]
-        digest_reference: String,
+        digest_reference: RepositoryDigest,
     },
     /// A Git revision built into an immutable local image.
     Git {
@@ -70,28 +70,50 @@ pub enum ResolvedSource {
     },
 }
 
-fn deserialize_digest_reference<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-    if immutable_digest_reference(&value) {
-        Ok(value)
-    } else {
-        Err(de::Error::custom(
-            "digest_reference must be an immutable repository@sha256:<64 hex> reference",
-        ))
-    }
+/// Invalid raw image-resolution result received at a runtime boundary.
+#[derive(Debug, thiserror::Error)]
+pub enum ResolvedImageError {
+    /// Requested image syntax is invalid.
+    #[error("invalid requested image reference")]
+    Reference(#[from] crate::images::ImageReferenceError),
+    /// The runtime did not return a repository digest.
+    #[error("invalid resolved repository digest")]
+    Digest(#[from] crate::images::RepositoryDigestError),
 }
 
 impl ResolvedSource {
+    /// Checks raw image-resolution input and the runtime's repository digest.
+    ///
+    /// # Errors
+    /// Returns the invalid reference or digest cause.
+    pub fn parse_image(
+        requested: impl Into<String>,
+        digest: impl Into<String>,
+    ) -> Result<Self, ResolvedImageError> {
+        Ok(Self::Image {
+            requested: ImageReference::parse(requested)?,
+            digest_reference: RepositoryDigest::parse(digest)?,
+        })
+    }
+
+    /// Returns the checked immutable image used by Docker.
+    #[must_use]
+    pub fn image(&self) -> ImmutableImage {
+        match self {
+            Self::Image {
+                digest_reference, ..
+            } => digest_reference.clone().into(),
+            Self::Git { image_id, .. } => image_id.clone().into(),
+        }
+    }
+
     /// Returns the immutable image reference used by Docker.
     #[must_use]
     pub fn digest_reference(&self) -> &str {
         match self {
             Self::Image {
                 digest_reference, ..
-            } => digest_reference,
+            } => digest_reference.as_str(),
             Self::Git { image_id, .. } => image_id.as_str(),
         }
     }
@@ -276,7 +298,7 @@ pub struct DesiredService {
     /// Immutable source resolution used by the service.
     pub source: ResolvedSource,
     /// Digest-pinned image reference.
-    pub image: String,
+    pub image: ImmutableImage,
     /// Desired replica count.
     pub replicas: u16,
     /// Environment variables keyed by name.
@@ -506,11 +528,7 @@ fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
                 requested,
                 digest_reference,
             },
-        ) => {
-            image == requested
-                && immutable_digest_reference(digest_reference)
-                && same_image_repository(image, digest_reference)
-        }
+        ) => image == requested.as_str() && same_image_repository(image, digest_reference.as_str()),
         (
             Source::Git { repository, .. },
             ResolvedSource::Git {
@@ -541,7 +559,7 @@ fn compile_service(
     DesiredService {
         logical_name: service.name.clone(),
         name: DockerServiceName::for_service(app.id(), &service.name),
-        image: source.digest_reference().into(),
+        image: source.image(),
         source,
         replicas: service.replicas,
         environment: service.environment.clone(),
@@ -563,7 +581,7 @@ fn compile_service(
     }
 }
 
-fn immutable_digest_reference(reference: &str) -> bool {
+pub(crate) fn immutable_digest_reference(reference: &str) -> bool {
     valid_image_reference(reference)
         && reference
             .split_once("@sha256:")
@@ -802,7 +820,7 @@ impl ObservedService {
     /// Returns whether all desired service fields match.
     #[must_use]
     pub fn matches(&self, desired: &DesiredService) -> bool {
-        self.image == desired.image
+        self.image == desired.image.as_str()
             && self.replicas == desired.replicas
             && self.environment == desired.environment
             && self.command == desired.command

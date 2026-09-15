@@ -119,11 +119,8 @@ impl SwarmScenario {
                 Some("web"),
             ))
             .unwrap(),
-            source: ResolvedSource::Image {
-                requested: "alpine:3.20".into(),
-                digest_reference: image.clone(),
-            },
-            image,
+            source: ResolvedSource::parse_image("alpine:3.20", image.clone()).unwrap(),
+            image: piqueld_core::ImmutableImage::parse(image).unwrap(),
             replicas: 1,
             environment: BTreeMap::new(),
             command: vec!["/bin/sh".into()],

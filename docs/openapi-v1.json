@@ -876,8 +876,8 @@
             ]
           },
           "image": {
-            "description": "Digest-pinned image reference.",
-            "type": "string"
+            "$ref": "#/components/schemas/ImmutableImage",
+            "description": "Digest-pinned image reference."
           },
           "labels": {
             "additionalProperties": {
@@ -2228,6 +2228,16 @@
         ],
         "type": "object"
       },
+      "ImageReference": {
+        "description": "A syntactically valid requested container image reference.\n\nThe schema accepts a lowercase repository path with an optional registry,\ntag, and content digest. Registry hostnames are case-insensitive and may\ninclude a valid TCP port. Repository paths follow Docker naming rules,\ntags use Docker's 128-character format, and digests use a lowercase\nalgorithm name with an encoded value of at least 32 characters.\nURLs, credentials, IPv6 registry authorities, whitespace, and query or\nfragment suffixes are rejected.",
+        "pattern": "^(?=.{1,512}$)(?=.{1,255}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@[a-z][a-z0-9]*(?:[_+.-][a-z][a-z0-9]*)*:[A-Za-z0-9=_-]{32,})?$)(?:(?:(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?:0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@[a-z][a-z0-9]*(?:[_+.-][a-z][a-z0-9]*)*:[A-Za-z0-9=_-]{32,})?$",
+        "type": "string"
+      },
+      "ImmutableImage": {
+        "description": "An immutable runtime image: a repository digest or a local SHA-256 image ID.\n\n```compile_fail\nuse piqueld_core::{ImageReference, ImmutableImage};\nlet runtime: ImmutableImage = ImageReference::parse(\"alpine:latest\").unwrap();\n```\n\nThe schema accepts either a [`RepositoryDigest`] or a local Docker image\nID written as `sha256:` followed by exactly 64 lowercase hexadecimal\ndigits. Mutable tags and unqualified repository names are rejected.",
+        "pattern": "^(?:sha256:[0-9a-f]{64}|(?=.{1,512}$)(?=.{1,255}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$)(?:(?:(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?:0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64})$",
+        "type": "string"
+      },
       "LogRecord": {
         "description": "One line of workload output with replica identity.",
         "properties": {
@@ -2770,6 +2780,11 @@
         ],
         "type": "object"
       },
+      "RepositoryDigest": {
+        "description": "A repository reference pinned to an explicit SHA-256 digest.\n\nThe schema accepts the same registry, repository, and optional tag forms\nas [`ImageReference`], but requires a trailing SHA-256 digest containing\nexactly 64 lowercase hexadecimal digits.",
+        "pattern": "^(?=.{1,512}$)(?=.{1,255}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$)(?:(?:(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?:0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
       "RepositoryManifest": {
         "additionalProperties": false,
         "description": "Independently selects the manifest used by a manual deployment.",
@@ -2796,12 +2811,12 @@
             "description": "A requested image resolved to an immutable repository digest.",
             "properties": {
               "digest_reference": {
-                "description": "The immutable image reference used at runtime.",
-                "type": "string"
+                "$ref": "#/components/schemas/RepositoryDigest",
+                "description": "The immutable image reference used at runtime."
               },
               "requested": {
-                "description": "The image reference requested by the user.",
-                "type": "string"
+                "$ref": "#/components/schemas/ImageReference",
+                "description": "The image reference requested by the user."
               },
               "type": {
                 "enum": [

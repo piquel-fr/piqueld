@@ -285,10 +285,11 @@ mod tests {
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
             name: piqueld_core::DockerServiceName::parse("app-policy-web").unwrap(),
             source: ResolvedSource::Image {
-                requested: "ghcr.io/example/notes:1.4.0".into(),
-                digest_reference: image.clone(),
+                requested: piqueld_core::ImageReference::parse("ghcr.io/example/notes:1.4.0")
+                    .unwrap(),
+                digest_reference: piqueld_core::RepositoryDigest::parse(image.clone()).unwrap(),
             },
-            image,
+            image: piqueld_core::ImmutableImage::parse(image).unwrap(),
             replicas: 1,
             environment: BTreeMap::new(),
             command: Vec::new(),
@@ -359,10 +360,11 @@ mod tests {
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
             name: piqueld_core::DockerServiceName::parse("app-policy-web").unwrap(),
             source: ResolvedSource::Image {
-                requested: "ghcr.io/example/notes:1.4.0".into(),
-                digest_reference: image.clone(),
+                requested: piqueld_core::ImageReference::parse("ghcr.io/example/notes:1.4.0")
+                    .unwrap(),
+                digest_reference: piqueld_core::RepositoryDigest::parse(image.clone()).unwrap(),
             },
-            image,
+            image: piqueld_core::ImmutableImage::parse(image).unwrap(),
             replicas: 2,
             environment: BTreeMap::from([("NOTES_PORT".into(), "8080".into())]),
             command: vec!["/bin/notes".into()],

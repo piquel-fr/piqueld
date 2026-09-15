@@ -804,7 +804,7 @@ fn relevant_network_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, 
 
 fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<String> {
     let mut fields = Vec::new();
-    if found.image != desired.image {
+    if found.image != desired.image.as_str() {
         fields.push("image".into());
     }
     if found.replicas != desired.replicas {

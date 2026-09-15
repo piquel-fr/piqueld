@@ -118,41 +118,48 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             let sources = stream::iter(pending.into_iter().map(move |(name, source)| {
                 let docker = Arc::clone(&docker);
                 async move {
-                    let resolved = match &source {
-                        Source::Image { image } => {
-                            let digest_reference = DockerTimeout::ImageResolution
-                                .run("resolve image", docker.resolve_image(image))
-                                .await
-                                .map_err(|error| {
-                                    (
-                                        name.clone(),
-                                        "resolving_image",
-                                        BoundaryError::Runtime(error),
-                                    )
-                                })?;
-                            ResolvedSource::Image {
-                                requested: image.clone(),
-                                digest_reference,
-                            }
-                        }
-                        Source::Git { repository, build } => {
-                            let (commit, image_id) =
-                                crate::git::Checkout::prepare(repository, build, docker.as_ref())
+                    let resolved =
+                        match &source {
+                            Source::Image { image } => {
+                                let digest_reference = DockerTimeout::ImageResolution
+                                    .run("resolve image", docker.resolve_image(image))
                                     .await
                                     .map_err(|error| {
                                         (
                                             name.clone(),
-                                            "building_git",
-                                            BoundaryError::GitBuild(error),
+                                            "resolving_image",
+                                            BoundaryError::Runtime(error),
                                         )
                                     })?;
-                            ResolvedSource::Git {
-                                requested: source,
-                                commit,
-                                image_id,
+                                ResolvedSource::parse_image(image.clone(), digest_reference)
+                                    .map_err(|source| {
+                                        (
+                                            name.clone(),
+                                            "resolving_image",
+                                            BoundaryError::Runtime(DockerError::RequestSource {
+                                                operation: "validate resolved image",
+                                                source: Box::new(source),
+                                            }),
+                                        )
+                                    })?
                             }
-                        }
-                    };
+                            Source::Git { repository, build } => {
+                                let (commit, image_id) = crate::git::Checkout::prepare(
+                                    repository,
+                                    build,
+                                    docker.as_ref(),
+                                )
+                                .await
+                                .map_err(|error| {
+                                    (name.clone(), "building_git", BoundaryError::GitBuild(error))
+                                })?;
+                                ResolvedSource::Git {
+                                    requested: source,
+                                    commit,
+                                    image_id,
+                                }
+                            }
+                        };
                     Ok::<_, (piqueld_core::ServiceName, &'static str, BoundaryError)>((
                         name, resolved,
                     ))
