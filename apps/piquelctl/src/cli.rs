@@ -64,19 +64,8 @@ pub(crate) enum Command {
         #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
         since_seconds: u32,
     },
-    /// List recent build attempts, newest first.
-    Builds {
-        #[arg(long)]
-        application: Option<String>,
-        #[arg(long)]
-        cursor: Option<String>,
-    },
-    /// Read a bounded page of persisted build output.
-    BuildLogs {
-        id: i64,
-        #[arg(long, default_value_t = 0)]
-        offset: i64,
-    },
+    /// Inspect build attempts and their persisted output.
+    Builds(BuildArgs),
     /// Preview creation or replacement from a TOML manifest.
     Plan(ManifestArgs),
     /// Plan, confirm, and apply a TOML manifest.
@@ -102,6 +91,29 @@ pub(crate) enum Command {
         /// Maximum number of events in the page.
         #[arg(long,default_value_t=50,value_parser=clap::value_parser!(u16).range(1..=100))]
         limit: u16,
+    },
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct BuildArgs {
+    #[command(subcommand)]
+    pub(crate) command: BuildCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum BuildCommand {
+    /// List recent build attempts, newest first.
+    List {
+        #[arg(long)]
+        application: Option<String>,
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Read a bounded page of persisted build output.
+    Logs {
+        id: i64,
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
     },
 }
 

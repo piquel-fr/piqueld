@@ -1,6 +1,7 @@
 use crate::{
     cli::{
-        ApplyArgs, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs, ReconcileArgs, RenameArgs,
+        ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs,
+        ReconcileArgs, RenameArgs,
     },
     error::{CliError, ErrorKind, Result},
     output::{Progress, blocked_plan_error, emit_json, render_operation, render_plan},
@@ -46,11 +47,13 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
             )
             .await
         }
-        Command::Builds {
-            application,
-            cursor,
-        } => builds(cli, &client, application.as_deref(), cursor.as_deref()).await,
-        Command::BuildLogs { id, offset } => build_logs(cli, &client, *id, *offset).await,
+        Command::Builds(args) => match &args.command {
+            BuildCommand::List {
+                application,
+                cursor,
+            } => builds(cli, &client, application.as_deref(), cursor.as_deref()).await,
+            BuildCommand::Logs { id, offset } => build_logs(cli, &client, *id, *offset).await,
+        },
         Command::Plan(args) => plan_command(cli, &client, args).await,
         Command::Apply(args) => apply(cli, &client, args).await,
         Command::Delete(args) => delete(cli, &client, args).await,
