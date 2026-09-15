@@ -344,7 +344,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         />
         <ApplicationSettings />
         <leptos::Show when=move ||context.tab.get()=="Logs"><ApplicationLogs/></leptos::Show>
-        <leptos::Show when=move ||context.tab.get()=="Builds"><super::builds::BuildHistory application=context.saved.with_untracked(|a|a.application.id.to_string())/></leptos::Show>
+        <leptos::Show when=move ||context.tab.get()=="Builds"><super::builds::BuildHistory application=context.saved.with_untracked(|a|a.application.id().to_string())/></leptos::Show>
         <div hidden={move || context.tab.get() != "Deployments"}>
             <DeploymentHistory />
         </div>
