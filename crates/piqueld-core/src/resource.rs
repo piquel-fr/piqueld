@@ -1,12 +1,10 @@
 //! Backend-neutral desired, resolved, and observed Docker resource contracts.
 
+use crate::manifest::domain::{ValidatedMount as Mount, ValidatedService as Service};
 use crate::names::validated_string;
 use crate::{
-    ApplicationId, ResourceKind, docker_resource_name,
-    manifest::{
-        HealthCheck, Mount, NormalizedApplication, ResourceLimits, Service, Source,
-        valid_image_reference,
-    },
+    ApplicationId, ResourceKind, ServiceName, docker_resource_name,
+    manifest::{HealthCheck, NormalizedApplication, ResourceLimits, Source, valid_image_reference},
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::collections::BTreeMap;
@@ -103,7 +101,7 @@ impl ResolvedSource {
 #[serde(deny_unknown_fields)]
 pub struct ResolutionSet {
     /// Resolved service sources keyed by logical service name.
-    pub sources: BTreeMap<String, ResolvedSource>,
+    pub sources: BTreeMap<ServiceName, ResolvedSource>,
 }
 
 /// Resolution work still required before compilation.
@@ -113,14 +111,14 @@ pub enum ResolutionRequirement {
     /// Resolve an image source to an immutable digest.
     ResolveImage {
         /// Logical service requesting resolution.
-        service: String,
+        service: ServiceName,
         /// Requested image reference.
         reference: String,
     },
     /// Resolve a Git revision and build its image.
     BuildGit {
         /// Logical service requesting a build.
-        service: String,
+        service: ServiceName,
         /// Explicit Git source configuration.
         source: Source,
     },
@@ -132,7 +130,7 @@ pub fn preview_resolution(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
 ) -> Vec<ResolutionRequirement> {
-    app.spec
+    app.spec()
         .services
         .iter()
         .filter_map(|service| {
@@ -326,14 +324,14 @@ impl ResolvedApplication {
     pub fn reusable_resolutions(&self, application: &NormalizedApplication) -> ResolutionSet {
         ResolutionSet {
             sources: application
-                .spec
+                .spec()
                 .services
                 .iter()
                 .filter_map(|service| {
                     let prior = self
                         .services
                         .iter()
-                        .find(|prior| prior.logical_name == service.name)?;
+                        .find(|prior| prior.logical_name == service.name.as_str())?;
                     resolved_source_matches(&service.source, &prior.source)
                         .then(|| (service.name.clone(), prior.source.clone()))
                 })
@@ -412,17 +410,17 @@ pub fn compile_application(
         Sha256Digest::parse(spec_hash.clone()).expect("spec_hash is produced by the domain hasher");
     let ownership = Ownership {
         instance_id: instance_id.clone(),
-        application_id: app.id.clone(),
+        application_id: app.id().clone(),
         service: None,
         spec_hash: digest.as_str().to_owned(),
     };
-    let private_network = docker_resource_name(&app.id, ResourceKind::Network, None);
+    let private_network = docker_resource_name(app.id(), ResourceKind::Network, None);
     Ok(ResolvedApplication {
-        id: app.id.clone(),
-        name: app.metadata.name.clone(),
+        id: app.id().clone(),
+        name: app.metadata().name.to_string(),
         instance_id,
         spec_hash,
-        networks: if app.spec.services.is_empty() {
+        networks: if app.spec().services.is_empty() {
             Vec::new()
         } else {
             vec![DesiredNetwork {
@@ -431,17 +429,21 @@ pub fn compile_application(
             }]
         },
         volumes: app
-            .spec
+            .spec()
             .volumes
             .iter()
             .map(|volume| DesiredVolume {
-                logical_name: volume.name.clone(),
-                name: docker_resource_name(&app.id, ResourceKind::Volume, Some(&volume.name)),
+                logical_name: volume.name.to_string(),
+                name: docker_resource_name(
+                    app.id(),
+                    ResourceKind::Volume,
+                    Some(volume.name.as_str()),
+                ),
                 labels: ownership.labels(),
             })
             .collect(),
         services: app
-            .spec
+            .spec()
             .services
             .iter()
             .map(|service| compile_service(service, app, resolutions, &ownership, &private_network))
@@ -454,14 +456,14 @@ fn validate_application(
     resolutions: &ResolutionSet,
 ) -> Vec<CompileError> {
     let mut errors = unresolved_errors(app, resolutions);
-    for service in &app.spec.services {
+    for service in &app.spec().services {
         let Some(resolved) = resolutions.sources.get(&service.name) else {
             continue;
         };
         if !resolved_source_matches(&service.source, resolved) {
             errors.push(CompileError {
                 code: crate::codes::SOURCE_RESOLUTION_MISMATCH.into(),
-                resource: service.name.clone(),
+                resource: service.name.to_string(),
                 message: "resolved source does not immutably resolve the normalized service source"
                     .into(),
             });
@@ -480,7 +482,7 @@ fn unresolved_errors(
             ResolutionRequirement::ResolveImage { service, .. }
             | ResolutionRequirement::BuildGit { service, .. } => CompileError {
                 code: crate::codes::SOURCE_UNRESOLVED.into(),
-                resource: service,
+                resource: service.to_string(),
                 message: "service source has not been resolved to an immutable image".into(),
             },
         })
@@ -526,10 +528,10 @@ fn compile_service(
 ) -> DesiredService {
     let source = resolutions.sources[&service.name].clone();
     let mut ownership = application_ownership.clone();
-    ownership.service = Some(service.name.clone());
+    ownership.service = Some(service.name.to_string());
     DesiredService {
-        logical_name: service.name.clone(),
-        name: docker_resource_name(&app.id, ResourceKind::Service, Some(&service.name)),
+        logical_name: service.name.to_string(),
+        name: docker_resource_name(app.id(), ResourceKind::Service, Some(service.name.as_str())),
         image: source.digest_reference().into(),
         source,
         replicas: service.replicas,
@@ -541,9 +543,9 @@ fn compile_service(
             .iter()
             .map(|mount: &Mount| DesiredMount {
                 volume_name: docker_resource_name(
-                    &app.id,
+                    app.id(),
                     ResourceKind::Volume,
-                    Some(&mount.volume),
+                    Some(mount.volume.as_str()),
                 ),
                 target: mount.target.clone(),
                 read_only: mount.read_only,

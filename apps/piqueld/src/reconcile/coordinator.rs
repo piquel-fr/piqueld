@@ -67,7 +67,7 @@ impl<D: DockerApi> Controller<D> {
                         Ok((full,applications))=> {
                             recovered=true;
                             for (application,operation_id) in applications {
-                                let id=application.application.id.clone();
+                                let id=application.application.id().clone();
                                 if full && health_active.insert(id.clone()) {
                                     let health_id=id.clone();
                                     let health_operation=operation_id.clone();
@@ -119,7 +119,7 @@ impl<D: DockerApi> Controller<D> {
             for app in page.items {
                 if let Some(operation) = self
                     .store
-                    .latest_operation_for_application(&app.application.id)
+                    .latest_operation_for_application(app.application.id())
                     .await?
                     && (full
                         || operation.state == OperationState::Requested
@@ -177,7 +177,7 @@ impl<D: DockerApi> Controller<D> {
             .saturating_add(delay)
     }
 
-    #[tracing::instrument(skip_all, fields(application_id = %application.application.id, generation = application.generation))]
+    #[tracing::instrument(skip_all, fields(application_id = %application.application.id(), generation = application.generation))]
     async fn scan_application(
         &self,
         application: &StoredApplication,
@@ -185,13 +185,13 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<(), StoreError> {
         let Some(latest) = self
             .store
-            .latest_operation_for_application(&application.application.id)
+            .latest_operation_for_application(application.application.id())
             .await?
         else {
             return Ok(());
         };
         if let Err(error) = self
-            .maintain_active(&application.application.id, &latest.id)
+            .maintain_active(application.application.id(), &latest.id)
             .await
         {
             tracing::warn!(%error,"active target repair failed");
@@ -209,8 +209,8 @@ impl<D: DockerApi> Controller<D> {
             };
             return self.run_operation(&operation, cancellation).await;
         }
-        let application = self.store.get(&application.application.id).await?;
-        let observed = match self.docker.observe(&application.application.id).await {
+        let application = self.store.get(application.application.id()).await?;
+        let observed = match self.docker.observe(application.application.id()).await {
             Ok(observed) => observed,
             Err(error) => {
                 tracing::warn!(%error,"could not observe application health");
@@ -223,7 +223,7 @@ impl<D: DockerApi> Controller<D> {
         let target = prepared.as_ref().or(application.resolved.as_ref());
         let request = if application.delete_intent {
             PlanRequest::Delete {
-                application_id: application.application.id.clone(),
+                application_id: application.application.id().clone(),
                 instance_id: piqueld_core::InstanceId::parse(self.store.instance_id())
                     .expect("valid store identity"),
             }
@@ -272,7 +272,7 @@ impl<D: DockerApi> Controller<D> {
             }
             if let Some(operation) = self
                 .store
-                .request_reconcile(&application.application.id, &latest.id)
+                .request_reconcile(application.application.id(), &latest.id)
                 .await?
             {
                 self.run_operation(&operation, cancellation).await?;

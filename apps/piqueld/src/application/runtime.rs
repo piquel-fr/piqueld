@@ -96,7 +96,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
     ) -> Result<piqueld_core::ResolvedApplication, BoundaryError> {
         tokio::time::timeout(self.prepare_timeout, async {
             let pending = application
-                .spec
+                .spec()
                 .services
                 .iter()
                 .filter(|service| !reusable.sources.contains_key(&service.name))
@@ -153,7 +153,9 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                             }
                         }
                     };
-                    Ok::<_, (String, &'static str, BoundaryError)>((name, resolved))
+                    Ok::<_, (piqueld_core::ServiceName, &'static str, BoundaryError)>((
+                        name, resolved,
+                    ))
                 }
             }))
             .buffer_unordered(4)
@@ -163,7 +165,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                 Ok(sources) => sources,
                 Err((service, phase, error)) => {
                     if let Some((store, id)) = &self.progress {
-                        store.progress(id, phase, Some(&service)).await?;
+                        store.progress(id, phase, Some(service.as_str())).await?;
                     }
                     return Err(error);
                 }
@@ -194,7 +196,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
         DockerTimeout::Request
             .run(
                 "observe application",
-                self.docker.observe(&application.application.id),
+                self.docker.observe(application.application.id()),
             )
             .await
             .map_err(BoundaryError::from)

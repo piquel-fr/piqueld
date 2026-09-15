@@ -50,7 +50,7 @@ fn detail_view(
     section: RuntimeSection,
 ) -> View {
     let refresh_detail = {
-        let id = detail.application.application.id.to_string();
+        let id = detail.application.application.id().to_string();
         move || load_detail(client.clone(), signals, id.clone())
     };
     view! {
@@ -106,7 +106,7 @@ impl RuntimeSection {
             .runtime_health
             .clone()
             .unwrap_or_else(|| "unknown".to_owned());
-        let application_id = app.id.to_string();
+        let application_id = app.id().to_string();
         let health = ApplicationHealth::from_server_state(status.state);
         match self {
             RuntimeSection::Overview => view! {

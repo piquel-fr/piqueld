@@ -59,7 +59,7 @@ impl RuntimeBoundary for FakeRuntime {
         _reusable: &piqueld_core::ResolutionSet,
     ) -> Result<piqueld_core::ResolvedApplication, BoundaryError> {
         let sources = application
-            .spec
+            .spec()
             .services
             .iter()
             .map(|service| {
@@ -210,16 +210,16 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
         .application(&created.application_id)
         .await
         .expect("full application read succeeds");
-    assert_eq!(application.application.spec.services.len(), 1);
+    assert_eq!(application.application.spec().services.len(), 1);
     let detail = client
         .application_detail(&created.application_id)
         .await
         .expect("detail succeeds");
     assert_eq!(
-        detail.application.application.id,
-        created.application_id.parse().unwrap()
+        detail.application.application.id().as_str(),
+        created.application_id
     );
-    assert_eq!(detail.application.application.spec.services.len(), 1);
+    assert_eq!(detail.application.application.spec().services.len(), 1);
     assert!(detail.observed.services.is_empty());
     assert_eq!(detail.application.resolved_generation, None);
     assert!(detail.diagnostics.is_empty());
@@ -1496,7 +1496,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
         .application(&accepted.application_id)
         .await
         .unwrap();
-    assert_eq!(app.application.metadata.name, "renamed");
+    assert_eq!(app.application.metadata().name.as_str(), "renamed");
     assert_eq!(
         api.client
             .operation(&accepted.operation_id)
@@ -1540,7 +1540,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
             .await
             .unwrap()
             .application
-            .spec
+            .spec()
             .services[0]
             .replicas,
         1
@@ -1606,7 +1606,7 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
         .await
         .unwrap();
     request.expected_generation = Some(1);
-    request.expected_application_id = Some(normalized.id.to_string());
+    request.expected_application_id = Some(normalized.id().to_string());
     request.manifest.spec.services[0].replicas = 3;
     request.manifest.spec.services[0]
         .environment
@@ -1639,7 +1639,7 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
     }
     assert!(json.contains("redacted"));
     assert_eq!(
-        api.store.get(&normalized.id).await.unwrap().generation,
+        api.store.get(normalized.id()).await.unwrap().generation,
         1,
         "preview is read-only"
     );
@@ -1797,7 +1797,7 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
             .await
             .unwrap()
             .application
-            .spec
+            .spec()
             .services[0]
             .replicas,
         4
@@ -1860,7 +1860,7 @@ async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent()
         .await
         .unwrap();
     assert_eq!(current.generation, newer.generation);
-    assert_eq!(current.application.spec.services[0].replicas, 3);
+    assert_eq!(current.application.spec().services[0].replicas, 3);
     AcceptanceApi::assert_error(
         keyed.apply_and_deploy(&request).await.unwrap_err(),
         "request_id_conflict",
@@ -2045,7 +2045,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
             .deployment_manifest(&second.operation_id)
             .await
             .unwrap()
-            .spec
+            .spec()
             .volumes
             .len(),
         0
@@ -2101,15 +2101,16 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
         .deployment_manifest(&refreshed.operation_id)
         .await
         .unwrap();
-    assert_eq!(snapshot.metadata.name, "renamed");
-    assert_eq!(snapshot.spec.services[0].replicas, 2);
+    assert_eq!(snapshot.metadata().name.as_str(), "renamed");
+    assert_eq!(snapshot.spec().services[0].replicas, 2);
     assert_eq!(
         api.store
             .deployment_manifest(&accepted.operation_id)
             .await
             .unwrap()
-            .metadata
-            .name,
+            .metadata()
+            .name
+            .as_str(),
         "notes"
     );
 }

@@ -73,7 +73,7 @@ impl Store {
         resolved: Option<&ResolvedApplication>,
         expected: Option<u64>,
     ) -> Result<Operation, StoreError> {
-        let id = app.id.as_str();
+        let id = app.id().as_str();
         let generation = Self::generation_on(tx, id, expected)
             .await?
             .checked_add(1)
@@ -84,11 +84,11 @@ impl Store {
             .transpose()
             .map_err(StoreError::corrupt)?;
         let resolved_generation = resolved.as_ref().map(|_| generation);
-        let name = app.metadata.name.as_str();
+        let name = app.metadata().name.as_str();
         let now = now_ms();
         sqlx::query!("INSERT INTO applications(id,name,desired_json,resolved_json,generation,resolved_generation,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?7) ON CONFLICT(id) DO UPDATE SET desired_json=excluded.desired_json,generation=excluded.generation,resolved_json=COALESCE(excluded.resolved_json,applications.resolved_json),resolved_generation=COALESCE(excluded.resolved_generation,applications.resolved_generation),delete_intent=0,updated_at_ms=excluded.updated_at_ms",id,name,desired,resolved,generation,resolved_generation,now)
             .execute(&mut **tx).await.map_err(|error| if error.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) { StoreError::AlreadyExists } else { StoreError::database(error) })?;
-        let operation = Self::insert_operation(tx, &app.id, OperationKind::Apply, now).await?;
+        let operation = Self::insert_operation(tx, app.id(), OperationKind::Apply, now).await?;
         sqlx::query!(
             "UPDATE operations SET target_json=?1 WHERE id=?2",
             resolved,

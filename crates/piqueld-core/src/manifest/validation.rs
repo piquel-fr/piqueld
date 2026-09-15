@@ -315,8 +315,8 @@ impl ApplicationManifest {
             }
         }
         Ok(ValidatedApplication {
-            name: self.metadata.name,
-            spec: self.spec,
+            metadata: super::domain::ValidatedMetadata::from_input(self.metadata)?,
+            spec: super::domain::ValidatedSpec::from_input(self.spec)?,
         })
     }
 }

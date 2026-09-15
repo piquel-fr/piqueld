@@ -9,11 +9,11 @@ impl Store {
         app: &NormalizedApplication,
         expected: Option<u64>,
     ) -> Result<SavedApplication, StoreError> {
-        let id = app.id.as_str();
+        let id = app.id().as_str();
         let previous = Self::generation_on(tx, id, expected).await?;
         let generation = previous.checked_add(1).ok_or(StoreError::InvalidInput)?;
         let json = serde_json::to_string(app).map_err(StoreError::corrupt)?;
-        let name = app.metadata.name.as_str();
+        let name = app.metadata().name.as_str();
         let now = now_ms();
         let changed = sqlx::query!("INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(id) DO UPDATE SET desired_json=excluded.desired_json,generation=excluded.generation,updated_at_ms=excluded.updated_at_ms WHERE applications.delete_intent=0",id,name,json,generation,now)
             .execute(&mut **tx).await.map_err(|error| if error.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) {StoreError::AlreadyExists} else {StoreError::database(error)})?.rows_affected();
@@ -227,10 +227,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let mut edited = original.clone();
+        let mut edited = original.to_manifest();
         edited.spec.volumes.push(piqueld_core::manifest::Volume {
             name: "later".into(),
         });
+        let edited = edited.validate().unwrap().normalize(original.id().clone());
         let changed = save(&store, edited, 1).await;
         assert_eq!(changed.generation, 2);
         drop(store);

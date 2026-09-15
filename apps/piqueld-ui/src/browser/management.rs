@@ -15,8 +15,9 @@ pub(super) use deployments::timestamp;
 use deployments::{DeploymentActions, DeploymentHistory};
 use leptos::{
     Callable, Callback, CollectView, IntoView, RwSignal, SignalGet, SignalGetUntracked, SignalSet,
-    SignalUpdate, SignalWith, StoredValue, component, create_effect, create_rw_signal, on_cleanup,
-    provide_context, spawn_local, store_value, use_context, view, window,
+    SignalUpdate, SignalWith, SignalWithUntracked, StoredValue, component, create_effect,
+    create_rw_signal, on_cleanup, provide_context, spawn_local, store_value, use_context, view,
+    window,
 };
 use leptos_router::{A, NavigateOptions, use_navigate};
 pub(super) use navigation::HistoryGuard;
@@ -41,13 +42,8 @@ struct EditorContext {
 }
 impl EditorContext {
     fn manifest(self) -> ApplicationManifest {
-        let saved = self.saved.get_untracked();
-        ApplicationManifest {
-            api_version: "piqueld.dev/v1alpha1".into(),
-            kind: "Application".into(),
-            metadata: saved.application.metadata,
-            spec: saved.application.spec,
-        }
+        self.saved
+            .with_untracked(|saved| saved.application.to_manifest())
     }
     fn blocked(self) -> bool {
         self.busy.get() || self.uncertain.get()
@@ -77,7 +73,7 @@ impl EditorContext {
         let request = ApplyApplicationRequest {
             manifest,
             expected_generation: Some(saved.generation),
-            expected_application_id: Some(saved.application.id.to_string()),
+            expected_application_id: Some(saved.application.id().to_string()),
         };
         let client = match mutation_client() {
             Ok(client) => client,
@@ -95,7 +91,7 @@ impl EditorContext {
             }
             match result {
                 Ok(receipt) => {
-                    let application = validated.normalize(saved.application.id);
+                    let application = validated.normalize(saved.application.id().clone());
                     let updated = ApplicationView {
                         spec_hash: application.spec_hash(),
                         application,
@@ -329,7 +325,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
                     href={move || {
                         format!(
                             "/api/v1/applications/{}/manifest",
-                            context.saved.get().application.id
+                            context.saved.get().application.id()
                         )
                     }}
                     download
@@ -379,7 +375,7 @@ fn DeleteApplication() -> impl IntoView {
         spawn_local(async move {
             match client
                 .delete_application_with_generation(
-                    saved.application.id.as_str(),
+                    saved.application.id().as_str(),
                     Some(saved.generation),
                 )
                 .await
@@ -521,7 +517,7 @@ fn ApplicationSettings() -> impl IntoView {
                 context
                     .saved
                     .get()
-                    .application
+                    .application.to_manifest()
                     .spec
                     .manifest
                     .is_some()
@@ -533,7 +529,7 @@ fn ApplicationSettings() -> impl IntoView {
                         }
                     })
             }}
-            <fieldset disabled={move || context.saved.get().application.spec.manifest.is_some()}>
+            <fieldset disabled={move || context.saved.get().application.to_manifest().spec.manifest.is_some()}>
                 <div hidden={move || context.tab.get() != "Services"}>
                     <div class="list-actions">
                         <NewService />

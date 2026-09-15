@@ -216,7 +216,7 @@ pub(crate) fn transport_description(cli: &Cli) -> String {
 pub(crate) fn desired_replicas(application: &ApplicationView) -> u32 {
     application
         .application
-        .spec
+        .spec()
         .services
         .iter()
         .map(|service| u32::from(service.replicas))

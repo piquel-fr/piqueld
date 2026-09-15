@@ -440,7 +440,7 @@ impl ApplicationRow {
     fn decode(self) -> Result<StoredApplication, StoreError> {
         let application: NormalizedApplication =
             serde_json::from_str(&self.desired_json).map_err(StoreError::corrupt)?;
-        if application.id.as_str() != self.id {
+        if application.id().as_str() != self.id {
             return Err(StoreError::Corrupt);
         }
         Ok(StoredApplication {

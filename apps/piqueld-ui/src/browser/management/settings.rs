@@ -14,7 +14,13 @@ use std::collections::BTreeMap;
 #[component]
 pub(super) fn RepositorySettings() -> impl IntoView {
     let context = editor();
-    let backing = context.saved.get_untracked().application.spec.manifest;
+    let backing = context
+        .saved
+        .get_untracked()
+        .application
+        .to_manifest()
+        .spec
+        .manifest;
     let draft = create_rw_signal((
         backing.is_some(),
         backing.unwrap_or(RepositoryManifest {
@@ -107,7 +113,7 @@ pub(super) fn MetadataSettings() -> impl IntoView {
     let name = create_rw_signal(
         context
             .saved
-            .with_untracked(|a| a.application.metadata.name.clone()),
+            .with_untracked(|a| a.application.to_manifest().metadata.name.clone()),
     );
     let baseline = create_rw_signal(name.get_untracked());
     dirty_group("name".into(), name, baseline);
@@ -122,6 +128,13 @@ pub(super) fn MetadataSettings() -> impl IntoView {
             return;
         };
         let app = context.saved.get_untracked();
+        let validated_name = match piqueld_client::ApplicationName::parse(name.get_untracked()) {
+            Ok(name) => name,
+            Err(error) => {
+                context.error.set(Some(error.to_string()));
+                return;
+            }
+        };
         let request = piqueld_client::RenameApplicationRequest {
             name: name.get_untracked(),
             expected_generation: Some(app.generation),
@@ -130,12 +143,12 @@ pub(super) fn MetadataSettings() -> impl IntoView {
         context.error.set(None);
         spawn_local(async move {
             let result = client
-                .rename_application(app.application.id.as_str(), &request)
+                .rename_application(app.application.id().as_str(), &request)
                 .await;
             match result {
                 Ok(renamed) => {
                     context.saved.update(|app| {
-                        app.application.metadata.name.clone_from(&renamed.name);
+                        app.application = app.application.clone().with_name(validated_name);
                         app.generation = renamed.generation;
                     });
                     name.set(renamed.name.clone());
@@ -152,7 +165,7 @@ pub(super) fn MetadataSettings() -> impl IntoView {
     view! {
         <div class="application-name">
             <div class="name-display" hidden={move || editing.get()}>
-                <h1>{move || context.saved.with(|a| a.application.metadata.name.clone())}</h1>
+                <h1>{move || context.saved.with(|a| a.application.to_manifest().metadata.name.clone())}</h1>
                 <button
                     class="icon-button"
                     aria-label="Rename application"
@@ -209,6 +222,7 @@ pub(super) fn VolumeSettings() -> impl IntoView {
     let context = editor();
     let volumes = create_rw_signal(context.saved.with_untracked(|a| {
         a.application
+            .to_manifest()
             .spec
             .volumes
             .iter()
@@ -229,6 +243,7 @@ pub(super) fn VolumeSettings() -> impl IntoView {
             Callback::new(move |app: ApplicationView| {
                 let names = app
                     .application
+                    .to_manifest()
                     .spec
                     .volumes
                     .into_iter()
@@ -296,6 +311,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
         .saved
         .with_untracked(|a| {
             a.application
+                .to_manifest()
                 .spec
                 .services
                 .iter()
@@ -324,7 +340,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
     view! {
         <section class="settings-card service-settings">
             <fieldset disabled={move || {
-                context.blocked() || context.saved.get().application.spec.manifest.is_some()
+                context.blocked() || context.saved.get().application.to_manifest().spec.manifest.is_some()
             }}>
                 {service_fields(section, draft)}
                 <div class="form-actions" hidden={move || draft.get() == baseline.get()}>

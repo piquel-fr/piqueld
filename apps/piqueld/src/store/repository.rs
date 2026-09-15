@@ -144,14 +144,16 @@ mod tests {
             .await
             .unwrap();
         let captured = store.deployment_manifest(&op.id).await.unwrap();
-        let mut fetched = captured.clone();
+        let mut fetched = captured.to_manifest();
         fetched.spec.manifest = None;
+        let fetched = fetched.validate().unwrap().normalize(captured.id().clone());
         store
             .save_deployment_input(&op, &fetched, Some(&"a".repeat(40)))
             .await
             .unwrap();
-        let mut edited = captured;
+        let mut edited = captured.to_manifest();
         edited.spec.manifest.as_mut().unwrap().path = "fixed.toml".into();
+        let edited = edited.validate().unwrap().normalize(captured.id().clone());
         store
             .accept(
                 Mutation::Save {

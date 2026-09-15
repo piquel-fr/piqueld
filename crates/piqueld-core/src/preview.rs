@@ -29,13 +29,13 @@ impl ManifestChange {
 
     fn fields(application: &NormalizedApplication) -> BTreeMap<String, serde_json::Value> {
         let mut fields = BTreeMap::new();
-        if let Some(manifest) = &application.spec.manifest {
+        if let Some(manifest) = &application.spec().manifest {
             fields.insert(
                 "manifest".into(),
                 serde_json::to_value(manifest).expect("manifest configuration is serializable"),
             );
         }
-        for service in &application.spec.services {
+        for service in &application.spec().services {
             let value = serde_json::to_value(service).expect("manifest service is serializable");
             if let serde_json::Value::Object(values) = value {
                 for (key, value) in values {
@@ -45,7 +45,7 @@ impl ManifestChange {
                 }
             }
         }
-        for volume in &application.spec.volumes {
+        for volume in &application.spec().volumes {
             fields.insert(
                 format!("volumes.{}", volume.name),
                 serde_json::Value::String("present (retained if removed)".into()),
@@ -118,11 +118,12 @@ TOKEN="old-secret"
 "#;
         let id = crate::ApplicationId::parse("app-example-01").unwrap();
         let original = crate::parse_toml(input).unwrap().normalize(id);
-        let mut changed = original.clone();
+        let mut changed = original.to_manifest();
         changed.spec.services[0].replicas = 3;
         changed.spec.services[0]
             .environment
             .insert("TOKEN".into(), "new-secret".into());
+        let changed = changed.validate().unwrap().normalize(original.id().clone());
         let differences = ManifestChange::between(Some(&original), &changed);
         assert_eq!(differences.len(), 2);
         assert!(

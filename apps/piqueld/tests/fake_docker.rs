@@ -400,7 +400,7 @@ async fn fixture_store(
     let application = application();
     let resolutions = ResolutionSet {
         sources: [(
-            "web".into(),
+            piqueld_core::ServiceName::parse("web").unwrap(),
             ResolvedSource::Image {
                 requested: "ghcr.io/example/notes:1.4.0".into(),
                 digest_reference: format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
@@ -450,7 +450,7 @@ impl ControllerHarness {
         let application = application();
         let resolutions = ResolutionSet {
             sources: [(
-                "web".into(),
+                piqueld_core::ServiceName::parse("web").unwrap(),
                 ResolvedSource::Image {
                     requested: "ghcr.io/example/notes:1.4.0".into(),
                     digest_reference: format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
@@ -512,7 +512,7 @@ impl ControllerHarness {
     async fn assert_recovered(&self, operation_id: &str) {
         let status = self
             .store
-            .status(&self.application.id)
+            .status(self.application.id())
             .await
             .expect("status is readable");
         assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
@@ -524,7 +524,7 @@ impl ControllerHarness {
         assert_eq!(operation.state, OperationState::Succeeded);
         let observed = self
             .docker
-            .observe(&self.application.id)
+            .observe(self.application.id())
             .await
             .expect("fake observation");
         assert_eq!(observed.volumes.len(), 1);
@@ -532,9 +532,12 @@ impl ControllerHarness {
     }
 
     async fn replace(&self) -> (Operation, ResolvedApplication) {
-        let mut replacement = self.application.clone();
+        let mut replacement = self.application.to_manifest();
         replacement.spec.services[0].replicas = 2;
-        let replacement = replacement.normalize();
+        let replacement = replacement
+            .validate()
+            .unwrap()
+            .normalize(self.application.id().clone());
         let replacement_resolved = compile_application(
             &replacement,
             InstanceId::parse(self.store.instance_id()).expect("store instance ID is valid"),
@@ -561,7 +564,7 @@ impl ControllerHarness {
             .expect("drift repair converges");
         assert_eq!(
             self.docker
-                .observe(&self.application.id)
+                .observe(self.application.id())
                 .await
                 .unwrap()
                 .services[0]
@@ -572,19 +575,19 @@ impl ControllerHarness {
 
     async fn delete(&self) -> Operation {
         self.store
-            .request_delete(&self.application.id, None)
+            .request_delete(self.application.id(), None)
             .await
             .expect("delete is durable")
     }
 
     async fn assert_deleted(&self) {
         assert!(matches!(
-            self.store.get(&self.application.id).await,
+            self.store.get(self.application.id()).await,
             Err(piqueld::store::StoreError::NotFound)
         ));
         let observed = self
             .docker
-            .observe(&self.application.id)
+            .observe(self.application.id())
             .await
             .expect("final observation");
         assert!(observed.services.is_empty());
@@ -614,7 +617,7 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
     assert_eq!(
         harness
             .docker
-            .observe(&harness.application.id)
+            .observe(harness.application.id())
             .await
             .unwrap()
             .services[0]
@@ -645,7 +648,7 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
     assert!(
         harness
             .store
-            .get(&harness.application.id)
+            .get(harness.application.id())
             .await
             .unwrap()
             .delete_intent
@@ -686,7 +689,7 @@ async fn controller_executes_actions_introduced_by_fresh_planning() {
         .expect("service is seeded");
     let observed = harness
         .docker
-        .observe(&harness.application.id)
+        .observe(harness.application.id())
         .await
         .expect("matching observation");
     let plan = ControllerHarness::reconcile_plan(harness.resolved.clone(), &observed);
@@ -704,7 +707,11 @@ async fn controller_executes_actions_introduced_by_fresh_planning() {
         .await
         .expect("fresh action converges");
 
-    let status = harness.store.status(&harness.application.id).await.unwrap();
+    let status = harness
+        .store
+        .status(harness.application.id())
+        .await
+        .unwrap();
     assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
     assert_eq!(harness.docker.observed.lock().await.networks.len(), 1);
 }
@@ -729,7 +736,7 @@ async fn superseded_operations_do_not_plan_stale_runtime_state() {
         .expect("service is seeded");
     let observed = harness
         .docker
-        .observe(&harness.application.id)
+        .observe(harness.application.id())
         .await
         .expect("matching observation");
     let plan = ControllerHarness::reconcile_plan(harness.resolved.clone(), &observed);
@@ -766,7 +773,7 @@ async fn superseded_operations_do_not_plan_stale_runtime_state() {
 async fn controller_refuses_a_foreign_same_name_service() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let (store, application, resolved) = fixture_store(&directory).await;
-    let mut foreign_service_labels = foreign_labels(&application.id);
+    let mut foreign_service_labels = foreign_labels(application.id());
     foreign_service_labels.insert(SERVICE_LABEL.into(), "web".into());
     let foreign = ObservedService {
         labels: foreign_service_labels,
@@ -786,7 +793,7 @@ async fn controller_refuses_a_foreign_same_name_service() {
         .await
         .expect("ownership conflict is journaled");
     let status = store
-        .status(&application.id)
+        .status(application.id())
         .await
         .expect("status is readable");
     assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
@@ -797,7 +804,7 @@ async fn controller_refuses_a_foreign_same_name_service() {
     assert_eq!(operation.state, OperationState::Failed);
     assert_eq!(
         docker
-            .observe(&application.id)
+            .observe(application.id())
             .await
             .unwrap()
             .services
@@ -824,7 +831,7 @@ async fn assert_foreign_fixture_refuses_reconciliation(
         .await
         .expect("ownership conflict is journaled");
     let status = store
-        .status(&application.id)
+        .status(application.id())
         .await
         .expect("status is readable");
     assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
@@ -843,7 +850,7 @@ async fn controller_refuses_a_foreign_same_name_network() {
     let foreign = ObservedNetwork {
         name: resolved.networks[0].name.clone(),
         runtime_configuration_matches: true,
-        labels: foreign_labels(&application.id),
+        labels: foreign_labels(application.id()),
     };
     let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
         networks: vec![foreign],
@@ -851,7 +858,7 @@ async fn controller_refuses_a_foreign_same_name_network() {
     }));
     assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved).await;
     // The foreign network must survive untouched.
-    let observed = docker.observe(&application.id).await.unwrap();
+    let observed = docker.observe(application.id()).await.unwrap();
     assert_eq!(observed.networks.len(), 1);
     assert_eq!(
         observed.networks[0].labels.get(INSTANCE_LABEL),
@@ -866,7 +873,7 @@ async fn controller_refuses_a_foreign_same_name_volume() {
     let foreign = ObservedVolume {
         name: resolved.volumes[0].name.clone(),
         runtime_configuration_matches: true,
-        labels: foreign_labels(&application.id),
+        labels: foreign_labels(application.id()),
     };
     let docker = Arc::new(FakeDocker::with_observed(ObservedApplication {
         volumes: vec![foreign],
@@ -874,7 +881,7 @@ async fn controller_refuses_a_foreign_same_name_volume() {
     }));
     assert_foreign_fixture_refuses_reconciliation(&docker, &store, &application, &resolved).await;
     // The foreign volume must survive untouched.
-    let observed = docker.observe(&application.id).await.unwrap();
+    let observed = docker.observe(application.id()).await.unwrap();
     assert_eq!(observed.volumes.len(), 1);
     assert_eq!(
         observed.volumes[0].labels.get(INSTANCE_LABEL),
@@ -1082,7 +1089,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
             .await
             .unwrap()
             .application
-            .spec
+            .spec()
             .services[0]
             .environment
             .is_empty()
@@ -1318,7 +1325,7 @@ async fn controller_enforces_global_io_bounds_on_a_single_thread() {
     for app in store.list(None, 100).await.unwrap().items {
         assert_eq!(
             store
-                .latest_operation_for_application(&app.application.id)
+                .latest_operation_for_application(app.application.id())
                 .await
                 .unwrap()
                 .unwrap()
@@ -1755,7 +1762,10 @@ mod repository_deployments {
             "unchanged image references must be refreshed"
         );
         let current = harness.store.get(&first.application_id).await.unwrap();
-        assert_eq!(current.application.spec.manifest.unwrap().path, "next.json");
+        assert_eq!(
+            current.application.spec().manifest.as_ref().unwrap().path,
+            "next.json"
+        );
         assert_eq!(current.resolved.unwrap().services[0].replicas, 2);
         assert_eq!(harness.store.list(None, 50).await.unwrap().items.len(), 1);
         next.spec.manifest = None;
@@ -1776,7 +1786,7 @@ mod repository_deployments {
                 .await
                 .unwrap()
                 .application
-                .spec
+                .spec()
                 .manifest
                 .is_none()
         );
@@ -1959,9 +1969,14 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
     let (application_id, operation_id) = {
         let mut harness = ControllerHarness::new().await;
-        harness.application.spec.services[0]
+        let mut manifest = harness.application.to_manifest();
+        manifest.spec.services[0]
             .environment
             .insert("TOKEN".into(), "must-not-appear-in-traces".into());
+        harness.application = manifest
+            .validate()
+            .unwrap()
+            .normalize(harness.application.id().clone());
         harness.resolved = compile_application(
             &harness.application,
             InstanceId::parse(harness.store.instance_id()).unwrap(),
@@ -1974,7 +1989,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
             .scan(&CancellationToken::new())
             .await
             .unwrap();
-        (harness.application.id.to_string(), operation.id)
+        (harness.application.id().to_string(), operation.id)
     };
     let text = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
     assert!(!text.contains("must-not-appear-in-traces"));

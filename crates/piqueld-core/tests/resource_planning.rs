@@ -23,7 +23,7 @@ fn instance() -> InstanceId {
 fn resolutions() -> ResolutionSet {
     ResolutionSet {
         sources: [(
-            "web".into(),
+            piqueld_core::ServiceName::parse("web").unwrap(),
             ResolvedSource::Image {
                 requested: "ghcr.io/example/notes:1.4.0".into(),
                 digest_reference: format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
@@ -88,7 +88,7 @@ fn image_resolution_is_the_only_pending_compilation_input() {
     let app = application();
     let missing = ResolutionSet::default();
     assert!(
-        matches!(preview_resolution(&app, &missing).as_slice(), [ResolutionRequirement::ResolveImage { service, .. }] if service == "web")
+        matches!(preview_resolution(&app, &missing).as_slice(), [ResolutionRequirement::ResolveImage { service, .. }] if service.as_str() == "web")
     );
     let desired = compile_application(&app, instance(), &resolutions()).unwrap();
     assert_eq!(

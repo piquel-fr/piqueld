@@ -2,8 +2,9 @@
 
 `piqueld-core` contains deterministic manifest validation, resource compilation,
 planning, and shared lifecycle records. It performs no Docker or database I/O.
-Manifest input and normalized state share the same service, mount, health-check,
-and resource-limit types.
+Manifest input keeps raw strings for aggregate validation. Normalized state
+exposes immutable service and mount views with typed logical names. Deserializing
+normalized state revalidates all manifest rules and restores canonical ordering.
 
 ```text
 manifest + resolved image digests -> desired resources
