@@ -6,6 +6,15 @@ validate: fmt-check lint check test doc-test deny openapi-check boundary check-w
 build:
     @cargo build --workspace --locked
 
+# Native CLI validation on Linux and macOS, including its shared contracts.
+validate-cli:
+    @cargo clippy --locked --package piquelctl --package piqueld-client --package piqueld-core --all-targets --all-features -- -D warnings
+    @cargo nextest run --locked --package piquelctl --package piqueld-client --package piqueld-core
+    @cargo test --locked --doc --package piqueld-client --package piqueld-core
+
+build-cli:
+    @cargo build --release --locked --package piquelctl
+
 run *ARGS:
     @cargo run --package piquelctl -- {{ARGS}}
 

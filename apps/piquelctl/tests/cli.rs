@@ -134,6 +134,8 @@ where
             while served < expected_requests && !stop_for_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        // BSD sockets inherit the listener's nonblocking mode.
+                        stream.set_nonblocking(false).expect("blocking request I/O");
                         served += 1;
                         deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
                         serve_stream(stream, &records_for_thread, &handler_for_thread);
@@ -162,6 +164,8 @@ where
             while served < expected_requests && !stop_for_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        // BSD sockets inherit the listener's nonblocking mode.
+                        stream.set_nonblocking(false).expect("blocking request I/O");
                         served += 1;
                         deadline = std::time::Instant::now() + ACCEPT_TIMEOUT;
                         serve_stream(stream, &records_for_thread, &handler_for_thread);
@@ -212,10 +216,19 @@ fn serve_stream<S>(
         reply.content_type,
         reply.body.len()
     );
-    stream
+    if let Err(error) = stream
         .write_all(header.as_bytes())
-        .expect("HTTP response headers");
-    stream.write_all(&reply.body).expect("HTTP response body");
+        .and_then(|()| stream.write_all(&reply.body))
+    {
+        // Timeout and interrupt tests deliberately close the client connection.
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            ),
+            "HTTP response: {error}"
+        );
+    }
 }
 
 fn read_request<S: Read>(stream: &mut S) -> Option<Request> {
