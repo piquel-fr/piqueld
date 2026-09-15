@@ -1,5 +1,6 @@
 //! Backend-neutral desired, resolved, and observed Docker resource contracts.
 
+use crate::names::validated_string;
 use crate::{
     ApplicationId, ResourceKind, docker_resource_name,
     manifest::{
@@ -8,8 +9,7 @@ use crate::{
     },
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
-use std::{collections::BTreeMap, fmt, str::FromStr};
-use thiserror::Error;
+use std::collections::BTreeMap;
 use utoipa::ToSchema;
 
 /// Label marking a resource as managed by piqueld.
@@ -23,26 +23,11 @@ pub const SERVICE_LABEL: &str = "io.piqueld.service";
 /// Label carrying the normalized application spec hash.
 pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
 
-/// Error returned when an instance identifier violates its storage invariant.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("instance IDs must be 1-64 lowercase ASCII letters, digits, or internal hyphens")]
-pub struct InstanceIdError;
-
-/// Stable control-plane instance identity.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-#[serde(transparent)]
-pub struct InstanceId(String);
-
-impl InstanceId {
-    /// Parses a safe, stable control-plane instance identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InstanceIdError`] when the value is empty, malformed, or
-    /// outside the bounded identifier format.
-    pub fn parse(value: impl Into<String>) -> Result<Self, InstanceIdError> {
-        let value = value.into();
-        if (1..=64).contains(&value.len())
+validated_string!(
+    /// Stable control-plane instance identity.
+    InstanceId, InstanceIdError,
+    "instance IDs must be 1-64 lowercase ASCII letters, digits, or internal hyphens",
+    |value: &str| (1..=64).contains(&value.len())
             && value
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
@@ -54,98 +39,14 @@ impl InstanceId {
                 .bytes()
                 .last()
                 .is_some_and(|byte| byte.is_ascii_alphanumeric())
-        {
-            Ok(Self(value))
-        } else {
-            Err(InstanceIdError)
-        }
-    }
+);
 
-    /// Returns the persisted representation.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for InstanceId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(value).map_err(de::Error::custom)
-    }
-}
-
-impl fmt::Display for InstanceId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl FromStr for InstanceId {
-    type Err = InstanceIdError;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
-
-/// Error returned when a digest is malformed.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("SHA-256 digests must use the sha256:<64 lowercase hexadecimal digits> format")]
-pub struct Sha256DigestError;
-
-/// Explicitly tagged lowercase SHA-256 digest.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-#[serde(transparent)]
-pub struct Sha256Digest(String);
-
-impl Sha256Digest {
-    /// Parses an explicitly tagged lowercase SHA-256 digest.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Sha256DigestError`] when the value is not a lowercase
-    /// `sha256:` digest with exactly 64 hexadecimal digits.
-    pub fn parse(value: impl Into<String>) -> Result<Self, Sha256DigestError> {
-        let value = value.into();
-        if valid_sha256(&value) {
-            Ok(Self(value))
-        } else {
-            Err(Sha256DigestError)
-        }
-    }
-
-    /// Returns the persisted representation.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for Sha256Digest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(value).map_err(de::Error::custom)
-    }
-}
-
-impl fmt::Display for Sha256Digest {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl FromStr for Sha256Digest {
-    type Err = Sha256DigestError;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
+validated_string!(
+    /// Explicitly tagged lowercase SHA-256 digest.
+    Sha256Digest, Sha256DigestError,
+    "SHA-256 digests must use the sha256:<64 lowercase hexadecimal digits> format",
+    valid_sha256
+);
 
 /// Immutable image resolution used by the Docker runtime.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
