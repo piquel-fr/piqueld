@@ -165,13 +165,23 @@ pub async fn resolve_image_digest(
 ) -> Result<String, DockerError> {
     let repository = image_repository(reference)
         .ok_or(DockerError::ImageResolution("parse image repository"))?;
+    let requested_digest = reference.split_once('@').map(|(_, digest)| digest);
     for attempt in 0..IMAGE_RESOLVE_ATTEMPTS {
         let before = matching_repo_digests(source, reference, &repository).await?;
         source.pull(reference).await?;
         let after = matching_repo_digests(source, reference, &repository).await?;
         let Some(digest) = after
             .iter()
-            .find(|digest| before.is_empty() || before.contains(*digest))
+            .find(|digest| {
+                requested_digest.map_or_else(
+                    || before.is_empty() || before.contains(*digest),
+                    |requested| {
+                        digest
+                            .split_once('@')
+                            .is_some_and(|(_, resolved)| resolved == requested)
+                    },
+                )
+            })
             .cloned()
         else {
             if after.is_empty() {

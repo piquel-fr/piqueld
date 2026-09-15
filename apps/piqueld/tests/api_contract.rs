@@ -1245,6 +1245,15 @@ async fn served_openapi_document_matches_the_generated_snapshot_and_resolves_ref
     let generated =
         serde_json::to_value(piqueld::api::openapi_document()).expect("document serializes");
     assert_eq!(document_response.body, generated);
+    for schema in ["ImageReference", "RepositoryDigest", "ImmutableImage"] {
+        assert!(
+            generated
+                .pointer(&format!("/components/schemas/{schema}/pattern"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|pattern| !pattern.is_empty()),
+            "{schema} must expose its validation pattern"
+        );
+    }
 
     let text = serde_json::to_string(&generated).expect("document stringifies");
     let mut unresolved = Vec::new();

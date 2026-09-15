@@ -4,12 +4,18 @@ use crate::{names::validated_string, resource::Sha256Digest};
 
 validated_string!(
     /// A syntactically valid requested container image reference.
+    #[schema(
+        pattern = r"^(?=.{1,512}$)(?=.{1,255}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@[a-z][a-z0-9]*(?:[_+.-][a-z][a-z0-9]*)*:[A-Za-z0-9=_-]{32,})?$)(?:(?:(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?:0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@[a-z][a-z0-9]*(?:[_+.-][a-z][a-z0-9]*)*:[A-Za-z0-9=_-]{32,})?$"
+    )]
     ImageReference, ImageReferenceError,
     "image reference must use a supported repository, optional tag, and optional SHA-256 digest",
     crate::manifest::valid_image_reference
 );
 validated_string!(
     /// A repository reference pinned to an explicit SHA-256 digest.
+    #[schema(
+        pattern = r"^(?=.{1,512}$)(?=.{1,255}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$)(?:(?:(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?:0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$"
+    )]
     RepositoryDigest, RepositoryDigestError,
     "repository digest must use repository@sha256:<64 lowercase hexadecimal digits>",
     crate::resource::immutable_digest_reference
@@ -21,6 +27,9 @@ validated_string!(
     /// use piqueld_core::{ImageReference, ImmutableImage};
     /// let runtime: ImmutableImage = ImageReference::parse("alpine:latest").unwrap();
     /// ```
+    #[schema(
+        pattern = r"^(?:sha256:[0-9a-f]{64}|(?=.{1,512}$)(?=.{1,255}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$)(?:(?:(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?:0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64})$"
+    )]
     ImmutableImage, ImmutableImageError,
     "runtime image must be a repository digest or local SHA-256 image ID",
     |value: &str| crate::resource::immutable_digest_reference(value) || Sha256Digest::parse(value).is_ok()

@@ -9,8 +9,8 @@ macro_rules! validated_string {
         #[error($message)]
         pub struct $error;
 
-        $(#[$meta])*
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, utoipa::ToSchema)]
+        $(#[$meta])*
         #[serde(transparent)]
         pub struct $name(String);
 
