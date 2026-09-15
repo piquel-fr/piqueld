@@ -11,7 +11,7 @@ use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
     manifest::{ApplicationManifest, Source},
     planner::ActionKind,
-    resource::ResolvedSource,
+    resource::{ResolvedSource, image_repository},
 };
 use std::{collections::BTreeMap, future::IntoFuture, sync::Arc};
 use tempfile::TempDir;
@@ -66,9 +66,8 @@ impl RuntimeBoundary for FakeRuntime {
                 let Source::Image { image } = &service.source else {
                     panic!("expected image fixture")
                 };
-                let repository = image
-                    .rsplit_once(':')
-                    .map_or(image.as_str(), |value| value.0);
+                let repository =
+                    image_repository(image).expect("validated fixture image has a repository");
                 (
                     service.name.clone(),
                     ResolvedSource::parse_image(
@@ -115,6 +114,28 @@ fn manifest() -> ApplicationManifest {
         }]}
     }))
     .expect("fixture is valid")
+}
+
+#[tokio::test]
+async fn fake_runtime_accepts_digest_pinned_requested_images() {
+    let mut input = manifest();
+    let Source::Image { image } = &mut input.spec.services[0].source else {
+        panic!("expected image fixture")
+    };
+    *image = format!("ghcr.io/example/notes@sha256:{}", "b".repeat(64));
+    let application = input
+        .validate()
+        .unwrap()
+        .normalize(piqueld_core::ApplicationId::parse("app-digest-fixture").unwrap());
+    let runtime = FakeRuntime {
+        instance: InstanceId::parse("test").unwrap(),
+        unavailable: std::sync::atomic::AtomicBool::new(false),
+    };
+
+    runtime
+        .prepare(&application, &ResolutionSet::default())
+        .await
+        .expect("digest-pinned image resolves");
 }
 
 async fn state(temp: &TempDir) -> ApiState {
