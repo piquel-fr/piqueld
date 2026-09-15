@@ -23,7 +23,22 @@ impl BuildLog {
 
 pub(crate) struct BuildAttempt {
     pub(crate) log: BuildLog,
-    finished: bool,
+    completion: Completion,
+}
+
+enum Completion {
+    Running,
+    Pending(BuildState, Option<String>),
+    Persisted,
+}
+impl Completion {
+    fn retry(self) -> Option<(BuildState, Option<String>)> {
+        match self {
+            Self::Running => Some((BuildState::Interrupted, None)),
+            Self::Pending(state, image) => Some((state, image)),
+            Self::Persisted => None,
+        }
+    }
 }
 impl BuildAttempt {
     pub(crate) async fn start(
@@ -38,7 +53,7 @@ impl BuildAttempt {
             .await?;
         Ok(Self {
             log: BuildLog { store, id },
-            finished: false,
+            completion: Completion::Running,
         })
     }
     pub(crate) async fn finish(
@@ -46,27 +61,50 @@ impl BuildAttempt {
         state: BuildState,
         image: Option<&str>,
     ) -> Result<(), StoreError> {
+        let image = image.map(str::to_owned);
+        self.completion = Completion::Pending(state, image.clone());
         self.log
             .store
-            .finish_build(self.log.id, state, image)
+            .finish_build(self.log.id, state, image.as_deref())
             .await?;
-        self.finished = true;
+        self.completion = Completion::Persisted;
         Ok(())
     }
 }
 impl Drop for BuildAttempt {
     fn drop(&mut self) {
-        if !self.finished {
-            let log = self.log.clone();
-            tokio::spawn(async move {
-                if let Err(error) = log
-                    .store
-                    .finish_build(log.id, BuildState::Interrupted, None)
-                    .await
-                {
-                    tracing::error!(build_id=log.id,error=?error,"failed to record interrupted build; startup recovery will retry");
-                }
-            });
-        }
+        let Some((state, image)) =
+            std::mem::replace(&mut self.completion, Completion::Persisted).retry()
+        else {
+            return;
+        };
+        let log = self.log.clone();
+        tokio::spawn(async move {
+            if let Err(error) = log
+                .store
+                .finish_build(log.id, state, image.as_deref())
+                .await
+            {
+                tracing::error!(build_id=log.id,error=?error,"failed to record build completion; startup recovery will mark it interrupted");
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_retry_preserves_pending_terminal_result() {
+        assert_eq!(
+            Completion::Pending(BuildState::Succeeded, Some("sha256:image".into())).retry(),
+            Some((BuildState::Succeeded, Some("sha256:image".into())))
+        );
+        assert_eq!(
+            Completion::Running.retry(),
+            Some((BuildState::Interrupted, None))
+        );
+        assert_eq!(Completion::Persisted.retry(), None);
     }
 }
