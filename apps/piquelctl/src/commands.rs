@@ -16,11 +16,7 @@ use piqueld_client::{
     OperationState, Page, Source,
 };
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeSet,
-    io::{self, Write as _},
-    path::PathBuf,
-};
+use std::{collections::BTreeSet, io::Write as _, path::PathBuf};
 use tokio::{signal, time};
 
 use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
@@ -112,7 +108,7 @@ async fn builds(
     }
     for build in page.items {
         writeln!(
-            io::stdout().lock(),
+            cli.output(),
             "{}  {}  {}  {:?}  {}",
             build.id,
             build.application_id,
@@ -122,7 +118,7 @@ async fn builds(
         )?;
     }
     if let Some(cursor) = page.next_cursor {
-        writeln!(io::stdout().lock(), "next cursor: {cursor}")?;
+        writeln!(cli.output(), "next cursor: {cursor}")?;
     }
     Ok(())
 }
@@ -138,14 +134,16 @@ async fn build_logs(cli: &Cli, client: &Client, id: i64, offset: i64) -> Result<
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
         .collect::<String>();
-    write!(io::stdout().lock(), "{text}")?;
-    if page.expired {
+    write!(cli.output(), "{text}")?;
+    if page.expired && !cli.quiet {
         eprintln!("Build output has expired.");
     }
-    if page.truncated {
+    if page.truncated && !cli.quiet {
         eprintln!("Build output was truncated at the configured byte limit.");
     }
-    if let Some(offset) = page.next_offset {
+    if let Some(offset) = page.next_offset
+        && !cli.quiet
+    {
         eprintln!("Continue with --offset {offset}");
     }
     Ok(())
