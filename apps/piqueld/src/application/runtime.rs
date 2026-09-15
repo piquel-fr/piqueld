@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 
-/// Runtime boundary backed by Docker.
-pub struct DockerRuntime<D> {
+/// Application runtime orchestration backed by Docker.
+pub struct ApplicationRuntime<D> {
     docker: Arc<D>,
     instance_id: InstanceId,
     wake: Arc<Notify>,
@@ -27,8 +27,8 @@ pub struct DockerRuntime<D> {
     progress: Option<(Arc<crate::store::Store>, String)>,
 }
 
-impl<D> DockerRuntime<D> {
-    /// Creates a Docker runtime adapter with the supplied input-resolution budget.
+impl<D> ApplicationRuntime<D> {
+    /// Creates application runtime orchestration with the supplied preparation budget.
     #[must_use]
     pub fn new(
         docker: Arc<D>,
@@ -56,7 +56,7 @@ impl<D> DockerRuntime<D> {
 }
 
 #[async_trait]
-impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
+impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     async fn logs(
         &self,
         id: &piqueld_core::ApplicationId,
@@ -214,7 +214,7 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
     }
 }
 
-impl<D: DockerApi> DockerRuntime<D> {
+impl<D: DockerApi> ApplicationRuntime<D> {
     async fn prepare_git(
         &self,
         application: &NormalizedApplication,

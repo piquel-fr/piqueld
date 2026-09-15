@@ -455,7 +455,7 @@ async fn git_build_runs_as_a_local_swarm_image() {
     let app = piqueld_core::parse_json(&manifest.to_string())
         .unwrap()
         .normalize(ApplicationId::parse("git-local-build").unwrap());
-    let runtime = piqueld::application::DockerRuntime::new(
+    let runtime = piqueld::application::ApplicationRuntime::new(
         std::sync::Arc::new(docker.clone()),
         InstanceId::parse("git-build-test").unwrap(),
         std::sync::Arc::new(tokio::sync::Notify::new()),
