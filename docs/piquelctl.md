@@ -4,14 +4,7 @@
 public `piqueld-client` contracts and talks to the daemon over a Unix socket by
 default.
 
-## Installation on macOS
-
-The CLI supports Apple Silicon Macs. With Rust 1.96 or newer and
-Apple's Command Line Tools installed, build and install from the repository:
-
-```console
-cargo install --path apps/piquelctl --locked
-```
+## macOS support
 
 On Apple Silicon, Nix users can run `nix build .#cli` or
 `nix run .#cli -- --help`. On macOS the default flake package is also the CLI;

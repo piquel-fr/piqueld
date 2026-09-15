@@ -54,8 +54,8 @@ provides a reproducible development shell and the flake contains deployable
 packages. macOS supports the CLI on Apple Silicon: use
 `just validate-cli` for CLI development and `nix build .#cli` for the Apple
 Silicon Nix package.
-See [macOS installation](docs/piquelctl.md#installation-on-macos) for Cargo
-installation and connecting to a Linux daemon. The full Linux validation command is:
+See [macOS support](docs/piquelctl.md#macos-support) for development and
+connecting to a Linux daemon. The full Linux validation command is:
 
 ```console
 just
