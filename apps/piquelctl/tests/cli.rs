@@ -1288,6 +1288,29 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
         }
         server.finish();
     }
+    let server = start_server(false, 1, |_| {
+        Reply::json(json!({"items": [], "next_cursor": null}))
+    });
+    let output = run_human(&server, &["--quiet", "builds", "list"]);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    server.finish();
+
+    let server = start_server(false, 1, |_| {
+        Reply::json(json!({
+            "text": "build output",
+            "next_offset": 64,
+            "truncated": true,
+            "expired": true
+        }))
+    });
+    let output = run_human(&server, &["--quiet", "builds", "logs", "1"]);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    server.finish();
+
     let output = Command::new(env!("CARGO_BIN_EXE_piquelctl"))
         .args(["--quiet", "--socket", "/nonexistent/piqueld.sock", "status"])
         .output()

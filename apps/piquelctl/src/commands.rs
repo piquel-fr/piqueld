@@ -1,6 +1,7 @@
 use crate::{
     cli::{
-        ApplyArgs, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs, ReconcileArgs, RenameArgs,
+        ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs,
+        ReconcileArgs, RenameArgs,
     },
     error::{CliError, ErrorKind, Result},
     output::{Progress, blocked_plan_error, emit_json, render_operation, render_plan},
@@ -42,6 +43,13 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
             )
             .await
         }
+        Command::Builds(args) => match &args.command {
+            BuildCommand::List {
+                application,
+                cursor,
+            } => builds(cli, &client, application.as_deref(), cursor.as_deref()).await,
+            BuildCommand::Logs { id, offset } => build_logs(cli, &client, *id, *offset).await,
+        },
         Command::Plan(args) => plan_command(cli, &client, args).await,
         Command::Apply(args) => apply(cli, &client, args).await,
         Command::Delete(args) => delete(cli, &client, args).await,
@@ -86,6 +94,59 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
             Ok(())
         }
     }
+}
+
+async fn builds(
+    cli: &Cli,
+    client: &Client,
+    application: Option<&str>,
+    cursor: Option<&str>,
+) -> Result<()> {
+    let page = client.builds(application, cursor).await?;
+    if cli.json {
+        return emit_json(&page);
+    }
+    for build in page.items {
+        writeln!(
+            cli.output(),
+            "{}  {}  {}  {:?}  {}",
+            build.id,
+            build.application_id,
+            build.service,
+            build.state,
+            build.started_at_ms
+        )?;
+    }
+    if let Some(cursor) = page.next_cursor {
+        writeln!(cli.output(), "next cursor: {cursor}")?;
+    }
+    Ok(())
+}
+
+async fn build_logs(cli: &Cli, client: &Client, id: i64, offset: i64) -> Result<()> {
+    let page = client.build_logs(id, offset).await?;
+    if cli.json {
+        return emit_json(&page);
+    }
+    // Persist original output, but never execute terminal controls when displaying it.
+    let text = page
+        .text
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect::<String>();
+    write!(cli.output(), "{text}")?;
+    if page.expired && !cli.quiet {
+        eprintln!("Build output has expired.");
+    }
+    if page.truncated && !cli.quiet {
+        eprintln!("Build output was truncated at the configured byte limit.");
+    }
+    if let Some(offset) = page.next_offset
+        && !cli.quiet
+    {
+        eprintln!("Continue with --offset {offset}");
+    }
+    Ok(())
 }
 
 fn build_client(cli: &Cli) -> Result<Client> {

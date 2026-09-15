@@ -13,6 +13,12 @@ pub(crate) struct Checkout {
 
 impl Checkout {
     pub(crate) async fn clone(repository: &GitRepository) -> anyhow::Result<Self> {
+        Self::clone_recorded(repository, None).await
+    }
+    async fn clone_recorded(
+        repository: &GitRepository,
+        log: Option<&crate::build::BuildLog>,
+    ) -> anyhow::Result<Self> {
         let mut errors = Vec::new();
         repository.validate("repository", &mut errors);
         if !errors.is_empty() {
@@ -26,24 +32,27 @@ impl Checkout {
             clone.args(["--branch", &repository.branch]);
         }
         clone.arg("--").arg(&repository.url).arg(&root);
-        crate::command::LoggedCommand::run(&mut clone, "clone Git repository").await?;
+        crate::command::LoggedCommand::run_recorded(&mut clone, "clone Git repository", log)
+            .await?;
         if let Some(commit) = &repository.commit {
-            crate::command::LoggedCommand::run(
+            crate::command::LoggedCommand::run_recorded(
                 Self::command()
                     .arg("-C")
                     .arg(&root)
                     .args(["fetch", "origin", commit]),
                 "fetch pinned Git commit",
+                log,
             )
             .await?;
         }
         let revision = repository.commit.as_deref().unwrap_or("HEAD");
-        crate::command::LoggedCommand::run(
+        crate::command::LoggedCommand::run_recorded(
             Self::command()
                 .arg("-C")
                 .arg(&root)
                 .args(["checkout", "--detach", revision, "--"]),
             "checkout Git commit",
+            log,
         )
         .await?;
         let output = Self::command()
@@ -104,7 +113,18 @@ impl Checkout {
         build: &piqueld_core::manifest::Build,
         docker: &impl crate::docker::DockerApi,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
-        let checkout = Self::clone(repository).await?;
+        Self::prepare_recorded(repository, build, docker, None).await
+    }
+    pub(crate) async fn prepare_recorded(
+        repository: &GitRepository,
+        build: &piqueld_core::manifest::Build,
+        docker: &impl crate::docker::DockerApi,
+        log: Option<&crate::build::BuildLog>,
+    ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
+        let checkout = Self::clone_recorded(repository, log).await?;
+        if let Some(log) = log {
+            log.commit(&checkout.commit).await?;
+        }
         let piqueld_core::manifest::Build::Docker {
             dockerfile,
             context,
@@ -112,7 +132,7 @@ impl Checkout {
         let dockerfile = checkout.path(dockerfile).await?;
         let context = checkout.path(context).await?;
         let image = docker
-            .build_image(&dockerfile, &context)
+            .build_image_recorded(&dockerfile, &context, log)
             .await
             .context("build Git source image")?;
         Ok((checkout.commit, image))

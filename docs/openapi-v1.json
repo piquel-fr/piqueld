@@ -701,6 +701,130 @@
           }
         ]
       },
+      "BuildLogPage": {
+        "description": "Bounded byte-offset page of build output.",
+        "properties": {
+          "expired": {
+            "description": "Retention removed the output.",
+            "type": "boolean"
+          },
+          "next_offset": {
+            "description": "Byte offset of the next page, when more output exists.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "Lossy UTF-8 decoding of this output page.",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "The build exceeded its total output cap.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text",
+          "truncated",
+          "expired"
+        ],
+        "type": "object"
+      },
+      "BuildRecord": {
+        "description": "Durable source-preparation attempt, independent of the build executor.",
+        "properties": {
+          "application_id": {
+            "description": "Owning application ID.",
+            "type": "string"
+          },
+          "commit": {
+            "description": "Resolved Git commit, when checkout completed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at_ms": {
+            "description": "Completion time, absent while running.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Monotonic build identifier.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "image_id": {
+            "description": "Built image identifier, when successful.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "log_bytes": {
+            "description": "Number of currently retained output bytes.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "log_expired": {
+            "description": "Output was removed by retention.",
+            "type": "boolean"
+          },
+          "log_truncated": {
+            "description": "Output exceeded the configured per-build cap.",
+            "type": "boolean"
+          },
+          "operation_id": {
+            "description": "Source operation ID, retained even after operation pruning.",
+            "type": "string"
+          },
+          "service": {
+            "description": "Logical service name.",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source",
+            "description": "Requested build source."
+          },
+          "started_at_ms": {
+            "description": "Start time in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BuildState",
+            "description": "Current attempt outcome."
+          }
+        },
+        "required": [
+          "id",
+          "application_id",
+          "operation_id",
+          "service",
+          "source",
+          "state",
+          "started_at_ms",
+          "log_bytes",
+          "log_truncated",
+          "log_expired"
+        ],
+        "type": "object"
+      },
+      "BuildState": {
+        "description": "Outcome of a source-preparation attempt.",
+        "enum": [
+          "running",
+          "succeeded",
+          "failed",
+          "interrupted"
+        ],
+        "type": "string"
+      },
       "Convergence": {
         "description": "Aggregate health state derived from observed tasks.",
         "enum": [
@@ -1239,6 +1363,46 @@
         ],
         "type": "object"
       },
+      "Envelope_BuildLogPage": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Bounded byte-offset page of build output.",
+            "properties": {
+              "expired": {
+                "description": "Retention removed the output.",
+                "type": "boolean"
+              },
+              "next_offset": {
+                "description": "Byte offset of the next page, when more output exists.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "text": {
+                "description": "Lossy UTF-8 decoding of this output page.",
+                "type": "string"
+              },
+              "truncated": {
+                "description": "The build exceeded its total output cap.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "text",
+              "truncated",
+              "expired"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_HostConfiguration": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -1442,6 +1606,118 @@
                     "delete_intent",
                     "created_at_ms",
                     "updated_at_ms"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_Page_BuildRecord": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Cursor-paginated API response.",
+            "properties": {
+              "items": {
+                "description": "Items in this page.",
+                "items": {
+                  "description": "Durable source-preparation attempt, independent of the build executor.",
+                  "properties": {
+                    "application_id": {
+                      "description": "Owning application ID.",
+                      "type": "string"
+                    },
+                    "commit": {
+                      "description": "Resolved Git commit, when checkout completed.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "finished_at_ms": {
+                      "description": "Completion time, absent while running.",
+                      "format": "int64",
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "id": {
+                      "description": "Monotonic build identifier.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "image_id": {
+                      "description": "Built image identifier, when successful.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "log_bytes": {
+                      "description": "Number of currently retained output bytes.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "log_expired": {
+                      "description": "Output was removed by retention.",
+                      "type": "boolean"
+                    },
+                    "log_truncated": {
+                      "description": "Output exceeded the configured per-build cap.",
+                      "type": "boolean"
+                    },
+                    "operation_id": {
+                      "description": "Source operation ID, retained even after operation pruning.",
+                      "type": "string"
+                    },
+                    "service": {
+                      "description": "Logical service name.",
+                      "type": "string"
+                    },
+                    "source": {
+                      "$ref": "#/components/schemas/Source",
+                      "description": "Requested build source."
+                    },
+                    "started_at_ms": {
+                      "description": "Start time in Unix milliseconds.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "state": {
+                      "$ref": "#/components/schemas/BuildState",
+                      "description": "Current attempt outcome."
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "application_id",
+                    "operation_id",
+                    "service",
+                    "source",
+                    "state",
+                    "started_at_ms",
+                    "log_bytes",
+                    "log_truncated",
+                    "log_expired"
                   ],
                   "type": "object"
                 },
@@ -4648,6 +4924,138 @@
           }
         },
         "summary": "Get application status"
+      }
+    },
+    "/api/v1/builds": {
+      "get": {
+        "operationId": "listBuilds",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "application_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_BuildRecord"
+                }
+              }
+            },
+            "description": "Build history, newest first"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/builds/{id}/logs": {
+      "get": {
+        "operationId": "buildLogs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_BuildLogPage"
+                }
+              }
+            },
+            "description": "Bounded build output"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
       }
     },
     "/api/v1/events": {

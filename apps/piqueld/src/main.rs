@@ -66,7 +66,8 @@ async fn main() -> Result<()> {
     let store = Arc::new(
         Store::open(config.server.database_path())
             .await
-            .context("failed to open control-plane state")?,
+            .context("failed to open control-plane state")?
+            .with_build_history(config.build_history.clone()),
     );
     info!(
         path = %config.server.database_path().display(),

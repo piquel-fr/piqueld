@@ -104,6 +104,15 @@ pub trait DockerApi: Send + Sync + 'static {
     /// Pulls an image reference and returns its immutable repository digest.
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError>;
     /// Builds local Docker inputs into an immutable image.
+    async fn build_image_recorded(
+        &self,
+        dockerfile: &Path,
+        context: &Path,
+        _log: Option<&crate::build::BuildLog>,
+    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
+        self.build_image(dockerfile, context).await
+    }
+    /// Builds a local image without persisting output.
     async fn build_image(
         &self,
         dockerfile: &Path,

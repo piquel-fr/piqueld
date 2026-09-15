@@ -119,7 +119,7 @@ impl<D: DockerApi> Controller<D> {
     /// Panics if the store violates its validated instance identity invariant.
     #[must_use]
     pub fn runtime(&self, wake: Arc<Notify>) -> Arc<dyn crate::application::RuntimeBoundary> {
-        Arc::new(crate::application::DockerRuntime::new(
+        Arc::new(crate::application::ApplicationRuntime::new(
             Arc::clone(&self.docker),
             piqueld_core::InstanceId::parse(self.store.instance_id())
                 .expect("store instance identity is valid"),

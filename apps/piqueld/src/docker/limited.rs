@@ -68,17 +68,27 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
             })
             .await
     }
-    async fn build_image(
+    async fn build_image_recorded(
         &self,
         dockerfile: &std::path::Path,
         context: &std::path::Path,
+        log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         let _permit = self
             .builds
             .acquire()
             .await
-            .expect("semaphore is never closed");
-        self.inner.build_image(dockerfile, context).await
+            .map_err(|_| DockerError::Unavailable("build concurrency gate"))?;
+        self.inner
+            .build_image_recorded(dockerfile, context, log)
+            .await
+    }
+    async fn build_image(
+        &self,
+        dockerfile: &std::path::Path,
+        context: &std::path::Path,
+    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
+        self.build_image_recorded(dockerfile, context, None).await
     }
     async fn observe(&self, id: &ApplicationId) -> Result<ObservedApplication, DockerError> {
         DockerTimeout::Request

@@ -17,6 +17,7 @@ pub mod operations;
 /// Control-plane status contracts.
 pub mod system;
 
+mod builds;
 mod client;
 
 pub use applications::{
@@ -40,7 +41,10 @@ pub use system::SystemStatus;
 use http::StatusCode;
 use thiserror::Error;
 
-pub use piqueld_core::api::{API_PREFIX, ApplicationLogs, Envelope, ErrorBody, LogRecord, Page};
+pub use piqueld_core::api::{
+    API_PREFIX, ApplicationLogs, BuildLogPage, BuildRecord, BuildState, Envelope, ErrorBody,
+    LogRecord, Page,
+};
 
 /// Validates a TOML application manifest and returns its editable name.
 ///

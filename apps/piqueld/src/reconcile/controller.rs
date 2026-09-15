@@ -264,7 +264,7 @@ impl<D: DockerApi> Controller<D> {
         {
             return Ok(target);
         }
-        let runtime = crate::application::DockerRuntime::new(
+        let runtime = crate::application::ApplicationRuntime::new(
             Arc::clone(&self.docker),
             piqueld_core::InstanceId::parse(self.store.instance_id()).expect("valid identity"),
             Arc::new(tokio::sync::Notify::new()),

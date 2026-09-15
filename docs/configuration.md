@@ -53,3 +53,8 @@ The dashboard is not configurable at runtime: it is embedded when the daemon
 is built with the `embedded-ui` cargo feature and absent otherwise. It is
 served on the TCP listener only, so `server.http_listen` must be set to reach
 it; the Unix API socket serves the API alone.
+
+`[build_history]` bounds persisted build output: `log_max_bytes` defaults to
+4194304 (maximum 64 MiB), and `log_retention_days` to 30 (1–3650). Build metadata
+remains until the application is deleted. Expiration removes output chunks while
+retaining the attempt and an explicit expired indicator.

@@ -3,6 +3,7 @@
 
 mod acceptance;
 mod application;
+mod build;
 mod deployment;
 mod event;
 mod operation;
@@ -198,6 +199,7 @@ pub struct ApplicationSummaryPage {
 pub struct Store {
     pool: SqlitePool,
     instance_id: String,
+    build_history: crate::config::BuildHistoryConfig,
     writers: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -305,6 +307,7 @@ impl Store {
         Ok(Self {
             pool,
             instance_id,
+            build_history: crate::config::BuildHistoryConfig::default(),
             writers: std::sync::Arc::default(),
         })
     }
