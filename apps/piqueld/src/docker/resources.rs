@@ -467,7 +467,9 @@ impl DockerApi for BollardDocker {
                     .find(|n| n.name.as_deref() == Some(desired.name.as_str()))
                 {
                     let Some(network) = self
-                        .inspect_network_complete(network.id.as_deref().unwrap_or(desired.name.as_str()))
+                        .inspect_network_complete(
+                            network.id.as_deref().unwrap_or(desired.name.as_str()),
+                        )
                         .await?
                     else {
                         return Err(DockerError::Request("inspect existing network"));
@@ -572,7 +574,10 @@ impl DockerApi for BollardDocker {
                         self.docker
                             .list_services(Some(
                                 ListServicesOptionsBuilder::default()
-                                    .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
+                                    .filters(&HashMap::from([(
+                                        "name",
+                                        vec![desired.name.to_string()],
+                                    )]))
                                     .status(true)
                                     .build(),
                             ))
@@ -580,7 +585,8 @@ impl DockerApi for BollardDocker {
                     )?;
                     let spec = Self::service_spec(desired)?;
                     match matches.into_iter().find(|s| {
-                        s.spec.as_ref().and_then(|s| s.name.as_deref()) == Some(desired.name.as_str())
+                        s.spec.as_ref().and_then(|s| s.name.as_deref())
+                            == Some(desired.name.as_str())
                     }) {
                         Some(existing) => {
                             // List responses can omit fields needed for semantic comparison.
