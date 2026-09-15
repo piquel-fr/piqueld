@@ -245,6 +245,11 @@
         color: var(--warn);
     }
 
+    .deployment-state[data-state="interrupted"] {
+        background: var(--pending-bg);
+        color: var(--pending);
+    }
+
     .snapshot-service {
         padding: 1rem 0;
         border-bottom: 1px solid var(--line);
@@ -401,6 +406,85 @@
         font-weight: 500;
     }
 
+    .build-history-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 12px;
+    }
+
+    .build-history-heading .help {
+        margin: 0;
+    }
+
+    .build-history-heading button {
+        flex-shrink: 0;
+    }
+
+    .build-summary {
+        min-height: 50px;
+    }
+
+    .build-service {
+        color: var(--muted);
+        font-size: 12px;
+    }
+
+    .expand-icon {
+        width: 1rem;
+        color: var(--muted);
+        text-align: center;
+    }
+
+    .build-body {
+        padding-top: 16px;
+    }
+
+    .build-details {
+        margin: 0 0 20px;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .build-details code {
+        overflow-wrap: anywhere;
+    }
+
+    .help-inline {
+        color: var(--muted);
+        font-size: 12px;
+    }
+
+    .build-output-heading,.build-output-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+    }
+
+    .build-output-heading h4 {
+        margin: 0;
+        font-size: 14px;
+    }
+
+    .build-output-heading .help {
+        margin: 2px 0 0;
+    }
+
+    .build-output-notice {
+        margin: 12px 0 0;
+        padding: 9px 12px;
+        border-radius: .4rem;
+        color: var(--warn);
+        background: var(--warn-bg);
+        font-size: 12px;
+    }
+
+    .build-output-footer {
+        margin-top: 10px;
+    }
+
     .tag {
         font-size: 10px;
         color: var(--muted);
@@ -494,6 +578,15 @@
 
         .deployment-time {
             margin-left: 0;
+        }
+
+        .build-history-heading,.build-output-heading {
+            align-items: flex-start;
+            flex-direction: column;
+        }
+
+        .build-summary .deployment-time {
+            flex-basis: 100%;
         }
 
         .rename-form {
