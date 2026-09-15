@@ -457,17 +457,19 @@ impl DockerApi for BollardDocker {
                     self.docker
                         .list_networks(Some(
                             ListNetworksOptionsBuilder::default()
-                                .filters(&HashMap::from([("name", vec![desired.name.clone()])]))
+                                .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
                                 .build(),
                         ))
                         .await,
                 )?;
                 if let Some(network) = existing
                     .into_iter()
-                    .find(|n| n.name.as_deref() == Some(&desired.name))
+                    .find(|n| n.name.as_deref() == Some(desired.name.as_str()))
                 {
                     let Some(network) = self
-                        .inspect_network_complete(network.id.as_deref().unwrap_or(&desired.name))
+                        .inspect_network_complete(
+                            network.id.as_deref().unwrap_or(desired.name.as_str()),
+                        )
                         .await?
                     else {
                         return Err(DockerError::Request("inspect existing network"));
@@ -492,7 +494,7 @@ impl DockerApi for BollardDocker {
                     "create network",
                     self.docker
                         .create_network(NetworkCreateRequest {
-                            name: desired.name.clone(),
+                            name: desired.name.to_string(),
                             driver: Some("overlay".into()),
                             internal: Some(false),
                             attachable: Some(true),
@@ -521,7 +523,7 @@ impl DockerApi for BollardDocker {
                     self.docker
                         .list_volumes(Some(
                             ListVolumesOptionsBuilder::default()
-                                .filters(&HashMap::from([("name", vec![desired.name.clone()])]))
+                                .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
                                 .build(),
                         ))
                         .await,
@@ -529,7 +531,7 @@ impl DockerApi for BollardDocker {
                 .volumes
                 .unwrap_or_default()
                 .into_iter()
-                .find(|v| v.name == desired.name);
+                .find(|v| v.name == desired.name.as_str());
                 if let Some(volume) = existing {
                     let runtime_configuration_matches = Self::volume_configuration_matches(&volume);
                     let labels = volume.labels.into_iter().collect::<BTreeMap<_, _>>();
@@ -546,7 +548,7 @@ impl DockerApi for BollardDocker {
                     "create volume",
                     self.docker
                         .create_volume(VolumeCreateOptions {
-                            name: Some(desired.name.clone()),
+                            name: Some(desired.name.to_string()),
                             driver: Some("local".into()),
                             driver_opts: Some(HashMap::new()),
                             labels: Some(desired.labels.clone().into_iter().collect()),
@@ -572,7 +574,10 @@ impl DockerApi for BollardDocker {
                         self.docker
                             .list_services(Some(
                                 ListServicesOptionsBuilder::default()
-                                    .filters(&HashMap::from([("name", vec![desired.name.clone()])]))
+                                    .filters(&HashMap::from([(
+                                        "name",
+                                        vec![desired.name.to_string()],
+                                    )]))
                                     .status(true)
                                     .build(),
                             ))
@@ -580,7 +585,8 @@ impl DockerApi for BollardDocker {
                     )?;
                     let spec = Self::service_spec(desired)?;
                     match matches.into_iter().find(|s| {
-                        s.spec.as_ref().and_then(|s| s.name.as_deref()) == Some(&desired.name)
+                        s.spec.as_ref().and_then(|s| s.name.as_deref())
+                            == Some(desired.name.as_str())
                     }) {
                         Some(existing) => {
                             // List responses can omit fields needed for semantic comparison.
@@ -588,7 +594,7 @@ impl DockerApi for BollardDocker {
                             // deciding whether an update is necessary.
                             let inspected = self
                                 .inspect_service_wire(
-                                    existing.id.as_deref().unwrap_or(&desired.name),
+                                    existing.id.as_deref().unwrap_or(desired.name.as_str()),
                                 )
                                 .await?;
                             let Some(existing) = inspected else {
@@ -639,7 +645,7 @@ impl DockerApi for BollardDocker {
                                 .version
                                 .and_then(|v| v.index)
                                 .ok_or(DockerError::Request("read existing service version"))?;
-                            self.update_service_wire(&desired.name, version, &spec)
+                            self.update_service_wire(desired.name.as_str(), version, &spec)
                                 .await
                         }
                         None => self.create_service_wire(&spec).await,

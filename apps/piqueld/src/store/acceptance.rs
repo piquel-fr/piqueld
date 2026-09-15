@@ -298,7 +298,7 @@ impl Store {
                 .map_err(StoreError::invalid_input)?,
         );
         if let Some(target) = app.resolved.as_mut() {
-            target.name.clone_from(&name);
+            target.name.clone_from(&app.application.metadata().name);
         }
         let desired = serde_json::to_string(&app.application).map_err(StoreError::corrupt)?;
         let resolved = app

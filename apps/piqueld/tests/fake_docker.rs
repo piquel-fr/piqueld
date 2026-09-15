@@ -163,17 +163,21 @@ impl ImageSource for RegistryView {
 
 fn observed_service(desired: &DesiredService) -> ObservedService {
     ObservedService {
-        name: desired.name.clone(),
+        name: desired.name.to_string(),
         image: desired.image.clone(),
         replicas: desired.replicas,
         environment: desired.environment.clone(),
         command: desired.command.clone(),
         arguments: desired.arguments.clone(),
-        mounts: desired.mounts.clone(),
+        mounts: desired
+            .mounts
+            .iter()
+            .map(piqueld_core::resource::ObservedMount::from)
+            .collect(),
         healthcheck: desired.healthcheck.clone(),
         healthcheck_configured: desired.healthcheck.is_some(),
         resources: desired.resources.clone(),
-        networks: desired.networks.clone(),
+        networks: desired.networks.iter().map(ToString::to_string).collect(),
         labels: desired.labels.clone(),
         runtime_configuration_matches: true,
         tasks: vec![ObservedTask {
@@ -265,7 +269,7 @@ impl DockerApi for FakeDocker {
         if let Some(existing) = observed
             .networks
             .iter()
-            .find(|network| network.name == desired.name)
+            .find(|network| network.name == desired.name.as_str())
         {
             if !Self::ownership_matches(&existing.labels, &desired.labels)
                 || existing.labels.contains_key(SERVICE_LABEL)
@@ -278,7 +282,7 @@ impl DockerApi for FakeDocker {
             return Ok(());
         }
         observed.networks.push(ObservedNetwork {
-            name: desired.name.clone(),
+            name: desired.name.to_string(),
             runtime_configuration_matches: true,
             labels: desired.labels.clone(),
         });
@@ -294,7 +298,7 @@ impl DockerApi for FakeDocker {
         if let Some(existing) = observed
             .volumes
             .iter()
-            .find(|volume| volume.name == desired.name)
+            .find(|volume| volume.name == desired.name.as_str())
         {
             if !Self::ownership_matches(&existing.labels, &desired.labels)
                 || existing.labels.contains_key(SERVICE_LABEL)
@@ -307,7 +311,7 @@ impl DockerApi for FakeDocker {
             return Ok(());
         }
         observed.volumes.push(ObservedVolume {
-            name: desired.name.clone(),
+            name: desired.name.to_string(),
             runtime_configuration_matches: true,
             labels: desired.labels.clone(),
         });
@@ -323,14 +327,14 @@ impl DockerApi for FakeDocker {
         if let Some(existing) = observed
             .services
             .iter()
-            .find(|service| service.name == desired.name)
+            .find(|service| service.name == desired.name.as_str())
             && !Self::ownership_matches(&existing.labels, &desired.labels)
         {
             return Err(DockerError::OwnershipConflict);
         }
         observed
             .services
-            .retain(|service| service.name != desired.name);
+            .retain(|service| service.name != desired.name.as_str());
         observed.services.push(observed_service(desired));
         Ok(())
     }
@@ -848,7 +852,7 @@ async fn controller_refuses_a_foreign_same_name_network() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let (store, application, resolved) = fixture_store(&directory).await;
     let foreign = ObservedNetwork {
-        name: resolved.networks[0].name.clone(),
+        name: resolved.networks[0].name.to_string(),
         runtime_configuration_matches: true,
         labels: foreign_labels(application.id()),
     };
@@ -871,7 +875,7 @@ async fn controller_refuses_a_foreign_same_name_volume() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let (store, application, resolved) = fixture_store(&directory).await;
     let foreign = ObservedVolume {
-        name: resolved.volumes[0].name.clone(),
+        name: resolved.volumes[0].name.to_string(),
         runtime_configuration_matches: true,
         labels: foreign_labels(application.id()),
     };
