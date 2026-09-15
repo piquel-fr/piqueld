@@ -153,6 +153,8 @@ each result in text, and one refresh updates the complete dashboard status.
 These diagnostics never disable configuration controls.
 
 Build history is available from the main navigation and each application's Builds
-tab. Attempts show their outcome, commit, image and duration. Running attempts
+tab. Compact attempt rows expand to show source, revision, Docker build settings,
+operation timing, commit, image, and retained output size. Opening a row loads its
+output into the same accessible log viewer used by the Logs tab. Running attempts
 refresh while the page is visible; older pages remain stable. Output is read in
 bounded pages, with explicit expiration and truncation notices.

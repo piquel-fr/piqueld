@@ -1,7 +1,9 @@
 //! Build metadata and bounded output pages, independent of application runtime logs.
 use super::client_error_message;
+use super::logs::LogViewer;
+use super::management::timestamp;
 use leptos::*;
-use piqueld_client::{BuildRecord, BuildState, Client};
+use piqueld_client::{Build, BuildRecord, BuildState, Client, Source};
 use std::{cell::Cell, rc::Rc};
 
 #[component]
@@ -70,8 +72,8 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
             loading.set(false);
         });
     };
-    view! {<section class="deployment-history"><p class="help">"Every Git source preparation is recorded, including failed checkouts and cached builds. Image pulls do not create builds."</p>
-        <button disabled=move ||loading.get() on:click=move |_|refresh.set(true)>"Refresh builds"</button>
+    view! {<section class="deployment-history build-history"><div class="build-history-heading"><p class="help">"Every Git source preparation is recorded, including failed checkouts and cached builds. Image pulls do not create builds."</p>
+        <button disabled=move ||loading.get() on:click=move |_|refresh.set(true)>"Refresh builds"</button></div>
         {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}
         <Show when=move ||!loading.get() && records.with(Vec::is_empty)><p class="empty-state">"No builds recorded yet."</p></Show>
         <For each=move ||records.get() key=|build|build.id children=move |initial|{
@@ -84,6 +86,7 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
 
 #[component]
 fn BuildCard(record: Signal<BuildRecord>) -> impl IntoView {
+    let opened = create_rw_signal(false);
     let output = create_rw_signal(None::<piqueld_client::BuildLogPage>);
     let error = create_rw_signal(None::<String>);
     let loading = create_rw_signal(false);
@@ -103,33 +106,106 @@ fn BuildCard(record: Signal<BuildRecord>) -> impl IntoView {
             loading.set(false);
         });
     });
-    view! {<article class="deployment-card">
-        {move ||{let b=record.get();let state=match b.state{BuildState::Running=>"running",BuildState::Succeeded=>"succeeded",BuildState::Failed=>"failed",BuildState::Interrupted=>"interrupted"};view!{
-            <header><strong>{format!("Build #{} · {}",b.id,b.service)}</strong><span class="deployment-state" data-state=state>{state}</span></header>
-            <p><leptos_router::A href=format!("/dashboard/applications/{}",b.application_id)>{b.application_id}</leptos_router::A></p>
-            <p class="help">{format!("Started {} · Operation {}",format_time(b.started_at_ms),b.operation_id)}</p>
-            {b.finished_at_ms.map(|end|view!{<p>{format!("Duration: {} ms",end.saturating_sub(b.started_at_ms))}</p>})}
-            {b.commit.map(|commit|view!{<p>"Commit: "<code>{commit}</code></p>})}
-            {b.image_id.map(|image|view!{<p>"Image: "<code>{image}</code></p>})}
-            {b.log_truncated.then(||view!{<p class="help">"Output truncated at the configured byte limit."</p>})}
-            {b.log_expired.then(||view!{<p class="help">"Output expired; build metadata is retained."</p>})}
-        }}}
-        <button disabled=move ||loading.get() || record.get().log_expired on:click=move |_|load.call(0)>"View / refresh output"</button>
-        {move ||error.get().map(|e|view!{<p class="form-error">{e}</p>})}
-        {move ||output.get().map(|page|view!{
-            <p class="help">{format!("Output page from byte {}",offset.get())}</p>
-            <pre class="build-output">{page.text}</pre>
-            {page.expired.then(||view!{<p>"Output has expired."</p>})}
-            {page.next_offset.map(|next|view!{<button disabled=move ||loading.get() on:click=move |_|load.call(next)>"Next output page"</button>})}
-        })}
+    let toggle = move |_| {
+        let opening = !opened.get_untracked();
+        opened.set(opening);
+        if opening && output.get_untracked().is_none() && !record.get_untracked().log_expired {
+            load.call(0);
+        }
+    };
+    view! {<article class="deployment-card build-card">
+        <button class="deployment-summary build-summary" aria-expanded=move ||opened.get().to_string() on:click=toggle>
+            {move ||{let b=record.get();let state=build_state(b.state);let summary_time=build_summary_time(&b);view!{
+                <span class="deployment-state" data-state=state>{state}</span>
+                <strong>{format!("Build #{}",b.id)}</strong>
+                <span class="build-service">{b.service}</span>
+                <span class="deployment-time">{summary_time}</span>
+                <span class="expand-icon" aria-hidden="true">{if opened.get(){"−"}else{"+"}}</span>
+            }}}
+        </button>
+        <div class="deployment-body build-body" hidden=move ||!opened.get()>
+            {move ||{let b=record.get();let duration=build_duration(&b);view!{
+                <dl class="host-settings build-details">
+                    <dt>"Application"</dt>
+                    <dd><leptos_router::A href=format!("/dashboard/applications/{}",b.application_id)>{b.application_id}</leptos_router::A></dd>
+                    <dt>"Service"</dt><dd>{b.service}</dd>
+                    <dt>"Operation ID"</dt><dd><code>{b.operation_id}</code></dd>
+                    <dt>"Started"</dt><dd>{timestamp(b.started_at_ms)}</dd>
+                    <dt>"Finished"</dt><dd>{b.finished_at_ms.map(timestamp).unwrap_or_else(||"In progress".into())}</dd>
+                    <dt>"Duration"</dt><dd>{duration}</dd>
+                    {source_details(b.source)}
+                    <dt>"Resolved commit"</dt><dd>{b.commit.map(|commit|view!{<code>{commit}</code>}.into_view()).unwrap_or_else(||view!{<span class="help-inline">"Not resolved"</span>}.into_view())}</dd>
+                    <dt>"Image"</dt><dd>{b.image_id.map(|image|view!{<code>{image}</code>}.into_view()).unwrap_or_else(||view!{<span class="help-inline">"Not produced"</span>}.into_view())}</dd>
+                    <dt>"Retained output"</dt><dd>{format_bytes(b.log_bytes)}</dd>
+                </dl>
+            }}}
+            <div class="build-output-heading">
+                <div><h4>"Build output"</h4><p class="help">"Captured checkout and Docker build output."</p></div>
+                <button disabled=move ||loading.get() || record.get().log_expired on:click=move |_|load.call(0)>{move ||if loading.get(){"Loading…"}else{"Refresh output"}}</button>
+            </div>
+            {move ||record.get().log_truncated.then(||view!{<p class="build-output-notice">"Output reached the configured byte limit, so its end is not retained."</p>})}
+            {move ||record.get().log_expired.then(||view!{<p class="build-output-notice">"Output expired under the retention policy; build metadata remains available."</p>})}
+            {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}
+            {move ||output.get().map(|page|view!{
+                <LogViewer text=page.text label="Build log output" empty="No build output was captured."/>
+                <div class="build-output-footer">
+                    <span class="help-inline">{format!("Showing output from byte {}",offset.get())}</span>
+                    {page.next_offset.map(|next|view!{<button disabled=move ||loading.get() on:click=move |_|load.call(next)>"Next output page"</button>})}
+                </div>
+                {page.expired.then(||view!{<p class="build-output-notice">"Output expired while this build was open."</p>})}
+            })}
+        </div>
     </article>}
 }
 
-fn format_time(milliseconds: i64) -> String {
-    js_sys::Date::new(&leptos::wasm_bindgen::JsValue::from_f64(
-        milliseconds as f64,
-    ))
-    .to_iso_string()
-    .as_string()
-    .unwrap_or_else(|| milliseconds.to_string())
+fn build_state(state: BuildState) -> &'static str {
+    match state {
+        BuildState::Running => "running",
+        BuildState::Succeeded => "succeeded",
+        BuildState::Failed => "failed",
+        BuildState::Interrupted => "interrupted",
+    }
+}
+
+fn build_summary_time(build: &BuildRecord) -> String {
+    match build.finished_at_ms {
+        Some(_) => format!(
+            "{} · {}",
+            build_duration(build),
+            timestamp(build.started_at_ms)
+        ),
+        None => format!("Started {}", timestamp(build.started_at_ms)),
+    }
+}
+
+fn build_duration(build: &BuildRecord) -> String {
+    let Some(finished) = build.finished_at_ms else {
+        return "In progress".into();
+    };
+    let milliseconds = finished.saturating_sub(build.started_at_ms);
+    if milliseconds < 1_000 {
+        format!("{milliseconds} ms")
+    } else {
+        format!("{:.1} s", milliseconds as f64 / 1_000.0)
+    }
+}
+
+fn source_details(source: Source) -> View {
+    match source {
+        Source::Image { image } => view! {<dt>"Source"</dt><dd><code>{image}</code></dd>}.into_view(),
+        Source::Git {repository,build:Build::Docker {dockerfile,context}} => view! {
+            <dt>"Repository"</dt><dd><code>{repository.url}</code></dd>
+            <dt>"Requested revision"</dt><dd><code>{repository.commit.unwrap_or(repository.branch)}</code></dd>
+            <dt>"Dockerfile"</dt><dd><code>{dockerfile}</code></dd>
+            <dt>"Build context"</dt><dd><code>{context}</code></dd>
+        }.into_view(),
+    }
+}
+
+fn format_bytes(bytes: i64) -> String {
+    if bytes < 1_024 {
+        format!("{bytes} B")
+    } else {
+        format!("{:.1} KiB", bytes as f64 / 1_024.0)
+    }
 }

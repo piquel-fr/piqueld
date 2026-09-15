@@ -2,6 +2,7 @@
 
 mod builds;
 mod dashboard;
+mod logs;
 mod management;
 mod runtime;
 
