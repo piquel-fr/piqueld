@@ -1,12 +1,13 @@
 use crate::{
     cli::Cli,
     error::{CliError, ErrorKind, Result},
+    output::Console,
 };
 use piqueld_client::{ApplicationView, ClientError, ValidationErrors};
 use serde_json::json;
 use std::{
     future::Future,
-    io::{self, IsTerminal, Read, Write},
+    io::{self, IsTerminal, Read},
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
@@ -41,7 +42,12 @@ pub(crate) async fn interaction_changed() {
     INTERACTION_CHANGED.notified().await;
 }
 
-pub(crate) async fn confirm(noninteractive: bool, yes: bool, prompt: &str) -> Result<()> {
+pub(crate) async fn confirm(
+    console: &mut Console,
+    noninteractive: bool,
+    yes: bool,
+    prompt: &str,
+) -> Result<()> {
     if yes {
         return Ok(());
     }
@@ -51,11 +57,9 @@ pub(crate) async fn confirm(noninteractive: bool, yes: bool, prompt: &str) -> Re
             "confirmation is required in a non-interactive terminal; pass --yes",
         ));
     }
-    let prompt = prompt.to_owned();
+    console.prompt(prompt)?;
     set_interaction(true);
     let reader = tokio::task::spawn_blocking(move || -> io::Result<String> {
-        eprint!("{prompt}");
-        io::stderr().flush()?;
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
         Ok(answer)
@@ -86,9 +90,9 @@ pub(crate) async fn confirm(noninteractive: bool, yes: bool, prompt: &str) -> Re
             // The blocking reader cannot be cancelled; exiting here keeps the
             // conventional SIGINT exit code and avoids waiting on stdin.
             if let Err(error) = result {
-                eprintln!("piquelctl: could not install Ctrl-C handler: {error}");
+                console.error_message(format_args!("could not install Ctrl-C handler: {error}"));
             } else {
-                eprintln!("piquelctl: aborted by user");
+                console.error_message("aborted by user");
             }
             std::process::exit(130);
         }

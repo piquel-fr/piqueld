@@ -2,11 +2,17 @@
 use crate::{
     cli::{Cli, parse_duration},
     error::{CliError, ErrorKind, Result},
-    output::emit_json,
 };
 use clap::{ArgMatches, parser::ValueSource};
-use serde::Deserialize;
-use std::{collections::BTreeMap, fmt, io::Write as _, path::PathBuf};
+use serde::{Deserialize, Serialize};
+use std::{borrow::Cow, collections::BTreeMap, fmt, path::PathBuf};
+
+/// Effective profile data, independent of its human or machine presentation.
+#[derive(Serialize)]
+pub(crate) struct ProfileSummary<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) endpoint: Cow<'a, str>,
+}
 
 /// Sources are tracked independently: endpoint and timeout may use different overrides.
 #[derive(Debug, Default)]
@@ -112,20 +118,14 @@ impl Profiles {
         Ok(result)
     }
 
-    pub(crate) fn list(&self, cli: &Cli) -> Result<()> {
-        if cli.json {
-            let profiles: Vec<_> = self.profiles.iter().map(|(name, profile)| {
-                serde_json::json!({ "name": name, "endpoint": profile.endpoint() })
-            }).collect();
-            return emit_json(&serde_json::json!({ "profiles": profiles }));
-        }
-        if !self.profiles.is_empty() {
-            writeln!(cli.output(), "NAME\tENDPOINT")?;
-            for (name, profile) in &self.profiles {
-                writeln!(cli.output(), "{name}\t{}", profile.endpoint())?;
-            }
-        }
-        Ok(())
+    pub(crate) fn summaries(&self) -> Vec<ProfileSummary<'_>> {
+        self.profiles
+            .iter()
+            .map(|(name, profile)| ProfileSummary {
+                name,
+                endpoint: profile.endpoint(),
+            })
+            .collect()
     }
 
     pub(crate) fn resolve(&self, cli: &mut Cli, matches: &ArgMatches) -> Result<()> {

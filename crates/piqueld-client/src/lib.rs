@@ -35,7 +35,9 @@ pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{
     ApplicationId, ApplicationName, ValidatedApplication, ValidationError, ValidationErrors,
 };
-pub use piqueld_core::{ApplicationState, Convergence, Operation, OperationKind, OperationState};
+pub use piqueld_core::{
+    ApplicationState, Convergence, Event, Operation, OperationKind, OperationState,
+};
 pub use system::SystemStatus;
 
 use http::StatusCode;

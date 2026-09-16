@@ -3,30 +3,33 @@ use crate::{
         ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs,
         ReconcileArgs, RenameArgs,
     },
-    error::{CliError, ErrorKind, Result},
-    output::{Progress, blocked_plan_error, emit_json, render_operation, render_plan},
-    support::{
-        confirm, desired_replicas, looks_like_application_id, manifest_name, read_manifest,
-        retry_transport,
+    error::{CliError, ErrorKind, ErrorReport, Result},
+    output::{
+        Console, TaskOutcome,
+        reports::{
+            ApplicationRow, DeletionReport, OperationOutcomeReport, RenameReport,
+            SavedDeploymentReport, ShowReport, StatusReport,
+        },
     },
+    support::{confirm, looks_like_application_id, manifest_name, read_manifest, retry_transport},
 };
 use futures_util::StreamExt;
 use piqueld_client::{
     ApplicationSummary, ApplicationView, Client, ClientError, ListApplicationsOptions, Operation,
-    OperationState, Page, Source,
+    OperationState, Page,
 };
-use serde_json::{Value, json};
-use std::{collections::BTreeSet, io::Write as _, path::PathBuf};
+use serde_json::json;
+use std::{collections::BTreeSet, path::PathBuf};
 use tokio::{signal, time};
 
 use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
 
-pub(crate) async fn run(cli: &Cli, client: &Client) -> Result<()> {
+pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     match &cli.command {
         Command::Profiles => unreachable!("profiles are listed before connecting"),
-        Command::Status => status(cli, client).await,
-        Command::List => list(cli, client).await,
-        Command::Show { name_or_id } => show(cli, client, name_or_id).await,
+        Command::Status => status(cli, client, console).await,
+        Command::List => list(cli, client, console).await,
+        Command::Show { name_or_id } => show(console, client, name_or_id).await,
         Command::Logs {
             name_or_id,
             service,
@@ -34,7 +37,7 @@ pub(crate) async fn run(cli: &Cli, client: &Client) -> Result<()> {
             since_seconds,
         } => {
             logs(
-                cli,
+                console,
                 client,
                 name_or_id,
                 service.as_deref(),
@@ -47,16 +50,16 @@ pub(crate) async fn run(cli: &Cli, client: &Client) -> Result<()> {
             BuildCommand::List {
                 application,
                 cursor,
-            } => builds(cli, client, application.as_deref(), cursor.as_deref()).await,
-            BuildCommand::Logs { id, before } => build_logs(cli, client, *id, *before).await,
+            } => builds(console, client, application.as_deref(), cursor.as_deref()).await,
+            BuildCommand::Logs { id, before } => build_logs(console, client, *id, *before).await,
         },
-        Command::Plan(args) => plan_command(cli, client, args).await,
-        Command::Apply(args) => apply(cli, client, args).await,
-        Command::Delete(args) => delete(cli, client, args).await,
-        Command::Operation(args) => operation(cli, client, args).await,
-        Command::Reconcile(args) => reconcile_or_deploy(cli, client, args, false).await,
-        Command::Rename(args) => rename(cli, client, args).await,
-        Command::Deploy(args) => reconcile_or_deploy(cli, client, args, true).await,
+        Command::Plan(args) => plan_command(console, client, args).await,
+        Command::Apply(args) => apply(cli, client, console, args).await,
+        Command::Delete(args) => delete(cli, client, console, args).await,
+        Command::Operation(args) => operation(console, client, args).await,
+        Command::Reconcile(args) => reconcile_or_deploy(cli, client, console, args, false).await,
+        Command::Rename(args) => rename(cli, client, console, args).await,
+        Command::Deploy(args) => reconcile_or_deploy(cli, client, console, args, true).await,
         Command::Events {
             application,
             cursor,
@@ -65,89 +68,36 @@ pub(crate) async fn run(cli: &Cli, client: &Client) -> Result<()> {
             let page = client
                 .events(application.as_deref(), cursor.as_deref(), *limit)
                 .await?;
-            if cli.json {
-                return emit_json(&page);
-            }
-            for event in page.items {
-                writeln!(
-                    cli.output(),
-                    "{}\t{}\t{}\t{}\tattempt {}\t{}",
-                    event.id,
-                    event.created_at_ms,
-                    event.kind,
-                    event.operation_id.as_deref().unwrap_or("-"),
-                    event
-                        .attempt
-                        .map_or_else(|| "-".into(), |attempt| attempt.to_string()),
-                    format_args!(
-                        "{} {} {} {}",
-                        event.phase.as_deref().unwrap_or(""),
-                        event.resource.as_deref().unwrap_or(""),
-                        event.error_code.as_deref().unwrap_or(""),
-                        event.message.as_deref().unwrap_or("")
-                    )
-                )?;
-            }
-            if let Some(cursor) = page.next_cursor {
-                writeln!(cli.output(), "next cursor: {cursor}")?;
-            }
-            Ok(())
+            console.emit(&page)
         }
     }
 }
 
 async fn builds(
-    cli: &Cli,
+    console: &mut Console,
     client: &Client,
     application: Option<&str>,
     cursor: Option<&str>,
 ) -> Result<()> {
-    let page = client.builds(application, cursor).await?;
-    if cli.json {
-        return emit_json(&page);
-    }
-    for build in page.items {
-        writeln!(
-            cli.output(),
-            "{}  {}  {}  {:?}  {}",
-            build.id,
-            build.application_id,
-            build.service,
-            build.state,
-            build.started_at_ms
-        )?;
-    }
-    if let Some(cursor) = page.next_cursor {
-        writeln!(cli.output(), "next cursor: {cursor}")?;
-    }
-    Ok(())
+    console.emit(&client.builds(application, cursor).await?)
 }
 
-async fn build_logs(cli: &Cli, client: &Client, id: i64, before: Option<i64>) -> Result<()> {
+async fn build_logs(
+    console: &mut Console,
+    client: &Client,
+    id: i64,
+    before: Option<i64>,
+) -> Result<()> {
     let page = client.build_logs(id, before, None).await?;
-    if cli.json {
-        return emit_json(&page);
+    console.emit(&page)?;
+    if page.expired {
+        console.warning("Build output has expired.")?;
     }
-    let text = page
-        .items
-        .iter()
-        .map(|chunk| chunk.text.as_str())
-        .collect::<String>();
-    write!(
-        cli.output(),
-        "{}",
-        piqueld_client::LogRecord::clean_message(&text)
-    )?;
-    if page.expired && !cli.quiet {
-        eprintln!("Build output has expired.");
+    if page.truncated {
+        console.warning("Build output was truncated at the configured byte limit.")?;
     }
-    if page.truncated && !cli.quiet {
-        eprintln!("Build output was truncated at the configured byte limit.");
-    }
-    if let Some(before) = page.previous_offset
-        && !cli.quiet
-    {
-        eprintln!("Load older output with --before {before}");
+    if let Some(before) = page.previous_offset {
+        console.info(format_args!("Load older output with --before {before}"))?;
     }
     Ok(())
 }
@@ -167,163 +117,69 @@ pub(crate) fn build_client(cli: &Cli) -> Result<Client> {
         .with_request_id(uuid::Uuid::now_v7().to_string()))
 }
 
-async fn status(cli: &Cli, client: &Client) -> Result<()> {
+async fn status(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     let status = client.system_status().await?;
-    if cli.json {
-        return emit_json(&status);
-    }
-    writeln!(
-        cli.output(),
-        "daemon {} (version {}, API {}, instance {})",
-        status.status,
-        status.daemon_version,
-        status.api_version,
-        status.instance_id
-    )?;
-    writeln!(cli.output(), "transport: {}", transport_description(cli))?;
-    Ok(())
+    console.emit(&StatusReport {
+        status: &status,
+        transport: &transport_description(cli),
+    })
 }
 
-async fn list(cli: &Cli, client: &Client) -> Result<()> {
+async fn list(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     let applications = all_applications(client).await?;
-    let statuses = futures_util::stream::iter(
-        applications
-            .iter()
-            .map(|application| async { client.application_status(application.id.as_str()).await }),
-    )
-    .buffered(8)
-    .collect::<Vec<_>>()
-    .await;
-    let mut rows = Vec::with_capacity(applications.len());
-    for (application, status) in applications.into_iter().zip(statuses) {
+    let mut statuses =
+        futures_util::stream::iter(applications.into_iter().map(|application| async move {
+            let status = client.application_status(application.id.as_str()).await;
+            (application, status)
+        }))
+        .buffered(8);
+    let mut items = Vec::new();
+    while let Some((application, status)) = statuses.next().await {
         let status = match status {
-            Ok(status) => Some(status),
-            Err(error) if cli.json => return Err(error.into()),
+            Ok(status) => {
+                if let Some(message) = &status.message {
+                    console.warning(format_args!("{}: {message}", application.name))?;
+                }
+                Some(status)
+            }
             Err(error) => {
                 let error = CliError::from(error);
-                eprintln!("  {}: status unavailable: {}", application.name, error);
-                error.render_connection(cli);
+                console.warning_report(&ErrorReport::warning(
+                    &error,
+                    cli,
+                    application.name.as_str(),
+                ))?;
                 None
             }
         };
-        rows.push((application, status));
+        items.push(ApplicationRow {
+            application,
+            status,
+        });
     }
-    if cli.json {
-        let items = rows
-            .iter()
-            .map(|(application, status)| {
-                json!({
-                    "application": application,
-                    "status": status,
-                })
-            })
-            .collect::<Vec<_>>();
-        return emit_json(&json!({"items": items, "next_cursor": Value::Null}));
-    }
-    if rows.is_empty() {
-        writeln!(cli.output(), "No applications.")?;
-    } else {
-        let width = rows
-            .iter()
-            .map(|(a, _)| a.name.len())
-            .max()
-            .unwrap_or(4)
-            .max(4);
-        writeln!(
-            cli.output(),
-            "{:<width$}  {:<12}  {:>10}  ID",
-            "NAME",
-            "STATE",
-            "GENERATION"
-        )?;
-        for (application, status) in rows {
-            let state = status.as_ref().map_or_else(
-                || "unavailable".to_owned(),
-                |status| status.state.to_string(),
-            );
-            writeln!(
-                cli.output(),
-                "{:<width$}  {:<12}  {:>10}  {}",
-                application.name,
-                state,
-                application.generation,
-                application.id,
-            )?;
-            if let Some(status) = status
-                && let Some(message) = &status.message
-            {
-                eprintln!("  {}: {message}", application.name);
-            }
-        }
-    }
-    Ok(())
+    console.emit(&Page {
+        items,
+        next_cursor: None,
+    })
 }
 
-async fn show(cli: &Cli, client: &Client, name_or_id: &str) -> Result<()> {
+async fn show(console: &mut Console, client: &Client, name_or_id: &str) -> Result<()> {
     let application = resolve_application(client, name_or_id).await?;
     let status = client
         .application_status(application.application.id().as_str())
         .await?;
-    if cli.json {
-        return emit_json(&json!({"application": application, "status": status}));
-    }
-    writeln!(
-        cli.output(),
-        "{} ({})",
-        application.application.metadata().name,
-        application.application.id()
-    )?;
-    writeln!(
-        cli.output(),
-        "\nIntent: {}\nRuntime: {}",
-        status.state,
-        status.runtime_health.as_deref().unwrap_or("unknown")
-    )?;
-    writeln!(
-        cli.output(),
-        "Configuration revision: {}\nResolved revision: {}",
-        application.generation,
-        application
-            .resolved_generation
-            .map_or_else(|| "none".to_owned(), |value| value.to_string())
-    )?;
-    writeln!(cli.output(), "Replicas: {}", desired_replicas(&application))?;
-    for service in &application.application.spec().services {
-        let source = match &service.source {
-            Source::Image { image } => format!("image {image}"),
-            Source::Git { repository, .. } => {
-                format!("git {} ({})", repository.url, repository.branch)
-            }
-        };
-        writeln!(
-            cli.output(),
-            "\nService: {}\n  Replicas: {}\n  Source: {source}",
-            service.name,
-            service.replicas
-        )?;
-    }
-    if !application.application.spec().volumes.is_empty() {
-        let volumes = application
-            .application
-            .spec()
-            .volumes
-            .iter()
-            .map(|volume| volume.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(
-            cli.output(),
-            "named volumes: {volumes} (retained on deletion)"
-        )?;
-    }
-    if let Some(message) = status.message {
-        eprintln!("diagnostic: {message}");
+    console.emit(&ShowReport {
+        application: &application,
+        status: &status,
+    })?;
+    if let Some(message) = &status.message {
+        console.warning(message)?;
     }
     Ok(())
 }
 
 async fn logs(
-    cli: &Cli,
+    console: &mut Console,
     client: &Client,
     name_or_id: &str,
     service: Option<&str>,
@@ -334,48 +190,26 @@ async fn logs(
     let logs = client
         .application_logs(app.application.id().as_str(), service, tail, since_seconds)
         .await?;
-    if cli.json {
-        return emit_json(&logs);
-    }
-    for log in logs.items {
-        writeln!(
-            cli.output(),
-            "{} {} {} {} | {}",
-            log.timestamp,
-            log.service,
-            log.task_id,
-            log.stream,
-            log.message
-        )?;
-    }
-    if logs.truncated && !cli.quiet {
-        eprintln!("Log snapshot was truncated; narrow the service or time window.");
+    console.emit(&logs)?;
+    if logs.truncated {
+        console.warning("Log snapshot was truncated; narrow the service or time window.")?;
     }
     Ok(())
 }
 
-async fn plan_command(cli: &Cli, client: &Client, args: &ManifestArgs) -> Result<()> {
+async fn plan_command(console: &mut Console, client: &Client, args: &ManifestArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
     let plan = client
         .plan_application_toml_with_generation(&manifest, args.expected_generation)
         .await?;
-    if cli.json {
-        emit_json(&plan)?;
-        if plan.plan.is_blocked() {
-            return Err(blocked_plan_error(&plan, false));
-        }
-        return Ok(());
-    }
-    render_plan(&plan, &mut cli.output()).map_err(|error| {
-        CliError::new(ErrorKind::General, format!("could not write plan: {error}"))
-    })?;
+    console.emit(&plan)?;
     if plan.plan.is_blocked() {
-        return Err(blocked_plan_error(&plan, true));
+        return Err(CliError::blocked_plan(&plan));
     }
     Ok(())
 }
 
-async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
+async fn apply(cli: &Cli, client: &Client, console: &mut Console, args: &ApplyArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
     let name = manifest_name(&manifest, &args.file)?;
     // Configuration inspection does not depend on Docker availability.
@@ -388,6 +222,7 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
         "Save"
     };
     confirm(
+        console,
         cli.noninteractive,
         args.yes,
         &format!("{action} application {name:?}? [y/N] "),
@@ -404,46 +239,34 @@ async fn apply(cli: &Cli, client: &Client, args: &ApplyArgs) -> Result<()> {
     })
     .await?;
     let Some(operation_id) = saved.operation_id.as_deref() else {
-        if cli.json {
-            return emit_json(&saved);
-        }
-        writeln!(
-            cli.output(),
-            "Saved application {} (configuration revision {}). Not deployed.",
-            saved.application_id,
-            saved.generation
-        )?;
-        return Ok(());
+        return console.emit(&saved);
     };
     if args.deployment.no_wait {
-        if cli.json {
-            return emit_json(&saved);
-        }
-        writeln!(
-            cli.output(),
-            "Accepted deployment {operation_id} for application {}",
-            saved.application_id
-        )?;
-        return Ok(());
+        return console.emit(&saved);
     }
-    let operation = wait_for_operation(cli, client, operation_id, None).await?;
-    if cli.json {
-        emit_json(&json!({"saved":saved,"outcome":operation.state,"operation":operation}))
-    } else {
-        render_operation(cli, &operation)
-    }
+    let operation = wait_for_operation(console, client, operation_id).await?;
+    console.emit(&SavedDeploymentReport {
+        saved: &saved,
+        outcome: operation.state,
+        operation: &operation,
+    })
 }
 
-async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
+async fn delete(
+    cli: &Cli,
+    client: &Client,
+    console: &mut Console,
+    args: &DeleteArgs,
+) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
-    if !cli.quiet {
-        eprintln!(
-            "deleting {} ({}): managed services and network are removed; named volumes are retained",
-            application.application.metadata().name,
-            application.application.id()
-        );
-    }
+    console.info(format_args!(
+        "deleting {} ({}): managed services and network are removed; named volumes are retained",
+        application.application.metadata().name,
+        application.application.id()
+    ))?;
+
     confirm(
+        console,
         cli.noninteractive,
         args.yes,
         &format!(
@@ -463,46 +286,29 @@ async fn delete(cli: &Cli, client: &Client, args: &DeleteArgs) -> Result<()> {
     .await
     .map_err(CliError::from)?;
     if args.no_wait {
-        if cli.json {
-            return emit_json(&json!({"accepted": accepted, "volumes_retained": true}));
-        }
-        writeln!(
-            cli.output(),
-            "accepted operation {} (named volumes retained)",
-            accepted.operation_id
-        )?;
-        return Ok(());
+        return console.emit(&DeletionReport::accepted(&accepted));
     }
     wait_for_deletion(
-        cli,
+        console,
         client,
         &accepted.application_id,
         &accepted.operation_id,
     )
     .await?;
-    if cli.json {
-        return emit_json(&json!({
-            "accepted": accepted,
-            "outcome": "deleted",
-            "volumes_retained": true,
-        }));
-    }
-    writeln!(
-        cli.output(),
-        "application {} deleted (named volumes retained)",
-        accepted.application_id
-    )?;
-    Ok(())
+    console.emit(&DeletionReport::completed(&accepted))
 }
 
-async fn operation(cli: &Cli, client: &Client, args: &OperationArgs) -> Result<()> {
-    if args.no_wait {
-        let initial = client.operation(&args.operation_id).await?;
-        render_operation(cli, &initial)?;
-        return Ok(());
+async fn operation(console: &mut Console, client: &Client, args: &OperationArgs) -> Result<()> {
+    let operation = if args.no_wait {
+        client.operation(&args.operation_id).await?
+    } else {
+        wait_for_operation(console, client, &args.operation_id).await?
+    };
+    console.emit(&operation)?;
+    if let Some(message) = &operation.error_message {
+        console.warning(message)?;
     }
-    let operation = wait_for_operation(cli, client, &args.operation_id, None).await?;
-    render_operation(cli, &operation)
+    Ok(())
 }
 
 async fn all_applications(client: &Client) -> Result<Vec<ApplicationSummary>> {
@@ -580,23 +386,22 @@ async fn resolve_application(client: &Client, name_or_id: &str) -> Result<Applic
 }
 
 async fn wait_for_operation(
-    cli: &Cli,
+    console: &mut Console,
     client: &Client,
     operation_id: &str,
-    initial: Option<Operation>,
 ) -> Result<Operation> {
     let wait = async {
-        let mut current = initial;
-        let mut progress = Progress::new(cli, operation_id);
+        let progress = console.start_task(operation_id);
         loop {
-            let operation = match current.take() {
-                Some(operation) => operation,
-                None => client.operation(operation_id).await?,
-            };
-            progress.update(&operation);
+            let operation = client.operation(operation_id).await?;
             if operation.state.terminal() {
+                progress.finish(
+                    OperationProgress::outcome(&operation),
+                    &OperationProgress::message(&operation),
+                );
                 return finish_operation(operation);
             }
+            progress.update(&OperationProgress::message(&operation));
             time::sleep(POLL_INTERVAL).await;
         }
     };
@@ -631,6 +436,7 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
 async fn reconcile_or_deploy(
     cli: &Cli,
     client: &Client,
+    console: &mut Console,
     args: &ReconcileArgs,
     deploy: bool,
 ) -> Result<()> {
@@ -641,6 +447,7 @@ async fn reconcile_or_deploy(
         "Reconcile current intent for"
     };
     confirm(
+        console,
         cli.noninteractive,
         args.yes,
         &format!(
@@ -666,28 +473,25 @@ async fn reconcile_or_deploy(
     })
     .await?;
     if args.no_wait {
-        if cli.json {
-            return emit_json(&accepted);
-        }
-        writeln!(
-            cli.output(),
-            "accepted operation {} for application {}",
-            accepted.operation_id,
-            accepted.application_id
-        )?;
-        return Ok(());
+        return console.emit(&accepted);
     }
-    let operation = wait_for_operation(cli, client, &accepted.operation_id, None).await?;
-    if cli.json {
-        emit_json(&json!({"accepted":accepted,"outcome":operation.state,"operation":operation}))
-    } else {
-        render_operation(cli, &operation)
-    }
+    let operation = wait_for_operation(console, client, &accepted.operation_id).await?;
+    console.emit(&OperationOutcomeReport {
+        accepted: &accepted,
+        outcome: operation.state,
+        operation: &operation,
+    })
 }
 
-async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
+async fn rename(
+    cli: &Cli,
+    client: &Client,
+    console: &mut Console,
+    args: &RenameArgs,
+) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
     confirm(
+        console,
         cli.noninteractive,
         args.yes,
         &format!(
@@ -710,39 +514,47 @@ async fn rename(cli: &Cli, client: &Client, args: &RenameArgs) -> Result<()> {
         )
     })
     .await?;
-    if cli.json {
-        emit_json(&renamed)?;
-    } else {
-        writeln!(
-            cli.output(),
-            "Renamed {} to {} (generation {}).",
-            application.application.metadata().name,
-            renamed.name,
-            renamed.generation
-        )?;
-    }
-    if !cli.quiet {
-        eprintln!(
-            "Update metadata.name to {:?} in your manifest file before applying it again.",
-            renamed.name
-        );
-    }
+    console.emit(&RenameReport {
+        previous_name: application.application.metadata().name.as_str(),
+        renamed: &renamed,
+    })?;
+    console.warning(format_args!(
+        "Update metadata.name to {:?} in your manifest file before applying it again.",
+        renamed.name
+    ))?;
     Ok(())
 }
 
-async fn wait_for_deletion(cli: &Cli, client: &Client, id: &str, operation_id: &str) -> Result<()> {
+async fn wait_for_deletion(
+    console: &mut Console,
+    client: &Client,
+    id: &str,
+    operation_id: &str,
+) -> Result<()> {
     let wait = async {
-        let mut progress = Progress::new(cli, operation_id);
+        let progress = console.start_task(operation_id);
         loop {
             match client.application(id).await {
-                Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => return Ok(()),
+                Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {
+                    progress.finish(TaskOutcome::Succeeded, "deleted");
+                    return Ok(());
+                }
                 Err(error) => return Err(error.into()),
                 Ok(_) => {}
             }
             match client.operation(operation_id).await {
                 Ok(operation) => {
-                    progress.update(&operation);
+                    progress.update(&OperationProgress::message(&operation));
                     if operation.state.terminal() {
+                        if !matches!(
+                            operation.state,
+                            OperationState::Succeeded | OperationState::Superseded
+                        ) {
+                            progress.finish(
+                                TaskOutcome::Failed,
+                                &OperationProgress::message(&operation),
+                            );
+                        }
                         finish_operation(operation)?;
                     }
                 }
@@ -756,4 +568,29 @@ async fn wait_for_deletion(cli: &Cli, client: &Client, id: &str, operation_id: &
         result.map_err(|error|CliError::new(ErrorKind::General,error.to_string()))?;
         Err(CliError::new(ErrorKind::Interrupted,"wait interrupted; deletion continues on the server"))
     }}
+}
+
+struct OperationProgress;
+impl OperationProgress {
+    fn message(operation: &Operation) -> String {
+        let mut phase = operation.phase.as_deref().unwrap_or("").replace('_', " ");
+        if let Some(first) = phase.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        format!(
+            "{} · {phase}{}",
+            operation.state,
+            operation
+                .resource
+                .as_ref()
+                .map_or_else(String::new, |r| format!(" · {r}"))
+        )
+    }
+    fn outcome(operation: &Operation) -> TaskOutcome {
+        match operation.state {
+            OperationState::Succeeded => TaskOutcome::Succeeded,
+            OperationState::Superseded => TaskOutcome::Skipped,
+            _ => TaskOutcome::Failed,
+        }
+    }
 }
