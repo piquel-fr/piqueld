@@ -6,6 +6,10 @@
 }:
 let
   cfg = config.services.piqueld;
+  usesTailscale = builtins.elem cfg.settings.server.listen_mode [
+    "tailscale"
+    "both"
+  ];
   configuration = (pkgs.formats.toml { }).generate "piqueld.toml" (
     lib.recursiveUpdate (lib.filterAttrsRecursive (_: value: value != null) cfg.settings) {
       server.data_dir = cfg.dataDir;
@@ -33,11 +37,20 @@ in
     settings = lib.mkOption {
       type = lib.types.submodule {
         options = {
-          server.http_listen = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            example = "127.0.0.1:7845";
-            description = "Optional loopback HTTP listener. Null disables TCP; enabling it grants every local user unauthenticated API access.";
+          server.listen_mode = lib.mkOption {
+            type = lib.types.enum [
+              "off"
+              "localhost"
+              "tailscale"
+              "both"
+            ];
+            default = "off";
+            description = "HTTP listen interfaces. Every caller able to reach the listener has full operator access.";
+          };
+          server.port = lib.mkOption {
+            type = lib.types.ints.between 1 65535;
+            default = 7845;
+            description = "Shared HTTP port for all selected IPv4 and IPv6 addresses.";
           };
           docker.socket = lib.mkOption {
             type = lib.types.strMatching "/.+";
@@ -110,13 +123,14 @@ in
     systemd.services.piqueld = {
       description = "piqueld application control plane";
       wantedBy = [ "multi-user.target" ];
-      after = [ "docker.service" ];
+      after = [ "docker.service" ] ++ lib.optional usesTailscale "tailscaled.service";
       requires = [ "docker.service" ];
       path = [
         pkgs.git
         pkgs.openssh
         pkgs.docker-client
-      ];
+      ]
+      ++ lib.optional usesTailscale config.services.tailscale.package;
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
         User = "piqueld";

@@ -17,10 +17,11 @@ fn unknown_sections_are_rejected() {
 }
 
 #[test]
-fn host_paths_and_loopback_listener_are_validated() {
+fn host_paths_and_listener_settings_are_validated() {
     for document in [
         "[server]\nhttp_listen = '0.0.0.0:7845'",
-        "[server]\nhttp_listen = '127.0.0.1:0'",
+        "[server]\nport = 0",
+        "[server]\nlisten_mode = 'all'",
         "[server]\ndata_dir = 'relative/state'",
         "[server]\ndata_dir = '/'",
         "[server]\nruntime_dir = 'relative/run'",
@@ -44,13 +45,19 @@ fn host_paths_and_loopback_listener_are_validated() {
 }
 
 #[test]
-fn omitted_http_listener_disables_tcp_and_defaults_stay_enabled() {
-    let disabled = DaemonConfig::from_toml("[server]\ndata_dir = '/tmp/p'").unwrap();
-    assert!(disabled.server.http_listen.is_none());
-    assert_eq!(
-        DaemonConfig::default().server.http_listen,
-        Some("127.0.0.1:7845".parse().expect("constant socket address"))
-    );
+fn tcp_defaults_to_off_with_or_without_a_server_table() {
+    for source in ["", "[server]", "[server]\ndata_dir = '/tmp/p'"] {
+        let config = DaemonConfig::from_toml(source).unwrap();
+        assert_eq!(config.server.listen_mode, ListenMode::Off);
+        assert_eq!(config.server.port, 7845);
+    }
+    for mode in ["off", "localhost", "tailscale", "both"] {
+        let config =
+            DaemonConfig::from_toml(&format!("[server]\nlisten_mode = '{mode}'\nport = 8443"))
+                .unwrap();
+        assert_eq!(config.server.listen_mode.to_string(), mode);
+        assert_eq!(config.server.port, 8443);
+    }
 }
 
 #[test]

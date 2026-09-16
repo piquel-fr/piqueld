@@ -1,8 +1,8 @@
 //! The typed API client with one request pipeline for every target.
 //!
 //! Endpoint methods, envelope decoding, and query building are shared. The
-//! platform differences are confined to two small modules: [`loopback`]
-//! speaks HTTP/1.1 over loopback TCP and Unix-domain sockets natively, and
+//! platform differences are confined to two small modules: [`native`]
+//! speaks HTTP/1.1 over TCP and Unix-domain sockets natively, and
 //! [`web`] performs same-origin fetches in the browser. Both transports enforce
 //! one total deadline per exchange and reject response bodies beyond a fixed
 //! size; the native transport also constructs an explicit origin-form request.
@@ -55,8 +55,8 @@ fn response_too_large(limit: usize) -> ClientError {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-mod loopback {
-    //! Native transport: HTTP/1.1 over loopback TCP and Unix-domain sockets.
+mod native {
+    //! Native transport: HTTP/1.1 over TCP and Unix-domain sockets.
 
     use bytes::Bytes;
     use http::{Method, Request, StatusCode, header};
@@ -85,28 +85,22 @@ mod loopback {
     pub(super) enum Endpoint {
         Tcp {
             authority: String,
-            addresses: Vec<SocketAddr>,
+            target: Target,
         },
         #[cfg(unix)]
         Unix(PathBuf),
     }
 
-    /// Parses a loopback HTTP origin into a connectable endpoint.
-    ///
-    /// Only plain HTTP origins are accepted: the host must be `localhost`,
-    /// an IPv4 loopback address, or IPv6 `::1`. The client is meant for
-    /// daemons on the operator's own machine; remote management is out of
-    /// scope by design.
-    ///
-    /// # Errors
-    /// Returns [`ClientError::Endpoint`] when `base_url` is not a loopback
-    /// HTTP origin.
+    #[derive(Clone, Debug)]
+    pub(super) enum Target {
+        Addresses(Vec<SocketAddr>),
+        Dns(String, u16),
+    }
+
+    /// Parses an HTTP origin without resolving DNS until request dispatch.
     pub(super) fn tcp_endpoint(base_url: &str) -> Result<Endpoint, ClientError> {
         let url =
             Url::parse(base_url).map_err(|_| invalid_request("base URL is not a valid URL"))?;
-        // Trailing-dot hosts ("localhost.") are rejected on purpose: the
-        // resolver may answer differently than for the bare name.
-        //
         // Userinfo is rejected wholesale via '@': the parser collapses
         // spellings like ":@" into invisible empty credentials, and with
         // path, query, and fragment already excluded, an '@' can only ever
@@ -117,49 +111,26 @@ mod loopback {
             || url.fragment().is_some()
             || base_url.contains('@')
         {
-            return Err(invalid_request(
-                "base URL must be a plain loopback HTTP origin",
-            ));
+            return Err(invalid_request("base URL must be a plain HTTP origin"));
         }
-        let (host, addresses) = match url
+        let host = url
             .host()
-            .ok_or_else(|| invalid_request("base URL has no host"))?
-        {
-            // WHATWG parsing canonicalizes numeric spellings such as "127.1"
-            // before this match runs, so acceptance always implies a genuine
-            // loopback connect target.
-            Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => (
-                host.to_ascii_lowercase(),
-                vec![
-                    IpAddr::V6(Ipv6Addr::LOCALHOST),
-                    IpAddr::V4(Ipv4Addr::LOCALHOST),
-                ],
-            ),
-            Host::Ipv4(host) if host.is_loopback() => (host.to_string(), vec![IpAddr::V4(host)]),
-            Host::Ipv6(host) if host.is_loopback() => (host.to_string(), vec![IpAddr::V6(host)]),
-            _ => {
-                return Err(invalid_request(
-                    "base URL host must be localhost or a loopback IP",
-                ));
-            }
-        };
+            .ok_or_else(|| invalid_request("base URL has no host"))?;
         // http URLs always carry the implicit default port.
         let port = url
             .port_or_known_default()
             .expect("http URLs have a default port");
-        let authority = if host.contains(':') {
-            format!("[{host}]:{port}")
-        } else {
-            format!("{host}:{port}")
+        let target = match host {
+            Host::Domain("localhost") => Target::Addresses(vec![
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            ]),
+            Host::Domain(host) => Target::Dns(host.to_owned(), port),
+            Host::Ipv4(ip) => Target::Addresses(vec![SocketAddr::new(ip.into(), port)]),
+            Host::Ipv6(ip) => Target::Addresses(vec![SocketAddr::new(ip.into(), port)]),
         };
-        let addresses = addresses
-            .into_iter()
-            .map(|address| SocketAddr::new(address, port))
-            .collect();
-        Ok(Endpoint::Tcp {
-            authority,
-            addresses,
-        })
+        let authority = format!("{host}:{port}");
+        Ok(Endpoint::Tcp { authority, target })
     }
 
     /// Sends one request and returns the status plus the collected body.
@@ -230,8 +201,13 @@ mod loopback {
             .body(Full::new(Bytes::from(payload)))
             .map_err(|error| invalid_request(format!("malformed request head: {error}")))?;
         match endpoint {
-            Endpoint::Tcp { addresses, .. } => {
-                speak(TcpStream::connect(addresses.as_slice()).await, request).await
+            Endpoint::Tcp { authority, target } => {
+                let connection = match target {
+                    Target::Addresses(addresses) => TcpStream::connect(addresses.as_slice()).await,
+                    Target::Dns(host, port) => TcpStream::connect((host.as_str(), *port)).await,
+                }
+                .map_err(|error| transport(format!("failed to connect to {authority}: {error}")))?;
+                speak(Ok(connection), request).await
             }
             #[cfg(unix)]
             Endpoint::Unix(path) => speak(UnixStream::connect(path).await, request).await,
@@ -493,7 +469,7 @@ mod web {
 /// Configured asynchronous API client.
 pub struct Client {
     #[cfg(not(target_arch = "wasm32"))]
-    endpoint: loopback::Endpoint,
+    endpoint: native::Endpoint,
     timeout: Duration,
     request_id: Option<String>,
 }
@@ -501,16 +477,15 @@ pub struct Client {
 impl Client {
     /// Creates a client for an HTTP endpoint.
     ///
-    /// Only loopback origins are supported: `localhost`, IPv4 addresses in
-    /// `127.0.0.0/8`, and `[::1]`. piqueld daemons listen on the operator's
-    /// own machine; remote management is out of scope by design.
+    /// Accepts IP addresses and DNS names. HTTP has no application-layer
+    /// encryption: use a trusted network such as Tailscale for remote access.
     ///
     /// # Errors
-    /// Returns [`ClientError::Endpoint`] when `base_url` is not a loopback HTTP origin.
+    /// Returns [`ClientError::Endpoint`] when `base_url` is not an HTTP origin.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn tcp(base_url: &str) -> Result<Self, ClientError> {
         Ok(Self {
-            endpoint: loopback::tcp_endpoint(base_url)?,
+            endpoint: native::tcp_endpoint(base_url)?,
             timeout: Duration::from_secs(30),
             request_id: None,
         })
@@ -527,7 +502,7 @@ impl Client {
     #[must_use]
     pub fn unix(path: impl AsRef<std::path::Path>) -> Self {
         Self {
-            endpoint: loopback::Endpoint::Unix(path.as_ref().to_owned()),
+            endpoint: native::Endpoint::Unix(path.as_ref().to_owned()),
             timeout: Duration::from_secs(30),
             request_id: None,
         }
@@ -617,7 +592,7 @@ impl Client {
         let headers = headers.as_slice();
         validate_headers(headers)?;
         #[cfg(not(target_arch = "wasm32"))]
-        return loopback::exchange(&self.endpoint, self.timeout, method, path, payload, headers)
+        return native::exchange(&self.endpoint, self.timeout, method, path, payload, headers)
             .await;
 
         #[cfg(target_arch = "wasm32")]
@@ -675,7 +650,7 @@ pub(crate) fn path_segment(value: &str) -> String {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::{Client, loopback, path_segment, validate_headers};
+    use super::{Client, native, path_segment, validate_headers};
     use crate::{ClientError, SystemStatus};
     use http::Method;
     use tokio::{
@@ -701,10 +676,10 @@ mod tests {
 
     #[test]
     fn localhost_is_pinned_to_literal_loopback_addresses() {
-        let loopback::Endpoint::Tcp {
+        let native::Endpoint::Tcp {
             authority,
-            addresses,
-        } = loopback::tcp_endpoint("http://localhost:4321/").unwrap()
+            target: native::Target::Addresses(addresses),
+        } = native::tcp_endpoint("http://localhost:4321/").unwrap()
         else {
             panic!("localhost must produce a TCP endpoint");
         };

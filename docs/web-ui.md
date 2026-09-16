@@ -43,8 +43,8 @@ read-only. There is no raw manifest editor or deployment restoration workflow.
 
 The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
-loopback TCP listener. The Unix socket is API-only, and the daemon does not add
-CORS, authentication, cookies, browser persistence, telemetry, or a public
+configured localhost or Tailscale TCP listeners. The Unix socket is API-only,
+and the daemon does not add CORS, authentication, cookies, browser persistence, telemetry, or a public
 binding.
 
 ## Development

@@ -101,6 +101,70 @@ async fn typed_client_uses_tcp() {
 }
 
 #[tokio::test]
+async fn typed_client_resolves_dns_and_preserves_the_host_header() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/api/v1/system/status",
+                get(move |headers: HeaderMap| async move {
+                    assert_eq!(headers["host"], format!("localhost.:{port}"));
+                    status().await
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    // The trailing dot exercises DNS instead of the special bare-localhost path.
+    let response = Client::tcp(&format!("http://localhost.:{port}"))
+        .unwrap()
+        .system_status()
+        .await
+        .unwrap();
+    assert_eq!(response.status, "running");
+    server.abort();
+}
+
+#[tokio::test]
+async fn typed_client_uses_ipv6() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
+    let response = Client::tcp(&format!("http://{address}"))
+        .unwrap()
+        .system_status()
+        .await
+        .unwrap();
+    assert_eq!(response.status, "running");
+    server.abort();
+}
+
+#[tokio::test]
+async fn dns_and_connect_failures_include_the_endpoint() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    for endpoint in [
+        format!("localhost.:{port}"),
+        "invalid..hostname:7845".into(),
+    ] {
+        let error = Client::tcp(&format!("http://{endpoint}"))
+            .unwrap()
+            .with_timeout(Duration::from_secs(5))
+            .system_status()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ClientError::Transport { message } if message.contains(&endpoint)),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn typed_client_uses_unix_socket() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join(PathBuf::from("piqueld.sock"));
@@ -453,13 +517,8 @@ async fn application_limits_outside_server_range_are_rejected_before_transport()
 }
 
 #[test]
-fn tcp_transport_rejects_non_loopback_endpoints() {
+fn tcp_transport_accepts_remote_hosts_but_requires_an_http_origin() {
     for rejected in [
-        "http://example.com:8080/",
-        "http://192.168.1.10:8080/",
-        "http://10.0.0.1/",
-        "http://0.0.0.0/",
-        "http://[::ffff:127.0.0.1]:8080/",
         "https://127.0.0.1/",
         "http://user@localhost/",
         "http://:secret@localhost/",
@@ -473,6 +532,13 @@ fn tcp_transport_rejects_non_loopback_endpoints() {
         );
     }
     for accepted in [
+        "http://example.com:8080/",
+        "http://192.168.1.10:8080/",
+        "http://10.0.0.1/",
+        "http://0.0.0.0/",
+        "http://[::ffff:127.0.0.1]:8080/",
+        "http://daemon.tail123.ts.net:7845/",
+        "http://[fd7a:115c:a1e0::2]:7845/",
         "http://localhost:8080/",
         "http://LOCALHOST/",
         "http://127.0.0.1/",

@@ -38,7 +38,8 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | --- | --- |
 | `server.data_dir` | `/var/lib/piqueld` |
 | `server.runtime_dir` | `/run/piqueld` (must already exist) |
-| `server.http_listen` | `127.0.0.1:7845` (omit to disable TCP) |
+| `server.listen_mode` | `"off"` |
+| `server.port` | `7845` |
 | derived socket path | `<runtime_dir>/piqueld.sock` |
 | derived database path | `<data_dir>/piqueld.db` |
 | `docker.socket` | `/var/run/docker.sock` |
@@ -79,10 +80,41 @@ remain available for custom locations.
 
 The dashboard is not configurable at runtime: it is embedded when the daemon
 is built with the `embedded-ui` cargo feature and absent otherwise. It is
-served on the TCP listener only, so `server.http_listen` must be set to reach
+served on the TCP listener only, so a TCP listen mode must be enabled to reach
 it; the Unix API socket serves the API alone.
 
 `[build_history]` bounds persisted build output: `log_max_bytes` defaults to
 4194304 (maximum 64 MiB), and `log_retention_days` to 30 (1–3650). Build metadata
 remains until the application is deleted. Expiration removes output chunks while
 retaining the attempt and an explicit expired indicator.
+
+## TCP listen modes and Tailscale
+
+`server.listen_mode` selects `off` (Unix socket only), `localhost` (127.0.0.1
+and ::1), `tailscale` (the host's Tailscale IPv4 and IPv6 addresses), or `both`.
+Every selected TCP address uses `server.port`, which must be 1–65535. The Unix
+socket remains available in every mode. The old `server.http_listen` setting is
+rejected; replace it with `listen_mode` and `port`.
+
+For remote access, install and connect Tailscale on the daemon host and client:
+
+```toml
+[server]
+listen_mode = "tailscale"
+port = 7845
+```
+
+At startup, piqueld runs `tailscale status --json --peers=false` with a five-second
+timeout. If the command is missing, fails, or reports Tailscale is not running
+or has no addresses, piqueld logs a warning and continues with the remaining
+listeners. It never retries discovery: restart piqueld after bringing Tailscale
+up or changing its addresses. Any actual bind failure aborts startup, including
+a failure on just one address. Direct binding requires Tailscale's normal network
+interface; userspace-only networking is not supported.
+
+The tailnet is trusted like localhost: anyone who can reach the API has full
+operator access. Use tailnet policy to control who can connect. HTTP traffic
+between tailnet nodes is encrypted by Tailscale; piqueld does not manage HTTPS,
+Tailscale Serve, enrollment, or certificates. Set `listen_mode = "localhost"`
+to remove the Tailscale listener, or `"off"` for Unix-socket-only access, and
+restart the daemon. Independently configured proxies can still expose localhost.

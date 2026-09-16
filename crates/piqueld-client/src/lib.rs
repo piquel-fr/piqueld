@@ -2,7 +2,7 @@
 //!
 //! Shared API contracts are reexported from `piqueld-core`. The client runs one
 //! shared request pipeline on every target, with platform differences
-//! confined inside `client`: loopback TCP and Unix-domain sockets natively,
+//! confined inside `client`: TCP and Unix-domain sockets natively,
 //! and same-origin browser fetch under WASM.
 
 #[cfg(target_os = "windows")]
