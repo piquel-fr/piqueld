@@ -369,13 +369,23 @@
             "type": "array"
           },
           "latest_operation": {
-            "allOf": [
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/Operation"
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Operation"
+                  }
+                ],
+                "description": "Most recent durable operation, when one exists."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
               }
-            ],
-            "description": "Most recent durable operation, when one exists.",
-            "nullable": true
+            ]
           },
           "observed": {
             "$ref": "#/components/schemas/ObservedApplicationView",
@@ -457,14 +467,24 @@
         "description": "User-provided application resource lists.",
         "properties": {
           "manifest": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/RepositoryManifest"
-              }
-            ],
             "default": null,
-            "description": "Optional repository that supplies this application's manifest on Deploy.",
-            "nullable": true
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/RepositoryManifest"
+                  }
+                ],
+                "description": "Optional repository that supplies this application's manifest on Deploy."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "services": {
             "default": [],
@@ -951,9 +971,6 @@
               "type": "string"
             },
             "description": "Expected ownership labels.",
-            "propertyNames": {
-              "type": "string"
-            },
             "type": "object"
           },
           "name": {
@@ -990,19 +1007,26 @@
               "type": "string"
             },
             "description": "Environment variables keyed by name.",
-            "propertyNames": {
-              "type": "string"
-            },
             "type": "object"
           },
           "healthcheck": {
-            "allOf": [
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/HealthCheck"
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/HealthCheck"
+                  }
+                ],
+                "description": "Optional health check."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
               }
-            ],
-            "description": "Optional health check.",
-            "nullable": true
+            ]
           },
           "image": {
             "$ref": "#/components/schemas/ImmutableImage",
@@ -1013,9 +1037,6 @@
               "type": "string"
             },
             "description": "Ownership labels.",
-            "propertyNames": {
-              "type": "string"
-            },
             "type": "object"
           },
           "logical_name": {
@@ -1047,13 +1068,23 @@
             "type": "integer"
           },
           "resources": {
-            "allOf": [
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/ResourceLimits"
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ResourceLimits"
+                  }
+                ],
+                "description": "Optional CPU and memory limits."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
               }
-            ],
-            "description": "Optional CPU and memory limits.",
-            "nullable": true
+            ]
           },
           "source": {
             "$ref": "#/components/schemas/ResolvedSource",
@@ -1084,9 +1115,6 @@
               "type": "string"
             },
             "description": "Expected ownership labels.",
-            "propertyNames": {
-              "type": "string"
-            },
             "type": "object"
           },
           "logical_name": {
@@ -1196,13 +1224,23 @@
                 "type": "array"
               },
               "latest_operation": {
-                "allOf": [
+                "oneOf": [
                   {
-                    "$ref": "#/components/schemas/Operation"
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Operation"
+                      }
+                    ],
+                    "description": "Most recent durable operation, when one exists."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
                   }
-                ],
-                "description": "Most recent durable operation, when one exists.",
-                "nullable": true
+                ]
               },
               "observed": {
                 "$ref": "#/components/schemas/ObservedApplicationView",
@@ -1410,15 +1448,9 @@
                   "additionalProperties": {
                     "type": "string"
                   },
-                  "propertyNames": {
-                    "type": "string"
-                  },
                   "type": "object"
                 },
                 "description": "Settings grouped by server, Docker, reconciliation and retention.",
-                "propertyNames": {
-                  "type": "string"
-                },
                 "type": "object"
               }
             },
@@ -1787,13 +1819,23 @@
                   "description": "One immutable, sanitized fact about control-plane activity.",
                   "properties": {
                     "application_id": {
-                      "allOf": [
+                      "oneOf": [
                         {
-                          "$ref": "#/components/schemas/ApplicationId"
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/ApplicationId"
+                            }
+                          ],
+                          "description": "Related application, when applicable."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
                         }
-                      ],
-                      "description": "Related application, when applicable.",
-                      "nullable": true
+                      ]
                     },
                     "attempt": {
                       "description": "Execution attempt for attempt-related events.",
@@ -2022,13 +2064,23 @@
                 "type": "boolean"
               },
               "operation": {
-                "allOf": [
+                "oneOf": [
                   {
-                    "$ref": "#/components/schemas/Operation"
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Operation"
+                      }
+                    ],
+                    "description": "Latest operation at the time of comparison."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
                   }
-                ],
-                "description": "Latest operation at the time of comparison.",
-                "nullable": true
+                ]
               },
               "plan": {
                 "$ref": "#/components/schemas/Plan",
@@ -2222,13 +2274,23 @@
         "description": "One immutable, sanitized fact about control-plane activity.",
         "properties": {
           "application_id": {
-            "allOf": [
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/ApplicationId"
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ApplicationId"
+                  }
+                ],
+                "description": "Related application, when applicable."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
               }
-            ],
-            "description": "Related application, when applicable.",
-            "nullable": true
+            ]
           },
           "attempt": {
             "description": "Execution attempt for attempt-related events.",
@@ -2401,15 +2463,9 @@
               "additionalProperties": {
                 "type": "string"
               },
-              "propertyNames": {
-                "type": "string"
-              },
               "type": "object"
             },
             "description": "Settings grouped by server, Docker, reconciliation and retention.",
-            "propertyNames": {
-              "type": "string"
-            },
             "type": "object"
           }
         },
@@ -2860,13 +2916,23 @@
             "type": "boolean"
           },
           "operation": {
-            "allOf": [
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/Operation"
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Operation"
+                  }
+                ],
+                "description": "Latest operation at the time of comparison."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
               }
-            ],
-            "description": "Latest operation at the time of comparison.",
-            "nullable": true
+            ]
           },
           "plan": {
             "$ref": "#/components/schemas/Plan",
@@ -3110,19 +3176,26 @@
               "type": "string"
             },
             "description": "Environment variables keyed by name.",
-            "propertyNames": {
-              "type": "string"
-            },
             "type": "object"
           },
           "healthcheck": {
-            "allOf": [
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/HealthCheck"
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/HealthCheck"
+                  }
+                ],
+                "description": "Optional container health check."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
               }
-            ],
-            "description": "Optional container health check.",
-            "nullable": true
+            ]
           },
           "mounts": {
             "description": "Persistent volume mounts.",
@@ -3142,13 +3215,23 @@
             "type": "integer"
           },
           "resources": {
-            "allOf": [
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/ResourceLimits"
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ResourceLimits"
+                  }
+                ],
+                "description": "Optional CPU and memory limits."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
               }
-            ],
-            "description": "Optional CPU and memory limits.",
-            "nullable": true
+            ]
           },
           "source": {
             "$ref": "#/components/schemas/Source",
@@ -3305,19 +3388,26 @@
               "type": "string"
             },
             "description": "Environment variables keyed by name.",
-            "propertyNames": {
-              "type": "string"
-            },
             "type": "object"
           },
           "healthcheck": {
-            "allOf": [
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/HealthCheck"
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/HealthCheck"
+                  }
+                ],
+                "description": "Optional container health check."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
               }
-            ],
-            "description": "Optional container health check.",
-            "nullable": true
+            ]
           },
           "mounts": {
             "description": "Persistent volume mounts.",
@@ -3337,13 +3427,23 @@
             "type": "integer"
           },
           "resources": {
-            "allOf": [
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/ResourceLimits"
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ResourceLimits"
+                  }
+                ],
+                "description": "Optional CPU and memory limits."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
               }
-            ],
-            "description": "Optional CPU and memory limits.",
-            "nullable": true
+            ]
           },
           "source": {
             "$ref": "#/components/schemas/Source",
@@ -3365,13 +3465,23 @@
         "description": "Validated application resource lists.",
         "properties": {
           "manifest": {
-            "allOf": [
+            "oneOf": [
               {
-                "$ref": "#/components/schemas/RepositoryManifest"
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/RepositoryManifest"
+                  }
+                ],
+                "description": "Optional repository that supplies this application's manifest on Deploy."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
               }
-            ],
-            "description": "Optional repository that supplies this application's manifest on Deploy.",
-            "nullable": true
+            ]
           },
           "services": {
             "description": "Declared services.",

@@ -70,7 +70,7 @@ pub(super) fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value 
     document
 }
 
-/// Converts Utoipa's nullable JSON Schema forms to their `OpenAPI` 3.0 equivalent.
+/// Converts Utoipa's JSON Schema output to its `OpenAPI` 3.0 equivalent.
 fn convert_to_openapi_30(value: &mut Value) {
     match value {
         Value::Array(values) => {
@@ -82,6 +82,9 @@ fn convert_to_openapi_30(value: &mut Value) {
             for value in object.values_mut() {
                 convert_to_openapi_30(value);
             }
+            // OpenAPI 3.0 supports `additionalProperties`, but not JSON
+            // Schema's separate constraints on property names.
+            object.remove("propertyNames");
 
             if let Some(Value::Array(types)) = object.get("type") {
                 let non_null = types
@@ -114,12 +117,22 @@ fn convert_to_openapi_30(value: &mut Value) {
                 if let Some(schema) = schema.as_object_mut()
                     && let Some(reference) = schema.remove("$ref")
                 {
-                    object.insert("allOf".into(), serde_json::json!([{ "$ref": reference }]));
-                    object.extend(schema.clone());
+                    let mut referenced = serde_json::json!({ "$ref": reference });
+                    if !schema.is_empty() {
+                        schema.insert("allOf".into(), serde_json::json!([referenced]));
+                        referenced = Value::Object(schema.clone());
+                    }
+                    object.insert(
+                        "oneOf".into(),
+                        serde_json::json!([
+                            referenced,
+                            { "type": "string", "nullable": true, "enum": [null] }
+                        ]),
+                    );
                 } else if let Some(schema) = schema.as_object() {
                     object.extend(schema.clone());
+                    object.insert("nullable".into(), Value::Bool(true));
                 }
-                object.insert("nullable".into(), Value::Bool(true));
             }
         }
         _ => {}
