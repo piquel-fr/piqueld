@@ -219,6 +219,12 @@
         }
       );
 
+      checks.x86_64-linux.unix-socket = import ./nix/unix-socket-test.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        daemon = self.packages.x86_64-linux.daemon;
+        cli = self.packages.x86_64-linux.cli;
+      };
+
       devShells = forAllSystems (
         system:
         let

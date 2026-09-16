@@ -62,10 +62,20 @@ impl DaemonConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
-        absolute_directory("server.data_dir", &self.server.data_dir)?;
-        if self.server.data_dir.file_name().is_none() {
+        for (name, path) in [
+            ("server.data_dir", &self.server.data_dir),
+            ("server.runtime_dir", &self.server.runtime_dir),
+        ] {
+            absolute_directory(name, path)?;
+            if path.file_name().is_none() {
+                return Err(ConfigError::Invalid(format!(
+                    "{name} must name a directory"
+                )));
+            }
+        }
+        if self.server.data_dir == self.server.runtime_dir {
             return Err(ConfigError::Invalid(
-                "server.data_dir must name a directory".into(),
+                "server.data_dir and server.runtime_dir must be different directories".into(),
             ));
         }
         absolute_file("docker.socket", &self.docker.socket)?;
@@ -145,10 +155,12 @@ fn absolute_file(name: &str, path: &Path) -> Result<(), ConfigError> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    /// The single private directory holding the socket, the database, and
-    /// future user data.
+    /// Private directory holding the database and future user data.
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
+    /// Existing directory holding the group-accessible Unix API socket.
+    #[serde(default = "default_runtime_dir")]
+    pub runtime_dir: PathBuf,
     /// Optional loopback HTTP listener. Omitting it disables TCP.
     #[serde(default)]
     pub http_listen: Option<SocketAddr>,
@@ -158,11 +170,15 @@ fn default_data_dir() -> PathBuf {
     PathBuf::from("/var/lib/piqueld")
 }
 
+fn default_runtime_dir() -> PathBuf {
+    PathBuf::from("/run/piqueld")
+}
+
 impl ServerConfig {
-    /// Unix API socket path inside the data directory.
+    /// Unix API socket path inside the runtime directory.
     #[must_use]
     pub fn socket_path(&self) -> PathBuf {
-        self.data_dir.join("piqueld.sock")
+        self.runtime_dir.join(crate::runtime_dir::SOCKET_NAME)
     }
 
     /// Embedded database path inside the data directory.
@@ -175,7 +191,8 @@ impl ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            data_dir: PathBuf::from("/var/lib/piqueld"),
+            data_dir: default_data_dir(),
+            runtime_dir: default_runtime_dir(),
             http_listen: Some("127.0.0.1:7845".parse().expect("constant socket address")),
         }
     }

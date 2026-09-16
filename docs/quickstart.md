@@ -8,11 +8,12 @@ the engine can run a single-node Swarm.
 
 ```console
 just build
+mkdir -p -m 0700 /tmp/piqueld-dev-run
 just daemon --config examples/piqueld.toml
 ```
 
 The example keeps its state in `/tmp/piqueld-dev` and its Unix API socket at
-`/tmp/piqueld-dev/piqueld.sock`. The daemon creates the data directory with
+`/tmp/piqueld-dev-run/piqueld.sock`. The daemon creates the data directory with
 mode `0700`; an existing directory must be private and owned by your user.
 The daemon's production default is
 `/etc/piqueld/config.toml`; use `--config` when running as a non-root
@@ -23,13 +24,13 @@ developer.
 In a second terminal:
 
 ```console
-just run --socket /tmp/piqueld-dev/piqueld.sock status
+just run --socket /tmp/piqueld-dev-run/piqueld.sock status
 just run --url http://127.0.0.1:7845 status
-just run --socket /tmp/piqueld-dev/piqueld.sock plan \
+just run --socket /tmp/piqueld-dev-run/piqueld.sock plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
-just run --socket /tmp/piqueld-dev/piqueld.sock apply \
+just run --socket /tmp/piqueld-dev-run/piqueld.sock apply \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --deploy --yes
-just run --socket /tmp/piqueld-dev/piqueld.sock show notes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock show notes
 ```
 
 `status` reports the daemon version and `--json` produces the same structured
@@ -39,16 +40,16 @@ acceptance. Each explicit deployment prepares sources again and supersedes pendi
 work. Use the same development socket for repair, source refresh, and history:
 
 ```console
-just run --socket /tmp/piqueld-dev/piqueld.sock reconcile notes --yes
-just run --socket /tmp/piqueld-dev/piqueld.sock deploy notes --yes
-just run --socket /tmp/piqueld-dev/piqueld.sock events --application <application-id>
+just run --socket /tmp/piqueld-dev-run/piqueld.sock reconcile notes --yes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock deploy notes --yes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock events --application <application-id>
 ```
 
 ## Dashboard and cleanup
 
 The development toolchain serves the dashboard through the running
-daemon, exactly like a deployment: run `just dev` instead of the two commands
-above, give the first embedded build a moment to run Tailwind and Trunk, and
+daemon, exactly like a deployment: run `just dev` instead of the commands
+above (`just dev` also prepares the runtime directory), give the first embedded build a moment to run Tailwind and Trunk, and
 open `http://127.0.0.1:7845/dashboard/` in a browser to inspect the overview,
 application list, and detail routes alongside `piquelctl`; refresh after Rust
 or CSS changes. Any other daemon built with `--features embedded-ui` ships its
@@ -59,7 +60,7 @@ When finished, delete the application and note that its named volumes are
 retained:
 
 ```console
-just run --socket /tmp/piqueld-dev/piqueld.sock delete notes --yes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock delete notes --yes
 ```
 
 The retained named volumes are deliberate so deleting an application does not

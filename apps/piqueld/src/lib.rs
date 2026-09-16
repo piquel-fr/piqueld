@@ -11,15 +11,17 @@ pub mod reconcile;
 pub mod store;
 
 mod command;
-mod data_dir;
+mod directories;
 mod git;
+mod runtime_dir;
 mod ui_bundle;
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-pub use data_dir::{DataDirLock, prepare_data_dir};
+pub use directories::{DirectoryLock, prepare_data_dir};
+pub use runtime_dir::RuntimeDir;
 
 /// Errors produced by the daemon's process-level runtime skeleton.
 #[derive(Debug, Error)]

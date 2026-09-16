@@ -1,6 +1,6 @@
 //! Startup must exclude competing processes before touching durable state.
 
-use piqueld::DataDirLock;
+use piqueld::DirectoryLock;
 use std::{
     io::{BufRead, BufReader, Write},
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -25,7 +25,7 @@ fn simultaneous_acquisition_has_one_owner() {
                 let path = directory.path();
                 scope.spawn(move || {
                     barrier.wait();
-                    let lock = DataDirLock::acquire(path);
+                    let lock = DirectoryLock::acquire(path);
                     barrier.wait();
                     match lock {
                         Ok(_held) => true,
@@ -43,7 +43,7 @@ fn simultaneous_acquisition_has_one_owner() {
             .count()
     });
     assert_eq!(successes, 1);
-    DataDirLock::acquire(directory.path()).unwrap();
+    DirectoryLock::acquire(directory.path()).unwrap();
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn competing_daemon_preserves_database_and_live_socket() {
     let directory = tempfile::tempdir_in(".").unwrap();
     let path = directory.path().canonicalize().unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let _owner = DataDirLock::acquire(&path).unwrap();
+    let _owner = DirectoryLock::acquire(&path).unwrap();
     let database = path.join("piqueld.db");
     std::fs::write(&database, b"untouched database").unwrap();
     let socket = path.join("piqueld.sock");
@@ -71,7 +71,7 @@ fn competing_daemon_preserves_database_and_live_socket() {
         .unwrap();
     assert!(!output.status.success());
     let error = String::from_utf8(output.stderr).unwrap();
-    assert!(error.contains("data directory already in use"), "{error}");
+    assert!(error.contains("directory already in use"), "{error}");
     assert_eq!(std::fs::read(database).unwrap(), b"untouched database");
     assert_eq!(std::fs::metadata(socket).unwrap().ino(), inode);
 }
@@ -116,11 +116,11 @@ fn process_death_releases_the_directory_lock() {
     let directory = tempfile::tempdir().unwrap();
     let process = LockProcess::start(directory.path());
     assert_eq!(
-        DataDirLock::acquire(directory.path()).unwrap_err().kind(),
+        DirectoryLock::acquire(directory.path()).unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
     );
     drop(process); // Kill and reap the owner, without a graceful unlock.
-    DataDirLock::acquire(directory.path()).unwrap();
+    DirectoryLock::acquire(directory.path()).unwrap();
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn lock_holder_process() {
     let Some(path) = std::env::var_os("PIQUELD_TEST_LOCK_DIRECTORY") else {
         return;
     };
-    let _lock = DataDirLock::acquire(std::path::Path::new(&path)).unwrap();
+    let _lock = DirectoryLock::acquire(std::path::Path::new(&path)).unwrap();
     println!("lock acquired");
     std::io::stdout().flush().unwrap();
     let mut input = String::new();

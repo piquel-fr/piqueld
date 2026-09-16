@@ -23,6 +23,9 @@ fn host_paths_and_loopback_listener_are_validated() {
         "[server]\nhttp_listen = '127.0.0.1:0'",
         "[server]\ndata_dir = 'relative/state'",
         "[server]\ndata_dir = '/'",
+        "[server]\nruntime_dir = 'relative/run'",
+        "[server]\nruntime_dir = '/'",
+        "[server]\ndata_dir = '/run/piqueld'",
         "[docker]\nsocket = 'relative.sock'",
         "[database]\npath = '/tmp/piqueld.db'",
         "[reconciliation]\nscan_interval_seconds = 0",
@@ -51,11 +54,11 @@ fn omitted_http_listener_disables_tcp_and_defaults_stay_enabled() {
 }
 
 #[test]
-fn derived_paths_live_inside_the_data_directory() {
+fn socket_and_database_use_separate_directories() {
     let config = DaemonConfig::from_toml("[server]\ndata_dir = '/srv/piqueld'").unwrap();
     assert_eq!(
         config.server.socket_path(),
-        PathBuf::from("/srv/piqueld/piqueld.sock")
+        PathBuf::from("/run/piqueld/piqueld.sock")
     );
     assert_eq!(
         config.server.database_path(),
@@ -108,4 +111,17 @@ fn retention_defaults_to_ten_days_and_accepts_zero_as_disabled() {
         DaemonConfig::from_toml("[retention]\nunknown = 'x'"),
         Err(ConfigError::Parse(_))
     ));
+}
+
+#[test]
+fn runtime_directory_override_changes_only_the_socket_path() {
+    let config = DaemonConfig::from_toml("[server]\nruntime_dir = '/tmp/piqueld-dev-run'").unwrap();
+    assert_eq!(
+        config.server.socket_path(),
+        PathBuf::from("/tmp/piqueld-dev-run/piqueld.sock")
+    );
+    assert_eq!(
+        config.server.database_path(),
+        PathBuf::from("/var/lib/piqueld/piqueld.db")
+    );
 }
