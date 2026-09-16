@@ -463,12 +463,29 @@ impl Client {
         tail: u16,
         since_seconds: u32,
     ) -> Result<piqueld_core::api::ApplicationLogs, ClientError> {
+        self.filtered_application_logs(id, service, tail, since_seconds, None)
+            .await
+    }
+    /// Reads a bounded log window filtered by service and stream in the daemon.
+    /// # Errors
+    /// Returns transport, validation or Docker errors.
+    pub async fn filtered_application_logs(
+        &self,
+        id: &str,
+        service: Option<&str>,
+        tail: u16,
+        since_seconds: u32,
+        stream: Option<piqueld_core::api::LogStream>,
+    ) -> Result<piqueld_core::api::ApplicationLogs, ClientError> {
         let mut query = url::form_urlencoded::Serializer::new(String::new());
         query
             .append_pair("tail", &tail.to_string())
             .append_pair("since_seconds", &since_seconds.to_string());
         if let Some(service) = service {
             query.append_pair("service", service);
+        }
+        if let Some(stream) = stream {
+            query.append_pair("stream", stream.as_str());
         }
         self.send::<_, ()>(
             http::Method::GET,

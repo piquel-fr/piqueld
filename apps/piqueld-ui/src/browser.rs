@@ -109,6 +109,7 @@ pub fn mount() {
 
 #[component]
 fn App() -> impl IntoView {
+    logs::LogPreferences::provide();
     management::HistoryGuard::install();
     view! {
         <Router trailing_slash={TrailingSlash::Exact} fallback={|| view! { <NotFoundPage /> }}>

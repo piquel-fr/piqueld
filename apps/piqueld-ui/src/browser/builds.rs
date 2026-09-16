@@ -1,7 +1,8 @@
 //! Build metadata and bounded output pages, independent of application runtime logs.
 use super::client_error_message;
-use super::logs::LogViewer;
+use super::logs::{LogViewer, StreamFilter};
 use super::management::timestamp;
+use crate::log_output::LogLine;
 use leptos::*;
 use piqueld_client::{Build, BuildRecord, BuildState, Client, Source};
 use std::{cell::Cell, rc::Rc};
@@ -101,32 +102,7 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
 #[component]
 fn BuildCard(record: Signal<BuildRecord>) -> impl IntoView {
     let opened = create_rw_signal(false);
-    let output = create_rw_signal(None::<piqueld_client::BuildLogPage>);
-    let error = create_rw_signal(None::<String>);
-    let loading = create_rw_signal(false);
-    let offset = create_rw_signal(0i64);
-    let load = Callback::new(move |start: i64| {
-        loading.set(true);
-        offset.set(start);
-        let id = record.get_untracked().id;
-        spawn_local(async move {
-            match Client::browser().build_logs(id, start).await {
-                Ok(page) => {
-                    output.set(Some(page));
-                    error.set(None);
-                }
-                Err(e) => error.set(Some(client_error_message(&e))),
-            }
-            loading.set(false);
-        });
-    });
-    let toggle = move |_| {
-        let opening = !opened.get_untracked();
-        opened.set(opening);
-        if opening && output.get_untracked().is_none() && !record.get_untracked().log_expired {
-            load.call(0);
-        }
-    };
+    let toggle = move |_| opened.update(|value| *value = !*value);
     view! {<article class="deployment-card build-card">
         <button class="deployment-summary build-summary" aria-expanded=move ||opened.get().to_string() on:click=toggle>
             {move ||{let b=record.get();let state=build_state(b.state);let summary_time=build_summary_time(&b);view!{
@@ -153,23 +129,104 @@ fn BuildCard(record: Signal<BuildRecord>) -> impl IntoView {
                     <dt>"Retained output"</dt><dd>{format_bytes(b.log_bytes)}</dd>
                 </dl>
             }}}
-            <div class="build-output-heading">
-                <div><h4>"Build output"</h4><p class="help">"Captured checkout and Docker build output."</p></div>
-                <button disabled=move ||loading.get() || record.get().log_expired on:click=move |_|load.call(0)>{move ||if loading.get(){"Loading…"}else{"Refresh output"}}</button>
-            </div>
-            {move ||record.get().log_truncated.then(||view!{<p class="build-output-notice">"Output reached the configured byte limit, so its end is not retained."</p>})}
-            {move ||record.get().log_expired.then(||view!{<p class="build-output-notice">"Output expired under the retention policy; build metadata remains available."</p>})}
-            {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}
-            {move ||output.get().map(|page|view!{
-                <LogViewer text=page.text label="Build log output" empty="No build output was captured."/>
-                <div class="build-output-footer">
-                    <span class="help-inline">{format!("Showing output from byte {}",offset.get())}</span>
-                    {page.next_offset.map(|next|view!{<button disabled=move ||loading.get() on:click=move |_|load.call(next)>"Next output page"</button>})}
-                </div>
-                {page.expired.then(||view!{<p class="build-output-notice">"Output expired while this build was open."</p>})}
-            })}
+            <Show when=move ||opened.get()><BuildOutput record/></Show>
         </div>
     </article>}
+}
+
+/// Only mounted for an expanded build; the final successful fetch stops polling.
+#[component]
+fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
+    let chunks = create_rw_signal(Vec::<piqueld_client::BuildLogChunk>::new());
+    let previous = create_rw_signal(None::<i64>);
+    let stream = create_rw_signal(None);
+    let loading = create_rw_signal(false);
+    let error = create_rw_signal(None::<String>);
+    let expired = create_rw_signal(false);
+    let refresh = create_rw_signal(true);
+    let older = create_rw_signal(false);
+    create_effect(move |_| {
+        let _ = stream.get();
+        refresh.set(true);
+    });
+    let alive = Rc::new(Cell::new(true));
+    let cleanup = alive.clone();
+    on_cleanup(move || cleanup.set(false));
+    spawn_local(async move {
+        let mut elapsed = 30;
+        let mut final_loaded = false;
+        while alive.get() {
+            if !super::document_hidden()
+                && !record.get_untracked().log_expired
+                && (refresh.get_untracked()
+                    || older.get_untracked()
+                    || (!final_loaded && elapsed >= 30))
+            {
+                let replacing = refresh.get_untracked() || !older.get_untracked();
+                refresh.set(false);
+                older.set(false);
+                loading.set(true);
+                let filter = stream.get_untracked();
+                let before = if replacing {
+                    None
+                } else {
+                    previous.get_untracked()
+                };
+                let build = record.get_untracked();
+                let result = Client::browser()
+                    .build_log_tail(build.id, before, filter)
+                    .await;
+                if !alive.get() {
+                    break;
+                }
+                if stream.get_untracked() != filter {
+                    refresh.set(true);
+                    loading.set(false);
+                    continue;
+                }
+                match result {
+                    Ok(page) => {
+                        if replacing {
+                            chunks.set(page.items);
+                            final_loaded = build.state != BuildState::Running;
+                        } else {
+                            chunks.update(|chunks| {
+                                let mut items = page.items;
+                                items.append(chunks);
+                                *chunks = items;
+                            });
+                        }
+                        previous.set(page.previous_offset);
+                        expired.set(page.expired);
+                        error.set(None);
+                    }
+                    Err(e) => error.set(Some(client_error_message(&e))),
+                }
+                loading.set(false);
+                elapsed = 0;
+            }
+            gloo_timers::future::TimeoutFuture::new(1000).await;
+            elapsed += 1;
+        }
+    });
+    let service = record.get_untracked().service;
+    let lines = Signal::derive(move || LogLine::build(&chunks.get(), &service));
+    view! {
+        <div class="build-output-heading"><h4>"Build output"</h4></div>
+        <div class="log-toolbar">
+            <StreamFilter stream/>
+            <button class="log-refresh" disabled=move ||loading.get() || record.get().log_expired
+                on:click=move |_|refresh.set(true)>{move ||if loading.get(){"Loading…"}else{"Refresh output"}}</button>
+        </div>
+        <p class="help">"Refreshes every 30 seconds while visible until the build finishes."</p>
+        {move ||record.get().log_truncated.then(||view!{<p class="build-output-notice">"Output reached the configured byte limit, so its end is not retained."</p>})}
+        <Show when=move ||record.get().log_expired || expired.get()><p class="build-output-notice">"Output expired under the retention policy; build metadata remains available."</p></Show>
+        {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}
+        <Show when=move ||previous.get().is_some()>
+            <button disabled=move ||loading.get() on:click=move |_|older.set(true)>"Load older output"</button>
+        </Show>
+        <LogViewer lines label="Build log output" empty="No build output was captured."/>
+    }
 }
 
 fn build_state(state: BuildState) -> &'static str {

@@ -23,6 +23,7 @@ impl BollardDocker {
         service: Option<&str>,
         tail: u16,
         since: u32,
+        stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<ApplicationLogs, DockerError> {
         let services = self.log_services(instance, application, service).await?;
         if services.is_empty() {
@@ -65,8 +66,8 @@ impl BollardDocker {
                 container,
                 Some(
                     LogsOptionsBuilder::default()
-                        .stdout(true)
-                        .stderr(true)
+                        .stdout(stream != Some(piqueld_core::api::LogStream::Stderr))
+                        .stderr(stream != Some(piqueld_core::api::LogStream::Stdout))
                         .timestamps(true)
                         .since(since)
                         .tail(&(u32::from(tail) + 1).to_string())
@@ -85,14 +86,17 @@ impl BollardDocker {
                     }
                     Err(error) => return Err(DockerError::request("read container logs", error)),
                 };
-                let stream = match &item {
+                let source = match &item {
                     LogOutput::StdOut { .. } => "stdout",
                     LogOutput::StdErr { .. } => "stderr",
                     _ => "console",
                 };
+                if stream.is_some_and(|filter| filter.as_str() != source) {
+                    continue;
+                }
                 for line in item.to_string().lines() {
                     let (timestamp, message) = line.split_once(' ').unwrap_or(("", line));
-                    let message = Self::log_text(message);
+                    let message = LogRecord::clean_message(message);
                     bytes = bytes.saturating_add(
                         message.len() + timestamp.len() + task_id.len() + service.len() + 128,
                     );
@@ -104,7 +108,7 @@ impl BollardDocker {
                         service: service.clone(),
                         task_id: task_id.clone(),
                         timestamp: timestamp.into(),
-                        stream: stream.into(),
+                        stream: source.into(),
                         message,
                     });
                 }
@@ -161,43 +165,5 @@ impl BollardDocker {
                     .then_some((id, name))
             })
             .collect::<HashMap<_, _>>())
-    }
-    fn log_text(value: &str) -> String {
-        let mut output = String::new();
-        let mut escape = false;
-        let mut csi = false;
-        for ch in value.chars() {
-            if ch == '\u{1b}' {
-                escape = true;
-                csi = false;
-                continue;
-            }
-            if escape {
-                if ch == '[' && !csi {
-                    csi = true;
-                    continue;
-                }
-                if !csi || ('@'..='~').contains(&ch) {
-                    escape = false;
-                }
-                continue;
-            }
-            if !ch.is_control() || ch == '\t' {
-                output.push(ch);
-            }
-        }
-        output
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::BollardDocker;
-    #[test]
-    fn container_output_cannot_control_the_terminal() {
-        assert_eq!(
-            BollardDocker::log_text("\x1b[31mred\x1b[0m\r\0\ttext"),
-            "red\ttext"
-        );
     }
 }

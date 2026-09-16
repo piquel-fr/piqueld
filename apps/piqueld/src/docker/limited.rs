@@ -38,6 +38,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         service: Option<&str>,
         tail: u16,
         since: u32,
+        stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
         let _permit = self
             .observations
@@ -45,7 +46,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
             .await
             .expect("semaphore never closed");
         self.inner
-            .application_logs(instance, application, service, tail, since)
+            .application_logs(instance, application, service, tail, since, stream)
             .await
     }
 

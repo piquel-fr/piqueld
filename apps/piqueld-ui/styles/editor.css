@@ -68,21 +68,34 @@
         margin: 0;
     }
 
+    .log-toolbar, .log-display-controls { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .log-toolbar { width: 100%; }
+    .log-filter { display: flex; align-items: center; gap: .5rem; }
+    .log-refresh { margin-left: auto; }
+    .log-display-controls { margin-top: .75rem; color: var(--muted); font-size: .8rem; }
+    .log-display-controls label { display: inline-flex; align-items: center; gap: .35rem; }
+    .log-display-controls input { width: auto; }
     .application-logs {
-        max-height: min(28rem, 60vh);
-        width: 100%;
-        min-width: 0;
-        margin-top: 1rem;
-        padding: 1rem;
-        overflow: auto;
-        overscroll-behavior: contain;
-        border: 1px solid var(--line);
-        border-radius: .4rem;
-        background: var(--page);
-        font-size: .85rem;
-        line-height: 1.6;
-        white-space: pre;
+        max-height: min(36rem, 65vh);
+        width: 100%; min-width: 0; margin-top: .75rem; padding: .75rem 0;
+        overflow: auto; overflow-anchor: none; overscroll-behavior: contain;
+        border: 1px solid #334155; border-radius: .4rem;
+        background: #10151d; color: #b7bec9;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: .8rem; line-height: 1.65; tab-size: 4;
     }
+    .log-rows { min-width: 100%; width: max-content; }
+    .log-line { display: flex; padding: 0 .85rem; min-height: 1.65em; }
+    .log-metadata { display: flex; gap: .8rem; flex: none; padding-right: .85rem; margin-right: .85rem; border-right: 1px solid #394657; }
+    .log-metadata[hidden], .log-time[hidden], .log-service[hidden] { display: none; }
+    .log-time { color: #8292a9; }
+    .log-service { color: #7dd3fc; min-width: 10ch; }
+    .log-message { white-space: pre; color: #b7bec9; }
+    .log-line[data-severity="error"] { background: #63262d; border-left: 3px solid #fb7185; padding-left: calc(.85rem - 3px); }
+    .log-line[data-severity="stderr"] { background: #302a1e; }
+    .log-wrap .log-rows { width: 100%; }
+    .log-wrap .log-message { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+    .log-empty { padding: 0 .85rem; color: #8292a9; }
 
     .field {
         display: flex;

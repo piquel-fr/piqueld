@@ -13,8 +13,25 @@ impl BuildLog {
     /// Appends output, retaining the configured prefix and recording truncation.
     /// # Errors
     /// Returns a persistence error rather than silently losing output.
-    pub async fn append(&self, bytes: &[u8]) -> Result<(), StoreError> {
-        self.store.append_build_log(self.id, bytes).await
+    pub async fn append(
+        &self,
+        bytes: &[u8],
+        stream: piqueld_core::api::LogStream,
+    ) -> Result<(), StoreError> {
+        self.store.append_build_log(self.id, bytes, stream).await
+    }
+    /// Keeps an incomplete UTF-8 suffix for the next read without rejecting binary output.
+    pub(crate) fn complete_prefix(bytes: &[u8]) -> usize {
+        let mut end = 0;
+        for chunk in bytes.utf8_chunks() {
+            end += chunk.valid().len();
+            let invalid = chunk.invalid();
+            if std::str::from_utf8(invalid).is_err_and(|error| error.error_len().is_none()) {
+                return end;
+            }
+            end += invalid.len();
+        }
+        end
     }
     pub(crate) async fn commit(&self, commit: &str) -> Result<(), StoreError> {
         self.store.build_commit(self.id, commit).await
@@ -94,6 +111,13 @@ impl Drop for BuildAttempt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incomplete_characters_wait_for_the_next_read() {
+        assert_eq!(BuildLog::complete_prefix(b"ok\xe2\x82"), 2);
+        assert_eq!(BuildLog::complete_prefix(b"\xffok\xe2\x82"), 3);
+        assert_eq!(BuildLog::complete_prefix("ok€".as_bytes()), 5);
+    }
 
     #[test]
     fn completion_retry_preserves_pending_terminal_result() {

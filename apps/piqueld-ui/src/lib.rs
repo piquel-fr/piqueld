@@ -1,6 +1,7 @@
 //! Browser application management and deployment history.
 
 pub mod editor;
+pub mod log_output;
 pub mod state;
 
 #[cfg(target_arch = "wasm32")]

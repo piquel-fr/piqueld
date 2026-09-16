@@ -63,11 +63,12 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         service: Option<&str>,
         tail: u16,
         since: u32,
+        stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, BoundaryError> {
         tokio::time::timeout(
             Duration::from_secs(10),
             self.docker
-                .application_logs(&self.instance_id, id, service, tail, since),
+                .application_logs(&self.instance_id, id, service, tail, since, stream),
         )
         .await
         .map_err(|_| DockerError::Unavailable("read application logs"))?
@@ -250,7 +251,10 @@ impl<D: DockerApi> ApplicationRuntime<D> {
             Err(error) => {
                 attempt
                     .log
-                    .append(format!("\nBuild failed: {error}\n").as_bytes())
+                    .append(
+                        format!("\nERROR Build failed: {error}\n").as_bytes(),
+                        piqueld_core::api::LogStream::Stderr,
+                    )
                     .await?;
                 attempt
                     .finish(piqueld_core::api::BuildState::Failed, None)

@@ -1308,6 +1308,8 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
     let server = start_server(false, 1, |_| {
         Reply::json(json!({
             "text": "build output",
+            "items": [],
+            "previous_offset": null,
             "next_offset": 64,
             "truncated": true,
             "expired": true

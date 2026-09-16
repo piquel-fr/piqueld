@@ -13,6 +13,7 @@ use piqueld_core::{
 #[into_params(parameter_in=Query)]
 pub(super) struct LogQuery {
     service: Option<String>,
+    stream: Option<piqueld_core::api::LogStream>,
     #[param(minimum = 1, maximum = 1000, default = 200)]
     tail: u16,
     #[param(minimum = 1, maximum = 86400, default = 3600)]
@@ -22,6 +23,7 @@ impl Default for LogQuery {
     fn default() -> Self {
         Self {
             service: None,
+            stream: None,
             tail: 200,
             since_seconds: 3600,
         }
@@ -64,6 +66,7 @@ pub(super) async fn get(
             query.service.as_deref(),
             query.tail,
             query.since_seconds,
+            query.stream,
         )
         .await?))
 }

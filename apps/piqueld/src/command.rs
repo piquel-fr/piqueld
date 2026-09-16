@@ -32,8 +32,8 @@ impl LoggedCommand {
         let stderr = child.stderr.take().context("capture command stderr")?;
         let (status, stdout, stderr) = tokio::try_join!(
             async { child.wait().await.map_err(anyhow::Error::from) },
-            Self::tail_recorded(stdout, log),
-            Self::tail_recorded(stderr, log),
+            Self::tail_recorded(stdout, log, piqueld_core::api::LogStream::Stdout),
+            Self::tail_recorded(stderr, log, piqueld_core::api::LogStream::Stderr),
         )
         .with_context(|| operation)?;
         if !status.success() {
@@ -48,21 +48,29 @@ impl LoggedCommand {
 
     #[cfg(test)]
     async fn tail(stream: impl AsyncRead + Unpin) -> anyhow::Result<Vec<u8>> {
-        Self::tail_recorded(stream, None).await
+        Self::tail_recorded(stream, None, piqueld_core::api::LogStream::Stdout).await
     }
     async fn tail_recorded(
         mut stream: impl AsyncRead + Unpin,
         log: Option<&crate::build::BuildLog>,
+        source: piqueld_core::api::LogStream,
     ) -> anyhow::Result<Vec<u8>> {
         let mut tail = VecDeque::with_capacity(Self::TAIL_BYTES);
         let mut buffer = [0; 4096];
+        let mut pending = Vec::new();
         loop {
             let read = stream.read(&mut buffer).await?;
             if read == 0 {
+                if let Some(log) = log {
+                    log.append(&pending, source).await?;
+                }
                 return Ok(tail.into());
             }
             if let Some(log) = log {
-                log.append(&buffer[..read]).await?;
+                pending.extend_from_slice(&buffer[..read]);
+                let end = crate::build::BuildLog::complete_prefix(&pending);
+                log.append(&pending[..end], source).await?;
+                pending.drain(..end);
             }
             let discard = (tail.len() + read).saturating_sub(Self::TAIL_BYTES);
             tail.drain(..discard);

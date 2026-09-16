@@ -212,6 +212,7 @@ impl DockerApi for FakeDocker {
         _service: Option<&str>,
         _tail: u16,
         _since: u32,
+        _stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
         Ok(piqueld_core::api::ApplicationLogs::default())
     }
