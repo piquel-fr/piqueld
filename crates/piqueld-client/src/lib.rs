@@ -58,6 +58,17 @@ pub fn application_name_from_toml(input: &str) -> Result<String, ValidationError
     piqueld_core::parse_toml(input).map(|application| application.name().to_string())
 }
 
+/// The observed transport failure, without inferring daemon state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransportFailure {
+    /// Opening the socket failed with this operating-system error kind.
+    Connect(std::io::ErrorKind),
+    /// The request exceeded its deadline.
+    Timeout,
+    /// Sending the request or receiving its response failed.
+    Exchange,
+}
+
 #[derive(Debug, Error)]
 /// Errors produced while making an API request.
 pub enum ClientError {
@@ -72,6 +83,8 @@ pub enum ClientError {
     Transport {
         /// Safe transport failure detail suitable for operator diagnostics.
         message: String,
+        /// Structured failure category retained for actionable diagnostics.
+        kind: TransportFailure,
     },
     /// The server returned a non-success response.
     #[error("API returned {status}: {} ({})", error.code, error.message)]

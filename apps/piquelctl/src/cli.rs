@@ -9,6 +9,9 @@ use std::{path::PathBuf, time::Duration};
     about = "Operate a local piqueld control plane"
 )]
 pub(crate) struct Cli {
+    #[arg(skip)]
+    pub(crate) connection_sources: crate::profiles::ConnectionSources,
+
     /// Named connection in the profiles file (or `PIQUELD_PROFILE`).
     #[arg(long, global = true)]
     pub(crate) profile: Option<String>,

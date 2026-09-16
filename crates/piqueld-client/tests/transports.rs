@@ -158,7 +158,7 @@ async fn dns_and_connect_failures_include_the_endpoint() {
             .await
             .unwrap_err();
         assert!(
-            matches!(&error, ClientError::Transport { message } if message.contains(&endpoint)),
+            matches!(&error, ClientError::Transport { message, .. } if message.contains(&endpoint)),
             "{error}"
         );
     }
@@ -230,7 +230,7 @@ async fn request_timeout_is_reported_by_the_client() {
     let result = client.system_status().await;
     assert!(matches!(
         result,
-        Err(ClientError::Transport { message }) if message == "request timed out"
+        Err(ClientError::Transport { message, kind: piqueld_client::TransportFailure::Timeout }) if message == "request timed out"
     ));
 }
 
@@ -254,7 +254,7 @@ async fn incomplete_response_bodies_time_out() {
         .await;
     assert!(matches!(
         result,
-        Err(ClientError::Transport { message }) if message == "request timed out"
+        Err(ClientError::Transport { message, kind: piqueld_client::TransportFailure::Timeout }) if message == "request timed out"
     ));
     server.abort();
 }
@@ -279,7 +279,7 @@ async fn unix_socket_stalled_response_bodies_time_out() {
         .await;
     assert!(matches!(
         result,
-        Err(ClientError::Transport { message }) if message == "request timed out"
+        Err(ClientError::Transport { message, kind: piqueld_client::TransportFailure::Timeout }) if message == "request timed out"
     ));
     server.abort();
 }
@@ -314,7 +314,7 @@ async fn oversized_response_bodies_are_rejected() {
         .await;
     server.abort();
     match result {
-        Err(ClientError::Transport { message }) => {
+        Err(ClientError::Transport { message, .. }) => {
             assert!(message.contains("exceeded"), "unexpected error: {message}");
         }
         other => panic!("expected a body-size transport error, got {other:?}"),
@@ -366,6 +366,7 @@ async fn unreadable_error_bodies_fall_back_to_invalid_error_response() {
         Err(ClientError::Api { status, error }) => {
             assert_eq!(status, http::StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(error.code, "invalid_error_response");
+            assert!(error.message.contains("line 1 column"), "{}", error.message);
         }
         other => panic!("expected an API error, got {other:?}"),
     }

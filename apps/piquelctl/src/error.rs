@@ -1,5 +1,5 @@
 use crate::cli::Cli;
-use piqueld_client::ClientError;
+use piqueld_client::{ClientError, TransportFailure};
 use serde_json::Value;
 use std::{fmt, process::ExitCode};
 
@@ -33,6 +33,16 @@ pub(crate) struct CliError {
     api_code: Option<String>,
     request_id: Option<String>,
     details: Option<Value>,
+    diagnostic: Option<Box<Diagnostic>>,
+}
+
+#[derive(Debug)]
+enum Diagnostic {
+    Endpoint,
+    Configuration(String),
+    Transport(TransportFailure),
+    Response,
+    CommandTimeout,
 }
 
 impl CliError {
@@ -43,7 +53,86 @@ impl CliError {
             api_code: None,
             request_id: None,
             details: None,
+            diagnostic: None,
         }
+    }
+
+    fn diagnostic(mut self, diagnostic: Diagnostic) -> Self {
+        self.diagnostic = Some(Box::new(diagnostic));
+        self
+    }
+
+    pub(crate) fn configuration(self, source: String) -> Self {
+        self.diagnostic(Diagnostic::Configuration(source))
+    }
+
+    pub(crate) fn command_timeout(self) -> Self {
+        self.diagnostic(Diagnostic::CommandTimeout)
+    }
+
+    pub(crate) fn invalid_response(self) -> Self {
+        self.diagnostic(Diagnostic::Response)
+    }
+
+    /// Render only evidence available from configuration and the failed exchange.
+    pub(crate) fn render_connection(&self, cli: &Cli) {
+        let Some(diagnostic) = self.diagnostic.as_deref() else {
+            return;
+        };
+        if let Diagnostic::Configuration(source) = diagnostic {
+            eprintln!("  Configuration source: {source}");
+        } else {
+            // Rejected endpoint input can contain credentials; never echo it.
+            if !matches!(diagnostic, Diagnostic::Endpoint) {
+                eprintln!("  Endpoint: {}", crate::support::transport_description(cli));
+            }
+            eprintln!("  Endpoint source: {}", cli.connection_sources.endpoint);
+        }
+        if matches!(
+            diagnostic,
+            Diagnostic::CommandTimeout | Diagnostic::Transport(TransportFailure::Timeout)
+        ) {
+            eprintln!(
+                "  Timeout: {}",
+                crate::support::format_duration(cli.timeout)
+            );
+            eprintln!("  Timeout source: {}", cli.connection_sources.timeout);
+        }
+        let hint = match diagnostic {
+            Diagnostic::Endpoint => {
+                "Check the selected endpoint configuration; use a Unix socket or a plain loopback HTTP origin."
+            }
+            Diagnostic::Configuration(_) => {
+                "Check the configuration source above. Profiles require exactly one socket or URL and an optional positive timeout."
+            }
+            Diagnostic::Transport(TransportFailure::Connect(kind)) => match kind {
+                std::io::ErrorKind::NotFound if cli.url.is_none() => {
+                    "Check the socket path and whether the daemon has created its socket."
+                }
+                std::io::ErrorKind::PermissionDenied if cli.url.is_none() => {
+                    "Check whether your user has access to the socket and its parent directories."
+                }
+                std::io::ErrorKind::PermissionDenied => {
+                    "Check whether local network access is permitted for this process."
+                }
+                std::io::ErrorKind::ConnectionRefused => {
+                    "Check whether the daemon is listening at the selected endpoint."
+                }
+                _ => {
+                    "Check the selected endpoint and whether the daemon is listening and accessible."
+                }
+            },
+            Diagnostic::Transport(TransportFailure::Timeout) => {
+                "Check daemon responsiveness and whether the configured timeout is sufficient."
+            }
+            Diagnostic::CommandTimeout => {
+                "Check daemon responsiveness and whether the timeout allows the command to finish. A server-side operation may still be running."
+            }
+            Diagnostic::Transport(TransportFailure::Exchange) | Diagnostic::Response => {
+                "Check that the selected endpoint serves the piqueld API and inspect the daemon logs."
+            }
+        };
+        eprintln!("  Hint: {hint}");
     }
 
     pub(crate) fn api(mut self, code: String, request_id: String, details: Value) -> Self {
@@ -79,15 +168,19 @@ impl From<std::io::Error> for CliError {
 impl From<ClientError> for CliError {
     fn from(error: ClientError) -> Self {
         match error {
-            ClientError::Endpoint { message } => Self::new(ErrorKind::Input, message),
-            ClientError::Transport { message } => Self::new(
+            ClientError::Endpoint { message } => {
+                Self::new(ErrorKind::Input, message).diagnostic(Diagnostic::Endpoint)
+            }
+            ClientError::Transport { message, kind } => Self::new(
                 ErrorKind::Unavailable,
-                format!("could not connect to the piqueld API: {message}"),
-            ),
-            ClientError::Decode { .. } => Self::new(
+                format!("piqueld API request failed: {message}"),
+            )
+            .diagnostic(Diagnostic::Transport(kind)),
+            ClientError::Decode { source } => Self::new(
                 ErrorKind::General,
-                "the daemon returned an invalid public API response",
-            ),
+                format!("the daemon returned an invalid public API response: {source}"),
+            )
+            .invalid_response(),
             ClientError::Api { status, error } => {
                 let kind = match status.as_u16() {
                     400 | 404 | 413 | 415 | 422 => ErrorKind::Input,
@@ -96,11 +189,18 @@ impl From<ClientError> for CliError {
                     502..=504 => ErrorKind::Unavailable,
                     _ => ErrorKind::General,
                 };
-                Self::new(kind, format!("{} ({})", error.message, error.code)).api(
-                    error.code,
-                    error.request_id,
-                    error.details,
-                )
+                let diagnostic = (error.code == "invalid_error_response"
+                    || status.is_redirection())
+                .then_some(Diagnostic::Response);
+                let message = if diagnostic.is_some() {
+                    format!("{} ({}, HTTP {status})", error.message, error.code)
+                } else {
+                    format!("{} ({})", error.message, error.code)
+                };
+                let mut result =
+                    Self::new(kind, message).api(error.code, error.request_id, error.details);
+                result.diagnostic = diagnostic.map(Box::new);
+                result
             }
         }
     }
@@ -108,7 +208,7 @@ impl From<ClientError> for CliError {
 
 pub(crate) type Result<T> = std::result::Result<T, CliError>;
 
-pub(crate) fn finish_error(cli: &Cli, error: CliError) -> ExitCode {
+pub(crate) fn finish_error(cli: &Cli, error: &CliError) -> ExitCode {
     if cli.json {
         eprintln!(
             "piquelctl: {}{}{}{}",
@@ -137,16 +237,17 @@ pub(crate) fn finish_error(cli: &Cli, error: CliError) -> ExitCode {
         }
     } else {
         eprintln!("Error: {}", error.message);
-        if let Some(code) = error.api_code {
+        if let Some(code) = &error.api_code {
             eprintln!("  API code:   {code}");
         }
-        if let Some(request_id) = error.request_id {
+        if let Some(request_id) = &error.request_id {
             eprintln!("  Request ID: {request_id}");
         }
-        if let Some(details) = error.details {
-            render_details(&details);
+        if let Some(details) = &error.details {
+            render_details(details);
         }
     }
+    error.render_connection(cli);
     ExitCode::from(error.kind.exit_code())
 }
 

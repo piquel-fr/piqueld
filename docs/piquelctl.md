@@ -95,6 +95,36 @@ The DTO fields and error envelope are defined by the versioned API and the
 `piqueld-client` crate. CLI errors are reported on stderr and never mixed into
 JSON stdout.
 
+## Connection failures
+
+Use `piquelctl status` to check whether the selected endpoint responds with the
+piqueld API. Connection diagnostics are available on failures from every command;
+there is no separate diagnostic command.
+
+Failures identify the effective endpoint and its source (flag, environment,
+profile and file, or built-in default), preserve the observed cause, and suggest
+a check. Timeout failures also show the effective timeout and its independent
+source. For example:
+
+```text
+Error: piqueld API request failed: opening connection: No such file or directory (os error 2)
+  Endpoint: Unix socket /tmp/piqueld.sock
+  Endpoint source: flag --socket
+  Hint: Check the socket path and whether the daemon has created its socket.
+```
+
+Configuration failures identify the source that needs attention; they do not
+claim an effective endpoint before resolution succeeds. Rejected URLs and TOML
+source excerpts are omitted because they can contain credentials. Malformed
+profile files report a location and a safe error category instead.
+
+These diagnostics use the original request and resolved configuration. They do
+not probe other targets, inspect permissions, or check database, Docker, or Swarm
+readiness. Unexpected HTTP responses and invalid API data include connection
+context; ordinary application errors keep their existing reporting. Diagnostics
+remain human-readable on stderr with `--json` or `--quiet`, and exit codes and
+successful output are unchanged.
+
 ## Mutation safety
 
 `apply` saves configuration only. `apply --deploy` saves and deploys atomically.

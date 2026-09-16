@@ -281,3 +281,165 @@ fn automatic_discovery_uses_xdg_then_falls_back_to_home() {
         );
     }
 }
+
+#[test]
+fn connection_failures_identify_the_effective_endpoint_source() {
+    let fixture = ProfilesFixture::new();
+    for (args, env, source, endpoint) in [
+        (
+            vec!["--profile", "testing", "status"],
+            vec![],
+            "profile \"testing\" in",
+            "/tmp/profile-missing.sock",
+        ),
+        (
+            vec!["--profile", "testing", "list"],
+            vec![("PIQUELD_SOCKET", "/tmp/env-missing.sock")],
+            "environment variable PIQUELD_SOCKET",
+            "/tmp/env-missing.sock",
+        ),
+        (
+            vec![
+                "--profile",
+                "testing",
+                "--socket",
+                "/tmp/flag-missing.sock",
+                "--quiet",
+                "--json",
+                "status",
+            ],
+            vec![],
+            "flag --socket",
+            "/tmp/flag-missing.sock",
+        ),
+    ] {
+        let output = fixture.run(&args, &env);
+        assert_eq!(output.status.code(), Some(4));
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains(&format!("Endpoint source: {source}")),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!("Endpoint: Unix socket {endpoint}")),
+            "{error}"
+        );
+        assert!(error.contains("Check the socket path"), "{error}");
+        assert!(!error.contains("Timeout:"), "{error}");
+    }
+}
+
+#[test]
+fn timeout_provenance_is_independent_of_endpoint_provenance() {
+    use std::os::unix::net::UnixListener;
+    let fixture = ProfilesFixture::new();
+    let socket = fixture.directory.path().join("pending.sock");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    std::fs::write(
+        fixture.directory.path().join("profiles.toml"),
+        format!(
+            "[profiles.testing]\nsocket = {:?}\ntimeout = \"20ms\"\n",
+            socket.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    for (extra, env, source) in [
+        (vec![], vec![], "profile \"testing\" in"),
+        (
+            vec![],
+            vec![("PIQUELD_TIMEOUT", "20ms")],
+            "environment variable PIQUELD_TIMEOUT",
+        ),
+        (
+            vec!["--timeout", "20ms"],
+            vec![("PIQUELD_TIMEOUT", "bad")],
+            "flag --timeout",
+        ),
+    ] {
+        let mut args = vec![
+            "--profile",
+            "testing",
+            "--socket",
+            socket.to_str().unwrap(),
+            "status",
+        ];
+        args.extend(extra);
+        let output = fixture.run(&args, &env);
+        assert_eq!(output.status.code(), Some(4));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("Endpoint source: flag --socket"), "{error}");
+        assert!(error.contains("Timeout: 20ms"), "{error}");
+        assert!(
+            error.contains(&format!("Timeout source: {source}")),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn invalid_configuration_reports_its_source_without_exposing_values() {
+    let fixture = ProfilesFixture::new();
+    let output = fixture.run(
+        &[
+            "--url",
+            "http://user:private-token@localhost/?secret=value",
+            "status",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("Endpoint source: flag --url"), "{error}");
+    assert!(!error.contains("private-token"));
+    assert!(!error.contains("secret=value"));
+    assert!(!error.contains("Endpoint:"));
+
+    for malformed in [
+        "[profiles.testing]\nurl = \"http://user:private-token@localhost/\" broken",
+        "profiles = \"private-token\"",
+    ] {
+        std::fs::write(fixture.directory.path().join("profiles.toml"), malformed).unwrap();
+        let output = fixture.run(&["--socket", "/tmp/override.sock", "status"], &[]);
+        assert_eq!(output.status.code(), Some(2));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("line ") && error.contains("column "),
+            "{error}"
+        );
+        assert!(
+            error.contains("profiles.toml (environment variable PIQUELD_PROFILES_FILE)"),
+            "{error}"
+        );
+        assert!(!error.contains("private-token"));
+        assert!(!error.contains("Endpoint:"));
+    }
+}
+
+#[test]
+fn refused_connections_identify_the_listening_endpoint_check() {
+    let fixture = ProfilesFixture::new();
+    let socket = fixture.directory.path().join("stopped.sock");
+    drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let url = format!("http://127.0.0.1:{port}");
+    let dns_url = format!("http://localhost.:{port}");
+    for (flag, endpoint) in [
+        ("--socket", socket.to_str().unwrap()),
+        ("--url", url.as_str()),
+        ("--url", dns_url.as_str()),
+    ] {
+        let output = fixture.run(&[flag, endpoint, "status"], &[]);
+        assert_eq!(output.status.code(), Some(4));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(endpoint), "{error}");
+        assert!(
+            error.contains("Check whether the daemon is listening"),
+            "{error}"
+        );
+        assert!(!error.contains("Check the socket path"), "{error}");
+        assert!(!error.contains("inspect the daemon logs"), "{error}");
+    }
+}
