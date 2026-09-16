@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 
-/// Runtime boundary backed by Docker.
-pub struct DockerRuntime<D> {
+/// Application runtime orchestration backed by Docker.
+pub struct ApplicationRuntime<D> {
     docker: Arc<D>,
     instance_id: InstanceId,
     wake: Arc<Notify>,
@@ -27,8 +27,8 @@ pub struct DockerRuntime<D> {
     progress: Option<(Arc<crate::store::Store>, String)>,
 }
 
-impl<D> DockerRuntime<D> {
-    /// Creates a Docker runtime adapter with the supplied input-resolution budget.
+impl<D> ApplicationRuntime<D> {
+    /// Creates application runtime orchestration with the supplied preparation budget.
     #[must_use]
     pub fn new(
         docker: Arc<D>,
@@ -56,7 +56,7 @@ impl<D> DockerRuntime<D> {
 }
 
 #[async_trait]
-impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
+impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     async fn logs(
         &self,
         id: &piqueld_core::ApplicationId,
@@ -118,33 +118,37 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             let sources = stream::iter(pending.into_iter().map(move |(name, source)| {
                 let docker = Arc::clone(&docker);
                 async move {
-                    let resolved =
-                        match &source {
-                            Source::Image { image } => {
-                                let digest_reference = DockerTimeout::ImageResolution
-                                    .run("resolve image", docker.resolve_image(image))
-                                    .await
-                                    .map_err(|error| {
-                                        (
-                                            name.clone(),
-                                            "resolving_image",
-                                            BoundaryError::Runtime(error),
-                                        )
-                                    })?;
-                                ResolvedSource::parse_image(image.clone(), digest_reference)
-                                    .map_err(|source| {
-                                        (
-                                            name.clone(),
-                                            "resolving_image",
-                                            BoundaryError::Runtime(DockerError::RequestSource {
-                                                operation: "validate resolved image",
-                                                source: Box::new(source),
-                                            }),
-                                        )
-                                    })?
-                            }
-                            Source::Git { repository, build } => {
-                                let (commit, image_id) = crate::git::Checkout::prepare(
+                    let resolved = match &source {
+                        Source::Image { image } => {
+                            let digest_reference = DockerTimeout::ImageResolution
+                                .run("resolve image", docker.resolve_image(image))
+                                .await
+                                .map_err(|error| {
+                                    (
+                                        name.clone(),
+                                        "resolving_image",
+                                        BoundaryError::Runtime(error),
+                                    )
+                                })?;
+                            ResolvedSource::parse_image(image.clone(), digest_reference).map_err(
+                                |source| {
+                                    (
+                                        name.clone(),
+                                        "resolving_image",
+                                        BoundaryError::Runtime(DockerError::RequestSource {
+                                            operation: "validate resolved image",
+                                            source: Box::new(source),
+                                        }),
+                                    )
+                                },
+                            )?
+                        }
+                        Source::Git { repository, build } => {
+                            let (commit, image_id) = self
+                                .prepare_git(
+                                    application,
+                                    name.as_str(),
+                                    &source,
                                     repository,
                                     build,
                                     docker.as_ref(),
@@ -153,13 +157,13 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
                                 .map_err(|error| {
                                     (name.clone(), "building_git", BoundaryError::GitBuild(error))
                                 })?;
-                                ResolvedSource::Git {
-                                    requested: source,
-                                    commit,
-                                    image_id,
-                                }
+                            ResolvedSource::Git {
+                                requested: source,
+                                commit,
+                                image_id,
                             }
-                        };
+                        }
+                    };
                     Ok::<_, (piqueld_core::ServiceName, &'static str, BoundaryError)>((
                         name, resolved,
                     ))
@@ -207,5 +211,52 @@ impl<D: DockerApi> RuntimeBoundary for DockerRuntime<D> {
             )
             .await
             .map_err(BoundaryError::from)
+    }
+}
+
+impl<D: DockerApi> ApplicationRuntime<D> {
+    async fn prepare_git(
+        &self,
+        application: &NormalizedApplication,
+        service: &str,
+        source: &Source,
+        repository: &piqueld_core::manifest::GitRepository,
+        build: &piqueld_core::manifest::Build,
+        docker: &D,
+    ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
+        let Some((store, operation)) = &self.progress else {
+            return crate::git::Checkout::prepare(repository, build, docker).await;
+        };
+        let attempt = crate::build::BuildAttempt::start(
+            Arc::clone(store),
+            application.id(),
+            operation,
+            service,
+            source,
+        )
+        .await?;
+        let result =
+            crate::git::Checkout::prepare_recorded(repository, build, docker, Some(&attempt.log))
+                .await;
+        match &result {
+            Ok((_, image)) => {
+                attempt
+                    .finish(
+                        piqueld_core::api::BuildState::Succeeded,
+                        Some(image.as_str()),
+                    )
+                    .await?;
+            }
+            Err(error) => {
+                attempt
+                    .log
+                    .append(format!("\nBuild failed: {error}\n").as_bytes())
+                    .await?;
+                attempt
+                    .finish(piqueld_core::api::BuildState::Failed, None)
+                    .await?;
+            }
+        }
+        result
     }
 }

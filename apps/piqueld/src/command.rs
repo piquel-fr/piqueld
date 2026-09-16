@@ -12,7 +12,15 @@ impl LoggedCommand {
 
     /// Drain both streams concurrently with a fixed memory bound and no log file.
     /// Error tails stay in internal diagnostics, never the public API response.
+    #[cfg(test)]
     pub(crate) async fn run(command: &mut Command, operation: &'static str) -> anyhow::Result<()> {
+        Self::run_recorded(command, operation, None).await
+    }
+    pub(crate) async fn run_recorded(
+        command: &mut Command,
+        operation: &'static str,
+        log: Option<&crate::build::BuildLog>,
+    ) -> anyhow::Result<()> {
         let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -22,9 +30,12 @@ impl LoggedCommand {
             .with_context(|| operation)?;
         let stdout = child.stdout.take().context("capture command stdout")?;
         let stderr = child.stderr.take().context("capture command stderr")?;
-        let (status, stdout, stderr) =
-            tokio::try_join!(child.wait(), Self::tail(stdout), Self::tail(stderr),)
-                .with_context(|| operation)?;
+        let (status, stdout, stderr) = tokio::try_join!(
+            async { child.wait().await.map_err(anyhow::Error::from) },
+            Self::tail_recorded(stdout, log),
+            Self::tail_recorded(stderr, log),
+        )
+        .with_context(|| operation)?;
         if !status.success() {
             bail!(
                 "{operation} failed ({status}):\nstdout: {}\nstderr: {}",
@@ -35,13 +46,23 @@ impl LoggedCommand {
         Ok(())
     }
 
-    async fn tail(mut stream: impl AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
+    #[cfg(test)]
+    async fn tail(stream: impl AsyncRead + Unpin) -> anyhow::Result<Vec<u8>> {
+        Self::tail_recorded(stream, None).await
+    }
+    async fn tail_recorded(
+        mut stream: impl AsyncRead + Unpin,
+        log: Option<&crate::build::BuildLog>,
+    ) -> anyhow::Result<Vec<u8>> {
         let mut tail = VecDeque::with_capacity(Self::TAIL_BYTES);
         let mut buffer = [0; 4096];
         loop {
             let read = stream.read(&mut buffer).await?;
             if read == 0 {
                 return Ok(tail.into());
+            }
+            if let Some(log) = log {
+                log.append(&buffer[..read]).await?;
             }
             let discard = (tail.len() + read).saturating_sub(Self::TAIL_BYTES);
             tail.drain(..discard);

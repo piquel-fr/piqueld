@@ -146,7 +146,7 @@ out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.
 
 The dashboard provides application management forms and recent application logs. Remote
-authentication, build logs, registry management, and advanced interactive CLI flows remain future work.
+authentication, registry management, and advanced interactive CLI flows remain future work.
 
 `deploy` fetches repository-backed configuration when configured, then explicitly
 resolves image or Git build sources. It supersedes pending work for the selected
@@ -188,3 +188,7 @@ Precedence is explicit flags, then `PIQUELD_SOCKET` / `PIQUELD_URL` /
 override replaces the entire profile transport. Simultaneous environment socket
 and URL values are rejected unless an explicit transport overrides them.
 Authentication and credentials are not profile settings yet.
+
+`piquelctl builds list [--application ID] [--cursor CURSOR]` lists one page of build
+attempts. `piquelctl builds logs ID [--offset BYTE_OFFSET]` reads one bounded output
+page and prints the next offset when available. Both support `--json`.

@@ -1621,6 +1621,9 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
             .unwrap(),
         active
     );
+    harness
+        .assert_git_build_history(&first.application_id)
+        .await;
 }
 
 #[tokio::test]
@@ -2051,4 +2054,35 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
                     .any(|span| span["operation_id"] == operation_id)
             })
     }));
+}
+
+impl ControllerHarness {
+    async fn assert_git_build_history(&self, id: &ApplicationId) {
+        let builds = self.store.builds(Some(id), None, 50).await.unwrap();
+        assert_eq!(
+            builds.items.len(),
+            3,
+            "one record per executed preparation, not per accepted/replayed request"
+        );
+        assert_eq!(builds.items[0].state, piqueld_core::api::BuildState::Failed);
+        assert!(
+            builds
+                .items
+                .iter()
+                .all(|b| b.commit.is_some() && b.log_bytes > 0)
+        );
+        assert!(
+            builds.items[1..].iter().all(
+                |b| b.state == piqueld_core::api::BuildState::Succeeded && b.image_id.is_some()
+            )
+        );
+        assert!(
+            self.store
+                .build_logs(builds.items[0].id, 0)
+                .await
+                .unwrap()
+                .text
+                .contains("Build failed")
+        );
+    }
 }

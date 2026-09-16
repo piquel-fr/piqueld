@@ -2,6 +2,8 @@
 
 pub mod api;
 pub mod application;
+/// Executor-independent durable build recording.
+pub mod build;
 pub mod config;
 pub mod docker;
 pub mod operations;

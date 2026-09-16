@@ -178,6 +178,10 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
     let client = Client::tcp(&format!("http://{address}/")).expect("valid client endpoint");
     let manifest = manifest();
 
+    assert!(client.builds(None, None).await.unwrap().items.is_empty());
+    assert!(
+        matches!(client.build_logs(999,0).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
+    );
     assert_create_plan(&client, &manifest).await;
     let created = create_and_inspect(&client, &manifest).await;
     let replaced = replace_and_plan(&client, &created, manifest).await;

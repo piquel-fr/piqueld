@@ -1,7 +1,7 @@
 //! Accept manifest intent immediately; Docker preparation belongs to operation execution.
 
 mod runtime;
-pub use runtime::DockerRuntime;
+pub use runtime::ApplicationRuntime;
 
 use crate::{
     docker::DockerError,

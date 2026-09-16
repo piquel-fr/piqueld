@@ -48,3 +48,8 @@ The daemon prepares its private data directory before opening SQLite. The store
 checks the database file path. During builds, the daemon build script provisions
 a disposable migrated database for SQLx query checks; it does not open an
 operator database.
+
+Migration 0004 adds executor-independent build attempts and bounded output chunks.
+Build metadata is owned by the application rather than an operation, so pruning
+operation history cannot erase build history. Interrupted running records are
+recovered at coordinator startup; output retention leaves metadata intact.

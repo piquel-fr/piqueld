@@ -23,6 +23,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::store::StoreError;
 
 mod applications;
+mod builds;
 mod deployments;
 mod events;
 mod logs;
@@ -333,6 +334,8 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(deployments::attempts))
         .routes(routes!(events::list))
         .routes(routes!(logs::get))
+        .routes(routes!(builds::list))
+        .routes(routes!(builds::logs))
         .routes(routes!(operations::get))
 }
 
