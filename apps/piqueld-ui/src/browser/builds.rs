@@ -29,7 +29,7 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
                 .with_untracked(|items| items.iter().any(|b| b.state == BuildState::Running));
             if !super::document_hidden()
                 && !loading.get_untracked()
-                && (refresh.get_untracked() || (running && !paginated.get_untracked()))
+                && (refresh.get_untracked() || running)
             {
                 refresh.set(false);
                 loading.set(true);
@@ -40,9 +40,23 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
                 }
                 match result {
                     Ok(page) => {
-                        records.set(page.items);
-                        cursor.set(page.next_cursor);
-                        paginated.set(false);
+                        if paginated.get_untracked() {
+                            records.update(|items| {
+                                for build in page.items {
+                                    if let Some(existing) =
+                                        items.iter_mut().find(|b| b.id == build.id)
+                                    {
+                                        *existing = build;
+                                    } else {
+                                        items.push(build);
+                                    }
+                                }
+                                items.sort_by_key(|b| std::cmp::Reverse(b.id));
+                            });
+                        } else {
+                            records.set(page.items);
+                            cursor.set(page.next_cursor);
+                        }
                         error.set(None);
                     }
                     Err(e) => error.set(Some(client_error_message(&e))),
