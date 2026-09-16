@@ -114,8 +114,7 @@ pub trait DockerApi: Send + Sync + 'static {
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         self.build_image(dockerfile, context).await
     }
-    /// Builds a local image without persisting output.
-
+    /// Provisions an immutable secret with the expected application ownership.
     async fn ensure_secret(
         &self,
         _name: &str,
@@ -136,7 +135,7 @@ pub trait DockerApi: Send + Sync + 'static {
             Err(DockerError::Unavailable("secret removal"))
         }
     }
-    /// Builds a local image.
+    /// Builds a local image without persisting output.
     async fn build_image(
         &self,
         dockerfile: &Path,
