@@ -37,22 +37,25 @@ impl Store {
         let _writer = self.writers.lock().await;
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let row = sqlx::query!(
-            "SELECT log_bytes,log_expired,state FROM builds WHERE id=?1",
+            "SELECT log_bytes,log_expired,log_truncated,state FROM builds WHERE id=?1",
             id
         )
         .fetch_optional(&mut *tx)
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
-        if row.log_expired != 0 || row.state != "running" {
+        if row.log_expired != 0 || row.log_truncated != 0 || row.state != "running" {
             return Ok(());
         }
         let remaining = i64::from(self.build_history.log_max_bytes)
             .saturating_sub(row.log_bytes)
             .max(0);
-        let count = bytes
+        let mut count = bytes
             .len()
             .min(usize::try_from(remaining).map_err(StoreError::invalid_input)?);
+        if count < bytes.len() {
+            count = crate::build::BuildLog::complete_prefix(&bytes[..count]);
+        }
         // Each chunk is bounded regardless of which executor records output.
         let mut offset = row.log_bytes;
         let mut remaining = &bytes[..count];
@@ -441,21 +444,40 @@ mod tests {
     }
     #[tokio::test]
     async fn structured_chunks_preserve_multibyte_output() {
-        let Fixture {
-            _temp, store, id, ..
-        } = Fixture::new().await;
-        let text = "€".repeat(3000);
-        store
-            .append_build_log(id, text.as_bytes(), LogStream::Stdout)
-            .await
-            .unwrap();
-        let page = store.build_logs(id, None, None).await.unwrap();
-        assert_eq!(
-            page.items
-                .iter()
-                .map(|chunk| chunk.text.as_str())
-                .collect::<String>(),
-            text
-        );
+        for (repeats, retained, truncated) in [(3000, 9000, false), (25000, 69999, true)] {
+            let Fixture {
+                _temp, store, id, ..
+            } = Fixture::new().await;
+            let text = "€".repeat(repeats);
+            store
+                .append_build_log(id, text.as_bytes(), LogStream::Stdout)
+                .await
+                .unwrap();
+            if truncated {
+                // The unused byte at the cap must not admit output after a gap.
+                store
+                    .append_build_log(id, b"x", LogStream::Stdout)
+                    .await
+                    .unwrap();
+            }
+            let mut output = String::new();
+            let mut before = None;
+            loop {
+                let page = store.build_logs(id, before, None).await.unwrap();
+                assert_eq!(page.truncated, truncated);
+                let text = page
+                    .items
+                    .iter()
+                    .map(|chunk| chunk.text.as_str())
+                    .collect::<String>();
+                output.insert_str(0, &text);
+                before = page.previous_offset;
+                if before.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(output, text[..retained]);
+            assert!(!output.contains('�'));
+        }
     }
 }
