@@ -68,17 +68,7 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
         }
         let operation = &self.store.operation(&operation.id).await?;
-        let result = async {
-            self.execute_operation(operation, cancellation).await?;
-            if operation.kind == OperationKind::Delete {
-                let names = self.store.secret_names(&operation.application_id).await?;
-                self.docker
-                    .remove_secrets(&names, &self.ownership_labels(&operation.application_id))
-                    .await?;
-            }
-            Ok::<(), OperationError>(())
-        }
-        .await;
+        let result = self.execute_and_cleanup(operation, cancellation).await;
         if cancellation.is_cancelled() {
             return Ok("cancelled");
         }
@@ -137,6 +127,22 @@ impl<D: DockerApi> Controller<D> {
             }
         };
         persisted.map(|()| outcome)
+    }
+
+    /// Completes convergence and removes retained secrets after service deletion.
+    async fn execute_and_cleanup(
+        &self,
+        operation: &Operation,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        self.execute_operation(operation, cancellation).await?;
+        if operation.kind == OperationKind::Delete {
+            let names = self.store.secret_names(&operation.application_id).await?;
+            self.docker
+                .remove_secrets(&names, &self.ownership_labels(&operation.application_id))
+                .await?;
+        }
+        Ok(())
     }
 
     /// Plans from fresh observations until no work remains. Only desired state and

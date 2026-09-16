@@ -33,7 +33,7 @@ name = "data"
 Services support replicas, environment variables, command and argument arrays,
 health checks, CPU/memory limits, and mounts of declared named volumes. Named
 volumes are retained when an application is deleted. There are no manifest
-fields for managed credentials, secrets, routes, or published ports.
+fields for managed credentials, routes, or published ports.
 
 Names are 1–63 lowercase ASCII letters, digits, or hyphens; they start with a
 letter and cannot end with a hyphen. Applications may be empty. Deploying an empty application removes its services and network, retaining volume data.
