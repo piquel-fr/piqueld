@@ -874,7 +874,10 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     let output = run_with_timeout(&timeout_server, &["operation", "operation-01"], "50ms");
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("timed out"));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("timed out"), "{error}");
+    assert!(error.contains("Timeout: 50ms"), "{error}");
+    assert!(error.contains("Timeout source: flag --timeout"), "{error}");
     let _ = timeout_server.finish();
 
     let interrupt_server = start_server(false, usize::MAX, move |request| {
@@ -1151,7 +1154,12 @@ fn apply_protects_the_inspected_identity_and_revision_with_confirmation_skipped(
         ],
     );
     assert_eq!(output.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("run the command again"));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("run the command again"));
+    assert!(
+        !error.contains("Endpoint:"),
+        "application conflicts are not connection failures: {error}"
+    );
     assert_eq!(
         server.finish().len(),
         2,
@@ -1317,4 +1325,38 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
         .expect("CLI");
     assert!(!output.status.success());
     assert!(!output.stderr.is_empty());
+}
+
+#[test]
+fn unexpected_responses_include_connection_context_without_extra_probes() {
+    for (status, body, expected) in [
+        ("200 OK", "{}", "missing field `data`"),
+        (
+            "404 Not Found",
+            "<html>not found</html>",
+            "HTTP 404 Not Found",
+        ),
+    ] {
+        let server = start_server(false, usize::MAX, move |_| Reply {
+            status,
+            content_type: "text/plain",
+            body: body.as_bytes().to_vec(),
+            drop_connection: false,
+        });
+        let output = run(&server, &["--quiet", "status"]);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(expected), "{error}");
+        assert!(
+            error.contains("Endpoint: loopback TCP http://127.0.0.1:"),
+            "{error}"
+        );
+        assert!(error.contains("Endpoint source: flag --url"), "{error}");
+        assert!(
+            error.contains("Check that the selected endpoint serves the piqueld API"),
+            "{error}"
+        );
+        assert_eq!(server.stop().len(), 1);
+    }
 }

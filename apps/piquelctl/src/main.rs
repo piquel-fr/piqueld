@@ -19,19 +19,19 @@ async fn main() -> ExitCode {
     let mut cli = Cli::from_arg_matches(&matches).expect("validated command arguments");
     let profiles = match profiles::Profiles::load(&cli) {
         Ok(profiles) => profiles,
-        Err(error) => return finish_error(&cli, error),
+        Err(error) => return finish_error(&cli, &error),
     };
     let result = if matches!(cli.command, cli::Command::Profiles) {
         profiles.list(&cli)
     } else {
         if let Err(error) = profiles.resolve(&mut cli, &matches) {
-            return finish_error(&cli, error);
+            return finish_error(&cli, &error);
         }
         run_with_timeout(&cli).await
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => finish_error(&cli, error),
+        Err(error) => finish_error(&cli, &error),
     }
 }
 
@@ -40,9 +40,13 @@ async fn main() -> ExitCode {
 /// future stays polled even while a prompt is open so its completion and
 /// signal handling keep making progress.
 async fn run_with_timeout(cli: &Cli) -> Result<(), CliError> {
-    let command = commands::run(cli);
+    // Validate the endpoint before the deadline can win the select below, so
+    // timeout diagnostics can never echo rejected URL input.
+    let client = commands::build_client(cli)?;
+    let command = commands::run(cli, &client);
     tokio::pin!(command);
-    let mut deadline = checked_deadline(Instant::now(), cli.timeout)?;
+    let mut deadline = checked_deadline(Instant::now(), cli.timeout)
+        .map_err(|error| error.configuration(cli.connection_sources.timeout.to_string()))?;
     // Set while an interactive prompt is open; think time is excluded by
     // shifting the deadline once the prompt closes again.
     let mut interaction_started: Option<Instant> = None;
@@ -88,6 +92,7 @@ fn timeout_error(timeout: Duration) -> CliError {
             support::format_duration(timeout)
         ),
     )
+    .command_timeout()
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use http::{HeaderName, HeaderValue, Method, StatusCode};
 use serde::{Serialize, de::DeserializeOwned};
 use std::time::Duration;
 
-use crate::{ClientError, Envelope, ErrorBody};
+use crate::{ClientError, Envelope, ErrorBody, TransportFailure};
 
 /// Transport detail reported when a request exceeds its deadline.
 const TIMEOUT_MESSAGE: &str = "request timed out";
@@ -23,6 +23,7 @@ const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
 fn timed_out() -> ClientError {
     ClientError::Transport {
         message: TIMEOUT_MESSAGE.to_owned(),
+        kind: TransportFailure::Timeout,
     }
 }
 
@@ -51,6 +52,7 @@ fn validate_headers(headers: &[(&str, &str)]) -> Result<(), ClientError> {
 fn response_too_large(limit: usize) -> ClientError {
     ClientError::Transport {
         message: format!("response body exceeded the {limit}-byte limit"),
+        kind: TransportFailure::Exchange,
     }
 }
 
@@ -161,7 +163,7 @@ mod native {
     async fn collect_bounded(mut body: Incoming) -> Result<Vec<u8>, ClientError> {
         let mut buffer = Vec::new();
         while let Some(frame) = body.frame().await {
-            let frame = frame.map_err(transport)?;
+            let frame = frame.map_err(|error| protocol_error("reading response body", &error))?;
             if let Some(data) = frame.data_ref() {
                 if buffer.len().saturating_add(data.len()) > MAX_RESPONSE_BODY_BYTES {
                     return Err(response_too_large(MAX_RESPONSE_BODY_BYTES));
@@ -214,6 +216,18 @@ mod native {
         }
     }
 
+    fn protocol_error(stage: &str, error: &hyper::Error) -> ClientError {
+        use std::error::Error as _;
+        let mut message = format!("{stage}: {error}");
+        let mut source = error.source();
+        while let Some(cause) = source {
+            use std::fmt::Write as _;
+            let _ = write!(message, ": {cause}");
+            source = cause.source();
+        }
+        transport(message)
+    }
+
     async fn speak<S>(
         io: Result<S, std::io::Error>,
         request: Request<Full<Bytes>>,
@@ -221,9 +235,14 @@ mod native {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        let (mut sender, connection) = http1::handshake(TokioIo::new(io.map_err(transport)?))
-            .await
-            .map_err(transport)?;
+        let (mut sender, connection) = http1::handshake(TokioIo::new(io.map_err(|error| {
+            ClientError::Transport {
+                message: format!("opening connection: {error}"),
+                kind: crate::TransportFailure::Connect(error.kind()),
+            }
+        })?))
+        .await
+        .map_err(|error| protocol_error("HTTP handshake", &error))?;
         // Drive the connection to completion in the background. Dropping the
         // request or response handles makes hyper close the socket, so this
         // task never outlives the exchange by more than a graceful shutdown.
@@ -232,7 +251,10 @@ mod native {
                 tracing::debug!(%error, "piqueld-client connection closed");
             }
         });
-        sender.send_request(request).await.map_err(transport)
+        sender
+            .send_request(request)
+            .await
+            .map_err(|error| protocol_error("HTTP exchange", &error))
     }
 }
 
@@ -383,7 +405,7 @@ mod web {
             let response = response(&mut bytes);
             assert!(matches!(
                 collect_bounded(&response, 4).await,
-                Err(ClientError::Transport { message }) if message.contains("4-byte limit")
+                Err(ClientError::Transport { message, .. }) if message.contains("4-byte limit")
             ));
         }
 
@@ -427,7 +449,7 @@ mod web {
             restore.call0(&wasm_bindgen::JsValue::NULL).unwrap();
             assert!(matches!(
                 result,
-                Err(ClientError::Transport { message }) if message == super::super::TIMEOUT_MESSAGE
+                Err(ClientError::Transport { message, .. }) if message == super::super::TIMEOUT_MESSAGE
             ));
         }
 
@@ -451,7 +473,7 @@ mod web {
                 .await;
             assert!(matches!(
                 result,
-                Err(ClientError::Transport { message }) if message == super::super::TIMEOUT_MESSAGE
+                Err(ClientError::Transport { message, .. }) if message == super::super::TIMEOUT_MESSAGE
             ));
         }
 
@@ -623,13 +645,14 @@ pub(crate) fn api_error(status: StatusCode, payload: &[u8]) -> ClientError {
 fn transport(error: impl std::fmt::Display) -> ClientError {
     ClientError::Transport {
         message: error.to_string(),
+        kind: TransportFailure::Exchange,
     }
 }
 
 fn error_body(payload: &[u8]) -> ErrorBody {
-    serde_json::from_slice(payload).unwrap_or(ErrorBody {
+    serde_json::from_slice(payload).unwrap_or_else(|error| ErrorBody {
         code: "invalid_error_response".into(),
-        message: "server returned an unreadable error".into(),
+        message: format!("server returned an unreadable error: {error}"),
         details: serde_json::Value::Null,
         request_id: String::new(),
     })

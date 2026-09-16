@@ -6,7 +6,39 @@ use crate::{
 };
 use clap::{ArgMatches, parser::ValueSource};
 use serde::Deserialize;
-use std::{collections::BTreeMap, io::Write as _, path::PathBuf};
+use std::{collections::BTreeMap, fmt, io::Write as _, path::PathBuf};
+
+/// Sources are tracked independently: endpoint and timeout may use different overrides.
+#[derive(Debug, Default)]
+pub(crate) struct ConnectionSources {
+    pub(crate) endpoint: Source,
+    pub(crate) timeout: Source,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) enum Source {
+    #[default]
+    Default,
+    Flag(&'static str),
+    Environment(&'static str),
+    Profile {
+        name: String,
+        path: PathBuf,
+    },
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Default => formatter.write_str("built-in default"),
+            Self::Flag(name) => write!(formatter, "flag --{name}"),
+            Self::Environment(name) => write!(formatter, "environment variable {name}"),
+            Self::Profile { name, path } => {
+                write!(formatter, "profile {name:?} in {}", path.display())
+            }
+        }
+    }
+}
 
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -29,7 +61,13 @@ impl Profiles {
             .clone()
             .or_else(|| std::env::var_os("PIQUELD_PROFILES_FILE").map(PathBuf::from));
         if let Some(path) = explicit_file {
-            return Self::load_files([(path, true)]);
+            let source = if cli.profiles_file.is_some() {
+                Source::Flag("profiles-file")
+            } else {
+                Source::Environment("PIQUELD_PROFILES_FILE")
+            };
+            let context = format!("profiles file {} ({source})", path.display());
+            return Self::load_files([(path, true)]).map_err(|error| error.configuration(context));
         }
         let user_path = std::env::var_os("XDG_CONFIG_HOME")
             .filter(|value| !value.is_empty())
@@ -57,9 +95,7 @@ impl Profiles {
                     )));
                 }
             };
-            let mut loaded = toml::from_str::<Self>(&text).map_err(|error| {
-                Self::invalid(format!("Invalid profiles file {}: {error}", path.display()))
-            })?;
+            let mut loaded = Self::parse_file(&text, &path)?;
             for profile in loaded.profiles.values_mut() {
                 profile.source.clone_from(&path);
             }
@@ -97,16 +133,29 @@ impl Profiles {
             .profile
             .clone()
             .or_else(|| std::env::var("PIQUELD_PROFILE").ok());
-        let profile = match selected {
-            Some(name) => Some(
-                self.profiles
-                    .get(&name)
-                    .ok_or_else(|| Self::invalid(format!("Unknown connection profile: {name}")))?,
-            ),
+        let profile = match selected.as_ref() {
+            Some(name) => Some(self.profiles.get(name).ok_or_else(|| {
+                Self::invalid(format!("Unknown connection profile: {name}")).configuration(
+                    if cli.profile.is_some() {
+                        Source::Flag("profile")
+                    } else {
+                        Source::Environment("PIQUELD_PROFILE")
+                    }
+                    .to_string(),
+                )
+            })?),
             None => self.profiles.get("default"),
         };
+        let profile_source = profile.map_or(Source::Default, |profile| Source::Profile {
+            name: selected.unwrap_or_else(|| "default".to_owned()),
+            path: profile.source.clone(),
+        });
         // Resolve a transport as a pair: a higher-priority URL replaces a lower socket.
-        if cli.socket.is_none() && cli.url.is_none() {
+        if cli.socket.is_some() {
+            cli.connection_sources.endpoint = Source::Flag("socket");
+        } else if cli.url.is_some() {
+            cli.connection_sources.endpoint = Source::Flag("url");
+        } else {
             let socket = std::env::var_os("PIQUELD_SOCKET").map(PathBuf::from);
             let url = std::env::var("PIQUELD_URL").ok();
             if socket.is_some() && url.is_some() {
@@ -115,26 +164,59 @@ impl Profiles {
                 ));
             }
             if socket.is_some() || url.is_some() {
+                cli.connection_sources.endpoint = Source::Environment(if socket.is_some() {
+                    "PIQUELD_SOCKET"
+                } else {
+                    "PIQUELD_URL"
+                });
                 cli.socket = socket;
                 cli.url = url;
             } else if let Some(profile) = profile {
+                cli.connection_sources.endpoint = profile_source.clone();
                 cli.socket.clone_from(&profile.socket);
                 cli.url.clone_from(&profile.url);
             }
         }
-        if matches.value_source("timeout") != Some(ValueSource::CommandLine) {
+        if matches.value_source("timeout") == Some(ValueSource::CommandLine) {
+            cli.connection_sources.timeout = Source::Flag("timeout");
+        } else {
             let timeout = std::env::var("PIQUELD_TIMEOUT").ok();
             if let Some(value) = timeout
                 .as_deref()
                 .or_else(|| profile.and_then(|p| p.timeout.as_deref()))
             {
-                cli.timeout = parse_duration(value).map_err(Self::invalid)?;
+                cli.connection_sources.timeout = if timeout.is_some() {
+                    Source::Environment("PIQUELD_TIMEOUT")
+                } else {
+                    profile_source
+                };
+                cli.timeout = parse_duration(value).map_err(|message| {
+                    Self::invalid(message).configuration(cli.connection_sources.timeout.to_string())
+                })?;
             }
         }
         Ok(())
     }
+    fn parse_file(text: &str, path: &std::path::Path) -> Result<Self> {
+        toml::from_str(text).map_err(|error: toml::de::Error| {
+            // Neither source excerpts nor schema error values are safe to print.
+            let prefix = text.get(..error.span().map_or(0, |span| span.start)).unwrap_or("");
+            let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+            let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+            let reason = if error.message().starts_with("unknown field") {
+                "unknown field (expected profiles containing socket, url, or timeout)"
+            } else if error.message().starts_with("invalid type") {
+                "invalid field type (profiles must be tables; socket, url, and timeout must be strings)"
+            } else {
+                "invalid TOML or profile schema"
+            };
+            Self::invalid(format!("Invalid profiles file {}: {reason} at line {line}, column {column}", path.display()))
+                .configuration(format!("profiles file {}", path.display()))
+        })
+    }
     fn invalid(message: impl Into<String>) -> CliError {
         CliError::new(ErrorKind::Input, message)
+            .configuration("connection configuration".to_owned())
     }
 }
 

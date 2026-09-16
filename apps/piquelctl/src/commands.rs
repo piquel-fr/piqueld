@@ -21,13 +21,12 @@ use tokio::{signal, time};
 
 use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
 
-pub(crate) async fn run(cli: &Cli) -> Result<()> {
-    let client = build_client(cli)?;
+pub(crate) async fn run(cli: &Cli, client: &Client) -> Result<()> {
     match &cli.command {
         Command::Profiles => unreachable!("profiles are listed before connecting"),
-        Command::Status => status(cli, &client).await,
-        Command::List => list(cli, &client).await,
-        Command::Show { name_or_id } => show(cli, &client, name_or_id).await,
+        Command::Status => status(cli, client).await,
+        Command::List => list(cli, client).await,
+        Command::Show { name_or_id } => show(cli, client, name_or_id).await,
         Command::Logs {
             name_or_id,
             service,
@@ -36,7 +35,7 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
         } => {
             logs(
                 cli,
-                &client,
+                client,
                 name_or_id,
                 service.as_deref(),
                 *tail,
@@ -48,16 +47,16 @@ pub(crate) async fn run(cli: &Cli) -> Result<()> {
             BuildCommand::List {
                 application,
                 cursor,
-            } => builds(cli, &client, application.as_deref(), cursor.as_deref()).await,
-            BuildCommand::Logs { id, offset } => build_logs(cli, &client, *id, *offset).await,
+            } => builds(cli, client, application.as_deref(), cursor.as_deref()).await,
+            BuildCommand::Logs { id, offset } => build_logs(cli, client, *id, *offset).await,
         },
-        Command::Plan(args) => plan_command(cli, &client, args).await,
-        Command::Apply(args) => apply(cli, &client, args).await,
-        Command::Delete(args) => delete(cli, &client, args).await,
-        Command::Operation(args) => operation(cli, &client, args).await,
-        Command::Reconcile(args) => reconcile_or_deploy(cli, &client, args, false).await,
-        Command::Rename(args) => rename(cli, &client, args).await,
-        Command::Deploy(args) => reconcile_or_deploy(cli, &client, args, true).await,
+        Command::Plan(args) => plan_command(cli, client, args).await,
+        Command::Apply(args) => apply(cli, client, args).await,
+        Command::Delete(args) => delete(cli, client, args).await,
+        Command::Operation(args) => operation(cli, client, args).await,
+        Command::Reconcile(args) => reconcile_or_deploy(cli, client, args, false).await,
+        Command::Rename(args) => rename(cli, client, args).await,
+        Command::Deploy(args) => reconcile_or_deploy(cli, client, args, true).await,
         Command::Events {
             application,
             cursor,
@@ -150,7 +149,7 @@ async fn build_logs(cli: &Cli, client: &Client, id: i64, offset: i64) -> Result<
     Ok(())
 }
 
-fn build_client(cli: &Cli) -> Result<Client> {
+pub(crate) fn build_client(cli: &Cli) -> Result<Client> {
     let client = if let Some(url) = &cli.url {
         Client::tcp(url).map_err(CliError::from)?
     } else {
@@ -198,7 +197,9 @@ async fn list(cli: &Cli, client: &Client) -> Result<()> {
             Ok(status) => Some(status),
             Err(error) if cli.json => return Err(error.into()),
             Err(error) => {
+                let error = CliError::from(error);
                 eprintln!("  {}: status unavailable: {}", application.name, error);
+                error.render_connection(cli);
                 None
             }
         };
@@ -532,7 +533,8 @@ async fn fold_applications<T>(
             return Err(CliError::new(
                 ErrorKind::General,
                 "the daemon returned a repeated pagination cursor",
-            ));
+            )
+            .invalid_response());
         }
         cursor = Some(next_cursor);
     }
