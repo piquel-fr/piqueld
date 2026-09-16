@@ -443,10 +443,6 @@ pub enum BuildState {
 /// Bounded byte-offset page of build output.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BuildLogPage {
-    /// Lossy UTF-8 decoding of this output page.
-    pub text: String,
-    /// Byte offset of the next page, when more output exists.
-    pub next_offset: Option<i64>,
     /// Structured output chunks in chronological order.
     pub items: Vec<BuildLogChunk>,
     /// Exclusive byte cursor for loading an older page.
@@ -464,8 +460,8 @@ pub struct BuildLogChunk {
     pub offset: i64,
     /// Capture time in Unix milliseconds.
     pub timestamp_ms: i64,
-    /// Source stream; absent for output captured before structured logging.
-    pub stream: Option<LogStream>,
+    /// Captured source stream.
+    pub stream: LogStream,
     /// Lossy UTF-8 output, possibly containing partial lines.
     pub text: String,
 }

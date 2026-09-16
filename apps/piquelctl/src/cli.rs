@@ -117,8 +117,8 @@ pub(crate) enum BuildCommand {
     /// Read a bounded page of persisted build output.
     Logs {
         id: i64,
-        #[arg(long, default_value_t = 0)]
-        offset: i64,
+        #[arg(long)]
+        before: Option<i64>,
     },
 }
 

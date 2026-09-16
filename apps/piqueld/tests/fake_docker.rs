@@ -2079,11 +2079,12 @@ impl ControllerHarness {
         );
         assert!(
             self.store
-                .build_logs(builds.items[0].id, 0)
+                .build_logs(builds.items[0].id, None, None)
                 .await
                 .unwrap()
-                .text
-                .contains("Build failed")
+                .items
+                .iter()
+                .any(|chunk| chunk.text.contains("Build failed"))
         );
     }
 }

@@ -1307,10 +1307,8 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
 
     let server = start_server(false, 1, |_| {
         Reply::json(json!({
-            "text": "build output",
-            "items": [],
-            "previous_offset": null,
-            "next_offset": 64,
+            "items": [{"offset":64,"timestamp_ms":1000,"stream":"stdout","text":"build output"}],
+            "previous_offset": 64,
             "truncated": true,
             "expired": true
         }))
@@ -1357,5 +1355,36 @@ fn unexpected_responses_include_connection_context_without_extra_probes() {
             "{error}"
         );
         assert_eq!(server.stop().len(), 1);
+    }
+}
+
+#[test]
+fn build_logs_render_structured_output_and_page_backwards() {
+    for before in [None, Some("128")] {
+        let server = start_server(false, 1, move |request| {
+            let (path, query) = request.path.split_once('?').unwrap_or((&request.path, ""));
+            assert_eq!(path, "/api/v1/builds/1/logs");
+            assert_eq!(
+                query.trim_end_matches('&'),
+                before.map_or(String::new(), |value| format!("before={value}"))
+            );
+            Reply::json(json!({
+                "items": [{"offset":64,"timestamp_ms":1000,"stream":"stderr","text":"\u{1b}[31mERROR failed\u{1b}[0m\n"}],
+                "previous_offset":64,"truncated":false,"expired":false
+            }))
+        });
+        let mut args = vec!["builds", "logs", "1"];
+        if let Some(before) = before {
+            args.extend(["--before", before]);
+        }
+        let output = run_human(&server, &args);
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "ERROR failed\n");
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("--before 64")
+        );
+        server.finish();
     }
 }

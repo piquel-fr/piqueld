@@ -180,12 +180,10 @@ image IDs are recorded when available; retries create new attempts.
 with `previous_offset` as an exclusive `before` cursor to load older chunks.
 Optional `stream=stdout|stderr` filters in the daemon before paging. Each of the
 up to 16 chunks includes its byte offset, capture timestamp in milliseconds,
-stream, and text; output captured before migration has an unknown stream and time.
-The combined `text` remains available for plain-text clients.
-
-`GET /api/v1/builds/{id}/logs?offset=0` reads forward from a byte offset (at most
-64 KiB). `offset` and `before` are mutually exclusive. Follow
-`next_offset` for more. Output is decoded as lossy UTF-8; offsets count original
-bytes. Truncation and expiration are explicit. Output retains the configured
+stream, and text. Stream and capture time are required for every chunk. Pages
+contain at most 64 KiB of output, decoded as lossy UTF-8; offsets count original
+bytes. The old forward `offset` query and combined `text` response are removed.
+Migration expires previously captured unstructured output while retaining build
+metadata. Truncation and expiration are explicit. Output retains the configured
 prefix, defaults to 4 MiB per attempt and expires 30 days after completion.
 Metadata survives operation pruning and is deleted with its application.

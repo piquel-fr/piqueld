@@ -173,9 +173,7 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
                     previous.get_untracked()
                 };
                 let build = record.get_untracked();
-                let result = Client::browser()
-                    .build_log_tail(build.id, before, filter)
-                    .await;
+                let result = Client::browser().build_logs(build.id, before, filter).await;
                 if !alive.get() {
                     break;
                 }

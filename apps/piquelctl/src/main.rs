@@ -112,7 +112,7 @@ mod tests {
             vec!["piquelctl", "list"],
             vec!["piquelctl", "show", "notes"],
             vec!["piquelctl", "builds", "list", "--application", "app-01"],
-            vec!["piquelctl", "builds", "logs", "1", "--offset", "64"],
+            vec!["piquelctl", "builds", "logs", "1", "--before", "64"],
             vec!["piquelctl", "plan", "--file", "application.toml"],
             vec!["piquelctl", "apply", "--file", "application.toml", "--yes"],
             vec!["piquelctl", "delete", "notes", "--yes", "--no-wait"],

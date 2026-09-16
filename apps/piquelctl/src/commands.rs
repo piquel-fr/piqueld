@@ -48,7 +48,7 @@ pub(crate) async fn run(cli: &Cli, client: &Client) -> Result<()> {
                 application,
                 cursor,
             } => builds(cli, client, application.as_deref(), cursor.as_deref()).await,
-            BuildCommand::Logs { id, offset } => build_logs(cli, client, *id, *offset).await,
+            BuildCommand::Logs { id, before } => build_logs(cli, client, *id, *before).await,
         },
         Command::Plan(args) => plan_command(cli, client, args).await,
         Command::Apply(args) => apply(cli, client, args).await,
@@ -123,28 +123,31 @@ async fn builds(
     Ok(())
 }
 
-async fn build_logs(cli: &Cli, client: &Client, id: i64, offset: i64) -> Result<()> {
-    let page = client.build_logs(id, offset).await?;
+async fn build_logs(cli: &Cli, client: &Client, id: i64, before: Option<i64>) -> Result<()> {
+    let page = client.build_logs(id, before, None).await?;
     if cli.json {
         return emit_json(&page);
     }
-    // Persist original output, but never execute terminal controls when displaying it.
     let text = page
-        .text
-        .chars()
-        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .items
+        .iter()
+        .map(|chunk| chunk.text.as_str())
         .collect::<String>();
-    write!(cli.output(), "{text}")?;
+    write!(
+        cli.output(),
+        "{}",
+        piqueld_client::LogRecord::clean_message(&text)
+    )?;
     if page.expired && !cli.quiet {
         eprintln!("Build output has expired.");
     }
     if page.truncated && !cli.quiet {
         eprintln!("Build output was truncated at the configured byte limit.");
     }
-    if let Some(offset) = page.next_offset
+    if let Some(before) = page.previous_offset
         && !cli.quiet
     {
-        eprintln!("Continue with --offset {offset}");
+        eprintln!("Load older output with --before {before}");
     }
     Ok(())
 }

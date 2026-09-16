@@ -49,7 +49,6 @@ pub(super) async fn list(
 #[serde(default, deny_unknown_fields)]
 #[into_params(parameter_in=Query)]
 pub(super) struct OutputQuery {
-    offset: Option<i64>,
     before: Option<i64>,
     stream: Option<piqueld_core::api::LogStream>,
 }
@@ -62,12 +61,12 @@ pub(super) async fn logs(
     let Query(query) = query.map_err(|_| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
-            "build_offset_invalid",
-            "invalid build log offset",
+            "build_query_invalid",
+            "invalid build log query",
         )
     })?;
     Ok(ok(state
         .store
-        .build_log_page(id, query.offset, query.before, query.stream)
+        .build_logs(id, query.before, query.stream)
         .await?))
 }

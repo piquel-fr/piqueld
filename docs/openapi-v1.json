@@ -710,15 +710,8 @@
             "type": "integer"
           },
           "stream": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/LogStream",
-                "description": "Source stream; absent for output captured before structured logging."
-              }
-            ]
+            "$ref": "#/components/schemas/LogStream",
+            "description": "Captured source stream."
           },
           "text": {
             "description": "Lossy UTF-8 output, possibly containing partial lines.",
@@ -733,6 +726,7 @@
         "required": [
           "offset",
           "timestamp_ms",
+          "stream",
           "text"
         ],
         "type": "object"
@@ -751,14 +745,6 @@
             },
             "type": "array"
           },
-          "next_offset": {
-            "description": "Byte offset of the next page, when more output exists.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "previous_offset": {
             "description": "Exclusive byte cursor for loading an older page.",
             "format": "int64",
@@ -767,17 +753,12 @@
               "null"
             ]
           },
-          "text": {
-            "description": "Lossy UTF-8 decoding of this output page.",
-            "type": "string"
-          },
           "truncated": {
             "description": "The build exceeded its total output cap.",
             "type": "boolean"
           }
         },
         "required": [
-          "text",
           "items",
           "truncated",
           "expired"
@@ -1432,14 +1413,6 @@
                 },
                 "type": "array"
               },
-              "next_offset": {
-                "description": "Byte offset of the next page, when more output exists.",
-                "format": "int64",
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
               "previous_offset": {
                 "description": "Exclusive byte cursor for loading an older page.",
                 "format": "int64",
@@ -1448,17 +1421,12 @@
                   "null"
                 ]
               },
-              "text": {
-                "description": "Lossy UTF-8 decoding of this output page.",
-                "type": "string"
-              },
               "truncated": {
                 "description": "The build exceeded its total output cap.",
                 "type": "boolean"
               }
             },
             "required": [
-              "text",
               "items",
               "truncated",
               "expired"
@@ -5083,15 +5051,6 @@
             "in": "path",
             "name": "id",
             "required": true,
-            "schema": {
-              "format": "int64",
-              "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "offset",
-            "required": false,
             "schema": {
               "format": "int64",
               "type": "integer"

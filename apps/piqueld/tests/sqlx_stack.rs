@@ -117,3 +117,43 @@ async fn upgrades_legacy_configuration_to_latest_recoverable_deployment() {
             .unwrap();
     assert_eq!(retained, 1);
 }
+
+#[tokio::test]
+async fn structured_logs_expire_old_output_without_losing_build_records() {
+    let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+    for migration in [
+        include_str!("../../../migrations/0001_control_plane.sql"),
+        include_str!("../../../migrations/0002_deployments.sql"),
+        include_str!("../../../migrations/0003_deployment_inputs.sql"),
+        include_str!("../../../migrations/0004_build_records.sql"),
+    ] {
+        sqlx::raw_sql(migration)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    sqlx::raw_sql(
+        "INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms)
+         VALUES('app-build','build','{}',1,1,1);
+         INSERT INTO builds(id,application_id,operation_id,service,source_json,state,started_at_ms,log_bytes)
+         VALUES(1,'app-build','op-build','web','{}','succeeded',1,3);
+         INSERT INTO build_log_chunks(build_id,offset,data) VALUES(1,0,x'616263');",
+    ).execute(&mut connection).await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/0005_structured_build_logs.sql"
+    ))
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    let record: (String, String, i64, i64) =
+        sqlx::query_as("SELECT service,state,log_bytes,log_expired FROM builds WHERE id=1")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    assert_eq!(record, ("web".into(), "succeeded".into(), 0, 1));
+    let chunks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM build_log_chunks")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(chunks, 0);
+}

@@ -184,7 +184,7 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
 
     assert!(client.builds(None, None).await.unwrap().items.is_empty());
     assert!(
-        matches!(client.build_logs(999,0).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
+        matches!(client.build_logs(999,None,None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
     );
     assert_create_plan(&client, &manifest).await;
     let created = create_and_inspect(&client, &manifest).await;

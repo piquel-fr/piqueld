@@ -34,7 +34,7 @@ impl LogLine {
     #[must_use]
     pub fn build(chunks: &[BuildLogChunk], service: &str) -> Vec<Self> {
         let mut lines = Vec::new();
-        for stream in [Some(LogStream::Stdout), Some(LogStream::Stderr), None] {
+        for stream in [LogStream::Stdout, LogStream::Stderr] {
             let mut text = String::new();
             let mut starts = Vec::new();
             for chunk in chunks.iter().filter(|chunk| chunk.stream == stream) {
@@ -54,7 +54,7 @@ impl LogLine {
                     Self {
                         timestamp: timestamp.to_string(),
                         service: service.into(),
-                        stream: stream.map_or("console", LogStream::as_str).into(),
+                        stream: stream.as_str().into(),
                         message: LogRecord::clean_message(line.trim_end_matches('\n')),
                     },
                 ));
@@ -89,7 +89,7 @@ mod tests {
     fn interleaved_chunks_keep_partial_lines_and_severity() {
         let chunk = |offset, stream, text: &str| BuildLogChunk {
             offset,
-            stream: Some(stream),
+            stream,
             timestamp_ms: 1000,
             text: text.into(),
         };

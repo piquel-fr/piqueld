@@ -24,22 +24,10 @@ impl Client {
         )
         .await
     }
-    /// Reads at most 64 KiB of build output from a byte offset.
-    /// # Errors
-    /// Returns transport, decoding, or API errors.
-    pub async fn build_logs(&self, id: i64, offset: i64) -> Result<BuildLogPage, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("{}/builds/{id}/logs?offset={offset}", crate::API_PREFIX),
-            None,
-            &[],
-        )
-        .await
-    }
     /// Reads the newest filtered build output before an optional exclusive cursor.
     /// # Errors
     /// Returns transport, decoding, or API errors.
-    pub async fn build_log_tail(
+    pub async fn build_logs(
         &self,
         id: i64,
         before: Option<i64>,

@@ -194,28 +194,16 @@ impl Store {
             .collect::<Result<Vec<_>, StoreError>>()?;
         Ok(Page { items, next_cursor })
     }
-    /// Reads at most 64 KiB from a build's output using byte offsets.
-    /// # Errors
-    /// Returns not found, invalid offset, or storage errors.
-    pub async fn build_logs(&self, id: i64, offset: i64) -> Result<BuildLogPage, StoreError> {
-        self.build_log_page(id, Some(offset), None, None).await
-    }
-
-    /// Reads a bounded output page. Without an offset, returns the newest chunks
-    /// before an exclusive cursor. Stream filtering happens before pagination.
+    /// Reads the newest output chunks before an optional exclusive cursor. Stream filtering happens before pagination.
     /// # Errors
     /// Returns not found, invalid cursors, or storage errors.
-    pub async fn build_log_page(
+    pub async fn build_logs(
         &self,
         id: i64,
-        offset: Option<i64>,
         before: Option<i64>,
         stream: Option<LogStream>,
     ) -> Result<BuildLogPage, StoreError> {
-        if offset.is_some_and(|value| value < 0)
-            || before.is_some_and(|value| value < 0)
-            || (offset.is_some() && before.is_some())
-        {
+        if before.is_some_and(|value| value < 0) {
             return Err(StoreError::InvalidInput);
         }
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
@@ -231,11 +219,10 @@ impl Store {
         let mut chunks = sqlx::query!(
             "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
              WHERE build_id=?1 AND (?2 IS NULL OR stream=?2)
-             AND (?3 IS NULL OR offset+length(data)>?3) AND (?4 IS NULL OR offset<?4)
-             ORDER BY CASE WHEN ?3 IS NOT NULL THEN offset END ASC, offset DESC LIMIT 17",
+             AND (?3 IS NULL OR offset<?3)
+             ORDER BY offset DESC LIMIT 17",
             id,
             filter,
-            offset,
             before
         )
         .fetch_all(&mut *tx)
@@ -243,37 +230,24 @@ impl Store {
         .map_err(StoreError::database)?;
         let more = chunks.len() > 16;
         chunks.truncate(16);
-        if offset.is_none() {
-            chunks.reverse();
-        }
-        let previous_offset = (offset.is_none() && more).then(|| chunks[0].offset);
-        let mut bytes = Vec::new();
+        chunks.reverse();
+        let previous_offset = more.then(|| chunks[0].offset);
         let mut items = Vec::new();
-        let mut end = 0;
         for chunk in chunks {
-            let skip = usize::try_from(offset.unwrap_or(0).saturating_sub(chunk.offset).max(0))
-                .map_err(StoreError::invalid_input)?;
-            let data = &chunk.data[skip..];
-            end = chunk.offset
-                + i64::try_from(chunk.data.len()).map_err(StoreError::invalid_input)?;
-            bytes.extend_from_slice(data);
             items.push(BuildLogChunk {
                 offset: chunk.offset,
                 timestamp_ms: chunk.timestamp_ms,
-                stream: match chunk.stream.as_deref() {
-                    Some("stdout") => Some(LogStream::Stdout),
-                    Some("stderr") => Some(LogStream::Stderr),
-                    None => None,
+                stream: match chunk.stream.as_str() {
+                    "stdout" => LogStream::Stdout,
+                    "stderr" => LogStream::Stderr,
                     _ => return Err(StoreError::Corrupt),
                 },
-                text: String::from_utf8_lossy(data).into_owned(),
+                text: String::from_utf8_lossy(&chunk.data).into_owned(),
             });
         }
         Ok(BuildLogPage {
-            text: String::from_utf8_lossy(&bytes).into_owned(),
             items,
             previous_offset,
-            next_offset: (offset.is_some() && more).then_some(end),
             truncated: row.log_truncated != 0,
             expired: row.log_expired != 0,
         })
@@ -337,15 +311,29 @@ mod tests {
             .append_build_log(id, &vec![b'a'; 80_000], LogStream::Stdout)
             .await
             .unwrap();
-        let first = store.build_logs(id, 0).await.unwrap();
-        assert_eq!(first.text.len(), 65536);
+        let first = store.build_logs(id, None, None).await.unwrap();
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .map(|chunk| chunk.text.len())
+                .sum::<usize>(),
+            61808
+        );
         assert!(first.truncated);
         let second = store
-            .build_logs(id, first.next_offset.unwrap())
+            .build_logs(id, first.previous_offset, None)
             .await
             .unwrap();
-        assert_eq!(second.text.len(), 4464);
-        assert!(second.next_offset.is_none());
+        assert_eq!(
+            second
+                .items
+                .iter()
+                .map(|chunk| chunk.text.len())
+                .sum::<usize>(),
+            8192
+        );
+        assert!(second.previous_offset.is_none());
         store
             .finish_build(id, BuildState::Succeeded, Some("sha256:fixture"))
             .await
@@ -363,7 +351,7 @@ mod tests {
             .await
             .unwrap();
         store.prune_build_logs().await.unwrap();
-        assert!(store.build_logs(id, 0).await.unwrap().expired);
+        assert!(store.build_logs(id, None, None).await.unwrap().expired);
         let records = store.builds(None, None, 50).await.unwrap();
         assert_eq!(records.items.len(), 1);
         assert_eq!(records.items[0].state, BuildState::Succeeded);
@@ -386,7 +374,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn output_filters_before_paging_in_both_directions() {
+    async fn output_filters_before_paging_backwards() {
         let Fixture {
             _temp, store, id, ..
         } = Fixture::new().await;
@@ -395,7 +383,7 @@ mod tests {
             .await
             .unwrap();
         let newest = store
-            .build_log_page(id, None, None, Some(LogStream::Stdout))
+            .build_logs(id, None, Some(LogStream::Stdout))
             .await
             .unwrap();
         assert_eq!(newest.items.len(), 16);
@@ -403,18 +391,26 @@ mod tests {
             newest
                 .items
                 .iter()
-                .all(|chunk| chunk.stream == Some(LogStream::Stdout) && chunk.timestamp_ms > 0)
+                .all(|chunk| chunk.stream == LogStream::Stdout && chunk.timestamp_ms > 0)
         );
         let older = store
-            .build_log_page(id, None, newest.previous_offset, Some(LogStream::Stdout))
+            .build_logs(id, newest.previous_offset, Some(LogStream::Stdout))
             .await
             .unwrap();
-        assert_eq!(older.text.len() + newest.text.len(), 70_000);
+        assert_eq!(
+            older
+                .items
+                .iter()
+                .chain(&newest.items)
+                .map(|chunk| chunk.text.len())
+                .sum::<usize>(),
+            70_000
+        );
         assert!(older.previous_offset.is_none());
         assert!(older.items.last().unwrap().offset < newest.items[0].offset);
         assert!(
             store
-                .build_log_page(id, None, None, Some(LogStream::Stderr))
+                .build_logs(id, None, Some(LogStream::Stderr))
                 .await
                 .unwrap()
                 .items
@@ -437,10 +433,10 @@ mod tests {
             .await
             .unwrap();
         let errors = store
-            .build_log_page(id, None, None, Some(LogStream::Stderr))
+            .build_logs(id, None, Some(LogStream::Stderr))
             .await
             .unwrap();
-        assert_eq!(errors.text, "error output");
+        assert_eq!(errors.items[0].text, "error output");
         assert!(errors.previous_offset.is_none());
     }
     #[tokio::test]
@@ -453,7 +449,7 @@ mod tests {
             .append_build_log(id, text.as_bytes(), LogStream::Stdout)
             .await
             .unwrap();
-        let page = store.build_log_page(id, None, None, None).await.unwrap();
+        let page = store.build_logs(id, None, None).await.unwrap();
         assert_eq!(
             page.items
                 .iter()
