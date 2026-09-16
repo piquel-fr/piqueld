@@ -1,16 +1,30 @@
 //! Generates or checks the `OpenAPI` specification and its Rust client bindings.
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use piqueld::api::openapi_document;
-use sha2::{Digest, Sha256};
+use serde::Deserialize;
+use serde_json::Value;
 use std::{
+    collections::BTreeSet,
     fs,
-    path::{Path, PathBuf},
-    process::Command,
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
 };
 
-const GENERATOR_VERSION: &str = "7.20.0";
-const GENERATOR_SHA256: &str = "871e0155287a87b579ff31096b2d45b1f95a115edfe631411ec6cff4848d0f03";
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Config {
+    replacements: Vec<Replacement>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Replacement {
+    schema: String,
+    name: String,
+    rust_type: String,
+}
 
 /// Runs both stages before updating either checked-in artifact.
 struct Generator {
@@ -19,10 +33,10 @@ struct Generator {
 
 impl Generator {
     fn run(&self, check: bool) -> Result<()> {
-        let value = openapi_document();
-        let paths = value
+        let document = openapi_document();
+        let paths = document
             .get("paths")
-            .and_then(serde_json::Value::as_object)
+            .and_then(Value::as_object)
             .context("OpenAPI document has no paths object")?;
         for path in paths.keys() {
             ensure!(
@@ -30,46 +44,14 @@ impl Generator {
                 "OpenAPI path is outside the API namespace: {path}"
             );
         }
-        let document = format!("{}\n", serde_json::to_string_pretty(&value)?);
-        let temporary = tempfile::tempdir().context("create API generation directory")?;
-        let input = temporary.path().join("openapi.json");
-        fs::write(&input, &document).context("write fresh OpenAPI generator input")?;
 
-        let jar = self.generator_jar()?;
-        let output = temporary.path().join("output");
-        self.command(
-            Command::new("java")
-                .arg("-jar")
-                .arg(jar)
-                .args(["generate", "-g", "rust", "-i"])
-                .arg(&input)
-                .arg("-c")
-                .arg(self.root.join("tools/client-codegen/config.json"))
-                .arg("-t")
-                .arg(self.root.join("tools/client-codegen/templates"))
-                .arg("-o")
-                .arg(&output)
-                .args(["--global-property", "apis,apiDocs=false,apiTests=false"]),
-        )?;
-
-        let api_directory = output.join("src/apis");
-        let generated = api_directory.join("default_api.rs");
-        let files = fs::read_dir(&api_directory)
-            .context("read generated API modules")?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<std::io::Result<Vec<_>>>()?;
-        // Tags can split operations into multiple modules. Never silently drop them.
-        ensure!(
-            files == [generated.clone()],
-            "expected a single default API module; update generation for the new API groups"
-        );
-        self.command(
-            Command::new("rustfmt")
-                .args(["--edition", "2024", "--config-path"])
-                .arg(&self.root)
-                .arg(&generated),
-        )?;
-        let client = fs::read_to_string(&generated).context("read formatted client bindings")?;
+        let config: Config = serde_json::from_slice(
+            &fs::read(self.root.join("tools/client-codegen/config.json"))
+                .context("read Progenitor configuration")?,
+        )
+        .context("parse Progenitor configuration")?;
+        let client = self.generate_client(document.clone(), &config)?;
+        let document = format!("{}\n", serde_json::to_string_pretty(&document)?);
 
         let artifacts = [
             ("docs/openapi-v1.json", document),
@@ -102,61 +84,136 @@ impl Generator {
         Ok(())
     }
 
-    fn generator_jar(&self) -> Result<PathBuf> {
-        let cache = self.root.join("target/client-codegen");
-        let filename = format!("openapi-generator-cli-{GENERATOR_VERSION}.jar");
-        let jar = cache.join(&filename);
-        if jar.try_exists().context("check cached OpenAPI Generator")? {
-            Self::verify_jar(&jar)?;
-        } else {
-            fs::create_dir_all(&cache).context("create OpenAPI Generator cache")?;
-            let download =
-                tempfile::NamedTempFile::new_in(&cache).context("create generator download")?;
-            let url = format!(
-                "https://repo.maven.apache.org/maven2/org/openapitools/openapi-generator-cli/{GENERATOR_VERSION}/{filename}"
+    fn generate_client(&self, mut document: Value, config: &Config) -> Result<String> {
+        Self::prepare_client_document(&mut document, config)?;
+        let spec = serde_json::from_value(document).context("parse OpenAPI 3.0 document")?;
+
+        let mut settings = progenitor::GenerationSettings::default();
+        let inner = "crate::client::ClientState"
+            .parse()
+            .map_err(|error| anyhow!("parse generated client state type: {error}"))?;
+        settings.with_inner_type(inner);
+        for replacement in &config.replacements {
+            settings.with_replacement(
+                &replacement.name,
+                &replacement.rust_type,
+                std::iter::empty(),
             );
-            self.command(
-                Command::new("curl")
-                    .args([
-                        "--fail",
-                        "--location",
-                        "--silent",
-                        "--show-error",
-                        &url,
-                        "--output",
-                    ])
-                    .arg(download.path()),
-            )?;
-            Self::verify_jar(download.path())?;
-            download
-                .persist(&jar)
-                .context("cache verified OpenAPI Generator")?;
         }
-        Ok(jar)
-    }
 
-    fn verify_jar(path: &Path) -> Result<()> {
-        let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        let tokens = progenitor::Generator::new(&settings)
+            .generate_tokens(&spec)
+            .context("generate Progenitor client")?;
+        let syntax = syn::parse2(tokens).context("parse generated Rust")?;
+        // The generated operations are private implementation details, and
+        // Progenitor's indented prose is otherwise interpreted as doctest code.
+        let source = prettyplease::unparse(&syntax).replace("/**", "/*");
+        let decoder = "ResponseValue::from_response(response).await";
         ensure!(
-            format!("{:x}", Sha256::digest(bytes)) == GENERATOR_SHA256,
-            "OpenAPI Generator checksum mismatch: {}",
-            path.display()
+            source.contains(decoder),
+            "Progenitor response decoder shape changed"
         );
-        Ok(())
+        let source = source.replace(decoder, "crate::client::decode_response(response).await");
+        self.rustfmt(&format!(
+            "// Generated by Progenitor. Run `just generate`; do not edit.\n\n// Progenitor emits mechanical patterns that intentionally trip style lints.\n#![allow(clippy::all, clippy::pedantic, dead_code, private_interfaces)]\n\n{source}"
+        ))
     }
 
-    fn command(&self, command: &mut Command) -> Result<()> {
-        command.current_dir(&self.root);
-        let output = command
-            .output()
-            .with_context(|| format!("run {command:?}"))?;
+    fn rustfmt(&self, source: &str) -> Result<String> {
+        let mut child = Command::new("rustfmt")
+            .args(["--edition", "2024", "--emit", "stdout", "--config-path"])
+            .arg(&self.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("start rustfmt for generated client")?;
+        child
+            .stdin
+            .take()
+            .context("open rustfmt stdin")?
+            .write_all(source.as_bytes())
+            .context("write generated client to rustfmt")?;
+        let output = child.wait_with_output().context("wait for rustfmt")?;
         ensure!(
             output.status.success(),
-            "{command:?} failed ({}):\n{}{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
+            "rustfmt failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        String::from_utf8(output.stdout).context("rustfmt returned non-UTF-8 output")
+    }
+
+    fn prepare_client_document(document: &mut Value, config: &Config) -> Result<()> {
+        let paths = document
+            .get_mut("paths")
+            .and_then(Value::as_object_mut)
+            .context("OpenAPI document has no paths object")?;
+        for item in paths.values_mut().filter_map(Value::as_object_mut) {
+            for operation in item.values_mut().filter_map(Value::as_object_mut) {
+                if let Some(content) = operation
+                    .get_mut("requestBody")
+                    .and_then(|body| body.get_mut("content"))
+                    .and_then(Value::as_object_mut)
+                    && let Some(json) = content.remove("application/json")
+                {
+                    content.clear();
+                    content.insert("application/json".into(), json);
+                }
+                if let Some(parameters) = operation
+                    .get_mut("parameters")
+                    .and_then(Value::as_array_mut)
+                {
+                    for parameter in parameters.iter_mut().filter_map(Value::as_object_mut) {
+                        let Some(schema) =
+                            parameter.get_mut("schema").and_then(Value::as_object_mut)
+                        else {
+                            continue;
+                        };
+                        schema.remove("nullable");
+                        if schema.get("type").and_then(Value::as_str) == Some("string") {
+                            schema.remove("minLength");
+                            schema.remove("maxLength");
+                            schema.remove("pattern");
+                        }
+                        if schema.get("type").and_then(Value::as_str) == Some("integer")
+                            && schema
+                                .get("minimum")
+                                .and_then(Value::as_f64)
+                                .is_some_and(|minimum| minimum >= 0.0)
+                        {
+                            let format = match schema.get("format").and_then(Value::as_str) {
+                                Some("int32") => Some("uint32"),
+                                Some("int64") => Some("uint64"),
+                                _ => None,
+                            };
+                            if let Some(format) = format {
+                                schema.insert("format".into(), Value::String(format.into()));
+                            }
+                        }
+                        schema.remove("minimum");
+                        schema.remove("maximum");
+                    }
+                }
+            }
+        }
+
+        let schemas = document
+            .get_mut("components")
+            .and_then(|components| components.get_mut("schemas"))
+            .and_then(Value::as_object_mut)
+            .context("OpenAPI document has no component schemas")?;
+        let retained = config
+            .replacements
+            .iter()
+            .map(|replacement| replacement.schema.as_str())
+            .collect::<BTreeSet<_>>();
+        for schema in &retained {
+            ensure!(
+                schemas.contains_key(*schema),
+                "missing mapped schema {schema}"
+            );
+        }
+        schemas.retain(|name, _| retained.contains(name.as_str()));
         Ok(())
     }
 }
@@ -168,7 +225,7 @@ fn main() -> Result<()> {
         "usage: generate_openapi [--check]"
     );
     Generator {
-        root: Path::new(env!("CARGO_MANIFEST_DIR"))
+        root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()
             .context("locate repository root")?,

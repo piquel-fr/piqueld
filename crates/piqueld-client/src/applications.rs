@@ -5,7 +5,10 @@ pub use piqueld_core::api::{
     RenameApplicationRequest, RenamedApplication, SavedApplication,
 };
 
-use crate::{Client, ClientError, Page, client::invalid_request, generated};
+use crate::{
+    Client, ClientError, Envelope, Page,
+    client::{generated_result, invalid_request},
+};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// Cursor and page-size options for listing applications.
@@ -42,11 +45,11 @@ impl Client {
                 "application list limit must be between 1 and {MAX_APPLICATION_PAGE_SIZE}"
             )));
         }
-        generated::ListApplications {
-            cursor: options.cursor.clone(),
-            limit: options.limit.map(u32::from),
-        }
-        .send(self)
+        generated_result(
+            self.generated
+                .list_applications(options.cursor.as_deref(), options.limit.map(u32::from))
+                .await,
+        )
         .await
         .map(|response| response.data)
     }
@@ -56,8 +59,7 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn application(&self, id: &str) -> Result<ApplicationView, ClientError> {
-        generated::GetApplication { id: id.into() }
-            .send(self)
+        generated_result(self.generated.get_application(id).await)
             .await
             .map(|response| response.data)
     }
@@ -67,8 +69,7 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn application_detail(&self, id: &str) -> Result<ApplicationDetailView, ClientError> {
-        generated::GetApplicationDetail { id: id.into() }
-            .send(self)
+        generated_result(self.generated.get_application_detail(id).await)
             .await
             .map(|response| response.data)
     }
@@ -105,14 +106,17 @@ impl Client {
         force: bool,
         deploy: bool,
     ) -> Result<SavedApplication, ClientError> {
-        generated::ApplyApplication {
-            force: force.then_some(true),
-            deploy: Some(deploy),
-            ..Default::default()
-        }
-        .send(
-            self,
-            generated::ApplyApplicationBody::ApplicationJson(request),
+        generated_result(
+            self.generated
+                .apply_application(
+                    Some(deploy),
+                    force.then_some(true),
+                    None,
+                    None,
+                    None,
+                    request,
+                )
+                .await,
         )
         .await
         .map(|response| response.data)
@@ -139,13 +143,11 @@ impl Client {
         expected: Option<u64>,
         force: bool,
     ) -> Result<AcceptedOperation, ClientError> {
-        generated::DeleteApplication {
-            id: id.into(),
-            expected_generation: expected,
-            force: force.then_some(true),
-            ..Default::default()
-        }
-        .send(self)
+        generated_result(
+            self.generated
+                .delete_application(id, expected, force.then_some(true), None)
+                .await,
+        )
         .await
         .map(|response| response.data)
     }
@@ -158,15 +160,9 @@ impl Client {
         &self,
         request: &ApplyApplicationRequest,
     ) -> Result<PlanView, ClientError> {
-        generated::PlanApplication {
-            ..Default::default()
-        }
-        .send(
-            self,
-            generated::PlanApplicationBody::ApplicationJson(request),
-        )
-        .await
-        .map(|response| response.data)
+        generated_result(self.generated.plan_application(None, None, request).await)
+            .await
+            .map(|response| response.data)
     }
 
     /// Fetches current reconciliation status for an application.
@@ -174,8 +170,7 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn application_status(&self, id: &str) -> Result<ApplicationStatusView, ClientError> {
-        generated::ApplicationStatus { id: id.into() }
-            .send(self)
+        generated_result(self.generated.application_status(id).await)
             .await
             .map(|response| response.data)
     }
@@ -215,16 +210,23 @@ impl Client {
         force: bool,
         deploy: bool,
     ) -> Result<SavedApplication, ClientError> {
-        generated::ApplyApplication {
-            force: force.then_some(true),
-            deploy: Some(deploy),
-            x_expected_generation: expected,
-            x_expected_application_id: expected_id.map(str::to_owned),
-            ..Default::default()
+        let mut query = Vec::with_capacity(2);
+        if force {
+            query.push(("force", true.to_string()));
         }
-        .send(
-            self,
-            generated::ApplyApplicationBody::ApplicationToml(manifest),
+        query.push(("deploy", deploy.to_string()));
+        let mut headers = Vec::new();
+        if let Some(expected) = expected {
+            headers.push(("X-Expected-Generation", expected.to_string()));
+        }
+        if let Some(expected_id) = expected_id {
+            headers.push(("X-Expected-Application-Id", expected_id.to_owned()));
+        }
+        self.send_toml::<Envelope<SavedApplication>>(
+            "/api/v1/applications/apply",
+            &query,
+            &headers,
+            manifest,
         )
         .await
         .map(|response| response.data)
@@ -247,16 +249,12 @@ impl Client {
         manifest: &str,
         expected: Option<u64>,
     ) -> Result<PlanView, ClientError> {
-        generated::PlanApplication {
-            x_expected_generation: expected,
-            ..Default::default()
-        }
-        .send(
-            self,
-            generated::PlanApplicationBody::ApplicationToml(manifest),
-        )
-        .await
-        .map(|response| response.data)
+        let headers = expected
+            .map(|expected| vec![("X-Expected-Generation", expected.to_string())])
+            .unwrap_or_default();
+        self.send_toml::<Envelope<PlanView>>("/api/v1/applications/plan", &[], &headers, manifest)
+            .await
+            .map(|response| response.data)
     }
 
     /// Repairs the latest accepted intent using its already resolved digests.
@@ -267,12 +265,11 @@ impl Client {
         id: &str,
         expected: Option<u64>,
     ) -> Result<AcceptedOperation, ClientError> {
-        generated::ReconcileApplication {
-            id: id.into(),
-            expected_generation: expected,
-            ..Default::default()
-        }
-        .send(self)
+        generated_result(
+            self.generated
+                .reconcile_application(id, expected, None, None)
+                .await,
+        )
         .await
         .map(|response| response.data)
     }
@@ -297,14 +294,10 @@ impl Client {
         request: &RenameApplicationRequest,
         force: bool,
     ) -> Result<RenamedApplication, ClientError> {
-        generated::RenameApplication {
-            id: id.into(),
-            force: force.then_some(true),
-            ..Default::default()
-        }
-        .send(
-            self,
-            generated::RenameApplicationBody::ApplicationJson(request),
+        generated_result(
+            self.generated
+                .rename_application(id, force.then_some(true), None, request)
+                .await,
         )
         .await
         .map(|response| response.data)
@@ -322,12 +315,11 @@ impl Client {
         if !(1..=100).contains(&limit) {
             return Err(invalid_request("event limit must be between 1 and 100"));
         }
-        generated::ListEvents {
-            application_id: application_id.map(str::to_owned),
-            cursor: cursor.map(str::to_owned),
-            limit: Some(u32::from(limit)),
-        }
-        .send(self)
+        generated_result(
+            self.generated
+                .list_events(application_id, cursor, Some(i64::from(limit)))
+                .await,
+        )
         .await
         .map(|response| response.data)
     }
@@ -342,12 +334,11 @@ impl Client {
         id: &str,
         expected: u64,
     ) -> Result<AcceptedOperation, ClientError> {
-        generated::DeployApplication {
-            id: id.into(),
-            expected_generation: Some(expected),
-            ..Default::default()
-        }
-        .send(self)
+        generated_result(
+            self.generated
+                .deploy_application(id, Some(expected), None, None)
+                .await,
+        )
         .await
         .map(|response| response.data)
     }
@@ -360,13 +351,9 @@ impl Client {
         id: &str,
         cursor: Option<&str>,
     ) -> Result<Page<DeploymentView>, ClientError> {
-        generated::ListDeployments {
-            id: id.into(),
-            cursor: cursor.map(str::to_owned),
-        }
-        .send(self)
-        .await
-        .map(|response| response.data)
+        generated_result(self.generated.list_deployments(id, cursor).await)
+            .await
+            .map(|response| response.data)
     }
 
     /// Lists retained attempt outcomes, 100 per page.
@@ -378,18 +365,27 @@ impl Client {
         deployment: &str,
         cursor: Option<&str>,
     ) -> Result<Page<piqueld_core::Operation>, ClientError> {
-        generated::ListDeploymentAttempts {
-            id: id.into(),
-            deployment: deployment.into(),
-            cursor: cursor.map(str::to_owned),
-        }
-        .send(self)
+        generated_result(
+            self.generated
+                .list_deployment_attempts(id, deployment, cursor)
+                .await,
+        )
         .await
         .map(|response| response.data)
     }
 }
 
 impl Client {
+    /// Downloads the saved application manifest as TOML.
+    /// # Errors
+    /// Returns transport, API, or UTF-8 decoding errors.
+    pub async fn application_manifest(&self, id: &str) -> Result<String, ClientError> {
+        let stream =
+            generated_result(self.generated.download_application_manifest(id).await).await?;
+        let bytes = crate::client::collect_byte_stream(stream).await?;
+        String::from_utf8(bytes).map_err(|source| ClientError::TextDecode { source })
+    }
+
     /// Reads a bounded historical Docker log window.
     /// # Errors
     /// Returns transport, validation or Docker errors.

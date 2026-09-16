@@ -469,7 +469,9 @@ async fn assert_api_routes(application: &axum::Router) {
     )
     .await;
     assert_eq!(openapi.0, axum::http::StatusCode::OK);
-    assert!(openapi.1.contains("/api/v1/applications/{id}/detail"));
+    let openapi: serde_json::Value = serde_json::from_str(&openapi.1).unwrap();
+    assert_eq!(openapi["openapi"], "3.0.3");
+    assert!(openapi["paths"]["/api/v1/applications/{id}/detail"].is_object());
 }
 
 async fn assert_api_only_and_ui_modes(temp: &TempDir) {

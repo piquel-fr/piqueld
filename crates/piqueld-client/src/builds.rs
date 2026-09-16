@@ -1,5 +1,4 @@
-use crate::generated;
-use crate::{BuildLogPage, BuildRecord, Client, ClientError, Page};
+use crate::{BuildLogPage, BuildRecord, Client, ClientError, Page, client::generated_result};
 use http::Method;
 impl Client {
     /// Reads one page of build attempts, newest first.
@@ -10,14 +9,9 @@ impl Client {
         application: Option<&str>,
         cursor: Option<&str>,
     ) -> Result<Page<BuildRecord>, ClientError> {
-        generated::ListBuilds {
-            application_id: application.map(str::to_owned),
-            cursor: cursor.map(str::to_owned),
-            ..Default::default()
-        }
-        .send(self)
-        .await
-        .map(|response| response.data)
+        generated_result(self.generated.list_builds(application, cursor, None).await)
+            .await
+            .map(|response| response.data)
     }
     /// Reads the newest filtered build output before an optional exclusive cursor.
     /// # Errors

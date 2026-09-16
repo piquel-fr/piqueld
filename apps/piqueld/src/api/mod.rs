@@ -249,7 +249,7 @@ pub fn router(state: ApiState) -> Router {
 /// Builds the API-only router used by the Unix-socket client transport.
 pub fn api_router(state: ApiState) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
-    finish_router(router.fallback(api_fallback), state, openapi)
+    finish_router(router.fallback(api_fallback), state, &openapi)
 }
 
 /// Builds the TCP router from the API, liveness, and optional UI boundaries.
@@ -263,7 +263,7 @@ pub fn web_router(state: ApiState, ui_assets: UiAssets) -> Router {
             .route("/dashboard", get(ui::redirect))
             .fallback(move |request: Request| ui_fallback(bundle, request)),
     };
-    let router = finish_router(router, state, openapi);
+    let router = finish_router(router, state, &openapi);
     match ui_assets {
         UiAssets::Disabled => router,
         UiAssets::Embedded(_) => router.layer(middleware::from_fn(ui::security_headers)),
@@ -278,12 +278,13 @@ pub fn health_router() -> Router<ApiState> {
 fn finish_router(
     router: Router<ApiState>,
     state: ApiState,
-    openapi: utoipa::openapi::OpenApi,
+    openapi: &utoipa::openapi::OpenApi,
 ) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     // 405 responses must advertise exactly the methods each matched endpoint
     // registers, so the values are derived from the OpenAPI document itself.
-    let allow_routes = AllowRoutes::build(&openapi);
+    let allow_routes = AllowRoutes::build(openapi);
+    let openapi = openapi::openapi_30_document(openapi);
     let router = router.method_not_allowed_fallback(move |request: Request| {
         let allow_routes = Arc::clone(&allow_routes);
         async move { method_not_allowed(&allow_routes, request.uri().path()) }

@@ -17,8 +17,7 @@ pub mod operations;
 /// Control-plane status contracts.
 pub mod system;
 
-/// OpenAPI-generated operations and their request representations.
-pub mod generated;
+mod generated;
 
 mod builds;
 mod client;

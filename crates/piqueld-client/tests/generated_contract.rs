@@ -7,7 +7,7 @@ use axum::{
     http::{HeaderMap, Uri},
 };
 use piqueld_client::system::{DependencyStatus, ReadinessStatus};
-use piqueld_client::{Client, ClientError, RenameApplicationRequest, generated};
+use piqueld_client::{Client, ClientError, RenameApplicationRequest};
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
 
 struct Request {
@@ -74,7 +74,7 @@ async fn log_parameters_are_encoded_and_readiness_keeps_its_503_payload() {
     let request = server.requests.recv().await.unwrap();
     assert_eq!(
         request.uri,
-        "/api/v1/applications/a%2Fb/logs?service=web+%26+worker&tail=20&since_seconds=90"
+        "/api/v1/applications/a%2Fb/logs?service=web+%26+worker&since_seconds=90&tail=20"
     );
 
     let readiness = ReadinessStatus {
@@ -97,51 +97,39 @@ async fn log_parameters_are_encoded_and_readiness_keeps_its_503_payload() {
 }
 
 #[tokio::test]
-async fn generated_toml_variants_preserve_headers_and_unsigned_revisions() {
+async fn toml_adapter_preserves_headers_and_unsigned_revisions() {
     let mut server = Server::start(
         http::StatusCode::OK,
         r#"{"data":{"application_id":"app","generation":1,"operation_id":null}}"#,
     )
     .await;
     let client = server.client.clone().with_request_id("fallback-key");
-    let operation = generated::ApplyApplication {
-        force: Some(false),
-        deploy: Some(true),
-        x_expected_generation: Some(u64::MAX),
-        x_expected_application_id: Some("inspected-app".into()),
-        idempotency_key: Some("explicit-key".into()),
-    };
     let manifest = "name = 'café'\n";
-    for (body, content_type) in [
-        (
-            generated::ApplyApplicationBody::ApplicationToml(manifest),
-            "application/toml",
-        ),
-        (
-            generated::ApplyApplicationBody::TextToml(manifest),
-            "text/toml",
-        ),
-    ] {
-        let saved = operation.send(&client, body).await.unwrap().data;
-        assert_eq!(saved.application_id, "app");
-        let request = server.requests.recv().await.unwrap();
-        assert_eq!(
-            request.uri,
-            "/api/v1/applications/apply?force=false&deploy=true"
-        );
-        assert_eq!(request.headers["content-type"], content_type);
-        assert_eq!(
-            request.headers["x-expected-generation"],
-            u64::MAX.to_string()
-        );
-        assert_eq!(
-            request.headers["x-expected-application-id"],
-            "inspected-app"
-        );
-        assert_eq!(request.headers.get_all("idempotency-key").iter().count(), 1);
-        assert_eq!(request.headers["idempotency-key"], "explicit-key");
-        assert_eq!(request.body, manifest.as_bytes());
-    }
+    let saved = client
+        .apply_application_toml_with_preconditions(
+            manifest,
+            Some(u64::MAX),
+            Some("inspected-app"),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.application_id, "app");
+    let request = server.requests.recv().await.unwrap();
+    assert_eq!(request.uri, "/api/v1/applications/apply?deploy=true");
+    assert_eq!(request.headers["content-type"], "application/toml");
+    assert_eq!(
+        request.headers["x-expected-generation"],
+        u64::MAX.to_string()
+    );
+    assert_eq!(
+        request.headers["x-expected-application-id"],
+        "inspected-app"
+    );
+    assert_eq!(request.headers.get_all("idempotency-key").iter().count(), 1);
+    assert_eq!(request.headers["idempotency-key"], "fallback-key");
+    assert_eq!(request.body, manifest.as_bytes());
 }
 
 #[tokio::test]
@@ -179,15 +167,17 @@ async fn generated_json_mutation_encodes_paths_and_decodes_api_errors() {
 async fn manifest_download_decodes_text_and_rejects_invalid_utf8() {
     let manifest = "name = 'café'\n";
     let mut server = Server::start(http::StatusCode::OK, manifest).await;
-    let operation = generated::DownloadApplicationManifest { id: "a/b".into() };
-    assert_eq!(operation.send(&server.client).await.unwrap(), manifest);
+    assert_eq!(
+        server.client.application_manifest("a/b").await.unwrap(),
+        manifest
+    );
     assert_eq!(
         server.requests.recv().await.unwrap().uri,
         "/api/v1/applications/a%2Fb/manifest"
     );
     let server = Server::start(http::StatusCode::OK, vec![0xff]).await;
     assert!(matches!(
-        operation.send(&server.client).await,
+        server.client.application_manifest("a/b").await,
         Err(ClientError::TextDecode { .. })
     ));
 }

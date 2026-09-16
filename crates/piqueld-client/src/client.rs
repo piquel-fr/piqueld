@@ -1,502 +1,27 @@
-//! The typed API client with one request pipeline for every target.
-//!
-//! Endpoint methods, envelope decoding, and query building are shared. The
-//! platform differences are confined to two small modules: [`native`]
-//! speaks HTTP/1.1 over TCP and Unix-domain sockets natively, and
-//! [`web`] performs same-origin fetches in the browser. Both transports enforce
-//! one total deadline per exchange and reject response bodies beyond a fixed
-//! size; the native transport also constructs an explicit origin-form request.
+//! Public client configuration and adapters around the generated Progenitor client.
 
-use http::{HeaderName, HeaderValue, Method, StatusCode};
-use serde::{Serialize, de::DeserializeOwned};
+use bytes::Bytes;
+use futures_util::StreamExt;
+use progenitor_client::{ClientHooks, ClientInfo, Error, OperationInfo, ResponseValue};
+use serde::de::DeserializeOwned;
 use std::time::Duration;
 
-use crate::{ClientError, ErrorBody, TransportFailure};
+use crate::{ClientError, ErrorBody, TransportFailure, generated};
 
-/// Transport detail reported when a request exceeds its deadline.
+/// Upper bound on buffered response bodies for every operation.
+const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
 const TIMEOUT_MESSAGE: &str = "request timed out";
 
-/// Upper bound on buffered response bodies for every exchange.
-const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
-
-/// Builds the timeout [`ClientError`] shared by both transports.
-fn timed_out() -> ClientError {
-    ClientError::Transport {
-        message: TIMEOUT_MESSAGE.to_owned(),
-        kind: TransportFailure::Timeout,
-    }
-}
-
-/// Builds [`ClientError::Endpoint`] with the reason construction failed.
-pub(crate) fn invalid_request(message: impl std::fmt::Display) -> ClientError {
-    ClientError::Endpoint {
-        message: message.to_string(),
-    }
-}
-
-/// Validates shared request headers before either transport sees them.
-fn validate_headers(headers: &[(&str, &str)]) -> Result<(), ClientError> {
-    for (name, value) in headers {
-        HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| invalid_request("request header name is invalid"))?;
-        if !value.is_ascii() {
-            return Err(invalid_request("request header value must be ASCII"));
-        }
-        HeaderValue::from_str(value)
-            .map_err(|_| invalid_request("request header value is invalid"))?;
-    }
-    Ok(())
-}
-
-/// Builds the bounded-response error shared by both transports.
-fn response_too_large(limit: usize) -> ClientError {
-    ClientError::Transport {
-        message: format!("response body exceeded the {limit}-byte limit"),
-        kind: TransportFailure::Exchange,
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-mod native {
-    //! Native transport: HTTP/1.1 over TCP and Unix-domain sockets.
-
-    use bytes::Bytes;
-    use http::{Method, Request, StatusCode, header};
-    use http_body_util::{BodyExt, Full};
-    use hyper::Response;
-    use hyper::body::Incoming;
-    use hyper::client::conn::http1;
-    use hyper_util::rt::TokioIo;
-    #[cfg(unix)]
-    use std::path::PathBuf;
-    use std::{
-        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-        time::Duration,
-    };
-    use tokio::net::TcpStream;
-    #[cfg(unix)]
-    use tokio::net::UnixStream;
-    use url::{Host, Url};
-
-    use super::{
-        ClientError, MAX_RESPONSE_BODY_BYTES, invalid_request, response_too_large, timed_out,
-        transport,
-    };
-
-    #[derive(Clone, Debug)]
-    pub(super) enum Endpoint {
-        Tcp {
-            authority: String,
-            target: Target,
-        },
-        #[cfg(unix)]
-        Unix(PathBuf),
-    }
-
-    #[derive(Clone, Debug)]
-    pub(super) enum Target {
-        Addresses(Vec<SocketAddr>),
-        Dns(String, u16),
-    }
-
-    /// Parses an HTTP origin without resolving DNS until request dispatch.
-    pub(super) fn tcp_endpoint(base_url: &str) -> Result<Endpoint, ClientError> {
-        let url =
-            Url::parse(base_url).map_err(|_| invalid_request("base URL is not a valid URL"))?;
-        // Userinfo is rejected wholesale via '@': the parser collapses
-        // spellings like ":@" into invisible empty credentials, and with
-        // path, query, and fragment already excluded, an '@' can only ever
-        // belong to userinfo.
-        if url.scheme() != "http"
-            || url.path() != "/"
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || base_url.contains('@')
-        {
-            return Err(invalid_request("base URL must be a plain HTTP origin"));
-        }
-        let host = url
-            .host()
-            .ok_or_else(|| invalid_request("base URL has no host"))?;
-        // http URLs always carry the implicit default port.
-        let port = url
-            .port_or_known_default()
-            .expect("http URLs have a default port");
-        let target = match host {
-            Host::Domain("localhost") => Target::Addresses(vec![
-                SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
-            ]),
-            Host::Domain(host) => Target::Dns(host.to_owned(), port),
-            Host::Ipv4(ip) => Target::Addresses(vec![SocketAddr::new(ip.into(), port)]),
-            Host::Ipv6(ip) => Target::Addresses(vec![SocketAddr::new(ip.into(), port)]),
-        };
-        let authority = format!("{host}:{port}");
-        Ok(Endpoint::Tcp { authority, target })
-    }
-
-    /// Sends one request and returns the status plus the collected body.
-    ///
-    /// The deadline governs dispatch and body collection alike, so a stalled
-    /// response cannot outlive [`Client::with_timeout`]. Bodies larger than
-    /// [`MAX_RESPONSE_BODY_BYTES`] are rejected instead of buffered.
-    pub(super) async fn exchange(
-        endpoint: &Endpoint,
-        timeout: Duration,
-        method: Method,
-        path: &str,
-        payload: Vec<u8>,
-        headers: &[(&str, &str)],
-    ) -> Result<(StatusCode, Vec<u8>), ClientError> {
-        let (status, body) = tokio::time::timeout(timeout, async {
-            let response = send_request(endpoint, method, path, payload, headers).await?;
-            let status = response.status();
-            let body = collect_bounded(response.into_body()).await?;
-            Ok((status, body))
-        })
-        .await
-        .map_err(|_| timed_out())??;
-        Ok((status, body))
-    }
-
-    /// Collects the body while enforcing [`MAX_RESPONSE_BODY_BYTES`].
-    async fn collect_bounded(mut body: Incoming) -> Result<Vec<u8>, ClientError> {
-        let mut buffer = Vec::new();
-        while let Some(frame) = body.frame().await {
-            let frame = frame.map_err(|error| protocol_error("reading response body", &error))?;
-            if let Some(data) = frame.data_ref() {
-                if buffer.len().saturating_add(data.len()) > MAX_RESPONSE_BODY_BYTES {
-                    return Err(response_too_large(MAX_RESPONSE_BODY_BYTES));
-                }
-                buffer.extend_from_slice(data);
-            }
-        }
-        Ok(buffer)
-    }
-
-    async fn send_request(
-        endpoint: &Endpoint,
-        method: Method,
-        path: &str,
-        payload: Vec<u8>,
-        headers: &[(&str, &str)],
-    ) -> Result<Response<Incoming>, ClientError> {
-        let authority = match endpoint {
-            Endpoint::Tcp { authority, .. } => authority.as_str(),
-            #[cfg(unix)]
-            Endpoint::Unix(_) => "localhost",
-        };
-        if !path.starts_with('/') {
-            return Err(invalid_request("request path must start with '/'"));
-        }
-        // Origin-form target plus an explicit Host header: the raw hyper
-        // connection API never fills either in, and RFC 9112 requires both.
-        let mut builder = Request::builder()
-            .method(method)
-            .uri(path)
-            .header(header::HOST, authority)
-            .header(header::ACCEPT, "application/json");
-        for (name, value) in headers {
-            builder = builder.header(*name, *value);
-        }
-        let request = builder
-            .body(Full::new(Bytes::from(payload)))
-            .map_err(|error| invalid_request(format!("malformed request head: {error}")))?;
-        match endpoint {
-            Endpoint::Tcp { authority, target } => {
-                let connection = match target {
-                    Target::Addresses(addresses) => TcpStream::connect(addresses.as_slice()).await,
-                    Target::Dns(host, port) => TcpStream::connect((host.as_str(), *port)).await,
-                }
-                .map_err(|error| ClientError::Transport {
-                    message: format!("failed to connect to {authority}: {error}"),
-                    kind: crate::TransportFailure::Connect(error.kind()),
-                })?;
-                speak(Ok(connection), request).await
-            }
-            #[cfg(unix)]
-            Endpoint::Unix(path) => speak(UnixStream::connect(path).await, request).await,
-        }
-    }
-
-    fn protocol_error(stage: &str, error: &hyper::Error) -> ClientError {
-        use std::error::Error as _;
-        let mut message = format!("{stage}: {error}");
-        let mut source = error.source();
-        while let Some(cause) = source {
-            use std::fmt::Write as _;
-            let _ = write!(message, ": {cause}");
-            source = cause.source();
-        }
-        transport(message)
-    }
-
-    async fn speak<S>(
-        io: Result<S, std::io::Error>,
-        request: Request<Full<Bytes>>,
-    ) -> Result<Response<Incoming>, ClientError>
-    where
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-    {
-        let (mut sender, connection) = http1::handshake(TokioIo::new(io.map_err(|error| {
-            ClientError::Transport {
-                message: format!("opening connection: {error}"),
-                kind: crate::TransportFailure::Connect(error.kind()),
-            }
-        })?))
-        .await
-        .map_err(|error| protocol_error("HTTP handshake", &error))?;
-        // Drive the connection to completion in the background. Dropping the
-        // request or response handles makes hyper close the socket, so this
-        // task never outlives the exchange by more than a graceful shutdown.
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::debug!(%error, "piqueld-client connection closed");
-            }
-        });
-        sender
-            .send_request(request)
-            .await
-            .map_err(|error| protocol_error("HTTP exchange", &error))
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-mod web {
-    //! Browser transport: same-origin fetches via `gloo-net`.
-
-    use gloo_net::http::{Request, RequestBuilder, Response};
-    use http::{Method, StatusCode};
-    use js_sys::{Date, Reflect, Uint8Array};
-    use std::time::Duration;
-    use wasm_bindgen::{JsCast, JsValue};
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{
-        ReadableStreamDefaultReader, RequestCache, RequestCredentials, RequestMode, RequestRedirect,
-    };
-
-    use super::{
-        ClientError, MAX_RESPONSE_BODY_BYTES, invalid_request, response_too_large, timed_out,
-        transport,
-    };
-
-    /// Sends one same-origin request and returns the status plus body bytes.
-    pub(super) async fn exchange(
-        timeout: Duration,
-        method: Method,
-        path: &str,
-        payload: Vec<u8>,
-        headers: &[(&str, &str)],
-    ) -> Result<(StatusCode, Vec<u8>), ClientError> {
-        let millis = u32::try_from(timeout.as_millis()).map_err(|_| {
-            invalid_request("browser request timeout exceeds u32::MAX milliseconds")
-        })?;
-        let deadline = Date::now() + f64::from(millis);
-        let signal = web_sys::AbortSignal::timeout_with_u32(millis);
-        let mut request = match method {
-            Method::GET => Request::get(path),
-            Method::POST => Request::post(path),
-            Method::PUT => Request::put(path),
-            Method::DELETE => Request::delete(path),
-            _ => RequestBuilder::new(path).method(method),
-        }
-        .header("accept", "application/json")
-        .cache(RequestCache::NoStore)
-        .credentials(RequestCredentials::Omit)
-        .mode(RequestMode::SameOrigin)
-        // Match the native transport, which never follows redirects.
-        .redirect(RequestRedirect::Error);
-        for (name, value) in headers {
-            request = request.header(name, value);
-        }
-        // The browser enforces the deadline through the abort signal, which
-        // rejects the fetch and any pending body read once it fires. This
-        // bounds pending I/O. Also check elapsed time after each await: the
-        // abort timer pauses while a page is suspended in the back-forward cache.
-        let request = request.abort_signal(Some(&signal));
-        let sent = if payload.is_empty() {
-            request.send().await
-        } else {
-            // JSON and TOML payloads are always UTF-8.
-            let body = String::from_utf8(payload)
-                .map_err(|_| invalid_request("request payload is not valid UTF-8"))?;
-            request.body(body).map_err(transport)?.send().await
-        };
-        if signal.aborted() || Date::now() >= deadline {
-            return Err(timed_out());
-        }
-        let response = sent.map_err(transport)?;
-        let status = StatusCode::from_u16(response.status()).map_err(|_| {
-            transport(format!(
-                "server returned invalid status {}",
-                response.status()
-            ))
-        })?;
-        let body = collect_bounded(&response, MAX_RESPONSE_BODY_BYTES).await;
-        if signal.aborted() || Date::now() >= deadline {
-            return Err(timed_out());
-        }
-        Ok((status, body?))
-    }
-
-    /// Drains a fetch body as exact bytes without allowing unbounded buffering.
-    async fn collect_bounded(response: &Response, limit: usize) -> Result<Vec<u8>, ClientError> {
-        let Some(stream) = response.body() else {
-            return Ok(Vec::new());
-        };
-        let reader: ReadableStreamDefaultReader = stream.get_reader().unchecked_into();
-        let mut buffer = Vec::new();
-        loop {
-            let result = JsFuture::from(reader.read()).await.map_err(js_transport)?;
-            let done = Reflect::get(&result, &JsValue::from_str("done"))
-                .map_err(js_transport)?
-                .as_bool()
-                .unwrap_or(false);
-            if done {
-                reader.release_lock();
-                return Ok(buffer);
-            }
-            let value = Reflect::get(&result, &JsValue::from_str("value")).map_err(js_transport)?;
-            let chunk = Uint8Array::new(&value);
-            let chunk_len = usize::try_from(chunk.length())
-                .map_err(|_| transport("response chunk length exceeds this platform"))?;
-            if buffer.len().saturating_add(chunk_len) > limit {
-                let _ = reader.cancel();
-                reader.release_lock();
-                return Err(response_too_large(limit));
-            }
-            let start = buffer.len();
-            buffer.resize(start + chunk_len, 0);
-            chunk.copy_to(&mut buffer[start..]);
-        }
-    }
-
-    fn js_transport(error: JsValue) -> ClientError {
-        transport(format!("{error:?}"))
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::{MAX_RESPONSE_BODY_BYTES, collect_bounded};
-        use crate::{Client, ClientError};
-        use http::Method;
-        use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
-
-        wasm_bindgen_test_configure!(run_in_browser);
-
-        fn response(bytes: &mut [u8]) -> gloo_net::http::Response {
-            web_sys::Response::new_with_opt_u8_array(Some(bytes))
-                .expect("test response is valid")
-                .into()
-        }
-
-        #[wasm_bindgen_test]
-        async fn response_collection_preserves_exact_bytes() {
-            let mut bytes = [b'{', b'"', 0xff, b'"', b'}'];
-            let response = response(&mut bytes);
-            assert_eq!(
-                collect_bounded(&response, MAX_RESPONSE_BODY_BYTES)
-                    .await
-                    .expect("small response is collected"),
-                bytes
-            );
-        }
-
-        #[wasm_bindgen_test]
-        async fn response_collection_rejects_the_first_oversized_chunk() {
-            let mut bytes = [1, 2, 3, 4, 5];
-            let response = response(&mut bytes);
-            assert!(matches!(
-                collect_bounded(&response, 4).await,
-                Err(ClientError::Transport { message, .. }) if message.contains("4-byte limit")
-            ));
-        }
-
-        #[wasm_bindgen_test]
-        async fn exchange_fetches_from_the_current_origin() {
-            let (status, payload) = Client::browser()
-                .exchange(Method::GET, "/", Vec::new(), &[])
-                .await
-                .expect("same-origin fetch succeeds");
-
-            assert!(status.is_success());
-            assert!(!payload.is_empty());
-        }
-
-        #[wasm_bindgen::prelude::wasm_bindgen(inline_js = "
-            export function advanceClockDuringFetch() {
-                const originalFetch = globalThis.fetch;
-                const originalNow = Date.now;
-                globalThis.fetch = async (...args) => {
-                    const response = await originalFetch(...args);
-                    Date.now = () => originalNow() + 60000;
-                    return response;
-                };
-                return () => {
-                    globalThis.fetch = originalFetch;
-                    Date.now = originalNow;
-                };
-            }
-        ")]
-        extern "C" {
-            #[wasm_bindgen::prelude::wasm_bindgen(js_name = advanceClockDuringFetch)]
-            fn advance_clock_during_fetch() -> js_sys::Function;
-        }
-
-        #[wasm_bindgen_test]
-        async fn elapsed_deadline_rejects_fetch_after_page_suspension() {
-            let restore = advance_clock_during_fetch();
-            let result = Client::browser()
-                .exchange(Method::GET, "/", Vec::new(), &[])
-                .await;
-            restore.call0(&wasm_bindgen::JsValue::NULL).unwrap();
-            assert!(matches!(
-                result,
-                Err(ClientError::Transport { message, .. }) if message == super::super::TIMEOUT_MESSAGE
-            ));
-        }
-
-        #[wasm_bindgen_test]
-        async fn oversized_timeout_returns_an_error_before_fetch() {
-            let result = Client::browser()
-                .with_timeout(std::time::Duration::from_millis(u64::from(u32::MAX) + 1))
-                .exchange(Method::GET, "/", Vec::new(), &[])
-                .await;
-            assert!(matches!(
-                result,
-                Err(ClientError::Endpoint { message }) if message.contains("timeout exceeds")
-            ));
-        }
-
-        #[wasm_bindgen_test]
-        async fn zero_timeout_cannot_return_a_successful_fetch() {
-            let result = Client::browser()
-                .with_timeout(std::time::Duration::ZERO)
-                .exchange(Method::GET, "/", Vec::new(), &[])
-                .await;
-            assert!(matches!(
-                result,
-                Err(ClientError::Transport { message, .. }) if message == super::super::TIMEOUT_MESSAGE
-            ));
-        }
-
-        #[wasm_bindgen_test]
-        async fn invalid_headers_return_an_error_before_fetch() {
-            let result = Client::browser()
-                .exchange(Method::GET, "/", Vec::new(), &[("x-test", "bad\nvalue")])
-                .await;
-            assert!(matches!(result, Err(ClientError::Endpoint { .. })));
-        }
-    }
+#[derive(Clone, Debug)]
+pub(crate) struct ClientState {
+    timeout: Duration,
+    request_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 /// Configured asynchronous API client.
 pub struct Client {
-    #[cfg(not(target_arch = "wasm32"))]
-    endpoint: native::Endpoint,
-    timeout: Duration,
-    request_id: Option<String>,
+    pub(crate) generated: generated::Client,
 }
 
 impl Client {
@@ -509,46 +34,95 @@ impl Client {
     /// Returns [`ClientError::Endpoint`] when `base_url` is not an HTTP origin.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn tcp(base_url: &str) -> Result<Self, ClientError> {
-        Ok(Self {
-            endpoint: native::tcp_endpoint(base_url)?,
-            timeout: Duration::from_secs(30),
-            request_id: None,
-        })
+        let url = url::Url::parse(base_url)
+            .map_err(|_| invalid_request("base URL is not a valid URL"))?;
+        if url.scheme() != "http"
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || base_url.contains('@')
+            || url.host().is_none()
+        {
+            return Err(invalid_request("base URL must be a plain HTTP origin"));
+        }
+
+        let mut builder = reqwest::ClientBuilder::new()
+            .connect_timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy();
+        if url.host_str() == Some("localhost") {
+            let port = url.port().unwrap_or(80);
+            builder = builder.resolve_to_addrs(
+                "localhost",
+                &[
+                    std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), port),
+                    std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port),
+                ],
+            );
+        }
+        Self::with_client(base_url.trim_end_matches('/'), builder)
     }
 
     /// Creates a client for a Unix-domain socket.
     ///
     /// # Trust model
-    /// Any process able to reach `path` can drive the daemon, and this client
-    /// speaks plain HTTP to whatever socket it is given — including sockets
-    /// owned by other subsystems such as the Docker socket. Only pass paths
+    /// Any process able to reach `path` can drive the daemon. Only pass paths
     /// provisioned by the piqueld daemon itself.
+    ///
+    /// # Panics
+    /// Panics only if reqwest rejects its fixed, library-owned configuration.
     #[cfg(all(not(target_arch = "wasm32"), unix))]
-    #[must_use]
     pub fn unix(path: impl AsRef<std::path::Path>) -> Self {
-        Self {
-            endpoint: native::Endpoint::Unix(path.as_ref().to_owned()),
-            timeout: Duration::from_secs(30),
-            request_id: None,
-        }
+        Self::with_client(
+            "http://localhost",
+            reqwest::ClientBuilder::new()
+                .connect_timeout(Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .unix_socket(path.as_ref().to_path_buf()),
+        )
+        .expect("the fixed Unix-socket client configuration is valid")
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn with_client(base_url: &str, builder: reqwest::ClientBuilder) -> Result<Self, ClientError> {
+        let client = builder
+            .build()
+            .map_err(|_| invalid_request("HTTP client configuration is invalid"))?;
+        Ok(Self {
+            generated: generated::Client::new_with_client(
+                base_url,
+                client,
+                ClientState {
+                    timeout: Duration::from_secs(30),
+                    request_id: None,
+                },
+            ),
+        })
     }
 
     /// Creates a client that fetches the daemon API from the current browser origin.
     #[cfg(target_arch = "wasm32")]
-    #[must_use]
     pub fn browser() -> Self {
+        let base_url = web_sys::window()
+            .and_then(|window| window.location().origin().ok())
+            .unwrap_or_default();
         Self {
-            timeout: Duration::from_secs(30),
-            request_id: None,
+            generated: generated::Client::new_with_client(
+                &base_url,
+                reqwest::Client::new(),
+                ClientState {
+                    timeout: Duration::from_secs(30),
+                    request_id: None,
+                },
+            ),
         }
     }
 
     /// Overrides the per-request timeout.
-    ///
-    /// Browser requests reject timeouts larger than `u32::MAX` milliseconds.
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
+        self.generated.inner.timeout = timeout;
         self
     }
 
@@ -556,256 +130,309 @@ impl Client {
     /// use a new identity for a separately intended mutation.
     #[must_use]
     pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
-        self.request_id = Some(request_id.into());
+        self.generated.inner.request_id = Some(request_id.into());
         self
     }
 
-    pub(crate) async fn exchange(
+    pub(crate) async fn send_toml<T: DeserializeOwned>(
         &self,
-        method: Method,
         path: &str,
-        payload: Vec<u8>,
-        headers: &[(&str, &str)],
-    ) -> Result<(StatusCode, Vec<u8>), ClientError> {
-        let mut headers = headers.to_vec();
-        if method != Method::GET
-            && method != Method::HEAD
-            && !headers
-                .iter()
-                .any(|(name, _)| name.eq_ignore_ascii_case("idempotency-key"))
-            && let Some(id) = self.request_id.as_deref()
-        {
-            headers.push(("idempotency-key", id));
+        query: &[(&str, String)],
+        headers: &[(&str, String)],
+        body: &str,
+    ) -> Result<T, ClientError> {
+        let url = format!("{}{path}", self.generated.baseurl);
+        let mut builder = self
+            .generated
+            .client
+            .post(url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header("api-version", "v1")
+            .header(reqwest::header::CONTENT_TYPE, "application/toml")
+            .query(query)
+            .body(body.to_owned());
+        for (name, value) in headers {
+            builder = builder.header(*name, value);
         }
-        let headers = headers.as_slice();
-        validate_headers(headers)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        return native::exchange(&self.endpoint, self.timeout, method, path, payload, headers)
-            .await;
-
-        #[cfg(target_arch = "wasm32")]
-        return web::exchange(self.timeout, method, path, payload, headers).await;
+        let mut request = builder
+            .build()
+            .map_err(|_| invalid_request("request could not be constructed"))?;
+        prepare_request(&self.generated.inner, &mut request)
+            .map_err(|_| invalid_request("request header or timeout is invalid"))?;
+        let response = self
+            .generated
+            .client
+            .execute(request)
+            .await
+            .map_err(transport_error)?;
+        let status = response.status();
+        let payload = collect_response(response).await?;
+        if !status.is_success() {
+            return Err(api_error(status, &payload));
+        }
+        serde_json::from_slice(&payload).map_err(|source| ClientError::Decode { source })
     }
 }
 
-pub(crate) fn api_error(status: StatusCode, payload: &[u8]) -> ClientError {
-    ClientError::Api {
-        status,
-        error: error_body(payload),
+impl ClientHooks<ClientState> for generated::Client {
+    // The external async trait fixes this signature even though preparation is synchronous.
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn pre<E>(
+        &self,
+        request: &mut reqwest::Request,
+        _info: &OperationInfo,
+    ) -> Result<(), Error<E>> {
+        prepare_request(self.inner(), request).map_err(Error::InvalidRequest)
     }
 }
 
-/// Builds a [`ClientError`] for a failed underlying transport operation.
-fn transport(error: impl std::fmt::Display) -> ClientError {
+fn prepare_request(state: &ClientState, request: &mut reqwest::Request) -> Result<(), String> {
+    #[cfg(target_arch = "wasm32")]
+    u32::try_from(state.timeout.as_millis())
+        .map_err(|_| "browser request timeout exceeds u32::MAX milliseconds".to_owned())?;
+    *request.timeout_mut() = Some(state.timeout);
+    if request.method() != reqwest::Method::GET
+        && request.method() != reqwest::Method::HEAD
+        && !request.headers().contains_key("idempotency-key")
+        && let Some(request_id) = &state.request_id
+    {
+        let value = reqwest::header::HeaderValue::from_str(request_id)
+            .map_err(|_| "request header value is invalid".to_owned())?;
+        request.headers_mut().insert("idempotency-key", value);
+    }
+    Ok(())
+}
+
+// Progenitor fixes this public error type; boxing it would not match generated calls.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn decode_response<T, E>(
+    response: reqwest::Response,
+) -> Result<ResponseValue<T>, Error<E>>
+where
+    T: DeserializeOwned,
+{
+    let status = response.status();
+    let headers = response.headers().clone();
+    let full = collect_response(response)
+        .await
+        .map_err(|error| match error {
+            ClientError::Transport { message, .. } => Error::Custom(message),
+            _ => Error::Custom(error.to_string()),
+        })?;
+    let full = Bytes::from(full);
+    let value = serde_json::from_slice(&full)
+        .map_err(|error| Error::InvalidResponsePayload(full, error))?;
+    Ok(ResponseValue::new(value, status, headers))
+}
+
+async fn collect_response(response: reqwest::Response) -> Result<Vec<u8>, ClientError> {
+    collect_stream(response.bytes_stream()).await
+}
+
+pub(crate) async fn collect_byte_stream(
+    response: progenitor_client::ByteStream,
+) -> Result<Vec<u8>, ClientError> {
+    collect_stream(response.into_inner()).await
+}
+
+async fn collect_stream<S>(mut stream: S) -> Result<Vec<u8>, ClientError>
+where
+    S: futures_util::Stream<Item = reqwest::Result<Bytes>> + Unpin,
+{
+    let mut buffer = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(transport_error)?;
+        if buffer.len().saturating_add(chunk.len()) > MAX_RESPONSE_BODY_BYTES {
+            return Err(ClientError::Transport {
+                message: format!("response body exceeded the {MAX_RESPONSE_BODY_BYTES}-byte limit"),
+                kind: TransportFailure::Exchange,
+            });
+        }
+        buffer.extend_from_slice(&chunk);
+    }
+    Ok(buffer)
+}
+
+pub(crate) trait ApiErrorPayload {
+    fn into_error_body(self) -> Option<ErrorBody>;
+}
+
+impl ApiErrorPayload for ErrorBody {
+    fn into_error_body(self) -> Option<ErrorBody> {
+        Some(self)
+    }
+}
+
+impl ApiErrorPayload for () {
+    fn into_error_body(self) -> Option<ErrorBody> {
+        None
+    }
+}
+
+impl ApiErrorPayload for crate::Envelope<piqueld_core::api::ReadinessStatus> {
+    fn into_error_body(self) -> Option<ErrorBody> {
+        None
+    }
+}
+
+pub(crate) async fn generated_result<T, E>(
+    result: Result<ResponseValue<T>, Error<E>>,
+) -> Result<T, ClientError>
+where
+    E: ApiErrorPayload,
+{
+    match result {
+        Ok(response) => Ok(response.into_inner()),
+        Err(error) => Err(generated_error(error).await),
+    }
+}
+
+pub(crate) async fn generated_error<E>(error: Error<E>) -> ClientError
+where
+    E: ApiErrorPayload,
+{
+    match error {
+        Error::InvalidRequest(message) => invalid_request(message),
+        Error::CommunicationError(error)
+        | Error::InvalidUpgrade(error)
+        | Error::ResponseBodyError(error) => transport_error(error),
+        Error::ErrorResponse(response) => {
+            let status = response.status();
+            response.into_inner().into_error_body().map_or_else(
+                || unexpected_status(status),
+                |error| ClientError::Api { status, error },
+            )
+        }
+        Error::InvalidResponsePayload(_, source) => ClientError::Decode { source },
+        Error::UnexpectedResponse(response) => {
+            let status = response.status();
+            match collect_response(response).await {
+                Ok(payload) if !status.is_success() => api_error(status, &payload),
+                Ok(_) => unexpected_status(status),
+                Err(error) => error,
+            }
+        }
+        Error::Custom(message) => ClientError::Transport {
+            kind: if message == TIMEOUT_MESSAGE {
+                TransportFailure::Timeout
+            } else {
+                TransportFailure::Exchange
+            },
+            message,
+        },
+    }
+}
+
+fn unexpected_status(status: reqwest::StatusCode) -> ClientError {
     ClientError::Transport {
-        message: error.to_string(),
+        message: format!("server returned undocumented status {status}"),
         kind: TransportFailure::Exchange,
     }
 }
 
-fn error_body(payload: &[u8]) -> ErrorBody {
-    serde_json::from_slice(payload).unwrap_or_else(|error| ErrorBody {
-        code: "invalid_error_response".into(),
-        message: format!("server returned an unreadable error: {error}"),
-        details: serde_json::Value::Null,
-        request_id: String::new(),
-    })
-}
-
-pub(crate) fn path_segment(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            use std::fmt::Write as _;
-            let _ = write!(encoded, "%{byte:02X}");
-        }
-    }
-    encoded
-}
-
-/// Transport-independent request assembled by the generated endpoint bindings.
-pub(crate) struct GeneratedRequest {
-    method: Method,
-    path: String,
-    query: url::form_urlencoded::Serializer<'static, String>,
-    headers: Vec<(&'static str, String)>,
-    payload: Vec<u8>,
-}
-
-impl GeneratedRequest {
-    pub(crate) fn new(method: Method, path: String) -> Self {
-        Self {
-            method,
-            path,
-            query: url::form_urlencoded::Serializer::new(String::new()),
-            headers: Vec::new(),
-            payload: Vec::new(),
-        }
-    }
-
-    pub(crate) fn query(&mut self, name: &str, value: &impl std::fmt::Display) {
-        self.query.append_pair(name, &value.to_string());
-    }
-
-    pub(crate) fn header(&mut self, name: &'static str, value: &impl std::fmt::Display) {
-        self.headers.push((name, value.to_string()));
-    }
-
-    pub(crate) fn json(
-        mut self,
-        content_type: &'static str,
-        body: &impl Serialize,
-    ) -> Result<Self, ClientError> {
-        self.payload = serde_json::to_vec(body)
-            .map_err(|error| invalid_request(format!("request serialization failed: {error}")))?;
-        self.header("content-type", &content_type);
-        Ok(self)
-    }
-
-    pub(crate) fn text(mut self, content_type: &'static str, body: &str) -> Self {
-        self.payload = body.as_bytes().to_vec();
-        self.header("content-type", &content_type);
-        self
-    }
-
-    async fn send(
-        mut self,
-        client: &Client,
-        accepted: &[StatusCode],
-    ) -> Result<Vec<u8>, ClientError> {
-        let query = self.query.finish();
-        if !query.is_empty() {
-            self.path.push('?');
-            self.path.push_str(&query);
-        }
-        let headers = self
-            .headers
-            .iter()
-            .map(|(name, value)| (*name, value.as_str()))
-            .collect::<Vec<_>>();
-        let (status, payload) = client
-            .exchange(self.method, &self.path, self.payload, &headers)
-            .await?;
-        if !status.is_success() && !accepted.contains(&status) {
-            return Err(api_error(status, &payload));
-        }
-        Ok(payload)
-    }
-
-    pub(crate) async fn send_json<T: DeserializeOwned>(
-        self,
-        client: &Client,
-        accepted: &[StatusCode],
-    ) -> Result<T, ClientError> {
-        let payload = self.send(client, accepted).await?;
-        serde_json::from_slice(&payload).map_err(|source| ClientError::Decode { source })
-    }
-
-    pub(crate) async fn send_text(
-        self,
-        client: &Client,
-        accepted: &[StatusCode],
-    ) -> Result<String, ClientError> {
-        let payload = self.send(client, accepted).await?;
-        String::from_utf8(payload).map_err(|source| ClientError::TextDecode { source })
-    }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
-    use super::{Client, GeneratedRequest, native, path_segment, validate_headers};
-    use crate::{ClientError, SystemStatus};
-    use http::Method;
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-        sync::mpsc,
+// `map_err` passes ownership; retaining reqwest's error beyond this conversion is unnecessary.
+#[allow(clippy::needless_pass_by_value)]
+fn transport_error(error: reqwest::Error) -> ClientError {
+    #[cfg(not(target_arch = "wasm32"))]
+    let connection_kind = connection_error_kind(&error).or_else(|| {
+        error
+            .is_connect()
+            .then_some(std::io::ErrorKind::ConnectionRefused)
+    });
+    #[cfg(target_arch = "wasm32")]
+    let connection_kind = None;
+    let kind = if error.is_timeout() {
+        TransportFailure::Timeout
+    } else if let Some(kind) = connection_kind {
+        TransportFailure::Connect(kind)
+    } else {
+        TransportFailure::Exchange
     };
+    ClientError::Transport {
+        message: if matches!(kind, TransportFailure::Timeout) {
+            TIMEOUT_MESSAGE.to_owned()
+        } else {
+            transport_error_message(&error)
+        },
+        kind,
+    }
+}
 
-    #[test]
-    fn path_segment_preserves_unreserved_characters() {
-        assert_eq!(path_segment("app-1_2.x~y"), "app-1_2.x~y");
-        assert_eq!(path_segment(""), "");
+#[cfg(not(target_arch = "wasm32"))]
+fn connection_error_kind(error: &reqwest::Error) -> Option<std::io::ErrorKind> {
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        if let Some(error) = cause.downcast_ref::<std::io::Error>() {
+            return Some(error.kind());
+        }
+        source = cause.source();
+    }
+    None
+}
+
+fn transport_error_message(error: &reqwest::Error) -> String {
+    use std::fmt::Write as _;
+
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        let _ = write!(message, ": {cause}");
+        source = cause.source();
+    }
+    message
+}
+
+pub(crate) fn invalid_request(message: impl std::fmt::Display) -> ClientError {
+    ClientError::Endpoint {
+        message: message.to_string(),
+    }
+}
+
+fn api_error(status: reqwest::StatusCode, payload: &[u8]) -> ClientError {
+    ClientError::Api {
+        status,
+        error: serde_json::from_slice(payload).unwrap_or_else(|error| ErrorBody {
+            code: "invalid_error_response".into(),
+            message: format!("server returned an unreadable error: {error}"),
+            details: serde_json::Value::Null,
+            request_id: String::new(),
+        }),
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::{Client, ClientError, MAX_RESPONSE_BODY_BYTES, collect_stream};
+    use bytes::Bytes;
+    use futures_util::stream;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen_test]
+    async fn response_collection_rejects_oversized_streams() {
+        let chunks = stream::iter([
+            Ok::<_, reqwest::Error>(Bytes::from(vec![0; MAX_RESPONSE_BODY_BYTES])),
+            Ok(Bytes::from_static(&[1])),
+        ]);
+        assert!(matches!(
+            collect_stream(chunks).await,
+            Err(ClientError::Transport { message, .. }) if message.contains("16")
+        ));
     }
 
-    #[test]
-    fn path_segment_encodes_reserved_and_non_ascii_bytes() {
-        assert_eq!(path_segment("a/b"), "a%2Fb");
-        assert_eq!(path_segment("?#&="), "%3F%23%26%3D");
-        assert_eq!(path_segment("é"), "%C3%A9");
-        assert_eq!(path_segment("\r\n"), "%0D%0A");
-        assert_eq!(path_segment(" "), "%20");
+    #[wasm_bindgen_test]
+    async fn oversized_timeout_is_rejected_before_fetch() {
+        let error = Client::browser()
+            .with_timeout(Duration::from_millis(u64::from(u32::MAX) + 1))
+            .system_status()
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ClientError::Endpoint { message } if message.contains("timeout exceeds")
+        ));
     }
 
-    #[test]
-    fn localhost_is_pinned_to_literal_loopback_addresses() {
-        let native::Endpoint::Tcp {
-            authority,
-            target: native::Target::Addresses(addresses),
-        } = native::tcp_endpoint("http://localhost:4321/").unwrap()
-        else {
-            panic!("localhost must produce a TCP endpoint");
-        };
-        assert_eq!(authority, "localhost:4321");
-        assert_eq!(
-            addresses,
-            [
-                "[::1]:4321".parse().unwrap(),
-                "127.0.0.1:4321".parse().unwrap()
-            ]
-        );
-    }
-
-    #[test]
-    fn invalid_header_values_are_rejected_without_echoing_them() {
-        let error = validate_headers(&[("x-test", "secret\nvalue")]).unwrap_err();
-        assert!(matches!(error, ClientError::Endpoint { .. }));
-        assert!(!error.to_string().contains("secret"));
-    }
-
-    #[tokio::test]
-    async fn bodyless_sends_forward_caller_headers() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let (wire_tx, mut wire_rx) = mpsc::channel(1);
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buffer = Vec::new();
-            loop {
-                let mut chunk = [0u8; 1024];
-                let read = socket.read(&mut chunk).await.unwrap();
-                assert_ne!(read, 0, "client closed before sending request headers");
-                buffer.extend_from_slice(&chunk[..read]);
-                if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            wire_tx
-                .send(String::from_utf8_lossy(&buffer).into_owned())
-                .await
-                .unwrap();
-            let body = r#"{"data":{"status":"running","api_version":"v1","daemon_version":"0.1.0","instance_id":"i"}}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = socket.write_all(response.as_bytes()).await;
-        });
-        let client = Client::tcp(&format!("http://{address}/")).unwrap();
-        let mut request =
-            GeneratedRequest::new(Method::DELETE, "/api/v1/applications/app-1".into());
-        request.header("x-trace-id", &"trace-42");
-        request.header("if-match", &"\"7\"");
-        let status: crate::Envelope<SystemStatus> = request.send_json(&client, &[]).await.unwrap();
-        server.await.unwrap();
-        let wire = wire_rx.recv().await.unwrap();
-        assert!(wire.starts_with("DELETE /api/v1/applications/app-1 HTTP/1.1\r\n"));
-        let wire = wire.to_ascii_lowercase();
-        assert!(wire.contains("\r\nx-trace-id: trace-42\r\n"));
-        assert!(wire.contains("\r\nif-match: \"7\"\r\n"));
-        assert!(!wire.contains("content-type"));
-        assert_eq!(status.data.status, "running");
-    }
+    use std::time::Duration;
 }

@@ -1,6 +1,4 @@
-use crate::generated;
-
-use crate::{Client, ClientError, Operation};
+use crate::{Client, ClientError, Operation, client::generated_result};
 
 impl Client {
     /// Fetches an asynchronous operation by identifier.
@@ -8,8 +6,7 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn operation(&self, id: &str) -> Result<Operation, ClientError> {
-        generated::GetOperation { id: id.into() }
-            .send(self)
+        generated_result(self.generated.get_operation(id).await)
             .await
             .map(|response| response.data)
     }

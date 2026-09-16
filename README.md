@@ -73,10 +73,10 @@ Regenerate both artifacts in dependency order with:
 just generate
 ```
 
-Client generation requires Java 11 or newer and curl (included in `nix develop`);
-ordinary Cargo builds use checked-in Rust. See
-[client generation](tools/client-codegen/README.md) for the pinned tooling,
-shared contract mappings, and template.
+Client generation is implemented in Rust with Progenitor. Ordinary Cargo builds
+use the checked-in client without compiling the generator. See
+[client generation](tools/client-codegen/README.md) for the shared contract
+mappings and the two handwritten TOML adapters.
 
 The optional privileged Docker qualification uses an isolated Docker-in-Docker
 daemon:

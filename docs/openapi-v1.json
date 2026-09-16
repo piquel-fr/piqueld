@@ -369,15 +369,13 @@
             "type": "array"
           },
           "latest_operation": {
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Operation",
-                "description": "Most recent durable operation, when one exists."
+                "$ref": "#/components/schemas/Operation"
               }
-            ]
+            ],
+            "description": "Most recent durable operation, when one exists.",
+            "nullable": true
           },
           "observed": {
             "$ref": "#/components/schemas/ObservedApplicationView",
@@ -459,16 +457,14 @@
         "description": "User-provided application resource lists.",
         "properties": {
           "manifest": {
-            "default": null,
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/RepositoryManifest",
-                "description": "Optional repository that supplies this application's manifest on Deploy."
+                "$ref": "#/components/schemas/RepositoryManifest"
               }
-            ]
+            ],
+            "default": null,
+            "description": "Optional repository that supplies this application's manifest on Deploy.",
+            "nullable": true
           },
           "services": {
             "default": [],
@@ -511,17 +507,13 @@
           },
           "message": {
             "description": "Optional safe status message.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "runtime_health": {
             "description": "Observed runtime health, independent of operation progress.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "state": {
             "$ref": "#/components/schemas/ApplicationState",
@@ -570,10 +562,8 @@
             "description": "Revision of the last completely resolved target, not a convergence guarantee.",
             "format": "int64",
             "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "updated_at_ms": {
             "description": "Last update timestamp in Unix milliseconds.",
@@ -617,10 +607,8 @@
             "description": "Revision of the last completely resolved target, not a convergence guarantee.",
             "format": "int64",
             "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "spec_hash": {
             "description": "Hash of the normalized desired specification.",
@@ -648,19 +636,15 @@
         "properties": {
           "expected_application_id": {
             "description": "Required for non-forced updates by name; protects against name reuse.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "expected_generation": {
             "description": "Required for apply unless forced; optional for preview. Zero requires an absent name.",
             "format": "int64",
             "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "manifest": {
             "$ref": "#/components/schemas/ApplicationManifest",
@@ -748,10 +732,8 @@
           "previous_offset": {
             "description": "Exclusive byte cursor for loading an older page.",
             "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "truncated": {
             "description": "The build exceeded its total output cap.",
@@ -774,18 +756,14 @@
           },
           "commit": {
             "description": "Resolved Git commit, when checkout completed.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "finished_at_ms": {
             "description": "Completion time, absent while running.",
             "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "id": {
             "description": "Monotonic build identifier.",
@@ -794,10 +772,8 @@
           },
           "image_id": {
             "description": "Built image identifier, when successful.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "log_bytes": {
             "description": "Number of currently retained output bytes.",
@@ -930,10 +906,8 @@
           "succeeded_at_ms": {
             "description": "First successful convergence, retained during later drift repair.",
             "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           }
         },
         "required": [
@@ -1022,15 +996,13 @@
             "type": "object"
           },
           "healthcheck": {
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/HealthCheck",
-                "description": "Optional health check."
+                "$ref": "#/components/schemas/HealthCheck"
               }
-            ]
+            ],
+            "description": "Optional health check.",
+            "nullable": true
           },
           "image": {
             "$ref": "#/components/schemas/ImmutableImage",
@@ -1075,15 +1047,13 @@
             "type": "integer"
           },
           "resources": {
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ResourceLimits",
-                "description": "Optional CPU and memory limits."
+                "$ref": "#/components/schemas/ResourceLimits"
               }
-            ]
+            ],
+            "description": "Optional CPU and memory limits.",
+            "nullable": true
           },
           "source": {
             "$ref": "#/components/schemas/ResolvedSource",
@@ -1226,15 +1196,13 @@
                 "type": "array"
               },
               "latest_operation": {
-                "oneOf": [
+                "allOf": [
                   {
-                    "type": "null"
-                  },
-                  {
-                    "$ref": "#/components/schemas/Operation",
-                    "description": "Most recent durable operation, when one exists."
+                    "$ref": "#/components/schemas/Operation"
                   }
-                ]
+                ],
+                "description": "Most recent durable operation, when one exists.",
+                "nullable": true
               },
               "observed": {
                 "$ref": "#/components/schemas/ObservedApplicationView",
@@ -1301,17 +1269,13 @@
               },
               "message": {
                 "description": "Optional safe status message.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               },
               "runtime_health": {
                 "description": "Observed runtime health, independent of operation progress.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               },
               "state": {
                 "$ref": "#/components/schemas/ApplicationState",
@@ -1365,10 +1329,8 @@
                 "description": "Revision of the last completely resolved target, not a convergence guarantee.",
                 "format": "int64",
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "integer"
               },
               "spec_hash": {
                 "description": "Hash of the normalized desired specification.",
@@ -1416,10 +1378,8 @@
               "previous_offset": {
                 "description": "Exclusive byte cursor for loading an older page.",
                 "format": "int64",
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "integer"
               },
               "truncated": {
                 "description": "The build exceeded its total output cap.",
@@ -1502,25 +1462,19 @@
               },
               "error_code": {
                 "description": "Stable failure code, when present.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               },
               "error_message": {
                 "description": "Safe failure message, when present.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               },
               "finished_at_ms": {
                 "description": "Completion timestamp in Unix milliseconds.",
                 "format": "int64",
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "integer"
               },
               "generation": {
                 "description": "Intent revision this operation targets.",
@@ -1538,25 +1492,19 @@
               },
               "phase": {
                 "description": "Current execution phase, retained on failure.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               },
               "resource": {
                 "description": "Logical or Docker resource currently being processed.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               },
               "started_at_ms": {
                 "description": "Start timestamp in Unix milliseconds.",
                 "format": "int64",
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "integer"
               },
               "state": {
                 "$ref": "#/components/schemas/OperationState",
@@ -1624,10 +1572,8 @@
                       "description": "Revision of the last completely resolved target, not a convergence guarantee.",
                       "format": "int64",
                       "minimum": 0,
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "integer"
                     },
                     "updated_at_ms": {
                       "description": "Last update timestamp in Unix milliseconds.",
@@ -1649,10 +1595,8 @@
               },
               "next_cursor": {
                 "description": "Cursor for the next page, when more items are available.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               }
             },
             "required": [
@@ -1683,18 +1627,14 @@
                     },
                     "commit": {
                       "description": "Resolved Git commit, when checkout completed.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     },
                     "finished_at_ms": {
                       "description": "Completion time, absent while running.",
                       "format": "int64",
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "integer"
                     },
                     "id": {
                       "description": "Monotonic build identifier.",
@@ -1703,10 +1643,8 @@
                     },
                     "image_id": {
                       "description": "Built image identifier, when successful.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     },
                     "log_bytes": {
                       "description": "Number of currently retained output bytes.",
@@ -1761,10 +1699,8 @@
               },
               "next_cursor": {
                 "description": "Cursor for the next page, when more items are available.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               }
             },
             "required": [
@@ -1808,10 +1744,8 @@
                     "succeeded_at_ms": {
                       "description": "First successful convergence, retained during later drift repair.",
                       "format": "int64",
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "integer"
                     }
                   },
                   "required": [
@@ -1826,10 +1760,8 @@
               },
               "next_cursor": {
                 "description": "Cursor for the next page, when more items are available.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               }
             },
             "required": [
@@ -1855,24 +1787,20 @@
                   "description": "One immutable, sanitized fact about control-plane activity.",
                   "properties": {
                     "application_id": {
-                      "oneOf": [
+                      "allOf": [
                         {
-                          "type": "null"
-                        },
-                        {
-                          "$ref": "#/components/schemas/ApplicationId",
-                          "description": "Related application, when applicable."
+                          "$ref": "#/components/schemas/ApplicationId"
                         }
-                      ]
+                      ],
+                      "description": "Related application, when applicable.",
+                      "nullable": true
                     },
                     "attempt": {
                       "description": "Execution attempt for attempt-related events.",
                       "format": "int64",
                       "minimum": 0,
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "integer"
                     },
                     "created_at_ms": {
                       "description": "Unix timestamp in milliseconds.",
@@ -1881,19 +1809,15 @@
                     },
                     "error_code": {
                       "description": "Stable failure classification, when this event records failure.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     },
                     "generation": {
                       "description": "Intent generation, when applicable.",
                       "format": "int64",
                       "minimum": 0,
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "integer"
                     },
                     "id": {
                       "description": "Monotonic event identity used for pagination.",
@@ -1906,31 +1830,23 @@
                     },
                     "message": {
                       "description": "Sanitized diagnostic or state description.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     },
                     "operation_id": {
                       "description": "Related operation, retained even if that operation is pruned.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     },
                     "phase": {
                       "description": "Execution phase at the time of the event.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     },
                     "resource": {
                       "description": "Related logical or Docker resource.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -1944,10 +1860,8 @@
               },
               "next_cursor": {
                 "description": "Cursor for the next page, when more items are available.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               }
             },
             "required": [
@@ -1995,25 +1909,19 @@
                     },
                     "error_code": {
                       "description": "Stable failure code, when present.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     },
                     "error_message": {
                       "description": "Safe failure message, when present.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     },
                     "finished_at_ms": {
                       "description": "Completion timestamp in Unix milliseconds.",
                       "format": "int64",
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "integer"
                     },
                     "generation": {
                       "description": "Intent revision this operation targets.",
@@ -2031,25 +1939,19 @@
                     },
                     "phase": {
                       "description": "Current execution phase, retained on failure.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     },
                     "resource": {
                       "description": "Logical or Docker resource currently being processed.",
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "string"
                     },
                     "started_at_ms": {
                       "description": "Start timestamp in Unix milliseconds.",
                       "format": "int64",
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
+                      "nullable": true,
+                      "type": "integer"
                     },
                     "state": {
                       "$ref": "#/components/schemas/OperationState",
@@ -2077,10 +1979,8 @@
               },
               "next_cursor": {
                 "description": "Cursor for the next page, when more items are available.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               }
             },
             "required": [
@@ -2122,15 +2022,13 @@
                 "type": "boolean"
               },
               "operation": {
-                "oneOf": [
+                "allOf": [
                   {
-                    "type": "null"
-                  },
-                  {
-                    "$ref": "#/components/schemas/Operation",
-                    "description": "Latest operation at the time of comparison."
+                    "$ref": "#/components/schemas/Operation"
                   }
-                ]
+                ],
+                "description": "Latest operation at the time of comparison.",
+                "nullable": true
               },
               "plan": {
                 "$ref": "#/components/schemas/Plan",
@@ -2241,10 +2139,8 @@
               },
               "operation_id": {
                 "description": "Deployment operation, only when explicitly requested.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "nullable": true,
+                "type": "string"
               }
             },
             "required": [
@@ -2326,24 +2222,20 @@
         "description": "One immutable, sanitized fact about control-plane activity.",
         "properties": {
           "application_id": {
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ApplicationId",
-                "description": "Related application, when applicable."
+                "$ref": "#/components/schemas/ApplicationId"
               }
-            ]
+            ],
+            "description": "Related application, when applicable.",
+            "nullable": true
           },
           "attempt": {
             "description": "Execution attempt for attempt-related events.",
             "format": "int64",
             "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "created_at_ms": {
             "description": "Unix timestamp in milliseconds.",
@@ -2352,19 +2244,15 @@
           },
           "error_code": {
             "description": "Stable failure classification, when this event records failure.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "generation": {
             "description": "Intent generation, when applicable.",
             "format": "int64",
             "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "id": {
             "description": "Monotonic event identity used for pagination.",
@@ -2377,31 +2265,23 @@
           },
           "message": {
             "description": "Sanitized diagnostic or state description.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "operation_id": {
             "description": "Related operation, retained even if that operation is pruned.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "phase": {
             "description": "Execution phase at the time of the event.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "resource": {
             "description": "Related logical or Docker resource.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           }
         },
         "required": [
@@ -2421,10 +2301,8 @@
           },
           "commit": {
             "description": "Optional full commit hash.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "url": {
             "description": "Git clone URL or local repository path.",
@@ -2596,17 +2474,13 @@
         "properties": {
           "after": {
             "description": "Safe proposed value; absent for removals.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "before": {
             "description": "Safe previous value; absent for additions.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "field": {
             "description": "Logical manifest path.",
@@ -2746,10 +2620,8 @@
           },
           "image": {
             "description": "Observed immutable image reference, when the service exists.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "name": {
             "description": "Logical service name from the desired application.",
@@ -2798,25 +2670,19 @@
           },
           "error_code": {
             "description": "Stable failure code, when present.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "error_message": {
             "description": "Safe failure message, when present.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "finished_at_ms": {
             "description": "Completion timestamp in Unix milliseconds.",
             "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "generation": {
             "description": "Intent revision this operation targets.",
@@ -2834,25 +2700,19 @@
           },
           "phase": {
             "description": "Current execution phase, retained on failure.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "resource": {
             "description": "Logical or Docker resource currently being processed.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           },
           "started_at_ms": {
             "description": "Start timestamp in Unix milliseconds.",
             "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "state": {
             "$ref": "#/components/schemas/OperationState",
@@ -3000,15 +2860,13 @@
             "type": "boolean"
           },
           "operation": {
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Operation",
-                "description": "Latest operation at the time of comparison."
+                "$ref": "#/components/schemas/Operation"
               }
-            ]
+            ],
+            "description": "Latest operation at the time of comparison.",
+            "nullable": true
           },
           "plan": {
             "$ref": "#/components/schemas/Plan",
@@ -3060,10 +2918,8 @@
             "description": "Current intent revision, required unless explicitly forced.",
             "format": "int64",
             "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "name": {
             "description": "New unique application name.",
@@ -3192,20 +3048,16 @@
             "description": "CPU limit in millicores.",
             "format": "int32",
             "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           },
           "memory_bytes": {
             "description": "Memory limit in bytes.",
             "format": "int64",
             "maximum": 9223372036854775807,
             "minimum": 1,
-            "type": [
-              "integer",
-              "null"
-            ]
+            "nullable": true,
+            "type": "integer"
           }
         },
         "type": "object"
@@ -3225,10 +3077,8 @@
           },
           "operation_id": {
             "description": "Deployment operation, only when explicitly requested.",
-            "type": [
-              "string",
-              "null"
-            ]
+            "nullable": true,
+            "type": "string"
           }
         },
         "required": [
@@ -3266,15 +3116,13 @@
             "type": "object"
           },
           "healthcheck": {
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/HealthCheck",
-                "description": "Optional container health check."
+                "$ref": "#/components/schemas/HealthCheck"
               }
-            ]
+            ],
+            "description": "Optional container health check.",
+            "nullable": true
           },
           "mounts": {
             "description": "Persistent volume mounts.",
@@ -3294,15 +3142,13 @@
             "type": "integer"
           },
           "resources": {
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ResourceLimits",
-                "description": "Optional CPU and memory limits."
+                "$ref": "#/components/schemas/ResourceLimits"
               }
-            ]
+            ],
+            "description": "Optional CPU and memory limits.",
+            "nullable": true
           },
           "source": {
             "$ref": "#/components/schemas/Source",
@@ -3465,15 +3311,13 @@
             "type": "object"
           },
           "healthcheck": {
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/HealthCheck",
-                "description": "Optional container health check."
+                "$ref": "#/components/schemas/HealthCheck"
               }
-            ]
+            ],
+            "description": "Optional container health check.",
+            "nullable": true
           },
           "mounts": {
             "description": "Persistent volume mounts.",
@@ -3493,15 +3337,13 @@
             "type": "integer"
           },
           "resources": {
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ResourceLimits",
-                "description": "Optional CPU and memory limits."
+                "$ref": "#/components/schemas/ResourceLimits"
               }
-            ]
+            ],
+            "description": "Optional CPU and memory limits.",
+            "nullable": true
           },
           "source": {
             "$ref": "#/components/schemas/Source",
@@ -3523,15 +3365,13 @@
         "description": "Validated application resource lists.",
         "properties": {
           "manifest": {
-            "oneOf": [
+            "allOf": [
               {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/RepositoryManifest",
-                "description": "Optional repository that supplies this application's manifest on Deploy."
+                "$ref": "#/components/schemas/RepositoryManifest"
               }
-            ]
+            ],
+            "description": "Optional repository that supplies this application's manifest on Deploy.",
+            "nullable": true
           },
           "services": {
             "description": "Declared services.",
@@ -3590,13 +3430,12 @@
   "info": {
     "description": "piqueld control-plane API. Mutation responses identify durable operations; named volumes are retained on deletion.",
     "license": {
-      "identifier": "Apache-2.0",
       "name": "Apache-2.0"
     },
     "title": "piqueld API",
     "version": "v1"
   },
-  "openapi": "3.1.0",
+  "openapi": "3.0.3",
   "paths": {
     "/api/v1/applications": {
       "get": {
@@ -3698,10 +3537,7 @@
             "schema": {
               "format": "int64",
               "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
+              "type": "integer"
             }
           },
           {
@@ -3710,10 +3546,7 @@
             "name": "X-Expected-Application-Id",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -3721,10 +3554,7 @@
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -3865,10 +3695,7 @@
             "schema": {
               "format": "int64",
               "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
+              "type": "integer"
             }
           },
           {
@@ -3877,10 +3704,7 @@
             "name": "X-Expected-Application-Id",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -4038,10 +3862,7 @@
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -4215,10 +4036,7 @@
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -4730,10 +4548,7 @@
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -4827,10 +4642,7 @@
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -5195,7 +5007,7 @@
                 }
               }
             },
-            "description": "OpenAPI 3.1 document"
+            "description": "OpenAPI 3.0 document"
           }
         },
         "summary": "Get the `OpenAPI` document"

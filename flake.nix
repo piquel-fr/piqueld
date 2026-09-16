@@ -244,7 +244,6 @@
                 clippy
                 git
                 just
-                jre_headless
                 curl
                 rustc
                 rustfmt

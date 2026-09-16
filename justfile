@@ -59,7 +59,7 @@ deny:
 
 # Check both generated artifacts against freshly generated endpoint metadata.
 openapi-check:
-    @cargo run --package piqueld --bin generate_openapi -- --check
+    @cargo run --package piqueld --features openapi-codegen --bin generate_openapi -- --check
 
 boundary:
     @./scripts/check-dependency-boundaries.sh
@@ -85,7 +85,7 @@ dev:
 
 # Generate the OpenAPI document and client together.
 generate:
-    @cargo run --package piqueld --bin generate_openapi
+    @cargo run --package piqueld --features openapi-codegen --bin generate_openapi
 
 docker-test:
     @bash ./scripts/run-docker-integration-test.sh
