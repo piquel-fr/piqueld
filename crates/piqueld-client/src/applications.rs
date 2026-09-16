@@ -200,6 +200,9 @@ impl Client {
     }
 
     /// Applies TOML to the inspected identity and revision, unless explicitly forced.
+    ///
+    /// Progenitor generates only one request media type per operation. The generated
+    /// apply endpoint uses JSON, so this TOML variant uses the shared TOML adapter.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn apply_application_toml_with_preconditions(
@@ -242,6 +245,9 @@ impl Client {
     }
 
     /// Previews TOML conditioned on the optional current generation.
+    ///
+    /// Progenitor generates only one request media type per operation. The generated
+    /// plan endpoint uses JSON, so this TOML variant uses the shared TOML adapter.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn plan_application_toml_with_generation(
