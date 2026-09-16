@@ -9,15 +9,6 @@ let
   configuration = (pkgs.formats.toml { }).generate "piquelctl-profiles.toml" (
     lib.filterAttrsRecursive (_: value: value != null) cfg.settings
   );
-  package = pkgs.symlinkJoin {
-    name = "piquelctl-wrapped";
-    paths = [ cfg.package ];
-    nativeBuildInputs = [ pkgs.makeWrapper ];
-    postBuild = ''
-      wrapProgram "$out/bin/piquelctl" \
-        --set-default PIQUELD_PROFILES_FILE ${configuration}
-    '';
-  };
   profileType = lib.types.submodule {
     options = {
       socket = lib.mkOption {
@@ -66,6 +57,7 @@ in
       assertion = (profile.socket != null) != (profile.url != null);
       message = "programs.piquelctl.settings.profiles.${name} must contain exactly one of socket or url";
     }) cfg.settings.profiles;
-    environment.systemPackages = [ package ];
+    environment.systemPackages = [ cfg.package ];
+    environment.etc."piqueld/profiles.toml".source = configuration;
   };
 }

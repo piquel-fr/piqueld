@@ -12,7 +12,7 @@ pub(crate) struct Cli {
     /// Named connection in the profiles file (or `PIQUELD_PROFILE`).
     #[arg(long, global = true)]
     pub(crate) profile: Option<String>,
-    /// Profiles file (or `PIQUELD_PROFILES_FILE`); defaults to the user configuration directory.
+    /// Profiles file (or `PIQUELD_PROFILES_FILE`); replaces system and user discovery.
     #[arg(long, global = true)]
     pub(crate) profiles_file: Option<PathBuf>,
 
@@ -45,6 +45,8 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// List effective connection profile names and endpoints without contacting a daemon.
+    Profiles,
     /// Report daemon availability and version.
     Status,
     /// List applications and their concise reconciliation status.

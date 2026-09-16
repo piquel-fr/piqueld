@@ -38,6 +38,8 @@
           };
       };
 
+      darwinModules.piquelctl = self.nixosModules.piquelctl;
+
       packages = forAllSystems (
         system:
         let
