@@ -1,6 +1,6 @@
 //! Build metadata and bounded output pages, independent of application runtime logs.
 use super::client_error_message;
-use super::logs::{LogViewer, StreamFilter};
+use super::logs::{LogKind, LogViewer, StreamFilter};
 use super::management::timestamp;
 use crate::log_output::LogLine;
 use leptos::*;
@@ -225,7 +225,7 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
         <Show when=move ||previous.get().is_some()>
             <button disabled=move ||loading.get() on:click=move |_|older.set(true)>"Load older output"</button>
         </Show>
-        <LogViewer lines label="Build log output" empty="No build output was captured."/>
+        <LogViewer lines kind=LogKind::Build label="Build log output" empty="No build output was captured."/>
     }
 }
 

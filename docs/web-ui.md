@@ -152,8 +152,10 @@ Runtime and build output share a monospace terminal with grey messages, separate
 metadata, local HH:mm:ss timestamps (full precision on hover), red backgrounds
 for ERROR/FATAL messages, and subtle warning backgrounds for other stderr output.
 Task IDs and stream labels are omitted. Timestamp, service visibility, and wrap
-preferences persist in this browser; wrapping defaults off and service
-labels default hidden in a service’s own Logs tab. Terminal escape formatting is stripped. New output follows
+preferences persist in this browser. Application logs default to showing timestamps
+and services. Build timestamps default off and have a separate saved preference;
+build output never shows service labels or a service toggle. Wrapping defaults off,
+and service labels default hidden in a service’s own Logs tab. Terminal escape formatting is stripped. New output follows
 the bottom only when the reader has not scrolled up.
 
 The main overview groups daemon connectivity with deployment readiness for

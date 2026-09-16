@@ -5,6 +5,7 @@ use piqueld_client::LogStream;
 #[derive(Clone, Copy)]
 pub(super) struct LogPreferences {
     timestamps: RwSignal<bool>,
+    build_timestamps: RwSignal<bool>,
     services: RwSignal<bool>,
     scoped_services: RwSignal<bool>,
     wrap: RwSignal<bool>,
@@ -13,6 +14,7 @@ impl LogPreferences {
     pub(super) fn provide() {
         provide_context(Self {
             timestamps: Self::preference("timestamps", true),
+            build_timestamps: Self::preference("build-timestamps", false),
             services: Self::preference("services", true),
             scoped_services: Self::preference("scoped-services", false),
             wrap: Self::preference("wrap", false),
@@ -78,20 +80,33 @@ impl LogLine {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub(super) enum LogKind {
+    #[default]
+    Application,
+    Service,
+    Build,
+}
+
 /// A stable scroll container; refreshing rows never remounts the viewer.
 #[component]
 pub(super) fn LogViewer(
     #[prop(into)] lines: Signal<Vec<LogLine>>,
     #[prop(into)] label: String,
     #[prop(into)] empty: String,
-    #[prop(default = false)] scoped: bool,
+    #[prop(default = LogKind::Application)] kind: LogKind,
 ) -> impl IntoView {
     let preferences = use_context::<LogPreferences>().expect("log preferences");
-    let service = if scoped {
-        preferences.scoped_services
-    } else {
-        preferences.services
+    let timestamps = match kind {
+        LogKind::Build => preferences.build_timestamps,
+        LogKind::Application | LogKind::Service => preferences.timestamps,
     };
+    let service = match kind {
+        LogKind::Application => Some(preferences.services),
+        LogKind::Service => Some(preferences.scoped_services),
+        LogKind::Build => None,
+    };
+    let show_service = Signal::derive(move || service.is_some_and(|value| value.get()));
     let container = create_node_ref::<html::Div>();
     let follow = create_rw_signal(true);
     let position = create_rw_signal(0);
@@ -104,11 +119,7 @@ pub(super) fn LogViewer(
             !old.is_empty() && current.len() > old.len() && current.ends_with(old)
         });
         previous.set_value(current);
-        let _ = (
-            preferences.wrap.get(),
-            preferences.timestamps.get(),
-            service.get(),
-        );
+        let _ = (preferences.wrap.get(), timestamps.get(), show_service.get());
         let following = follow.get_untracked();
         let old_position = position.get_untracked();
         let old_height = height.get_value();
@@ -132,8 +143,10 @@ pub(super) fn LogViewer(
     });
     view! {
         <div class="log-display-controls" role="group" aria-label="Log display">
-            <label><input type="checkbox" prop:checked=move ||preferences.timestamps.get() on:change=move |e|preferences.timestamps.set(event_target_checked(&e))/ >"Timestamp"</label>
-            <label><input type="checkbox" prop:checked=move ||service.get() on:change=move |e|service.set(event_target_checked(&e))/ >"Service"</label>
+            <label><input type="checkbox" prop:checked=move ||timestamps.get() on:change=move |e|timestamps.set(event_target_checked(&e))/ >"Timestamp"</label>
+            {service.map(|service| view! {
+                <label><input type="checkbox" prop:checked=move ||service.get() on:change=move |e|service.set(event_target_checked(&e))/ >"Service"</label>
+            })}
             <label><input type="checkbox" prop:checked=move ||preferences.wrap.get() on:change=move |e|preferences.wrap.set(event_target_checked(&e))/ >"Wrap lines"</label>
         </div>
         <div class="application-logs" class:log-wrap=move ||preferences.wrap.get()
@@ -149,9 +162,9 @@ pub(super) fn LogViewer(
                         let severity=line.severity();
                         let (time, full)=line.display_time();
                         view!{<div class="log-line" data-severity=severity>
-                            <span class="log-metadata" hidden=move ||!preferences.timestamps.get() && !service.get()>
-                                <time class="log-time" title=full hidden=move ||!preferences.timestamps.get()>{time}</time>
-                                <span class="log-service" hidden=move ||!service.get()>{line.service}</span>
+                            <span class="log-metadata" hidden=move ||!timestamps.get() && !show_service.get()>
+                                <time class="log-time" title=full hidden=move ||!timestamps.get()>{time}</time>
+                                {service.map(|_| view! {<span class="log-service" hidden=move ||!show_service.get()>{line.service}</span>})}
                             </span>
                             <span class="log-message">{line.message}</span>
                         </div>}

@@ -1,6 +1,6 @@
 use super::{EditorContext, client_error_message};
 use crate::{
-    browser::logs::{LogViewer, StreamFilter},
+    browser::logs::{LogKind, LogViewer, StreamFilter},
     log_output::LogLine,
 };
 use leptos::*;
@@ -85,6 +85,6 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
         <Show when=move ||stream.get().is_some()><p class="help">"Merged terminal output is only included when Both streams are selected."</p></Show>
         {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}
         <Show when=move ||logs.with(|logs|logs.as_ref().is_some_and(|logs|logs.truncated))><p class="help">"Snapshot truncated. Filter by service or stream to narrow the output."</p></Show>
-        <LogViewer lines label="Application log output" empty="No recent output available." scoped/>
+        <LogViewer lines label="Application log output" empty="No recent output available." kind=if scoped {LogKind::Service} else {LogKind::Application}/>
     </section>}
 }
