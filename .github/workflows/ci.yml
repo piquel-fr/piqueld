@@ -8,7 +8,7 @@
 #   test / doc-test   -> test
 #   test-embedded     -> embedded-test
 #   deny              -> deny
-#   openapi-check / client-check -> openapi
+#   openapi-check     -> openapi
 #   boundary          -> boundary
 #   ui-check / check-wasm -> wasm-ui
 #   docker-test       -> docker-integration
@@ -181,12 +181,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-      - run: just openapi-check
       - name: Install client generator runtime
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends default-jre-headless
-      - run: just client-check
+      - run: just openapi-check
 
   boundary:
     name: boundary
