@@ -94,6 +94,7 @@ pub trait DockerApi: Send + Sync + 'static {
         service: Option<&str>,
         tail: u16,
         since: u32,
+        stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, DockerError>;
 
     /// Probes Engine reachability independently of Swarm configuration.

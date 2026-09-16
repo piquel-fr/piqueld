@@ -2,7 +2,7 @@
 use super::{EditorFeedback, editor, settings::ServiceGroup};
 use crate::editor::Section;
 use leptos::{
-    Callback, CollectView, IntoView, SignalGet, SignalSet, SignalWith, SignalWithUntracked,
+    Callback, CollectView, IntoView, Show, SignalGet, SignalSet, SignalWith, SignalWithUntracked,
     component, create_rw_signal, view, window,
 };
 use leptos_router::{A, NavigateOptions, use_navigate};
@@ -99,12 +99,13 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
             .saved
             .with(|app| app.application.to_manifest().spec.manifest.is_some())
     };
-    let selected = create_rw_signal(Section::General);
+    let selected = create_rw_signal(Some(Section::General));
+    let log_service = name.clone();
     let groups = Section::ALL
         .into_iter()
         .map(|section| {
             view! {
-                <div hidden={move || selected.get() != section}>
+                <div hidden={move || selected.get() != Some(section)}>
                     <ServiceGroup name={name.clone()} section={section} />
                 </div>
             }
@@ -134,20 +135,26 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
                 .map(|section| {
                     view! {
                         <button
-                            class:active={move || selected.get() == section}
+                            class:active={move || selected.get() == Some(section)}
                             aria-current={move || {
-                                if selected.get() == section { "page" } else { "false" }
+                                if selected.get() == Some(section) { "page" } else { "false" }
                             }}
-                            on:click={move |_| selected.set(section)}
+                            on:click={move |_| selected.set(Some(section))}
                         >
                             {section.title()}
                         </button>
                     }
                 })
                 .collect_view()}
+            <button class:active=move ||selected.get().is_none()
+                aria-current=move ||if selected.get().is_none(){"page"}else{"false"}
+                on:click=move |_|selected.set(None)>"Logs"</button>
         </nav>
+        <Show when=move ||selected.get().is_none()>
+            <super::logs::ApplicationLogs fixed_service=log_service.clone()/>
+        </Show>
         {move || {
-            managed()
+            (managed() && selected.get().is_some())
                 .then(|| {
                     view! {
                         <p class="help">

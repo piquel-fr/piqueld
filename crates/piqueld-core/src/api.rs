@@ -288,6 +288,26 @@ pub struct ApplicationLogs {
     /// More output existed than the requested window or safety limit.
     pub truncated: bool,
 }
+/// A selectable process output stream. Merged terminal output is only included without a filter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LogStream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
+impl LogStream {
+    /// Wire and storage representation.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+        }
+    }
+}
+
 /// One line of workload output with replica identity.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct LogRecord {
@@ -301,6 +321,40 @@ pub struct LogRecord {
     pub stream: String,
     /// Text with terminal control sequences removed.
     pub message: String,
+}
+
+impl LogRecord {
+    /// Removes terminal control sequences, including CSI colors and OSC titles/links.
+    #[must_use]
+    pub fn clean_message(value: &str) -> String {
+        let mut output = String::new();
+        let mut chars = value.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}' {
+                match chars.next() {
+                    Some('[') => {
+                        for c in chars.by_ref() {
+                            if ('@'..='~').contains(&c) {
+                                break;
+                            }
+                        }
+                    }
+                    Some(']' | 'P' | '^' | '_') => {
+                        while let Some(c) = chars.next() {
+                            if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some())
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else if !ch.is_control() || matches!(ch, '\t' | '\n') {
+                output.push(ch);
+            }
+        }
+        output
+    }
 }
 
 /// One diagnostic dependency probe, independent of application health.
@@ -389,12 +443,43 @@ pub enum BuildState {
 /// Bounded byte-offset page of build output.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BuildLogPage {
-    /// Lossy UTF-8 decoding of this output page.
-    pub text: String,
-    /// Byte offset of the next page, when more output exists.
-    pub next_offset: Option<i64>,
+    /// Structured output chunks in chronological order.
+    pub items: Vec<BuildLogChunk>,
+    /// Exclusive byte cursor for loading an older page.
+    pub previous_offset: Option<i64>,
     /// The build exceeded its total output cap.
     pub truncated: bool,
     /// Retention removed the output.
     pub expired: bool,
+}
+
+/// Captured output with stream identity and capture time.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct BuildLogChunk {
+    /// Byte position in the retained output.
+    pub offset: i64,
+    /// Capture time in Unix milliseconds.
+    pub timestamp_ms: i64,
+    /// Captured source stream.
+    pub stream: LogStream,
+    /// Lossy UTF-8 output, possibly containing partial lines.
+    pub text: String,
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::LogRecord;
+    #[test]
+    fn terminal_controls_are_removed_but_text_and_lines_survive() {
+        assert_eq!(
+            LogRecord::clean_message("\x1b[31mred\x1b[0m\r\0\ttext\n"),
+            "red\ttext\n"
+        );
+        assert_eq!(
+            LogRecord::clean_message(
+                "\x1b]0;hidden title\x07text \x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\"
+            ),
+            "text link"
+        );
+    }
 }

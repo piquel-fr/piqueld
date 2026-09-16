@@ -143,9 +143,20 @@ remain editable here. Configuration saved during preparation is preserved.
 **Download saved manifest** exports the current server-saved configuration as TOML. Unsaved form edits and runtime/deployment state are excluded. Repository connection settings are preserved; the download does not fetch Git or require Docker. Original comments and formatting are not retained.
 
 
-The application's Logs tab reads recent output directly from Docker. Refresh is
-manual by default; optional five-second polling runs only while the tab and page
-are visible. Output is a bounded snapshot, not an accumulated daemon log archive.
+Application and service Logs tabs read recent output directly from Docker.
+Service and stdout/stderr dropdowns filter in the daemon. Snapshots refresh every
+30 seconds while the view and browser tab are visible; Refresh is also available
+on the right. Merged terminal output appears only with Both streams selected.
+
+Runtime and build output share a monospace terminal with grey messages, separate
+metadata, local HH:mm:ss timestamps (full precision on hover), red backgrounds
+for ERROR/FATAL messages, and subtle warning backgrounds for other stderr output.
+Task IDs and stream labels are omitted. Timestamp, service visibility, and wrap
+preferences persist in this browser. Application logs default to showing timestamps
+and services. Build timestamps default off and have a separate saved preference;
+build output never shows service labels or a service toggle. Wrapping defaults off,
+and service labels default hidden in a service’s own Logs tab. Terminal escape formatting is stripped. New output follows
+the bottom only when the reader has not scrolled up.
 
 The main overview groups daemon connectivity with deployment readiness for
 SQLite, Docker reachability, and Swarm suitability. Green and red labels state
@@ -156,5 +167,8 @@ Build history is available from the main navigation and each application's Build
 tab. Compact attempt rows expand to show source, revision, Docker build settings,
 operation timing, commit, image, and retained output size. Opening a row loads its
 output into the same accessible log viewer used by the Logs tab. Running attempts
-refresh while the page is visible; older pages remain stable. Output is read in
-bounded pages, with explicit expiration and truncation notices.
+refresh output every 30 seconds while expanded and visible, stopping after the
+final completed output loads. Opening shows the newest output; Load older output
+prepends preceding pages. Refresh replaces the output with the latest page.
+New captures retain timestamps and stdout/stderr identity, allowing daemon-side
+stream filtering. Expiration and truncation remain explicit.

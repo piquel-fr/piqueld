@@ -15,7 +15,7 @@ futures-util.workspace = true
 gloo-timers = { workspace = true, features = ["futures"] }
 leptos = { workspace = true, features = ["csr"] }
 leptos_router = { workspace = true, features = ["csr"] }
-web-sys = { workspace = true, features = ["Document", "Window", "Crypto", "BeforeUnloadEvent"] }
+web-sys = { workspace = true, features = ["Document", "Window", "Crypto", "BeforeUnloadEvent", "Storage"] }
 
 [lints]
 workspace = true

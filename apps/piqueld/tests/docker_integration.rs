@@ -157,7 +157,7 @@ impl SwarmScenario {
             let logs = self
                 .engine
                 .docker
-                .application_logs(&instance, &self.app, Some("web"), 20, 60)
+                .application_logs(&instance, &self.app, Some("web"), 20, 60, None)
                 .await
                 .unwrap();
             if logs.items.iter().any(|line| line.message == "log-stderr") {
@@ -177,6 +177,19 @@ impl SwarmScenario {
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+        for stream in [
+            piqueld_core::api::LogStream::Stdout,
+            piqueld_core::api::LogStream::Stderr,
+        ] {
+            let logs = self
+                .engine
+                .docker
+                .application_logs(&instance, &self.app, Some("web"), 1, 60, Some(stream))
+                .await
+                .unwrap();
+            assert_eq!(logs.items.len(), 1);
+            assert_eq!(logs.items[0].stream, stream.as_str());
+        }
         assert!(
             self.engine
                 .docker
@@ -185,7 +198,8 @@ impl SwarmScenario {
                     &self.app,
                     None,
                     20,
-                    60
+                    60,
+                    None
                 )
                 .await
                 .unwrap()

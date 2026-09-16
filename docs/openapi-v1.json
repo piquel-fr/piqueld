@@ -701,6 +701,36 @@
           }
         ]
       },
+      "BuildLogChunk": {
+        "description": "Captured output with stream identity and capture time.",
+        "properties": {
+          "offset": {
+            "description": "Byte position in the retained output.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "stream": {
+            "$ref": "#/components/schemas/LogStream",
+            "description": "Captured source stream."
+          },
+          "text": {
+            "description": "Lossy UTF-8 output, possibly containing partial lines.",
+            "type": "string"
+          },
+          "timestamp_ms": {
+            "description": "Capture time in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "offset",
+          "timestamp_ms",
+          "stream",
+          "text"
+        ],
+        "type": "object"
+      },
       "BuildLogPage": {
         "description": "Bounded byte-offset page of build output.",
         "properties": {
@@ -708,17 +738,20 @@
             "description": "Retention removed the output.",
             "type": "boolean"
           },
-          "next_offset": {
-            "description": "Byte offset of the next page, when more output exists.",
+          "items": {
+            "description": "Structured output chunks in chronological order.",
+            "items": {
+              "$ref": "#/components/schemas/BuildLogChunk"
+            },
+            "type": "array"
+          },
+          "previous_offset": {
+            "description": "Exclusive byte cursor for loading an older page.",
             "format": "int64",
             "type": [
               "integer",
               "null"
             ]
-          },
-          "text": {
-            "description": "Lossy UTF-8 decoding of this output page.",
-            "type": "string"
           },
           "truncated": {
             "description": "The build exceeded its total output cap.",
@@ -726,7 +759,7 @@
           }
         },
         "required": [
-          "text",
+          "items",
           "truncated",
           "expired"
         ],
@@ -1373,17 +1406,20 @@
                 "description": "Retention removed the output.",
                 "type": "boolean"
               },
-              "next_offset": {
-                "description": "Byte offset of the next page, when more output exists.",
+              "items": {
+                "description": "Structured output chunks in chronological order.",
+                "items": {
+                  "$ref": "#/components/schemas/BuildLogChunk"
+                },
+                "type": "array"
+              },
+              "previous_offset": {
+                "description": "Exclusive byte cursor for loading an older page.",
                 "format": "int64",
                 "type": [
                   "integer",
                   "null"
                 ]
-              },
-              "text": {
-                "description": "Lossy UTF-8 decoding of this output page.",
-                "type": "string"
               },
               "truncated": {
                 "description": "The build exceeded its total output cap.",
@@ -1391,7 +1427,7 @@
               }
             },
             "required": [
-              "text",
+              "items",
               "truncated",
               "expired"
             ],
@@ -2546,6 +2582,14 @@
           "message"
         ],
         "type": "object"
+      },
+      "LogStream": {
+        "description": "A selectable process output stream. Merged terminal output is only included without a filter.",
+        "enum": [
+          "stdout",
+          "stderr"
+        ],
+        "type": "string"
       },
       "ManifestChange": {
         "description": "A change to a manifest field. Environment and process values are redacted.",
@@ -4482,6 +4526,14 @@
           },
           {
             "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LogStream"
+            }
+          },
+          {
+            "in": "query",
             "name": "tail",
             "required": false,
             "schema": {
@@ -5006,11 +5058,19 @@
           },
           {
             "in": "query",
-            "name": "offset",
+            "name": "before",
             "required": false,
             "schema": {
               "format": "int64",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stream",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LogStream"
             }
           }
         ],

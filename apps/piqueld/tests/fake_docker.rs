@@ -212,6 +212,7 @@ impl DockerApi for FakeDocker {
         _service: Option<&str>,
         _tail: u16,
         _since: u32,
+        _stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
         Ok(piqueld_core::api::ApplicationLogs::default())
     }
@@ -2078,11 +2079,12 @@ impl ControllerHarness {
         );
         assert!(
             self.store
-                .build_logs(builds.items[0].id, 0)
+                .build_logs(builds.items[0].id, None, None)
                 .await
                 .unwrap()
-                .text
-                .contains("Build failed")
+                .items
+                .iter()
+                .any(|chunk| chunk.text.contains("Build failed"))
         );
     }
 }

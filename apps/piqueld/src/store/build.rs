@@ -2,7 +2,7 @@
 use super::{Store, StoreError, now_ms, page_limit};
 use piqueld_core::{
     ApplicationId,
-    api::{BuildLogPage, BuildRecord, BuildState, Page},
+    api::{BuildLogChunk, BuildLogPage, BuildRecord, BuildState, LogStream, Page},
     manifest::Source,
 };
 
@@ -26,39 +26,58 @@ impl Store {
         let _writer = self.writers.lock().await;
         Ok(sqlx::query!("INSERT INTO builds(application_id,operation_id,service,source_json,state,started_at_ms) VALUES(?1,?2,?3,?4,'running',?5)",app,operation,service,source,now).execute(&self.pool).await.map_err(StoreError::database)?.last_insert_rowid())
     }
-    pub(crate) async fn append_build_log(&self, id: i64, bytes: &[u8]) -> Result<(), StoreError> {
+    pub(crate) async fn append_build_log(
+        &self,
+        id: i64,
+        bytes: &[u8],
+        stream: LogStream,
+    ) -> Result<(), StoreError> {
+        let stream = stream.as_str();
+        let timestamp = now_ms();
         let _writer = self.writers.lock().await;
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let row = sqlx::query!(
-            "SELECT log_bytes,log_expired,state FROM builds WHERE id=?1",
+            "SELECT log_bytes,log_expired,log_truncated,state FROM builds WHERE id=?1",
             id
         )
         .fetch_optional(&mut *tx)
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
-        if row.log_expired != 0 || row.state != "running" {
+        if row.log_expired != 0 || row.log_truncated != 0 || row.state != "running" {
             return Ok(());
         }
         let remaining = i64::from(self.build_history.log_max_bytes)
             .saturating_sub(row.log_bytes)
             .max(0);
-        let count = bytes
+        let mut count = bytes
             .len()
             .min(usize::try_from(remaining).map_err(StoreError::invalid_input)?);
+        if count < bytes.len() {
+            count = crate::build::BuildLog::complete_prefix(&bytes[..count]);
+        }
         // Each chunk is bounded regardless of which executor records output.
         let mut offset = row.log_bytes;
-        for chunk in bytes[..count].chunks(4096) {
+        let mut remaining = &bytes[..count];
+        while !remaining.is_empty() {
+            let mut end = remaining.len().min(4096);
+            if end < remaining.len() {
+                end = crate::build::BuildLog::complete_prefix(&remaining[..end]);
+            }
+            let chunk = &remaining[..end];
             sqlx::query!(
-                "INSERT INTO build_log_chunks(build_id,offset,data) VALUES(?1,?2,?3)",
+                "INSERT INTO build_log_chunks(build_id,offset,data,stream,timestamp_ms) VALUES(?1,?2,?3,?4,?5)",
                 id,
                 offset,
-                chunk
+                chunk,
+                stream,
+                timestamp
             )
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
             offset += i64::try_from(chunk.len()).map_err(StoreError::invalid_input)?;
+            remaining = &remaining[end..];
         }
         let truncated = count < bytes.len();
         sqlx::query!(
@@ -178,34 +197,60 @@ impl Store {
             .collect::<Result<Vec<_>, StoreError>>()?;
         Ok(Page { items, next_cursor })
     }
-    /// Reads at most 64 KiB from a build's output using byte offsets.
+    /// Reads the newest output chunks before an optional exclusive cursor. Stream filtering happens before pagination.
     /// # Errors
-    /// Returns not found, invalid offset, or storage errors.
-    pub async fn build_logs(&self, id: i64, offset: i64) -> Result<BuildLogPage, StoreError> {
-        if offset < 0 {
+    /// Returns not found, invalid cursors, or storage errors.
+    pub async fn build_logs(
+        &self,
+        id: i64,
+        before: Option<i64>,
+        stream: Option<LogStream>,
+    ) -> Result<BuildLogPage, StoreError> {
+        if before.is_some_and(|value| value < 0) {
             return Err(StoreError::InvalidInput);
         }
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let row = sqlx::query!(
-            "SELECT log_bytes,log_truncated,log_expired FROM builds WHERE id=?1",
+            "SELECT log_truncated,log_expired FROM builds WHERE id=?1",
             id
         )
         .fetch_optional(&mut *tx)
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
-        let chunks=sqlx::query!("SELECT offset,data FROM build_log_chunks WHERE build_id=?1 AND offset+length(data)>?2 ORDER BY offset LIMIT 16",id,offset).fetch_all(&mut *tx).await.map_err(StoreError::database)?;
-        let mut bytes = Vec::new();
+        let filter = stream.map(LogStream::as_str);
+        let mut chunks = sqlx::query!(
+            "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
+             WHERE build_id=?1 AND (?2 IS NULL OR stream=?2)
+             AND (?3 IS NULL OR offset<?3)
+             ORDER BY offset DESC LIMIT 17",
+            id,
+            filter,
+            before
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let more = chunks.len() > 16;
+        chunks.truncate(16);
+        chunks.reverse();
+        let previous_offset = more.then(|| chunks[0].offset);
+        let mut items = Vec::new();
         for chunk in chunks {
-            let skip = usize::try_from(offset.saturating_sub(chunk.offset).max(0))
-                .map_err(StoreError::invalid_input)?;
-            bytes.extend_from_slice(&chunk.data[skip..]);
+            items.push(BuildLogChunk {
+                offset: chunk.offset,
+                timestamp_ms: chunk.timestamp_ms,
+                stream: match chunk.stream.as_str() {
+                    "stdout" => LogStream::Stdout,
+                    "stderr" => LogStream::Stderr,
+                    _ => return Err(StoreError::Corrupt),
+                },
+                text: String::from_utf8_lossy(&chunk.data).into_owned(),
+            });
         }
-        let end =
-            offset.saturating_add(i64::try_from(bytes.len()).map_err(StoreError::invalid_input)?);
         Ok(BuildLogPage {
-            text: String::from_utf8_lossy(&bytes).into_owned(),
-            next_offset: (end < row.log_bytes).then_some(end),
+            items,
+            previous_offset,
             truncated: row.log_truncated != 0,
             expired: row.log_expired != 0,
         })
@@ -215,49 +260,91 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        store: Store,
+        app: piqueld_core::NormalizedApplication,
+        operation: String,
+        id: i64,
+    }
+    impl Fixture {
+        async fn new() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let store = Store::open(temp.path().join("state.db"))
+                .await
+                .unwrap()
+                .with_build_history(crate::config::BuildHistoryConfig {
+                    log_max_bytes: 70_000,
+                    log_retention_days: 1,
+                });
+            let app = piqueld_core::parse_toml(include_str!(
+                "../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
+            ))
+            .unwrap()
+            .normalize(ApplicationId::parse("app-build-test").unwrap());
+            let operation = store.save_application(&app, None, None).await.unwrap();
+            let id = store
+                .start_build(
+                    app.id(),
+                    &operation.id,
+                    "web",
+                    &app.spec().services[0].source,
+                )
+                .await
+                .unwrap();
+            Self {
+                _temp: temp,
+                store,
+                app,
+                operation: operation.id,
+                id,
+            }
+        }
+    }
     #[tokio::test]
     async fn output_is_bounded_paged_and_expired_without_losing_metadata() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("state.db"))
-            .await
-            .unwrap()
-            .with_build_history(crate::config::BuildHistoryConfig {
-                log_max_bytes: 70_000,
-                log_retention_days: 1,
-            });
-        let app = piqueld_core::parse_toml(include_str!(
-            "../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-        ))
-        .unwrap()
-        .normalize(ApplicationId::parse("app-build-test").unwrap());
-        let operation = store.save_application(&app, None, None).await.unwrap();
-        let id = store
-            .start_build(
-                app.id(),
-                &operation.id,
-                "web",
-                &app.spec().services[0].source,
-            )
-            .await
-            .unwrap();
+        let Fixture {
+            _temp,
+            store,
+            app,
+            operation,
+            id,
+        } = Fixture::new().await;
         store
-            .append_build_log(id, &vec![b'a'; 80_000])
+            .append_build_log(id, &vec![b'a'; 80_000], LogStream::Stdout)
             .await
             .unwrap();
-        let first = store.build_logs(id, 0).await.unwrap();
-        assert_eq!(first.text.len(), 65536);
+        let first = store.build_logs(id, None, None).await.unwrap();
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .map(|chunk| chunk.text.len())
+                .sum::<usize>(),
+            61808
+        );
         assert!(first.truncated);
         let second = store
-            .build_logs(id, first.next_offset.unwrap())
+            .build_logs(id, first.previous_offset, None)
             .await
             .unwrap();
-        assert_eq!(second.text.len(), 4464);
-        assert!(second.next_offset.is_none());
+        assert_eq!(
+            second
+                .items
+                .iter()
+                .map(|chunk| chunk.text.len())
+                .sum::<usize>(),
+            8192
+        );
+        assert!(second.previous_offset.is_none());
         store
             .finish_build(id, BuildState::Succeeded, Some("sha256:fixture"))
             .await
             .unwrap();
-        store.append_build_log(id, b"late").await.unwrap();
+        store
+            .append_build_log(id, b"late", LogStream::Stdout)
+            .await
+            .unwrap();
         assert_eq!(
             store.builds(Some(app.id()), None, 50).await.unwrap().items[0].log_bytes,
             70_000
@@ -267,17 +354,12 @@ mod tests {
             .await
             .unwrap();
         store.prune_build_logs().await.unwrap();
-        assert!(store.build_logs(id, 0).await.unwrap().expired);
+        assert!(store.build_logs(id, None, None).await.unwrap().expired);
         let records = store.builds(None, None, 50).await.unwrap();
         assert_eq!(records.items.len(), 1);
         assert_eq!(records.items[0].state, BuildState::Succeeded);
         let interrupted = store
-            .start_build(
-                app.id(),
-                &operation.id,
-                "web",
-                &app.spec().services[0].source,
-            )
+            .start_build(app.id(), &operation, "web", &app.spec().services[0].source)
             .await
             .unwrap();
         store.recover_builds().await.unwrap();
@@ -293,5 +375,109 @@ mod tests {
                 .id,
             id
         );
+    }
+    #[tokio::test]
+    async fn output_filters_before_paging_backwards() {
+        let Fixture {
+            _temp, store, id, ..
+        } = Fixture::new().await;
+        store
+            .append_build_log(id, &vec![b'a'; 80_000], LogStream::Stdout)
+            .await
+            .unwrap();
+        let newest = store
+            .build_logs(id, None, Some(LogStream::Stdout))
+            .await
+            .unwrap();
+        assert_eq!(newest.items.len(), 16);
+        assert!(
+            newest
+                .items
+                .iter()
+                .all(|chunk| chunk.stream == LogStream::Stdout && chunk.timestamp_ms > 0)
+        );
+        let older = store
+            .build_logs(id, newest.previous_offset, Some(LogStream::Stdout))
+            .await
+            .unwrap();
+        assert_eq!(
+            older
+                .items
+                .iter()
+                .chain(&newest.items)
+                .map(|chunk| chunk.text.len())
+                .sum::<usize>(),
+            70_000
+        );
+        assert!(older.previous_offset.is_none());
+        assert!(older.items.last().unwrap().offset < newest.items[0].offset);
+        assert!(
+            store
+                .build_logs(id, None, Some(LogStream::Stderr))
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+
+        let Fixture {
+            _temp: _other_temp,
+            store,
+            id,
+            ..
+        } = Fixture::new().await;
+        // A sparse stream must be filtered before the 16-chunk page limit.
+        store
+            .append_build_log(id, b"error output", LogStream::Stderr)
+            .await
+            .unwrap();
+        store
+            .append_build_log(id, &vec![b'x'; 68_000], LogStream::Stdout)
+            .await
+            .unwrap();
+        let errors = store
+            .build_logs(id, None, Some(LogStream::Stderr))
+            .await
+            .unwrap();
+        assert_eq!(errors.items[0].text, "error output");
+        assert!(errors.previous_offset.is_none());
+    }
+    #[tokio::test]
+    async fn structured_chunks_preserve_multibyte_output() {
+        for (repeats, retained, truncated) in [(3000, 9000, false), (25000, 69999, true)] {
+            let Fixture {
+                _temp, store, id, ..
+            } = Fixture::new().await;
+            let text = "€".repeat(repeats);
+            store
+                .append_build_log(id, text.as_bytes(), LogStream::Stdout)
+                .await
+                .unwrap();
+            if truncated {
+                // The unused byte at the cap must not admit output after a gap.
+                store
+                    .append_build_log(id, b"x", LogStream::Stdout)
+                    .await
+                    .unwrap();
+            }
+            let mut output = String::new();
+            let mut before = None;
+            loop {
+                let page = store.build_logs(id, before, None).await.unwrap();
+                assert_eq!(page.truncated, truncated);
+                let text = page
+                    .items
+                    .iter()
+                    .map(|chunk| chunk.text.as_str())
+                    .collect::<String>();
+                output.insert_str(0, &text);
+                before = page.previous_offset;
+                if before.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(output, text[..retained]);
+            assert!(!output.contains('�'));
+        }
     }
 }

@@ -42,8 +42,8 @@ use http::StatusCode;
 use thiserror::Error;
 
 pub use piqueld_core::api::{
-    API_PREFIX, ApplicationLogs, BuildLogPage, BuildRecord, BuildState, Envelope, ErrorBody,
-    LogRecord, Page,
+    API_PREFIX, ApplicationLogs, BuildLogChunk, BuildLogPage, BuildRecord, BuildState, Envelope,
+    ErrorBody, LogRecord, LogStream, Page,
 };
 
 /// Validates a TOML application manifest and returns its editable name.

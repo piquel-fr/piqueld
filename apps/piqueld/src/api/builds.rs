@@ -49,7 +49,8 @@ pub(super) async fn list(
 #[serde(default, deny_unknown_fields)]
 #[into_params(parameter_in=Query)]
 pub(super) struct OutputQuery {
-    offset: i64,
+    before: Option<i64>,
+    stream: Option<piqueld_core::api::LogStream>,
 }
 #[utoipa::path(get,path="/api/v1/builds/{id}/logs",operation_id="buildLogs",params(("id"=i64,Path),OutputQuery), responses((status=200,description="Bounded build output",body=Envelope<BuildLogPage>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn logs(
@@ -60,9 +61,12 @@ pub(super) async fn logs(
     let Query(query) = query.map_err(|_| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
-            "build_offset_invalid",
-            "invalid build log offset",
+            "build_query_invalid",
+            "invalid build log query",
         )
     })?;
-    Ok(ok(state.store.build_logs(id, query.offset).await?))
+    Ok(ok(state
+        .store
+        .build_logs(id, query.before, query.stream)
+        .await?))
 }

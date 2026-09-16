@@ -31,9 +31,13 @@ impl RuntimeBoundary for FakeRuntime {
         service: Option<&str>,
         tail: u16,
         since: u32,
+        stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, BoundaryError> {
         self.check_available().await?;
         assert_eq!((service, tail, since), (Some("web"), 5, 60));
+        if stream == Some(piqueld_core::api::LogStream::Stderr) {
+            return Ok(piqueld_core::api::ApplicationLogs::default());
+        }
         Ok(piqueld_core::api::ApplicationLogs {
             items: vec![piqueld_core::api::LogRecord {
                 service: "web".into(),
@@ -180,7 +184,7 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
 
     assert!(client.builds(None, None).await.unwrap().items.is_empty());
     assert!(
-        matches!(client.build_logs(999,0).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
+        matches!(client.build_logs(999,None,None).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
     );
     assert_create_plan(&client, &manifest).await;
     let created = create_and_inspect(&client, &manifest).await;
@@ -2344,6 +2348,17 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
     assert_eq!(logs.items[0].task_id, "task-1");
     assert_eq!(logs.items[0].message, "hello");
     assert!(!logs.truncated);
+    let stderr = client
+        .filtered_application_logs(
+            &app.application_id,
+            Some("web"),
+            5,
+            60,
+            Some(piqueld_client::LogStream::Stderr),
+        )
+        .await
+        .unwrap();
+    assert!(stderr.items.is_empty());
     for (tail, since) in [(0, 60), (1001, 60), (5, 0), (5, 86401)] {
         let error = client
             .application_logs(&app.application_id, Some("web"), tail, since)

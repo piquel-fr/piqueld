@@ -37,13 +37,12 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     /// Reads recent workload logs from Docker.
     async fn logs(
         &self,
-        _id: &ApplicationId,
-        _service: Option<&str>,
-        _tail: u16,
-        _since: u32,
-    ) -> Result<piqueld_core::api::ApplicationLogs, BoundaryError> {
-        Err(DockerError::Unavailable("application logs unavailable").into())
-    }
+        id: &ApplicationId,
+        service: Option<&str>,
+        tail: u16,
+        since: u32,
+        stream: Option<piqueld_core::api::LogStream>,
+    ) -> Result<piqueld_core::api::ApplicationLogs, BoundaryError>;
 
     /// Returns separate Engine and Swarm probe results. Unknown adapters fail closed.
     async fn readiness(&self) -> (bool, bool) {

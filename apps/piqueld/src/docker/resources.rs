@@ -318,8 +318,9 @@ impl DockerApi for BollardDocker {
         service: Option<&str>,
         tail: u16,
         since: u32,
+        stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
-        self.read_logs(instance, application, service, tail, since)
+        self.read_logs(instance, application, service, tail, since, stream)
             .await
     }
 

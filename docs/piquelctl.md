@@ -258,5 +258,6 @@ An empty list succeeds with no human output, or `{"profiles":[]}` in JSON.
 `--quiet` suppresses human output but preserves JSON and errors.
 
 `piquelctl builds list [--application ID] [--cursor CURSOR]` lists one page of build
-attempts. `piquelctl builds logs ID [--offset BYTE_OFFSET]` reads one bounded output
-page and prints the next offset when available. Both support `--json`.
+attempts. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
+output page, or an older page before the supplied cursor. It prints the cursor
+for loading older output when available. Both support `--json`.

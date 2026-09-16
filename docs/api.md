@@ -153,7 +153,8 @@ new manifest; reconcile retries the latest operation with its saved inputs.
 
 `GET /api/v1/applications/{id}/logs` reads Docker container output for services
 owned by this application and daemon instance. Optional `service` filters by
-logical service name; `tail` defaults to 200 (1–1000) and `since_seconds` to 3600
+logical service name; optional `stream=stdout|stderr` filters before limiting
+results (omit it for both, including merged terminal output). `tail` defaults to 200 (1–1000) and `since_seconds` to 3600
 (1–86400). Records include timestamp, service, task ID, stream and message.
 Snapshots are capped at 1 MiB of collected text and 256 tasks, with `truncated`
 indicating a partial result. Docker retains the source logs; removed containers
@@ -175,8 +176,14 @@ creates an independent record before checkout. Image pulls do not create records
 Outcomes are running, succeeded, failed, or interrupted. Resolved commits and
 image IDs are recorded when available; retries create new attempts.
 
-`GET /api/v1/builds/{id}/logs?offset=0` reads at most 64 KiB of output. Follow
-`next_offset` for more. Output is decoded as lossy UTF-8; offsets count original
-bytes. Truncation and expiration are explicit. Output retains the configured
+`GET /api/v1/builds/{id}/logs` returns the newest output in chronological order,
+with `previous_offset` as an exclusive `before` cursor to load older chunks.
+Optional `stream=stdout|stderr` filters in the daemon before paging. Each of the
+up to 16 chunks includes its byte offset, capture timestamp in milliseconds,
+stream, and text. Stream and capture time are required for every chunk. Pages
+contain at most 64 KiB of output, decoded as lossy UTF-8; offsets count original
+bytes. The old forward `offset` query and combined `text` response are removed.
+Migration expires previously captured unstructured output while retaining build
+metadata. Truncation and expiration are explicit. Output retains the configured
 prefix, defaults to 4 MiB per attempt and expires 30 days after completion.
 Metadata survives operation pruning and is deleted with its application.
