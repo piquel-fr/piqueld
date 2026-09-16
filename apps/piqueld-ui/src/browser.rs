@@ -1,6 +1,8 @@
 //! Leptos client-side-rendered dashboard routes and shared data services.
 
+mod builds;
 mod dashboard;
+mod logs;
 mod management;
 mod runtime;
 
@@ -115,6 +117,7 @@ fn App() -> impl IntoView {
                     <Route path="/" view={OverviewPage} />
                     <Route path="/applications" view={ApplicationsPage} />
                     <Route path="/settings" view={management::HostPage} />
+                    <Route path="/builds" view={builds::BuildsPage} />
                     <Route path="/applications/:id" view={ApplicationDetailPage} />
                     <Route
                         path="/applications/:id/services/:service"
@@ -125,6 +128,7 @@ fn App() -> impl IntoView {
                     <Route path="" view={DashboardRedirect} />
                     <Route path="/applications" view={ApplicationsPage} />
                     <Route path="/settings" view={management::HostPage} />
+                    <Route path="/builds" view={builds::BuildsPage} />
                     <Route path="/applications/:id" view={ApplicationDetailPage} />
                     <Route
                         path="/applications/:id/services/:service"

@@ -41,6 +41,7 @@ pub(super) fn dashboard_header() -> View {
                     <span aria-hidden="true">"⚙"</span>
                     "Host settings"
                 </A>
+                <A href="/dashboard/builds" class={move || if location.pathname.get().ends_with("/builds") { "nav-link active" } else { "nav-link" }}>"Builds"</A>
             </nav>
         </aside>
     }
