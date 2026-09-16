@@ -132,6 +132,15 @@ impl DirectoryKind {
     ) -> io::Result<()> {
         let name = self.name();
         let mode = metadata.permissions().mode();
+        if mode & 0o700 != 0o700 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "{name} directory {} must grant owner read, write, and execute access",
+                    path.display()
+                ),
+            ));
+        }
         if metadata.uid() != expected_uid {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -188,7 +197,34 @@ fn protected_ancestor(mode: u32, owner_uid: u32, daemon_uid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::protected_ancestor;
+    use super::{DirectoryKind, protected_ancestor};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn unusable_owner_permissions_are_rejected_without_modification() {
+        let cwd = std::env::current_dir().unwrap();
+        for kind in [DirectoryKind::Data, DirectoryKind::Runtime] {
+            for mode in [0o000, 0o300, 0o500, 0o600] {
+                let directory = tempfile::tempdir_in(&cwd).unwrap();
+                let path = directory.path();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+                // Validate only the owned fixture tree, including in Nix's user namespace.
+                let result = kind.prepare(path.strip_prefix(&cwd).unwrap()).await;
+                let actual_mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+                // Restore access before assertions so the fixture can always be cleaned up.
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(
+                    error
+                        .to_string()
+                        .contains("must grant owner read, write, and execute access")
+                );
+                assert_eq!(actual_mode, mode);
+            }
+        }
+    }
 
     #[test]
     fn sticky_ancestors_are_safe_only_when_owned_by_a_trusted_user() {

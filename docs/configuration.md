@@ -28,7 +28,8 @@ startup. Use daemon ownership and mode `0750` for group access, or `0700` for
 private development. Group-readable/traversable runtime directories must use
 the daemon's effective group. Group write and all access by others are rejected.
 Both paths reject symlinks and ancestors vulnerable to replacement by untrusted
-users. Existing directory permissions are never changed.
+users. Both final directories must grant their owner read, write, and execute
+access. Existing directory permissions are never changed.
 
 For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 `just dev` handles this automatically. The production defaults are:
