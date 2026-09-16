@@ -20,8 +20,9 @@ redeployment. Durable
 operations, attempt outcomes, and informational events remain in SQLite. Deletion
 completes only after services and networks are verified absent; volumes remain.
 
-The daemon exposes a polling HTTP API over loopback TCP and a Unix socket. The
-CLI and optional dashboard share domain records and HTTP contracts.
+The daemon exposes a polling HTTP API over a Unix socket and explicitly enabled
+localhost or Tailscale TCP listeners. The CLI and optional dashboard share domain
+records and HTTP contracts.
 See [module boundaries](docs/architecture/dependency-flow.md) for the code layout.
 
 The private `data_dir` holds the embedded database (`piqueld.db`) and is created
@@ -46,8 +47,8 @@ The supported manifest and runtime model are documented in:
 | Supported | Deferred until later releases |
 | --- | --- |
 | Prebuilt images, Git/Docker builds, repository-backed manifests, replicas, environment, command/args, health checks, resource limits, named volumes, and mounts | Automatic deployment, registry management, credentials, and secrets |
-| Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, application log snapshots, and the essential `piquelctl` workflow | Published ports, routes, Traefik, state transfer, authentication, and remote or multi-node operation |
-| Unix-socket and loopback-TCP API transports, plus a Leptos/WASM dashboard for saving configuration, deploying, inspecting history, and reading recent logs | Secrets, streams, and the advanced web UI |
+| Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, application log snapshots, and the essential `piquelctl` workflow | Published ports, routes, Traefik, state transfer, authentication, and multi-node operation |
+| Unix-socket, localhost, and Tailscale API transports, plus a Leptos/WASM dashboard for saving configuration, deploying, inspecting history, and reading recent logs | Secrets, streams, and the advanced web UI |
 
 ## Development
 

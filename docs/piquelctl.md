@@ -14,14 +14,16 @@ lints and tests the CLI and its shared client/core crates. `just build-cli`
 builds the release binary. CI runs these checks on `macos-latest`, verifies the
 Nix package, and uploads an Apple Silicon CLI binary.
 
-The daemon still runs on Linux. To reach it from a Mac, forward its loopback HTTP
-port over SSH (using the port configured on your host):
+The daemon runs on Linux. With its listen mode set to `tailscale` or `both`,
+connect from a tailnet peer using its IP address or MagicDNS name:
 
 ```console
-ssh -N -L 7845:127.0.0.1:7845 user@linux-host
-# In another terminal:
-piquelctl --url http://127.0.0.1:7845 status
+piquelctl --url http://linux-host:7845 status
 ```
+
+For persistent configuration, set a named profile's `url` to
+`http://linux-host:7845` and select it with `--profile`. See
+[daemon configuration](configuration.md#tcp-listen-modes-and-tailscale).
 
 Profiles use the same `$XDG_CONFIG_HOME/piqueld/profiles.toml` location on both
 platforms, falling back to `~/.config/piqueld/profiles.toml`.
@@ -44,10 +46,16 @@ piquelctl rename <name-or-id> <new-name>
 piquelctl events --application <application-id> --limit 50
 ```
 
-`--socket PATH` selects a Unix socket. `--url URL` selects an explicit loopback
+`--socket PATH` selects a Unix socket. `--url URL` selects an explicit
 HTTP origin such as `http://127.0.0.1:7845/`; the two transport options are
 mutually exclusive. The default socket is
 `/run/piqueld/piqueld.sock`.
+
+Remote IP addresses and DNS names are accepted. HTTPS, credentials, non-root
+paths, queries, and fragments are rejected. DNS resolution and connection setup
+share the request timeout; redirects are not followed. The client does not
+verify that a destination belongs to Tailscale: HTTP outside a protected network
+is unencrypted.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer

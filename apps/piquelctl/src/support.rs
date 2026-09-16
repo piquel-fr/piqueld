@@ -203,7 +203,7 @@ where
 
 pub(crate) fn transport_description(cli: &Cli) -> String {
     if let Some(url) = &cli.url {
-        format!("loopback TCP {url}")
+        format!("TCP {url}")
     } else {
         let socket = cli.socket.as_deref().map_or_else(
             || DEFAULT_SOCKET.to_owned(),

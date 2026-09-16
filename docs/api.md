@@ -1,6 +1,6 @@
 # HTTP API
 
-The API is rooted at `/api/v1` over a Unix socket and optional loopback TCP.
+The API is rooted at `/api/v1` over a Unix socket and optional localhost or Tailscale TCP.
 Responses use a `data` envelope; lists contain `items` and an opaque
 `next_cursor`. Errors expose a safe message, code, details, and request ID.
 Clients poll for progress.
@@ -128,7 +128,8 @@ never manifests, environment values, or raw Docker errors. Failure events preser
 resource. Significant resource mutations and active-target repairs are recorded,
 while unchanged observations and timer ticks are omitted.
 
-The unauthenticated TCP API accepts only loopback hosts. The dashboard
+The unauthenticated TCP API trusts every caller able to reach its configured
+localhost or Tailscale listeners. The dashboard
 is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
 The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
 [the generated contract](openapi-v1.json).

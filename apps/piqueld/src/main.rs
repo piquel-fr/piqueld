@@ -48,16 +48,9 @@ async fn main() -> Result<()> {
             config.server.data_dir.display()
         )
     })?;
-    // Bind both endpoints before opening state or starting any background work.
+    // Bind all endpoints before opening state or starting background work.
     let runtime_dir = piqueld::RuntimeDir::acquire(&config.server.runtime_dir).await?;
-    let tcp_listener = match config.server.http_listen {
-        Some(address) => Some(
-            TcpListener::bind(address)
-                .await
-                .with_context(|| format!("failed to bind HTTP API on {address}"))?,
-        ),
-        None => None,
-    };
+    let tcp_listeners = config.server.bind_tcp().await?;
     let unix_listener = runtime_dir.bind_api().await?;
 
     let store = Arc::new(
@@ -123,14 +116,16 @@ async fn main() -> Result<()> {
         result
     });
 
-    let tcp_api = tcp_listener
-        .map(|listener| spawn_tcp_api(listener, state.clone(), ui_assets, cancellation.clone()));
+    let tcp_apis: Vec<_> = tcp_listeners
+        .into_iter()
+        .map(|listener| spawn_tcp_api(listener, state.clone(), ui_assets, cancellation.clone()))
+        .collect();
     let unix_api = spawn_unix_api(unix_listener, state, cancellation.clone());
 
     piqueld::run_until_cancelled(cancellation).await?;
 
     signal_task.await.context("shutdown task failed")??;
-    if let Some(tcp_api) = tcp_api {
+    for tcp_api in tcp_apis {
         tcp_api
             .await
             .context("TCP API task failed")?

@@ -1,10 +1,9 @@
 //! Read-only host configuration for the single-node Docker Swarm daemon.
 
+mod listeners;
+
 use serde::Deserialize;
-use std::{
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -12,7 +11,7 @@ use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::Subscribe
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DaemonConfig {
-    /// Local API listeners and state directory.
+    /// API listeners and state directory.
     pub server: ServerConfig,
     /// Docker Engine connection and bootstrap policy.
     pub docker: DockerConfig,
@@ -79,17 +78,10 @@ impl DaemonConfig {
             ));
         }
         absolute_file("docker.socket", &self.docker.socket)?;
-        if let Some(address) = self.server.http_listen {
-            if address.port() == 0 {
-                return Err(ConfigError::Invalid(
-                    "server.http_listen port must be greater than zero".into(),
-                ));
-            }
-            if !address.ip().is_loopback() {
-                return Err(ConfigError::Invalid(
-                    "server.http_listen must bind to a loopback address".into(),
-                ));
-            }
+        if self.server.port == 0 {
+            return Err(ConfigError::Invalid(
+                "server.port must be greater than zero".into(),
+            ));
         }
         if !(1..=86_400).contains(&self.reconciliation.scan_interval_seconds) {
             return Err(ConfigError::Invalid(
@@ -151,7 +143,7 @@ fn absolute_file(name: &str, path: &Path) -> Result<(), ConfigError> {
     }
 }
 
-/// Local API listeners and the daemon state directory.
+/// API listeners and the daemon state directory.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
@@ -161,9 +153,42 @@ pub struct ServerConfig {
     /// Existing directory holding the group-accessible Unix API socket.
     #[serde(default = "default_runtime_dir")]
     pub runtime_dir: PathBuf,
-    /// Optional loopback HTTP listener. Omitting it disables TCP.
+    /// Interfaces exposed over unauthenticated HTTP. Defaults to no TCP.
     #[serde(default)]
-    pub http_listen: Option<SocketAddr>,
+    pub listen_mode: ListenMode,
+    /// Shared port for all selected TCP addresses.
+    #[serde(default = "default_port")]
+    pub port: u16,
+}
+
+/// Explicit TCP exposure policy; the Unix socket is always independent.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ListenMode {
+    /// Unix socket only.
+    #[default]
+    Off,
+    /// IPv4 and IPv6 loopback.
+    Localhost,
+    /// Addresses discovered from the local Tailscale daemon at startup.
+    Tailscale,
+    /// Loopback and Tailscale addresses.
+    Both,
+}
+
+impl std::fmt::Display for ListenMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Off => "off",
+            Self::Localhost => "localhost",
+            Self::Tailscale => "tailscale",
+            Self::Both => "both",
+        })
+    }
+}
+
+const fn default_port() -> u16 {
+    7845
 }
 
 fn default_data_dir() -> PathBuf {
@@ -193,7 +218,8 @@ impl Default for ServerConfig {
         Self {
             data_dir: default_data_dir(),
             runtime_dir: default_runtime_dir(),
-            http_listen: Some("127.0.0.1:7845".parse().expect("constant socket address")),
+            listen_mode: ListenMode::default(),
+            port: default_port(),
         }
     }
 }
@@ -318,12 +344,8 @@ impl DaemonConfig {
                         "API socket",
                         self.server.socket_path().display().to_string(),
                     ),
-                    (
-                        "HTTP listener",
-                        self.server
-                            .http_listen
-                            .map_or_else(|| "Disabled".into(), |v| v.to_string()),
-                    ),
+                    ("HTTP listen mode", self.server.listen_mode.to_string()),
+                    ("HTTP port", self.server.port.to_string()),
                 ],
             ),
             (

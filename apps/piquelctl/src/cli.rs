@@ -20,7 +20,7 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATH", conflicts_with = "url")]
     pub(crate) socket: Option<PathBuf>,
 
-    /// Explicit loopback HTTP endpoint, for example <http://127.0.0.1:8080/>.
+    /// Explicit HTTP endpoint, for example <http://127.0.0.1:8080/>.
     #[arg(long, global = true, value_name = "URL", conflicts_with = "socket")]
     pub(crate) url: Option<String>,
 

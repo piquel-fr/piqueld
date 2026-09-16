@@ -49,13 +49,28 @@ Custom `runtimeDir` values must be dedicated directories below `/run`. Configure
 CLI profiles or `--socket` explicitly when overriding this default.
 The module enables Docker and grants the service user Docker access, which is
 host-administrative authority. No firewall ports are opened. TCP is disabled by
-default. Opt in with `settings.server.http_listen = "127.0.0.1:7845";` only
-when all local users are trusted: the HTTP API has no authentication.
+default. Use `settings.server.listen_mode = "localhost";` for local HTTP,
+or configure Tailscale explicitly:
 
-`settings` declares typed options for `server.http_listen`, `docker.socket`,
+```nix
+services.tailscale.enable = true;
+services.piqueld.settings.server = {
+  listen_mode = "tailscale"; # or "both" to also serve localhost
+  port = 7845;
+};
+```
+
+Join the host to your tailnet separately. The module supplies the Tailscale CLI
+and orders piqueld after `tailscaled` for these modes; it does not enable or
+configure Tailscale itself. Ordering does not guarantee connectivity: if
+Tailscale is unavailable at startup, piqueld warns and requires a restart to
+activate remote listening. Ensure your firewall and tailnet policy permit the
+selected port on the Tailscale interface. Every reachable caller is trusted:
+the HTTP API has no authentication.
+
+`settings` declares typed options for `server.listen_mode`, `server.port`, `docker.socket`,
 `docker.auto_initialize_swarm`, all three `reconciliation` intervals/timeouts,
-and both `retention` periods, with the daemon's defaults except for disabled
-TCP. Reconciliation values must be 1–86400 seconds; retention values are
+and both `retention` periods, with the daemon's defaults. Reconciliation values must be 1–86400 seconds; retention values are
 nonnegative days, with zero disabling pruning. Unknown settings are rejected.
 The module always supplies
 `server.data_dir` from `dataDir` and `server.runtime_dir` from `runtimeDir`. It does not configure a registry, Traefik,
