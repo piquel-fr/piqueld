@@ -158,7 +158,7 @@ async fn dns_and_connect_failures_include_the_endpoint() {
             .await
             .unwrap_err();
         assert!(
-            matches!(&error, ClientError::Transport { message } if message.contains(&endpoint)),
+            matches!(&error, ClientError::Transport { message, .. } if message.contains(&endpoint)),
             "{error}"
         );
     }

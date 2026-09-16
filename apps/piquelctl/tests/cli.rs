@@ -1348,10 +1348,7 @@ fn unexpected_responses_include_connection_context_without_extra_probes() {
         assert!(output.stdout.is_empty());
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains(expected), "{error}");
-        assert!(
-            error.contains("Endpoint: loopback TCP http://127.0.0.1:"),
-            "{error}"
-        );
+        assert!(error.contains("Endpoint: TCP http://127.0.0.1:"), "{error}");
         assert!(error.contains("Endpoint source: flag --url"), "{error}");
         assert!(
             error.contains("Check that the selected endpoint serves the piqueld API"),
