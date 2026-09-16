@@ -3605,6 +3605,13 @@
               }
             ]
           },
+          "secrets": {
+            "description": "Application-scoped secret file mounts.",
+            "items": {
+              "$ref": "#/components/schemas/SecretMount"
+            },
+            "type": "array"
+          },
           "source": {
             "$ref": "#/components/schemas/Source",
             "description": "Explicit image or build source."
@@ -5153,6 +5160,7 @@
           "content": {
             "application/octet-stream": {
               "schema": {
+                "format": "binary",
                 "type": "string"
               }
             }

@@ -191,6 +191,7 @@ Metadata survives operation pruning and is deleted with its application.
 Application secret endpoints expose metadata only:
 
 - `GET /api/v1/applications/{id}/secrets` lists names, current generations and update times.
+  Its unpaginated metadata array is returned directly in `data`, without `items` or `next_cursor`.
 - `PUT /api/v1/applications/{id}/secrets/{name}` accepts an `application/octet-stream`
   value of 1–512000 bytes. `X-Expected-Generation: 0` creates; a current generation
   replaces. Each application supports at most 100 logical secrets.
