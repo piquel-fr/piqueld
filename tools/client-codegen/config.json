@@ -91,6 +91,21 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SystemStatus>"
     },
     {
+      "schema": "Envelope_Vec_SecretMetadata",
+      "name": "EnvelopeVecSecretMetadata",
+      "rustType": "piqueld_core::api::Envelope<Vec<piqueld_core::api::SecretMetadata>>"
+    },
+    {
+      "schema": "Envelope_SecretMetadata",
+      "name": "EnvelopeSecretMetadata",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SecretMetadata>"
+    },
+    {
+      "schema": "Envelope_bool",
+      "name": "EnvelopeBool",
+      "rustType": "piqueld_core::api::Envelope<bool>"
+    },
+    {
       "schema": "ApplyApplicationRequest",
       "name": "ApplyApplicationRequest",
       "rustType": "piqueld_core::api::ApplyApplicationRequest"

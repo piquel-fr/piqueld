@@ -1,21 +1,12 @@
-use crate::{Client, ClientError, Envelope, SecretMetadata, client::path_segment};
-use http::Method;
+use crate::{Client, ClientError, SecretMetadata, client::generated_result};
 impl Client {
     /// Lists metadata without retrieving secret values.
     /// # Errors
     /// Returns transport, decoding or API errors.
     pub async fn secrets(&self, application: &str) -> Result<Vec<SecretMetadata>, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!(
-                "{}/applications/{}/secrets",
-                crate::API_PREFIX,
-                path_segment(application)
-            ),
-            None,
-            &[],
-        )
-        .await
+        generated_result(self.generated.application_secrets(application).await)
+            .await
+            .map(|response| response.data)
     }
     /// Creates or rotates an application secret with optimistic version checking.
     /// # Errors
@@ -27,30 +18,13 @@ impl Client {
         generation: i64,
         value: Vec<u8>,
     ) -> Result<SecretMetadata, ClientError> {
-        let path = format!(
-            "{}/applications/{}/secrets/{}",
-            crate::API_PREFIX,
-            path_segment(application),
-            path_segment(name)
-        );
-        let generation = generation.to_string();
-        let (status, body) = self
-            .exchange(
-                Method::PUT,
-                &path,
-                value,
-                &[
-                    ("content-type", "application/octet-stream"),
-                    ("x-expected-generation", &generation),
-                ],
-            )
-            .await?;
-        if !status.is_success() {
-            return Err(crate::client::api_error(status, &body));
-        }
-        serde_json::from_slice::<Envelope<SecretMetadata>>(&body)
-            .map(|v| v.data)
-            .map_err(|source| ClientError::Decode { source })
+        generated_result(
+            self.generated
+                .put_application_secret(application, name, generation, value)
+                .await,
+        )
+        .await
+        .map(|response| response.data)
     }
     /// Deletes an unreferenced secret and its Docker versions.
     /// # Errors
@@ -61,16 +35,10 @@ impl Client {
         name: &str,
         generation: i64,
     ) -> Result<(), ClientError> {
-        self.send::<bool, ()>(
-            Method::DELETE,
-            &format!(
-                "{}/applications/{}/secrets/{}",
-                crate::API_PREFIX,
-                path_segment(application),
-                path_segment(name)
-            ),
-            None,
-            &[("x-expected-generation", &generation.to_string())],
+        generated_result(
+            self.generated
+                .delete_application_secret(application, name, generation)
+                .await,
         )
         .await
         .map(|_| ())
