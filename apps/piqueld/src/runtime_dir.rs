@@ -15,6 +15,8 @@ pub(crate) const SOCKET_NAME: &str = "piqueld.sock";
 
 /// A validated runtime directory exclusively held for a daemon's lifetime.
 /// Keep this guard alive while serving the Unix API.
+/// The directory is dedicated to piqueld; its advisory lock coordinates
+/// cooperating daemons, not other processes running as the same user or root.
 #[derive(Debug)]
 pub struct RuntimeDir {
     path: PathBuf,
@@ -44,8 +46,9 @@ impl RuntimeDir {
     /// Binds the API socket with access for the daemon's effective group.
     ///
     /// # Errors
-    /// Refuses live listeners and non-sockets. Only connection refusal proves
-    /// an existing socket stale; other probe errors leave it untouched.
+    /// Refuses observed live listeners and non-sockets. A refused connection
+    /// permits stale-socket recovery under the directory lock; other probe
+    /// errors leave the path untouched.
     pub async fn bind_api(&self) -> Result<UnixListener> {
         let path = self.path.join(SOCKET_NAME);
         Self::bind_at(&path)
@@ -59,6 +62,9 @@ impl RuntimeDir {
                 match tokio::time::timeout(Duration::from_secs(1), UnixStream::connect(path)).await
                 {
                     Ok(Err(error)) if error.kind() == io::ErrorKind::ConnectionRefused => {
+                        // Writers must honor the runtime-directory lock. A separate
+                        // inode check before unlink would still race with an
+                        // uncooperative process sharing the daemon's identity.
                         tokio::fs::remove_file(path)
                             .await
                             .context("failed to remove stale socket")?;

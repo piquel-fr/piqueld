@@ -60,6 +60,13 @@ require separate data and runtime directories. A competing process fails before
 opening the database or replacing a socket. Process exit (including a crash)
 releases the locks; there are no lock files to remove.
 
+The runtime directory is dedicated to piqueld. Its lock coordinates cooperating
+daemon instances, and its permissions prevent operator-group members from
+replacing entries. Processes running as the daemon user or root must also honor
+the lock; an unrelated process with that identity can otherwise replace the
+socket during recovery. The lock is not an isolation boundary between processes
+sharing the daemon's identity.
+
 Under the runtime lock, startup probes an existing socket. An active listener is
 left untouched; a connection-refused socket is removed and rebound. Unexpected
 files, symlinks, timeouts, and other probe errors stop startup without replacing
