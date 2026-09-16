@@ -101,6 +101,11 @@
       "rustType": "piqueld_core::api::RenameApplicationRequest"
     },
     {
+      "schema": "LogStream",
+      "name": "LogStream",
+      "rustType": "piqueld_core::api::LogStream"
+    },
+    {
       "schema": "ErrorBody",
       "name": "ErrorBody",
       "rustType": "piqueld_core::api::ErrorBody"

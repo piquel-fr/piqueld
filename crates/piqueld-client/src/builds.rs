@@ -1,5 +1,4 @@
 use crate::{BuildLogPage, BuildRecord, Client, ClientError, Page, client::generated_result};
-use http::Method;
 impl Client {
     /// Reads one page of build attempts, newest first.
     /// # Errors
@@ -22,19 +21,8 @@ impl Client {
         before: Option<i64>,
         stream: Option<crate::LogStream>,
     ) -> Result<BuildLogPage, ClientError> {
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        if let Some(before) = before {
-            query.append_pair("before", &before.to_string());
-        }
-        if let Some(stream) = stream {
-            query.append_pair("stream", stream.as_str());
-        }
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("{}/builds/{id}/logs?{}", crate::API_PREFIX, query.finish()),
-            None,
-            &[],
-        )
-        .await
+        generated_result(self.generated.build_logs(id, before, stream.as_ref()).await)
+            .await
+            .map(|response| response.data)
     }
 }

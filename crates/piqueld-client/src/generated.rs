@@ -706,6 +706,7 @@ impl Client {
         id: &'a str,
         service: Option<&'a str>,
         since_seconds: Option<u32>,
+        stream: Option<&'a piqueld_core::api::LogStream>,
         tail: Option<u32>,
     ) -> Result<
         ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::ApplicationLogs>>,
@@ -734,6 +735,7 @@ impl Client {
                 "since_seconds",
                 &since_seconds,
             ))
+            .query(&progenitor_client::QueryParam::new("stream", &stream))
             .query(&progenitor_client::QueryParam::new("tail", &tail))
             .headers(header_map)
             .build()?;
@@ -1065,7 +1067,8 @@ impl Client {
     pub async fn build_logs<'a>(
         &'a self,
         id: i64,
-        offset: Option<i64>,
+        before: Option<i64>,
+        stream: Option<&'a piqueld_core::api::LogStream>,
     ) -> Result<
         ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::BuildLogPage>>,
         Error<piqueld_core::api::ErrorBody>,
@@ -1088,7 +1091,8 @@ impl Client {
                 ::reqwest::header::ACCEPT,
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
-            .query(&progenitor_client::QueryParam::new("offset", &offset))
+            .query(&progenitor_client::QueryParam::new("before", &before))
+            .query(&progenitor_client::QueryParam::new("stream", &stream))
             .headers(header_map)
             .build()?;
         let info = OperationInfo {
