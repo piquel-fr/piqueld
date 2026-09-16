@@ -138,6 +138,7 @@ fn BuildCard(record: Signal<BuildRecord>) -> impl IntoView {
 #[component]
 fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
     let chunks = create_rw_signal(Vec::<piqueld_client::BuildLogChunk>::new());
+    let prepend_revision = create_rw_signal(0u64);
     let previous = create_rw_signal(None::<i64>);
     let stream = create_rw_signal(None);
     let loading = create_rw_signal(false);
@@ -187,11 +188,15 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
                         if replacing {
                             chunks.set(page.items);
                             final_loaded = build.state != BuildState::Running;
-                        } else {
-                            chunks.update(|chunks| {
-                                let mut items = page.items;
-                                items.append(chunks);
-                                *chunks = items;
+                        } else if !page.items.is_empty() {
+                            batch(move || {
+                                prepend_revision
+                                    .update(|revision| *revision = revision.wrapping_add(1));
+                                chunks.update(|chunks| {
+                                    let mut items = page.items;
+                                    items.append(chunks);
+                                    *chunks = items;
+                                });
                             });
                         }
                         previous.set(page.previous_offset);
@@ -223,7 +228,7 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
         <Show when=move ||previous.get().is_some()>
             <button disabled=move ||loading.get() on:click=move |_|older.set(true)>"Load older output"</button>
         </Show>
-        <LogViewer lines kind=LogKind::Build label="Build log output" empty="No build output was captured."/>
+        <LogViewer lines prepend_revision kind=LogKind::Build label="Build log output" empty="No build output was captured."/>
     }
 }
 

@@ -95,6 +95,7 @@ pub(super) fn LogViewer(
     #[prop(into)] label: String,
     #[prop(into)] empty: String,
     #[prop(default = LogKind::Application)] kind: LogKind,
+    #[prop(default = Signal::derive(|| 0), into)] prepend_revision: Signal<u64>,
 ) -> impl IntoView {
     let preferences = use_context::<LogPreferences>().expect("log preferences");
     let timestamps = match kind {
@@ -110,15 +111,16 @@ pub(super) fn LogViewer(
     let container = create_node_ref::<html::Div>();
     let follow = create_rw_signal(true);
     let position = create_rw_signal(0);
-    let previous = store_value(Vec::<LogLine>::new());
+    let previous_prepend = store_value(0);
     let height = store_value(0);
     let updating = store_value(false);
     create_effect(move |_| {
-        let current = lines.get();
-        let prepend = previous.with_value(|old| {
-            !old.is_empty() && current.len() > old.len() && current.ends_with(old)
-        });
-        previous.set_value(current);
+        let _ = lines.get();
+        // A prepended chunk can complete an existing partial line, so rendered
+        // line equality cannot reliably identify an older page insertion.
+        let revision = prepend_revision.get();
+        let prepend = revision != previous_prepend.get_value();
+        previous_prepend.set_value(revision);
         let _ = (preferences.wrap.get(), timestamps.get(), show_service.get());
         let following = follow.get_untracked();
         let old_position = position.get_untracked();
