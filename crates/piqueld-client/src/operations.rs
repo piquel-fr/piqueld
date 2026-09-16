@@ -1,6 +1,4 @@
-use http::Method;
-
-use crate::{Client, ClientError, Operation, client::path_segment};
+use crate::{Client, ClientError, Operation, client::generated_result};
 
 impl Client {
     /// Fetches an asynchronous operation by identifier.
@@ -8,12 +6,8 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn operation(&self, id: &str) -> Result<Operation, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("{}/operations/{}", crate::API_PREFIX, path_segment(id)),
-            None,
-            &[],
-        )
-        .await
+        generated_result(self.generated.get_operation(id).await)
+            .await
+            .map(|response| response.data)
     }
 }

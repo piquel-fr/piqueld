@@ -17,6 +17,8 @@ pub mod operations;
 /// Control-plane status contracts.
 pub mod system;
 
+mod generated;
+
 mod builds;
 mod client;
 
@@ -102,6 +104,13 @@ pub enum ClientError {
         /// Decoder failure with line and column context.
         #[source]
         source: serde_json::Error,
+    },
+    /// A text response was not valid UTF-8.
+    #[error("API returned invalid UTF-8: {source}")]
+    TextDecode {
+        /// UTF-8 decoder failure.
+        #[source]
+        source: std::string::FromUtf8Error,
     },
 }
 

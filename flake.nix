@@ -244,6 +244,7 @@
                 clippy
                 git
                 just
+                curl
                 rustc
                 rustfmt
               ]

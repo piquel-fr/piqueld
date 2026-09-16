@@ -1,5 +1,5 @@
-# The default command regenerates checked-in output and then validates it.
-default: generate-openapi validate
+# Validation checks committed artifacts without silently repairing stale output.
+default: validate
 
 validate: fmt-check lint check test doc-test deny openapi-check boundary check-wasm
 
@@ -57,8 +57,9 @@ doc-test:
 deny:
     @cargo deny check
 
+# Check both generated artifacts against freshly generated endpoint metadata.
 openapi-check:
-    @cargo run --package piqueld --bin generate_openapi -- --check
+    @cargo run --package piqueld --features openapi-codegen --bin generate_openapi -- --check
 
 boundary:
     @./scripts/check-dependency-boundaries.sh
@@ -82,9 +83,9 @@ daemon-embedded *ARGS:
 dev:
     @bash ./scripts/dev.sh
 
-# Explicitly mutating generation command.
-generate-openapi:
-    @cargo run --package piqueld --bin generate_openapi
+# Generate the OpenAPI document and client together.
+generate:
+    @cargo run --package piqueld --features openapi-codegen --bin generate_openapi
 
 docker-test:
     @bash ./scripts/run-docker-integration-test.sh

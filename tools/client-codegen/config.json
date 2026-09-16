@@ -1,0 +1,114 @@
+{
+  "replacements": [
+    {
+      "schema": "Envelope_AcceptedOperation",
+      "name": "EnvelopeAcceptedOperation",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>"
+    },
+    {
+      "schema": "Envelope_ApplicationDetailView",
+      "name": "EnvelopeApplicationDetailView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::ApplicationDetailView>"
+    },
+    {
+      "schema": "Envelope_ApplicationLogs",
+      "name": "EnvelopeApplicationLogs",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::ApplicationLogs>"
+    },
+    {
+      "schema": "Envelope_ApplicationStatusView",
+      "name": "EnvelopeApplicationStatusView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::ApplicationStatusView>"
+    },
+    {
+      "schema": "Envelope_ApplicationView",
+      "name": "EnvelopeApplicationView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::ApplicationView>"
+    },
+    {
+      "schema": "Envelope_BuildLogPage",
+      "name": "EnvelopeBuildLogPage",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::BuildLogPage>"
+    },
+    {
+      "schema": "Envelope_HostConfiguration",
+      "name": "EnvelopeHostConfiguration",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::HostConfiguration>"
+    },
+    {
+      "schema": "Envelope_Operation",
+      "name": "EnvelopeOperation",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::Operation>"
+    },
+    {
+      "schema": "Envelope_Page_ApplicationSummary",
+      "name": "EnvelopePageApplicationSummary",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::ApplicationSummary>>"
+    },
+    {
+      "schema": "Envelope_Page_BuildRecord",
+      "name": "EnvelopePageBuildRecord",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::BuildRecord>>"
+    },
+    {
+      "schema": "Envelope_Page_DeploymentView",
+      "name": "EnvelopePageDeploymentView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::DeploymentView>>"
+    },
+    {
+      "schema": "Envelope_Page_Event",
+      "name": "EnvelopePageEvent",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::Event>>"
+    },
+    {
+      "schema": "Envelope_Page_Operation",
+      "name": "EnvelopePageOperation",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::Operation>>"
+    },
+    {
+      "schema": "Envelope_PlanView",
+      "name": "EnvelopePlanView",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::PlanView>"
+    },
+    {
+      "schema": "Envelope_ReadinessStatus",
+      "name": "EnvelopeReadinessStatus",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::ReadinessStatus>"
+    },
+    {
+      "schema": "Envelope_RenamedApplication",
+      "name": "EnvelopeRenamedApplication",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::RenamedApplication>"
+    },
+    {
+      "schema": "Envelope_SavedApplication",
+      "name": "EnvelopeSavedApplication",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>"
+    },
+    {
+      "schema": "Envelope_SystemStatus",
+      "name": "EnvelopeSystemStatus",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SystemStatus>"
+    },
+    {
+      "schema": "ApplyApplicationRequest",
+      "name": "ApplyApplicationRequest",
+      "rustType": "piqueld_core::api::ApplyApplicationRequest"
+    },
+    {
+      "schema": "RenameApplicationRequest",
+      "name": "RenameApplicationRequest",
+      "rustType": "piqueld_core::api::RenameApplicationRequest"
+    },
+    {
+      "schema": "LogStream",
+      "name": "LogStream",
+      "rustType": "piqueld_core::api::LogStream"
+    },
+    {
+      "schema": "ErrorBody",
+      "name": "ErrorBody",
+      "rustType": "piqueld_core::api::ErrorBody"
+    }
+  ]
+}

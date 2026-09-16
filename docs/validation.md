@@ -12,16 +12,17 @@ Failed checks do not cancel unrelated jobs.
 | Real embedded assets and inline-script CSP hashes | `test-embedded` | `embedded-test` |
 | Documentation tests | `doc-test` | `test` |
 | Dependency policy and advisories | `deny` | `deny` |
-| Generated API contract freshness | `openapi-check` | `openapi` |
+| Generated API specification and client freshness | `openapi-check` | `openapi` |
 | Core dependency boundaries | `boundary` | `boundary` |
 | Browser compilation | `ui-check`, `check-wasm` | `wasm-ui` |
 | Real browser transport tests | `test-wasm` | `wasm-ui` |
 | Isolated Engine integration tests | `docker-test` | `docker-integration` |
 | Embedded daemon and CLI release builds | `build-embedded` | `embedded-release` |
 
-`just` regenerates OpenAPI and runs the default native validation set. CI checks
-the committed document without rewriting it. `check` and `build` are covered by
+`just` runs the default validation set, including a single check of the generated
+OpenAPI specification and client. Both local validation and CI compare the
+committed artifacts without rewriting them. `check` and `build` are covered by
 the stronger all-target Clippy and package/release builds. `fmt` and
-`generate-openapi` are editing commands whose results are checked above.
+`generate` are editing commands whose results are checked above.
 `run`, `daemon`, `daemon-embedded`, and `dev` launch interactive processes and are
 not finite validation commands.

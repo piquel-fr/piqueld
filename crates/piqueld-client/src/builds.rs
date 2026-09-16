@@ -1,5 +1,4 @@
-use crate::{BuildLogPage, BuildRecord, Client, ClientError, Page};
-use http::Method;
+use crate::{BuildLogPage, BuildRecord, Client, ClientError, Page, client::generated_result};
 impl Client {
     /// Reads one page of build attempts, newest first.
     /// # Errors
@@ -9,20 +8,9 @@ impl Client {
         application: Option<&str>,
         cursor: Option<&str>,
     ) -> Result<Page<BuildRecord>, ClientError> {
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        if let Some(app) = application {
-            query.append_pair("application_id", app);
-        }
-        if let Some(cursor) = cursor {
-            query.append_pair("cursor", cursor);
-        }
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("{}/builds?{}", crate::API_PREFIX, query.finish()),
-            None,
-            &[],
-        )
-        .await
+        generated_result(self.generated.list_builds(application, cursor, None).await)
+            .await
+            .map(|response| response.data)
     }
     /// Reads the newest filtered build output before an optional exclusive cursor.
     /// # Errors
@@ -33,19 +21,8 @@ impl Client {
         before: Option<i64>,
         stream: Option<crate::LogStream>,
     ) -> Result<BuildLogPage, ClientError> {
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        if let Some(before) = before {
-            query.append_pair("before", &before.to_string());
-        }
-        if let Some(stream) = stream {
-            query.append_pair("stream", stream.as_str());
-        }
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("{}/builds/{id}/logs?{}", crate::API_PREFIX, query.finish()),
-            None,
-            &[],
-        )
-        .await
+        generated_result(self.generated.build_logs(id, before, stream.as_ref()).await)
+            .await
+            .map(|response| response.data)
     }
 }

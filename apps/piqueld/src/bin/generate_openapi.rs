@@ -1,36 +1,234 @@
-//! Generates or checks the checked-in API `OpenAPI` snapshot.
+//! Generates or checks the `OpenAPI` specification and its Rust client bindings.
 
+use anyhow::{Context, Result, anyhow, ensure};
 use piqueld::api::openapi_document;
+use serde::Deserialize;
 use serde_json::Value;
+use std::{
+    collections::BTreeSet,
+    fs,
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
 
-fn validate_api_paths(document: &Value) -> Result<(), Box<dyn std::error::Error>> {
-    let paths = document
-        .get("paths")
-        .and_then(Value::as_object)
-        .ok_or("OpenAPI document has no paths object")?;
-    for path in paths.keys() {
-        if !path.starts_with("/api/") {
-            return Err(format!("OpenAPI path is outside the API namespace: {path}").into());
-        }
-    }
-    Ok(())
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Config {
+    replacements: Vec<Replacement>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/openapi-v1.json");
-    let value = openapi_document();
-    validate_api_paths(&value)?;
-    let mut document = serde_json::to_string_pretty(&value)?;
-    document.push('\n');
-    if std::env::args().any(|argument| argument == "--check") {
-        let existing = std::fs::read_to_string(&path)?;
-        if existing != document {
-            return Err(format!("{} is out of date", path.display()).into());
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Replacement {
+    schema: String,
+    name: String,
+    rust_type: String,
+}
+
+/// Runs both stages before updating either checked-in artifact.
+struct Generator {
+    root: PathBuf,
+}
+
+impl Generator {
+    fn run(&self, check: bool) -> Result<()> {
+        let document = openapi_document();
+        let paths = document
+            .get("paths")
+            .and_then(Value::as_object)
+            .context("OpenAPI document has no paths object")?;
+        for path in paths.keys() {
+            ensure!(
+                path.starts_with("/api/"),
+                "OpenAPI path is outside the API namespace: {path}"
+            );
         }
-        println!("{} is up to date", path.display());
-    } else {
-        std::fs::write(&path, document)?;
-        println!("wrote {}", path.display());
+
+        let config: Config = serde_json::from_slice(
+            &fs::read(self.root.join("tools/client-codegen/config.json"))
+                .context("read Progenitor configuration")?,
+        )
+        .context("parse Progenitor configuration")?;
+        let client = self.generate_client(document.clone(), &config)?;
+        let document = format!("{}\n", serde_json::to_string_pretty(&document)?);
+
+        let artifacts = [
+            ("docs/openapi-v1.json", document),
+            ("crates/piqueld-client/src/generated.rs", client),
+        ];
+        let mut stale = Vec::new();
+        for (relative, contents) in artifacts {
+            let path = self.root.join(relative);
+            if check {
+                match fs::read_to_string(&path) {
+                    Ok(existing) if existing == contents => println!("{relative} is up to date"),
+                    Ok(_) => stale.push(relative),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        stale.push(relative);
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| format!("read {}", path.display()));
+                    }
+                }
+            } else {
+                fs::write(&path, contents).with_context(|| format!("write {}", path.display()))?;
+                println!("wrote {relative}");
+            }
+        }
+        ensure!(
+            stale.is_empty(),
+            "generated artifacts are out of date: {}; run just generate",
+            stale.join(", ")
+        );
+        Ok(())
     }
-    Ok(())
+
+    fn generate_client(&self, mut document: Value, config: &Config) -> Result<String> {
+        Self::prepare_client_document(&mut document, config)?;
+        let spec = serde_json::from_value(document).context("parse OpenAPI 3.0 document")?;
+
+        let mut settings = progenitor::GenerationSettings::default();
+        let inner = "crate::client::ClientState"
+            .parse()
+            .map_err(|error| anyhow!("parse generated client state type: {error}"))?;
+        settings.with_inner_type(inner);
+        for replacement in &config.replacements {
+            settings.with_replacement(
+                &replacement.name,
+                &replacement.rust_type,
+                std::iter::empty(),
+            );
+        }
+
+        let tokens = progenitor::Generator::new(&settings)
+            .generate_tokens(&spec)
+            .context("generate Progenitor client")?;
+        let syntax = syn::parse2(tokens).context("parse generated Rust")?;
+        // The generated operations are private implementation details, and
+        // Progenitor's indented prose is otherwise interpreted as doctest code.
+        let source = prettyplease::unparse(&syntax).replace("/**", "/*");
+        let decoder = "ResponseValue::from_response(response).await";
+        ensure!(
+            source.contains(decoder),
+            "Progenitor response decoder shape changed"
+        );
+        let source = source.replace(decoder, "crate::client::decode_response(response).await");
+        self.rustfmt(&format!(
+            "// Generated by Progenitor. Run `just generate`; do not edit.\n\n// Progenitor emits mechanical patterns that intentionally trip style lints.\n#![allow(clippy::all, clippy::pedantic, dead_code, private_interfaces)]\n\n{source}"
+        ))
+    }
+
+    fn rustfmt(&self, source: &str) -> Result<String> {
+        let mut child = Command::new("rustfmt")
+            .args(["--edition", "2024", "--emit", "stdout", "--config-path"])
+            .arg(&self.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("start rustfmt for generated client")?;
+        child
+            .stdin
+            .take()
+            .context("open rustfmt stdin")?
+            .write_all(source.as_bytes())
+            .context("write generated client to rustfmt")?;
+        let output = child.wait_with_output().context("wait for rustfmt")?;
+        ensure!(
+            output.status.success(),
+            "rustfmt failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).context("rustfmt returned non-UTF-8 output")
+    }
+
+    fn prepare_client_document(document: &mut Value, config: &Config) -> Result<()> {
+        let paths = document
+            .get_mut("paths")
+            .and_then(Value::as_object_mut)
+            .context("OpenAPI document has no paths object")?;
+        for item in paths.values_mut().filter_map(Value::as_object_mut) {
+            for operation in item.values_mut().filter_map(Value::as_object_mut) {
+                if let Some(content) = operation
+                    .get_mut("requestBody")
+                    .and_then(|body| body.get_mut("content"))
+                    .and_then(Value::as_object_mut)
+                    && let Some(json) = content.remove("application/json")
+                {
+                    content.clear();
+                    content.insert("application/json".into(), json);
+                }
+                if let Some(parameters) = operation
+                    .get_mut("parameters")
+                    .and_then(Value::as_array_mut)
+                {
+                    for parameter in parameters.iter_mut().filter_map(Value::as_object_mut) {
+                        let Some(schema) =
+                            parameter.get_mut("schema").and_then(Value::as_object_mut)
+                        else {
+                            continue;
+                        };
+                        schema.remove("nullable");
+                        if schema.get("type").and_then(Value::as_str) == Some("string") {
+                            schema.remove("minLength");
+                            schema.remove("maxLength");
+                            schema.remove("pattern");
+                        }
+                        if schema.get("type").and_then(Value::as_str) == Some("integer")
+                            && schema
+                                .get("minimum")
+                                .and_then(Value::as_f64)
+                                .is_some_and(|minimum| minimum >= 0.0)
+                        {
+                            let format = match schema.get("format").and_then(Value::as_str) {
+                                Some("int32") => Some("uint32"),
+                                Some("int64") => Some("uint64"),
+                                _ => None,
+                            };
+                            if let Some(format) = format {
+                                schema.insert("format".into(), Value::String(format.into()));
+                            }
+                        }
+                        schema.remove("minimum");
+                        schema.remove("maximum");
+                    }
+                }
+            }
+        }
+
+        let schemas = document
+            .get_mut("components")
+            .and_then(|components| components.get_mut("schemas"))
+            .and_then(Value::as_object_mut)
+            .context("OpenAPI document has no component schemas")?;
+        let retained = config
+            .replacements
+            .iter()
+            .map(|replacement| replacement.schema.as_str())
+            .collect::<BTreeSet<_>>();
+        for schema in &retained {
+            ensure!(
+                schemas.contains_key(*schema),
+                "missing mapped schema {schema}"
+            );
+        }
+        schemas.retain(|name, _| retained.contains(name.as_str()));
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    ensure!(
+        args.is_empty() || args == ["--check"],
+        "usage: generate_openapi [--check]"
+    );
+    Generator {
+        root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .context("locate repository root")?,
+    }
+    .run(!args.is_empty())
 }

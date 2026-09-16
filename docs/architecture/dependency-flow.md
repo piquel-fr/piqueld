@@ -6,6 +6,15 @@ database, Docker, or UI dependency. The daemon uses these contracts directly.
 `piqueld-client` adds HTTP transport and reexports the shared contracts for the
 CLI and dashboard.
 
+Endpoint bindings are generated from the daemon's OpenAPI document by
+Progenitor and checked into `piqueld-client`. They reuse the core wire contracts
+and share bounded TCP/Unix/browser response handling. Handwritten convenience
+methods unwrap envelopes, provide local validation, and cover the two TOML
+request operations that Progenitor cannot generate. The generator is enabled
+only by the daemon's `openapi-codegen` feature; the client uses Progenitor's
+small runtime support crate. See
+[client generation](../../tools/client-codegen/README.md).
+
 Inside the daemon:
 
 | Module | Responsibility |

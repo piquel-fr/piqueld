@@ -469,7 +469,9 @@ async fn assert_api_routes(application: &axum::Router) {
     )
     .await;
     assert_eq!(openapi.0, axum::http::StatusCode::OK);
-    assert!(openapi.1.contains("/api/v1/applications/{id}/detail"));
+    let openapi: serde_json::Value = serde_json::from_str(&openapi.1).unwrap();
+    assert_eq!(openapi["openapi"], "3.0.3");
+    assert!(openapi["paths"]["/api/v1/applications/{id}/detail"].is_object());
 }
 
 async fn assert_api_only_and_ui_modes(temp: &TempDir) {
@@ -1264,11 +1266,49 @@ async fn served_openapi_document_matches_the_generated_snapshot_and_resolves_ref
     }
 
     let text = serde_json::to_string(&generated).expect("document stringifies");
+    assert!(
+        !text.contains("\"propertyNames\""),
+        "OpenAPI 3.0 does not support propertyNames"
+    );
+    for (pointer, reference) in [
+        (
+            "/components/schemas/ApplicationDetailView/properties/latest_operation",
+            "#/components/schemas/Operation",
+        ),
+        (
+            "/components/schemas/ApplicationSpec/properties/manifest",
+            "#/components/schemas/RepositoryManifest",
+        ),
+        (
+            "/components/schemas/DesiredService/properties/healthcheck",
+            "#/components/schemas/HealthCheck",
+        ),
+    ] {
+        assert_nullable_reference(
+            generated.pointer(pointer).expect("documented schema"),
+            reference,
+        );
+    }
     let mut unresolved = Vec::new();
     collect_unresolved_refs(&generated, &text, &mut unresolved);
     assert!(unresolved.is_empty(), "unresolved refs: {unresolved:?}");
 
     server.abort();
+}
+
+fn assert_nullable_reference(schema: &serde_json::Value, reference: &str) {
+    let variants = schema["oneOf"].as_array().expect("nullable oneOf variants");
+    assert!(variants.iter().any(|variant| {
+        variant
+            .get("$ref")
+            .or_else(|| variant.pointer("/allOf/0/$ref"))
+            == Some(&serde_json::Value::String(reference.to_owned()))
+    }));
+    assert!(variants.iter().any(|variant| {
+        variant["nullable"] == true
+            && variant["enum"] == serde_json::json!([null])
+            && variant["type"] == "string"
+    }));
 }
 
 fn collect_unresolved_refs(value: &serde_json::Value, document: &str, out: &mut Vec<String>) {

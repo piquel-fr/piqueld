@@ -1,10 +1,11 @@
 //! Generated OpenAPI document retrieval.
 
-use http::Method;
 use serde_json::Value;
 
-use crate::client::api_error;
-use crate::{Client, ClientError};
+use crate::{
+    Client, ClientError,
+    client::{collect_byte_stream, generated_result},
+};
 
 impl Client {
     /// Fetches the generated `OpenAPI` document.
@@ -12,17 +13,8 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn openapi(&self) -> Result<Value, ClientError> {
-        let (status, payload) = self
-            .exchange(
-                Method::GET,
-                &format!("{}/openapi.json", crate::API_PREFIX),
-                Vec::new(),
-                &[],
-            )
-            .await?;
-        if !status.is_success() {
-            return Err(api_error(status, &payload));
-        }
+        let response = generated_result(self.generated.open_api_document().await).await?;
+        let payload = collect_byte_stream(response).await?;
         serde_json::from_slice(&payload).map_err(|source| ClientError::Decode { source })
     }
 }
