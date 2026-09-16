@@ -288,10 +288,10 @@ prod  http://127.0.0.1:7845
 
 `piquelctl profiles --json` returns
 `{"profiles":[{"name":"dev","endpoint":"/tmp/piqueld-dev/piqueld.sock"}]}`.
-An empty list succeeds with no human output, or `{"profiles":[]}` in JSON.
+An empty list prints `No profiles configured.` in human mode, or
+`{"profiles":[]}` in JSON.
 `--quiet` suppresses human results, information, and progress, but preserves JSON,
-warnings, errors, and authorized prompts. An empty human profile list prints
-`No profiles configured.`
+warnings, errors, and authorized prompts.
 
 `piquelctl builds list [--application ID] [--cursor CURSOR]` lists one page of build
 attempts. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
