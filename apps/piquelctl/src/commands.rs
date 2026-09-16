@@ -24,6 +24,7 @@ use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_descrip
 pub(crate) async fn run(cli: &Cli) -> Result<()> {
     let client = build_client(cli)?;
     match &cli.command {
+        Command::Profiles => unreachable!("profiles are listed before connecting"),
         Command::Status => status(cli, &client).await,
         Command::List => list(cli, &client).await,
         Command::Show { name_or_id } => show(cli, &client, name_or_id).await,

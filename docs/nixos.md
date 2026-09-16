@@ -34,8 +34,22 @@ Connection profiles use the same typed-settings style as the daemon:
 ```
 
 Each profile must set exactly one of `socket` or `url`; `timeout` is optional.
-The generated profiles file is selected by default while preserving the CLI's
-`--profiles-file` and `PIQUELD_PROFILES_FILE` overrides.
+The module writes `/etc/piqueld/profiles.toml` and installs the unwrapped CLI.
+Every user and every CLI build, including `cargo run -p piquelctl`, discovers
+these profiles without environment setup. User profiles can add or replace named
+system profiles; `--profiles-file` and `PIQUELD_PROFILES_FILE` bypass discovery.
+Run `piquelctl profiles` to see the effective names and endpoints.
+
+For nix-darwin, import `inputs.piqueld.darwinModules.piquelctl` and use the same
+`programs.piquelctl` options. The shared CLI module does not require the daemon.
+
+When migrating from the wrapper-based module, rebuild the machine configuration
+and remove old `PIQUELD_PROFILES_FILE` exports or custom wrappers unless you
+intentionally want an exclusive file override. Remove duplicate TOML generation
+and per-user profile symlinks/activation scripts used to expose system profiles;
+the generated system file now serves all users. Keep intentional user overrides
+in the user configuration file. Profile settings remain in the public Nix store
+and must not contain credentials.
 
 `dataDir` defaults to `/var/lib/piqueld`, with mode `0700`, holding `piqueld.db`.
 `runtimeDir` defaults to `/run/piqueld`, prepared by systemd with mode `0750`.

@@ -25,12 +25,13 @@ For persistent configuration, set a named profile's `url` to
 `http://linux-host:7845` and select it with `--profile`. See
 [daemon configuration](configuration.md#tcp-listen-modes-and-tailscale).
 
-Profiles use the same `$XDG_CONFIG_HOME/piqueld/profiles.toml` location on both
-platforms, falling back to `~/.config/piqueld/profiles.toml`.
+Both platforms discover system and user profiles at runtime, including binaries
+built with Cargo. See [connection profiles](#connection-profiles).
 
 ## Commands
 
 ```console
+piquelctl profiles
 piquelctl status
 piquelctl list
 piquelctl show <name-or-id>
@@ -72,6 +73,7 @@ written to stderr, so stdout remains valid JSON.
 
 | Command | JSON output |
 | --- | --- |
+| `profiles` | `{ "profiles": [{ "name": string, "endpoint": string }] }` |
 | `status` | `SystemStatus` |
 | `list` | `{ "items": [{ "application": ApplicationSummary, "status": ApplicationStatusView }], "next_cursor": null }` |
 | `show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
@@ -176,8 +178,19 @@ reads a recent Docker snapshot with timestamps, service, task, and stream labels
 ## Connection profiles
 
 Select a named connection with `--profile NAME` or `PIQUELD_PROFILE`.
-`--profiles-file PATH` / `PIQUELD_PROFILES_FILE` overrides
+On Linux and macOS, the CLI loads `/etc/piqueld/profiles.toml`, then
 `$XDG_CONFIG_HOME/piqueld/profiles.toml` (otherwise `$HOME/.config/piqueld/profiles.toml`).
+User profiles replace entire system profiles with the same name; fields are not
+merged. Other system profiles remain available. Discovery happens at runtime,
+so installed and development binaries use the same configuration.
+
+`--profiles-file PATH` takes precedence over `PIQUELD_PROFILES_FILE`. Either
+explicit selection loads only that file, bypassing system and user discovery.
+Missing automatically discovered files are ignored. Explicitly selected missing
+files and all unreadable or malformed files are errors, with the file path.
+Surviving profiles are validated after replacement; invalid entries report their
+name and source file, even when they are not selected.
+
 An optional `[profiles.default]` is used when no name is selected; an explicitly
 selected missing profile is an error.
 
@@ -196,6 +209,23 @@ Precedence is explicit flags, then `PIQUELD_SOCKET` / `PIQUELD_URL` /
 override replaces the entire profile transport. Simultaneous environment socket
 and URL values are rejected unless an explicit transport overrides them.
 Authentication and credentials are not profile settings yet.
+
+`piquelctl profiles` lists the effective profile names and endpoints in alphabetical
+order after file selection and replacement. It does not contact a daemon or check
+endpoint reachability, and ignores `--profile`, `PIQUELD_PROFILE`, and connection
+overrides. Only configured profiles appear; the built-in local connection is not
+an additional profile.
+
+```text
+NAME  ENDPOINT
+dev   /tmp/piqueld-dev/piqueld.sock
+prod  http://127.0.0.1:7845
+```
+
+`piquelctl profiles --json` returns
+`{"profiles":[{"name":"dev","endpoint":"/tmp/piqueld-dev/piqueld.sock"}]}`.
+An empty list succeeds with no human output, or `{"profiles":[]}` in JSON.
+`--quiet` suppresses human output but preserves JSON and errors.
 
 `piquelctl builds list [--application ID] [--cursor CURSOR]` lists one page of build
 attempts. `piquelctl builds logs ID [--offset BYTE_OFFSET]` reads one bounded output

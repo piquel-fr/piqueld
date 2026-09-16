@@ -17,10 +17,19 @@ use tokio::time::Instant;
 async fn main() -> ExitCode {
     let matches = Cli::command().get_matches();
     let mut cli = Cli::from_arg_matches(&matches).expect("validated command arguments");
-    if let Err(error) = profiles::Profiles::resolve(&mut cli, &matches) {
-        return finish_error(&cli, error);
-    }
-    match run_with_timeout(&cli).await {
+    let profiles = match profiles::Profiles::load(&cli) {
+        Ok(profiles) => profiles,
+        Err(error) => return finish_error(&cli, error),
+    };
+    let result = if matches!(cli.command, cli::Command::Profiles) {
+        profiles.list(&cli)
+    } else {
+        if let Err(error) = profiles.resolve(&mut cli, &matches) {
+            return finish_error(&cli, error);
+        }
+        run_with_timeout(&cli).await
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => finish_error(&cli, error),
     }
