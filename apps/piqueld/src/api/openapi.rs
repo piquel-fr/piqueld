@@ -33,7 +33,7 @@ pub(super) struct ApiErrorResponse(ErrorBody);
     get,
     path = "/api/v1/openapi.json",
     operation_id = "openApiDocument",
-    summary = "Get the OpenAPI document",
+    summary = "Get the `OpenAPI` document",
     responses(
         (status = 200, description = "OpenAPI 3.1 document", body = Object, content_type = "application/vnd.oai.openapi+json")
     )

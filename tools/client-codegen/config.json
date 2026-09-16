@@ -1,0 +1,92 @@
+{
+  "library": "reqwest",
+  "additionalProperties": {
+    "preferUnsignedInt": true,
+    "contractTypes": [
+      {
+        "name": "EnvelopeAcceptedOperation",
+        "rustType": "crate::Envelope<piqueld_core::api::AcceptedOperation>"
+      },
+      {
+        "name": "EnvelopeApplicationDetailView",
+        "rustType": "crate::Envelope<piqueld_core::api::ApplicationDetailView>"
+      },
+      {
+        "name": "EnvelopeApplicationLogs",
+        "rustType": "crate::Envelope<piqueld_core::api::ApplicationLogs>"
+      },
+      {
+        "name": "EnvelopeApplicationStatusView",
+        "rustType": "crate::Envelope<piqueld_core::api::ApplicationStatusView>"
+      },
+      {
+        "name": "EnvelopeApplicationView",
+        "rustType": "crate::Envelope<piqueld_core::api::ApplicationView>"
+      },
+      {
+        "name": "EnvelopeBuildLogPage",
+        "rustType": "crate::Envelope<piqueld_core::api::BuildLogPage>"
+      },
+      {
+        "name": "EnvelopeHostConfiguration",
+        "rustType": "crate::Envelope<piqueld_core::api::HostConfiguration>"
+      },
+      {
+        "name": "EnvelopeOperation",
+        "rustType": "crate::Envelope<piqueld_core::Operation>"
+      },
+      {
+        "name": "EnvelopePageApplicationSummary",
+        "rustType": "crate::Envelope<crate::Page<piqueld_core::api::ApplicationSummary>>"
+      },
+      {
+        "name": "EnvelopePageBuildRecord",
+        "rustType": "crate::Envelope<crate::Page<piqueld_core::api::BuildRecord>>"
+      },
+      {
+        "name": "EnvelopePageDeploymentView",
+        "rustType": "crate::Envelope<crate::Page<piqueld_core::api::DeploymentView>>"
+      },
+      {
+        "name": "EnvelopePageEvent",
+        "rustType": "crate::Envelope<crate::Page<piqueld_core::Event>>"
+      },
+      {
+        "name": "EnvelopePageOperation",
+        "rustType": "crate::Envelope<crate::Page<piqueld_core::Operation>>"
+      },
+      {
+        "name": "EnvelopePlanView",
+        "rustType": "crate::Envelope<piqueld_core::api::PlanView>"
+      },
+      {
+        "name": "EnvelopeReadinessStatus",
+        "rustType": "crate::Envelope<piqueld_core::api::ReadinessStatus>"
+      },
+      {
+        "name": "EnvelopeRenamedApplication",
+        "rustType": "crate::Envelope<piqueld_core::api::RenamedApplication>"
+      },
+      {
+        "name": "EnvelopeSavedApplication",
+        "rustType": "crate::Envelope<piqueld_core::api::SavedApplication>"
+      },
+      {
+        "name": "EnvelopeSystemStatus",
+        "rustType": "crate::Envelope<piqueld_core::api::SystemStatus>"
+      },
+      {
+        "name": "ApplyApplicationRequest",
+        "rustType": "piqueld_core::api::ApplyApplicationRequest"
+      },
+      {
+        "name": "RenameApplicationRequest",
+        "rustType": "piqueld_core::api::RenameApplicationRequest"
+      },
+      {
+        "name": "ErrorBody",
+        "rustType": "piqueld_core::api::ErrorBody"
+      }
+    ]
+  }
+}

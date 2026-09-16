@@ -64,14 +64,19 @@ connecting to a Linux daemon. The full Linux validation command is:
 just
 ```
 
-`just` regenerates the checked-in OpenAPI snapshot and then checks formatting,
-lints, compiles, tests, checks documentation tests, audits dependencies and
-licenses, verifies the snapshot, and checks dependency boundaries. Use
-`just validate` for read-only validation. Regenerate OpenAPI explicitly with:
+`just` checks formatting, lints, compilation, tests, documentation tests,
+dependency licenses, dependency boundaries, and the freshness of the checked-in
+OpenAPI specification and generated client. It does not modify generated files.
+Regenerate both artifacts in dependency order with:
 
 ```console
-just generate-openapi
+just generate
 ```
+
+Client generation requires Java 11 or newer and curl (included in `nix develop`);
+ordinary Cargo builds use checked-in Rust. See
+[client generation](tools/client-codegen/README.md) for the pinned tooling,
+shared contract mappings, and template.
 
 The optional privileged Docker qualification uses an isolated Docker-in-Docker
 daemon:

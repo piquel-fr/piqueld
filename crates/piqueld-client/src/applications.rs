@@ -1,5 +1,3 @@
-use http::Method;
-
 pub use piqueld_core::api::{
     AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
     ApplicationView, ApplyApplicationRequest, DeploymentView, DiagnosticView,
@@ -7,10 +5,7 @@ pub use piqueld_core::api::{
     RenameApplicationRequest, RenamedApplication, SavedApplication,
 };
 
-use crate::{
-    Client, ClientError, Page,
-    client::{invalid_request, path_segment},
-};
+use crate::{Client, ClientError, Page, client::invalid_request, generated};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// Cursor and page-size options for listing applications.
@@ -47,20 +42,13 @@ impl Client {
                 "application list limit must be between 1 and {MAX_APPLICATION_PAGE_SIZE}"
             )));
         }
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        if let Some(cursor) = &options.cursor {
-            query.append_pair("cursor", cursor);
+        generated::ListApplications {
+            cursor: options.cursor.clone(),
+            limit: options.limit.map(u32::from),
         }
-        if let Some(limit) = options.limit {
-            query.append_pair("limit", &limit.to_string());
-        }
-        let query = query.finish();
-        let path = if query.is_empty() {
-            format!("{}/applications", crate::API_PREFIX)
-        } else {
-            format!("{}/applications?{query}", crate::API_PREFIX)
-        };
-        self.send::<_, ()>(Method::GET, &path, None, &[]).await
+        .send(self)
+        .await
+        .map(|response| response.data)
     }
 
     /// Fetches one application by identifier.
@@ -68,13 +56,10 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn application(&self, id: &str) -> Result<ApplicationView, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("{}/applications/{}", crate::API_PREFIX, path_segment(id)),
-            None,
-            &[],
-        )
-        .await
+        generated::GetApplication { id: id.into() }
+            .send(self)
+            .await
+            .map(|response| response.data)
     }
 
     /// Fetches desired, observed, operation, and diagnostic state for an application.
@@ -82,17 +67,10 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn application_detail(&self, id: &str) -> Result<ApplicationDetailView, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!(
-                "{}/applications/{}/detail",
-                crate::API_PREFIX,
-                path_segment(id)
-            ),
-            None,
-            &[],
-        )
-        .await
+        generated::GetApplicationDetail { id: id.into() }
+            .send(self)
+            .await
+            .map(|response| response.data)
     }
 
     /// Saves application configuration without deploying.
@@ -127,16 +105,17 @@ impl Client {
         force: bool,
         deploy: bool,
     ) -> Result<SavedApplication, ClientError> {
-        self.send(
-            Method::POST,
-            &Self::force_path(
-                format!("{}/applications/apply?deploy={deploy}", crate::API_PREFIX),
-                force,
-            ),
-            Some(request),
-            &[],
+        generated::ApplyApplication {
+            force: force.then_some(true),
+            deploy: Some(deploy),
+            ..Default::default()
+        }
+        .send(
+            self,
+            generated::ApplyApplicationBody::ApplicationJson(request),
         )
         .await
+        .map(|response| response.data)
     }
 
     /// Deletes only if the supplied intent revision still matches; absence is rejected.
@@ -160,13 +139,15 @@ impl Client {
         expected: Option<u64>,
         force: bool,
     ) -> Result<AcceptedOperation, ClientError> {
-        self.send::<_, ()>(
-            Method::DELETE,
-            &Self::force_path(Self::mutation_path(id, "", expected), force),
-            None,
-            &[],
-        )
+        generated::DeleteApplication {
+            id: id.into(),
+            expected_generation: expected,
+            force: force.then_some(true),
+            ..Default::default()
+        }
+        .send(self)
         .await
+        .map(|response| response.data)
     }
 
     /// Previews applying an application without mutating runtime state.
@@ -177,13 +158,15 @@ impl Client {
         &self,
         request: &ApplyApplicationRequest,
     ) -> Result<PlanView, ClientError> {
-        self.send(
-            Method::POST,
-            &format!("{}/applications/plan", crate::API_PREFIX),
-            Some(request),
-            &[],
+        generated::PlanApplication {
+            ..Default::default()
+        }
+        .send(
+            self,
+            generated::PlanApplicationBody::ApplicationJson(request),
         )
         .await
+        .map(|response| response.data)
     }
 
     /// Fetches current reconciliation status for an application.
@@ -191,17 +174,10 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn application_status(&self, id: &str) -> Result<ApplicationStatusView, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!(
-                "{}/applications/{}/status",
-                crate::API_PREFIX,
-                path_segment(id)
-            ),
-            None,
-            &[],
-        )
-        .await
+        generated::ApplicationStatus { id: id.into() }
+            .send(self)
+            .await
+            .map(|response| response.data)
     }
 
     /// Creates an application from TOML, requiring its name to be absent.
@@ -239,24 +215,19 @@ impl Client {
         force: bool,
         deploy: bool,
     ) -> Result<SavedApplication, ClientError> {
-        let generation = expected.map(|value| value.to_string());
-        let mut headers = vec![("content-type", "application/toml")];
-        if let Some(value) = generation.as_deref() {
-            headers.push(("x-expected-generation", value));
+        generated::ApplyApplication {
+            force: force.then_some(true),
+            deploy: Some(deploy),
+            x_expected_generation: expected,
+            x_expected_application_id: expected_id.map(str::to_owned),
+            ..Default::default()
         }
-        if let Some(id) = expected_id {
-            headers.push(("x-expected-application-id", id));
-        }
-        self.send_text(
-            Method::POST,
-            &Self::force_path(
-                format!("{}/applications/apply?deploy={deploy}", crate::API_PREFIX),
-                force,
-            ),
-            manifest,
-            &headers,
+        .send(
+            self,
+            generated::ApplyApplicationBody::ApplicationToml(manifest),
         )
         .await
+        .map(|response| response.data)
     }
 
     /// Previews applying an application from a TOML manifest.
@@ -276,39 +247,16 @@ impl Client {
         manifest: &str,
         expected: Option<u64>,
     ) -> Result<PlanView, ClientError> {
-        let generation = expected.map(|value| value.to_string());
-        let mut headers = vec![("content-type", "application/toml")];
-        if let Some(value) = generation.as_deref() {
-            headers.push(("x-expected-generation", value));
+        generated::PlanApplication {
+            x_expected_generation: expected,
+            ..Default::default()
         }
-        self.send_text(
-            Method::POST,
-            &format!("{}/applications/plan", crate::API_PREFIX),
-            manifest,
-            &headers,
+        .send(
+            self,
+            generated::PlanApplicationBody::ApplicationToml(manifest),
         )
         .await
-    }
-
-    fn force_path(mut path: String, force: bool) -> String {
-        if force {
-            path.push(if path.contains('?') { '&' } else { '?' });
-            path.push_str("force=true");
-        }
-        path
-    }
-
-    fn mutation_path(id: &str, action: &str, expected: Option<u64>) -> String {
-        let path = format!(
-            "{}/applications/{}{}",
-            crate::API_PREFIX,
-            path_segment(id),
-            action
-        );
-        expected.map_or_else(
-            || path.clone(),
-            |generation| format!("{path}?expected_generation={generation}"),
-        )
+        .map(|response| response.data)
     }
 
     /// Repairs the latest accepted intent using its already resolved digests.
@@ -319,13 +267,14 @@ impl Client {
         id: &str,
         expected: Option<u64>,
     ) -> Result<AcceptedOperation, ClientError> {
-        self.send::<_, ()>(
-            Method::POST,
-            &Self::mutation_path(id, "/reconcile", expected),
-            None,
-            &[],
-        )
+        generated::ReconcileApplication {
+            id: id.into(),
+            expected_generation: expected,
+            ..Default::default()
+        }
+        .send(self)
         .await
+        .map(|response| response.data)
     }
 
     /// Renames an idle application without touching its runtime resources.
@@ -348,13 +297,17 @@ impl Client {
         request: &RenameApplicationRequest,
         force: bool,
     ) -> Result<RenamedApplication, ClientError> {
-        self.send(
-            Method::POST,
-            &Self::force_path(Self::mutation_path(id, "/rename", None), force),
-            Some(request),
-            &[],
+        generated::RenameApplication {
+            id: id.into(),
+            force: force.then_some(true),
+            ..Default::default()
+        }
+        .send(
+            self,
+            generated::RenameApplicationBody::ApplicationJson(request),
         )
         .await
+        .map(|response| response.data)
     }
 
     /// Reads one page of informational events, including history of deleted applications.
@@ -369,16 +322,14 @@ impl Client {
         if !(1..=100).contains(&limit) {
             return Err(invalid_request("event limit must be between 1 and 100"));
         }
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        if let Some(id) = application_id {
-            query.append_pair("application_id", id);
+        generated::ListEvents {
+            application_id: application_id.map(str::to_owned),
+            cursor: cursor.map(str::to_owned),
+            limit: Some(u32::from(limit)),
         }
-        if let Some(cursor) = cursor {
-            query.append_pair("cursor", cursor);
-        }
-        query.append_pair("limit", &limit.to_string());
-        let path = format!("{}/events?{}", crate::API_PREFIX, query.finish());
-        self.send::<_, ()>(Method::GET, &path, None, &[]).await
+        .send(self)
+        .await
+        .map(|response| response.data)
     }
 }
 
@@ -391,13 +342,14 @@ impl Client {
         id: &str,
         expected: u64,
     ) -> Result<AcceptedOperation, ClientError> {
-        self.send::<_, ()>(
-            Method::POST,
-            &Self::mutation_path(id, "/deploy", Some(expected)),
-            None,
-            &[],
-        )
+        generated::DeployApplication {
+            id: id.into(),
+            expected_generation: Some(expected),
+            ..Default::default()
+        }
+        .send(self)
         .await
+        .map(|response| response.data)
     }
 
     /// Lists deployment snapshots newest first, three per page.
@@ -408,13 +360,13 @@ impl Client {
         id: &str,
         cursor: Option<&str>,
     ) -> Result<Page<DeploymentView>, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &Self::history_path(id, "/deployments", cursor),
-            None,
-            &[],
-        )
+        generated::ListDeployments {
+            id: id.into(),
+            cursor: cursor.map(str::to_owned),
+        }
+        .send(self)
         .await
+        .map(|response| response.data)
     }
 
     /// Lists retained attempt outcomes, 100 per page.
@@ -426,29 +378,14 @@ impl Client {
         deployment: &str,
         cursor: Option<&str>,
     ) -> Result<Page<piqueld_core::Operation>, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &Self::history_path(
-                id,
-                &format!("/deployments/{}/attempts", path_segment(deployment)),
-                cursor,
-            ),
-            None,
-            &[],
-        )
-        .await
-    }
-
-    fn history_path(id: &str, action: &str, cursor: Option<&str>) -> String {
-        let mut path = Self::mutation_path(id, action, None);
-        if let Some(cursor) = cursor {
-            let query = url::form_urlencoded::Serializer::new(String::new())
-                .append_pair("cursor", cursor)
-                .finish();
-            path.push('?');
-            path.push_str(&query);
+        generated::ListDeploymentAttempts {
+            id: id.into(),
+            deployment: deployment.into(),
+            cursor: cursor.map(str::to_owned),
         }
-        path
+        .send(self)
+        .await
+        .map(|response| response.data)
     }
 }
 

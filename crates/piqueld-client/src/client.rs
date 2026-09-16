@@ -11,7 +11,7 @@ use http::{HeaderName, HeaderValue, Method, StatusCode};
 use serde::{Serialize, de::DeserializeOwned};
 use std::time::Duration;
 
-use crate::{ClientError, Envelope, ErrorBody, TransportFailure};
+use crate::{ClientError, ErrorBody, TransportFailure};
 
 /// Transport detail reported when a request exceeds its deadline.
 const TIMEOUT_MESSAGE: &str = "request timed out";
@@ -560,46 +560,6 @@ impl Client {
         self
     }
 
-    pub(crate) async fn send<T: DeserializeOwned, B: Serialize>(
-        &self,
-        method: Method,
-        path: &str,
-        body: Option<&B>,
-        caller_headers: &[(&str, &str)],
-    ) -> Result<T, ClientError> {
-        let mut headers = Vec::with_capacity(caller_headers.len() + 1);
-        let payload = if let Some(body) = body {
-            if !caller_headers
-                .iter()
-                .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-            {
-                headers.push(("content-type", "application/json"));
-            }
-            headers.extend(caller_headers.iter().copied());
-            serde_json::to_vec(body).map_err(|error| {
-                invalid_request(format!("request serialization failed: {error}"))
-            })?
-        } else {
-            headers.extend(caller_headers.iter().copied());
-            Vec::new()
-        };
-        let (status, payload) = self.exchange(method, path, payload, &headers).await?;
-        decode_envelope(status, &payload)
-    }
-
-    pub(crate) async fn send_text<T: DeserializeOwned>(
-        &self,
-        method: Method,
-        path: &str,
-        body: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<T, ClientError> {
-        let (status, payload) = self
-            .exchange(method, path, body.as_bytes().to_vec(), headers)
-            .await?;
-        decode_envelope(status, &payload)
-    }
-
     pub(crate) async fn exchange(
         &self,
         method: Method,
@@ -610,6 +570,9 @@ impl Client {
         let mut headers = headers.to_vec();
         if method != Method::GET
             && method != Method::HEAD
+            && !headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("idempotency-key"))
             && let Some(id) = self.request_id.as_deref()
         {
             headers.push(("idempotency-key", id));
@@ -623,18 +586,6 @@ impl Client {
         #[cfg(target_arch = "wasm32")]
         return web::exchange(self.timeout, method, path, payload, headers).await;
     }
-}
-
-fn decode_envelope<T: DeserializeOwned>(
-    status: StatusCode,
-    payload: &[u8],
-) -> Result<T, ClientError> {
-    if !status.is_success() {
-        return Err(api_error(status, payload));
-    }
-    serde_json::from_slice::<Envelope<T>>(payload)
-        .map(|value| value.data)
-        .map_err(|source| ClientError::Decode { source })
 }
 
 pub(crate) fn api_error(status: StatusCode, payload: &[u8]) -> ClientError {
@@ -674,9 +625,97 @@ pub(crate) fn path_segment(value: &str) -> String {
     encoded
 }
 
+/// Transport-independent request assembled by the generated endpoint bindings.
+pub(crate) struct GeneratedRequest {
+    method: Method,
+    path: String,
+    query: url::form_urlencoded::Serializer<'static, String>,
+    headers: Vec<(&'static str, String)>,
+    payload: Vec<u8>,
+}
+
+impl GeneratedRequest {
+    pub(crate) fn new(method: Method, path: String) -> Self {
+        Self {
+            method,
+            path,
+            query: url::form_urlencoded::Serializer::new(String::new()),
+            headers: Vec::new(),
+            payload: Vec::new(),
+        }
+    }
+
+    pub(crate) fn query(&mut self, name: &str, value: &impl std::fmt::Display) {
+        self.query.append_pair(name, &value.to_string());
+    }
+
+    pub(crate) fn header(&mut self, name: &'static str, value: &impl std::fmt::Display) {
+        self.headers.push((name, value.to_string()));
+    }
+
+    pub(crate) fn json(
+        mut self,
+        content_type: &'static str,
+        body: &impl Serialize,
+    ) -> Result<Self, ClientError> {
+        self.payload = serde_json::to_vec(body)
+            .map_err(|error| invalid_request(format!("request serialization failed: {error}")))?;
+        self.header("content-type", &content_type);
+        Ok(self)
+    }
+
+    pub(crate) fn text(mut self, content_type: &'static str, body: &str) -> Self {
+        self.payload = body.as_bytes().to_vec();
+        self.header("content-type", &content_type);
+        self
+    }
+
+    async fn send(
+        mut self,
+        client: &Client,
+        accepted: &[StatusCode],
+    ) -> Result<Vec<u8>, ClientError> {
+        let query = self.query.finish();
+        if !query.is_empty() {
+            self.path.push('?');
+            self.path.push_str(&query);
+        }
+        let headers = self
+            .headers
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect::<Vec<_>>();
+        let (status, payload) = client
+            .exchange(self.method, &self.path, self.payload, &headers)
+            .await?;
+        if !status.is_success() && !accepted.contains(&status) {
+            return Err(api_error(status, &payload));
+        }
+        Ok(payload)
+    }
+
+    pub(crate) async fn send_json<T: DeserializeOwned>(
+        self,
+        client: &Client,
+        accepted: &[StatusCode],
+    ) -> Result<T, ClientError> {
+        let payload = self.send(client, accepted).await?;
+        serde_json::from_slice(&payload).map_err(|source| ClientError::Decode { source })
+    }
+
+    pub(crate) async fn send_text(
+        self,
+        client: &Client,
+        accepted: &[StatusCode],
+    ) -> Result<String, ClientError> {
+        let payload = self.send(client, accepted).await?;
+        String::from_utf8(payload).map_err(|source| ClientError::TextDecode { source })
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::{Client, native, path_segment, validate_headers};
+    use super::{Client, GeneratedRequest, native, path_segment, validate_headers};
     use crate::{ClientError, SystemStatus};
     use http::Method;
     use tokio::{
@@ -755,15 +794,11 @@ mod tests {
             let _ = socket.write_all(response.as_bytes()).await;
         });
         let client = Client::tcp(&format!("http://{address}/")).unwrap();
-        let status: SystemStatus = client
-            .send::<_, ()>(
-                Method::DELETE,
-                "/api/v1/applications/app-1",
-                None,
-                &[("x-trace-id", "trace-42"), ("if-match", "\"7\"")],
-            )
-            .await
-            .unwrap();
+        let mut request =
+            GeneratedRequest::new(Method::DELETE, "/api/v1/applications/app-1".into());
+        request.header("x-trace-id", &"trace-42");
+        request.header("if-match", &"\"7\"");
+        let status: crate::Envelope<SystemStatus> = request.send_json(&client, &[]).await.unwrap();
         server.await.unwrap();
         let wire = wire_rx.recv().await.unwrap();
         assert!(wire.starts_with("DELETE /api/v1/applications/app-1 HTTP/1.1\r\n"));
@@ -771,6 +806,6 @@ mod tests {
         assert!(wire.contains("\r\nx-trace-id: trace-42\r\n"));
         assert!(wire.contains("\r\nif-match: \"7\"\r\n"));
         assert!(!wire.contains("content-type"));
-        assert_eq!(status.status, "running");
+        assert_eq!(status.data.status, "running");
     }
 }

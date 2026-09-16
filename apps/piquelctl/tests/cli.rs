@@ -1342,7 +1342,7 @@ fn force_does_not_skip_confirmation_and_explicit_force_is_sent_to_the_endpoint()
             }
             assert_eq!(
                 request.path,
-                "/api/v1/applications/apply?deploy=true&force=true"
+                "/api/v1/applications/apply?force=true&deploy=true"
             );
             assert!(!request.headers.contains_key("x-expected-generation"));
             assert!(!request.headers.contains_key("x-expected-application-id"));

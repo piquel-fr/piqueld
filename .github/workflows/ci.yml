@@ -8,7 +8,7 @@
 #   test / doc-test   -> test
 #   test-embedded     -> embedded-test
 #   deny              -> deny
-#   openapi-check     -> openapi
+#   openapi-check / client-check -> openapi
 #   boundary          -> boundary
 #   ui-check / check-wasm -> wasm-ui
 #   docker-test       -> docker-integration
@@ -182,6 +182,11 @@ jobs:
         with:
           cache-on-failure: true
       - run: just openapi-check
+      - name: Install client generator runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends default-jre-headless
+      - run: just client-check
 
   boundary:
     name: boundary

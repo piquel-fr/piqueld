@@ -1,4 +1,4 @@
-use http::Method;
+use crate::generated;
 
 pub use piqueld_core::api::{DependencyStatus, ReadinessStatus, SystemStatus};
 
@@ -10,13 +10,10 @@ impl Client {
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn system_status(&self) -> Result<SystemStatus, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("{}/system/status", crate::API_PREFIX),
-            None,
-            &[],
-        )
-        .await
+        generated::SystemStatus {}
+            .send(self)
+            .await
+            .map(|response| response.data)
     }
 }
 
@@ -27,13 +24,10 @@ impl Client {
     pub async fn system_configuration(
         &self,
     ) -> Result<piqueld_core::api::HostConfiguration, ClientError> {
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("{}/system/configuration", crate::API_PREFIX),
-            None,
-            &[],
-        )
-        .await
+        generated::SystemConfiguration {}
+            .send(self)
+            .await
+            .map(|response| response.data)
     }
 }
 
@@ -44,19 +38,10 @@ impl Client {
     pub async fn system_readiness(
         &self,
     ) -> Result<piqueld_core::api::ReadinessStatus, ClientError> {
-        let (status, bytes) = self
-            .exchange(
-                Method::GET,
-                &format!("{}/system/readiness", crate::API_PREFIX),
-                Vec::new(),
-                &[],
-            )
+        let response: crate::Envelope<ReadinessStatus> = generated::SystemReadiness {}
+            .request()
+            .send_json(self, &[http::StatusCode::SERVICE_UNAVAILABLE])
             .await?;
-        if !status.is_success() && status != http::StatusCode::SERVICE_UNAVAILABLE {
-            return Err(crate::client::api_error(status, &bytes));
-        }
-        serde_json::from_slice::<crate::Envelope<piqueld_core::api::ReadinessStatus>>(&bytes)
-            .map(|envelope| envelope.data)
-            .map_err(|source| ClientError::Decode { source })
+        Ok(response.data)
     }
 }

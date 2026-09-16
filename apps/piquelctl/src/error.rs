@@ -77,6 +77,14 @@ impl CliError {
         self.diagnostic(Diagnostic::Response)
     }
 
+    fn decode_failure(source: impl fmt::Display) -> Self {
+        Self::new(
+            ErrorKind::General,
+            format!("the daemon returned an invalid public API response: {source}"),
+        )
+        .invalid_response()
+    }
+
     pub(crate) fn exit_code(&self) -> ExitCode {
         ExitCode::from(self.kind.exit_code())
     }
@@ -147,11 +155,8 @@ impl From<ClientError> for CliError {
                 format!("piqueld API request failed: {message}"),
             )
             .diagnostic(Diagnostic::Transport(kind)),
-            ClientError::Decode { source } => Self::new(
-                ErrorKind::General,
-                format!("the daemon returned an invalid public API response: {source}"),
-            )
-            .invalid_response(),
+            ClientError::Decode { source } => Self::decode_failure(source),
+            ClientError::TextDecode { source } => Self::decode_failure(source),
             ClientError::Api { status, error } => {
                 let kind = match status.as_u16() {
                     400 | 404 | 413 | 415 | 422 => ErrorKind::Input,

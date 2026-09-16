@@ -170,7 +170,7 @@ pub(super) async fn detail(
 #[utoipa::path(
     post, path = "/api/v1/applications/apply", operation_id = "applyApplication",
     summary = "Apply an application manifest",
-    params(ApplyQuery,("X-Expected-Generation"=Option<u64>,Header,description="TOML only: required unless forced; zero requires absence. JSON uses expected_generation in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses expected_application_id in the request body."),("Idempotency-Key"=Option<String>,Header)),
+    params(ApplyQuery,("X-Expected-Generation"=Option<u64>,Header,description="TOML only: required unless forced; zero requires absence. JSON uses `expected_generation` in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses `expected_application_id` in the request body."),("Idempotency-Key"=Option<String>,Header)),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 200, description = "Configuration saved", body = Envelope<SavedApplication>),
@@ -259,7 +259,7 @@ pub(super) async fn delete(
 #[utoipa::path(
     post, path = "/api/v1/applications/plan", operation_id = "planApplication",
     summary = "Preview an application manifest",
-    params(("X-Expected-Generation"=Option<u64>,Header,description="TOML only: inspected intent revision; zero requires absence. JSON uses expected_generation in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses expected_application_id in the request body.")),
+    params(("X-Expected-Generation"=Option<u64>,Header,description="TOML only: inspected intent revision; zero requires absence. JSON uses `expected_generation` in the request body."),("X-Expected-Application-Id"=Option<String>,Header,description="TOML only: inspected application identity. JSON uses `expected_application_id` in the request body.")),
     request_body(content((ApplyApplicationRequest = "application/json"), (String = "application/toml"), (String = "text/toml"))),
     responses(
         (status = 200, description = "Preview", body = Envelope<PlanView>),

@@ -3691,7 +3691,7 @@
             }
           },
           {
-            "description": "TOML only: required unless forced; zero requires absence. JSON uses expected_generation in the request body.",
+            "description": "TOML only: required unless forced; zero requires absence. JSON uses `expected_generation` in the request body.",
             "in": "header",
             "name": "X-Expected-Generation",
             "required": false,
@@ -3705,7 +3705,7 @@
             }
           },
           {
-            "description": "TOML only: inspected application identity. JSON uses expected_application_id in the request body.",
+            "description": "TOML only: inspected application identity. JSON uses `expected_application_id` in the request body.",
             "in": "header",
             "name": "X-Expected-Application-Id",
             "required": false,
@@ -3858,7 +3858,7 @@
         "operationId": "planApplication",
         "parameters": [
           {
-            "description": "TOML only: inspected intent revision; zero requires absence. JSON uses expected_generation in the request body.",
+            "description": "TOML only: inspected intent revision; zero requires absence. JSON uses `expected_generation` in the request body.",
             "in": "header",
             "name": "X-Expected-Generation",
             "required": false,
@@ -3872,7 +3872,7 @@
             }
           },
           {
-            "description": "TOML only: inspected application identity. JSON uses expected_application_id in the request body.",
+            "description": "TOML only: inspected application identity. JSON uses `expected_application_id` in the request body.",
             "in": "header",
             "name": "X-Expected-Application-Id",
             "required": false,
@@ -5198,7 +5198,7 @@
             "description": "OpenAPI 3.1 document"
           }
         },
-        "summary": "Get the OpenAPI document"
+        "summary": "Get the `OpenAPI` document"
       }
     },
     "/api/v1/operations/{id}": {

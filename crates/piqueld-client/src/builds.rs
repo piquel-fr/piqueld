@@ -1,3 +1,4 @@
+use crate::generated;
 use crate::{BuildLogPage, BuildRecord, Client, ClientError, Page};
 use http::Method;
 impl Client {
@@ -9,20 +10,14 @@ impl Client {
         application: Option<&str>,
         cursor: Option<&str>,
     ) -> Result<Page<BuildRecord>, ClientError> {
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        if let Some(app) = application {
-            query.append_pair("application_id", app);
+        generated::ListBuilds {
+            application_id: application.map(str::to_owned),
+            cursor: cursor.map(str::to_owned),
+            ..Default::default()
         }
-        if let Some(cursor) = cursor {
-            query.append_pair("cursor", cursor);
-        }
-        self.send::<_, ()>(
-            Method::GET,
-            &format!("{}/builds?{}", crate::API_PREFIX, query.finish()),
-            None,
-            &[],
-        )
+        .send(self)
         .await
+        .map(|response| response.data)
     }
     /// Reads the newest filtered build output before an optional exclusive cursor.
     /// # Errors
