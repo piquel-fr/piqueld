@@ -195,11 +195,45 @@ after acceptance, or a longer global `--timeout` for builds. The server continue
 deployment if the CLI wait times out. `refresh` resolves only the stored service
 sources; `reconcile` retries or repairs the latest deployment snapshot and prepared target.
 
-Human output uses bold labels and color on terminals, aligned application lists,
+Human output uses bold labels and color on terminals, application lists,
 and elapsed operation progress. Redirected output stays plain and `NO_COLOR`
-disables color. `--quiet` suppresses successful human output and progress while
-preserving errors and explicit JSON results. `--noninteractive` refuses prompts
+disables color. `--quiet` suppresses human results, information, and progress while
+preserving warnings, errors, and explicit JSON results. `--noninteractive` refuses prompts
 even on a terminal; destructive commands still need `--yes`.
+
+Output is routed through channels configured once at startup:
+
+| Role | Stream | Quiet behavior |
+| --- | --- | --- |
+| Result | stdout, human or one typed JSON document | Human hidden; JSON retained |
+| Information | stderr, routine guidance | Hidden |
+| Warning | stderr, incomplete results or actionable caveats | Retained |
+| Progress | stderr, task transitions and outcomes | Hidden |
+| Prompt | stderr, an authorized interactive question | Retained |
+| Error | stderr, final failure with context and hints | Retained |
+
+Every event is rendered and flushed as it occurs; output is not collected until
+the command ends. Terminal progress uses independently tracked task rows and
+permanent completion lines. Redirected progress prints meaningful transitions,
+without repeated identical updates. JSON remains a single result document, not
+a progress stream; stderr stays human-readable in JSON mode. Paginated results
+can collect typed records before that document is emitted. If an application's
+status cannot be fetched during `list`, its status is `null` and a contextual
+warning is emitted immediately; other applications are still returned.
+
+Dynamic human-readable values escape terminal control characters. Logs preserve
+newlines and tabs, but escape other controls. Build logs additionally use the
+shared ANSI/control cleanup before human rendering. JSON retains original values.
+Result, information, warning, and prompt write failures fail the command;
+progress and final error reporting are best effort.
+
+Internally, command handlers emit typed `Report` values through one `Console`;
+they do not branch on `--json` or `--quiet`. Reports define their JSON type and
+stream human rendering through `HumanWriter`. Contextual errors and warnings
+share a borrowed diagnostic renderer. Task handles may be cloned across workers,
+but ordinary console writes remain serialized. Only explicit task completion
+prints an outcome; dropping the last unfinished handle clears its transient row
+without claiming the server-side operation was cancelled.
 
 `piquelctl logs NAME_OR_ID [--service NAME] [--tail 200] [--since-seconds 3600]`
 reads a recent Docker snapshot with timestamps, service, task, and stream labels.
@@ -255,7 +289,9 @@ prod  http://127.0.0.1:7845
 `piquelctl profiles --json` returns
 `{"profiles":[{"name":"dev","endpoint":"/tmp/piqueld-dev/piqueld.sock"}]}`.
 An empty list succeeds with no human output, or `{"profiles":[]}` in JSON.
-`--quiet` suppresses human output but preserves JSON and errors.
+`--quiet` suppresses human results, information, and progress, but preserves JSON,
+warnings, errors, and authorized prompts. An empty human profile list prints
+`No profiles configured.`
 
 `piquelctl builds list [--application ID] [--cursor CURSOR]` lists one page of build
 attempts. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded

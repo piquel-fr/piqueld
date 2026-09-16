@@ -8,6 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anstream.workspace = true
+indicatif.workspace = true
 clap.workspace = true
 futures-util.workspace = true
 piqueld-client.workspace = true

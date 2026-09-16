@@ -140,7 +140,7 @@ socket = "/tmp/dev.sock"
     );
     assert_eq!(
         String::from_utf8(result.stdout).unwrap(),
-        "NAME\tENDPOINT\ndev\t/tmp/dev.sock\nprod\thttp://127.0.0.1:7845\n"
+        "NAME  ENDPOINT\ndev  /tmp/dev.sock\nprod  http://127.0.0.1:7845\n"
     );
     let result = fixture.run(&["profiles", "--json", "--quiet"], &env);
     assert!(result.status.success());
@@ -212,7 +212,7 @@ fn empty_profiles_succeed_and_missing_explicit_files_fail() {
     );
     let result = fixture.run(&["profiles"], &[]);
     assert!(result.status.success());
-    assert!(result.stdout.is_empty());
+    assert_eq!(result.stdout, b"No profiles configured.\n");
     std::fs::remove_file(&path).unwrap();
     let result = fixture.run(&["profiles"], &[]);
     assert_eq!(result.status.code(), Some(2));

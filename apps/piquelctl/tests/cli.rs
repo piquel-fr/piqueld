@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs,
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
     os::unix::net::UnixListener,
     path::PathBuf,
@@ -12,6 +12,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     thread,
     time::Duration,
@@ -689,6 +690,147 @@ fn human_plan_has_scannable_sections() {
 }
 
 #[test]
+fn partial_list_failures_preserve_results_and_context_in_all_modes() {
+    for json in [false, true] {
+        for quiet in [false, true] {
+            let server = start_server(false, 3, |request| match request.path.as_str() {
+                "/api/v1/applications?limit=100" => Reply::json(page(
+                    vec![
+                        app_summary("app-first-01", "first"),
+                        app_summary("app-notes-01", "notes"),
+                    ],
+                    None,
+                )),
+                "/api/v1/applications/app-first-01/status" => {
+                    Reply::json(status("app-first-01", "ready"))
+                }
+                "/api/v1/applications/app-notes-01/status" => Reply {
+                    content_type: "text/html",
+                    body: b"<html>wrong service</html>".to_vec(),
+                    ..Reply::json(Value::Null)
+                },
+                path => panic!("unexpected path {path}"),
+            });
+            let args = if quiet {
+                vec!["--quiet", "list"]
+            } else {
+                vec!["list"]
+            };
+            let output = run_with_format(&server, &args, "2s", json);
+            assert!(output.status.success());
+            if json {
+                let value = assert_json_success(&output);
+                assert_eq!(value["items"][0]["status"]["state"], "ready");
+                assert!(value["items"][1]["status"].is_null());
+                assert_eq!(value["items"][1]["application"]["name"], "notes");
+            } else if quiet {
+                assert!(output.stdout.is_empty());
+            } else {
+                assert!(String::from_utf8_lossy(&output.stdout).contains("notes  unavailable"));
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("Warning: notes: status unavailable"));
+            assert!(stderr.contains("Endpoint:"));
+            assert!(stderr.contains("Endpoint source: flag --url"));
+            assert!(stderr.contains("Hint:"));
+            assert!(!stderr.contains("<html>"));
+            server.finish();
+        }
+    }
+}
+
+#[test]
+fn progress_is_visible_before_the_server_completes_the_command() {
+    let (release, wait) = mpsc::channel();
+    let mut calls = 0;
+    let server = start_server(false, 2, move |_| {
+        calls += 1;
+        if calls == 1 {
+            let mut value = operation("running");
+            value["phase"] = json!("resolving_image");
+            Reply::json(value)
+        } else {
+            wait.recv_timeout(Duration::from_secs(5))
+                .expect("release final response");
+            Reply::json(operation("succeeded"))
+        }
+    });
+    let Endpoint::Tcp(url) = &server.endpoint else {
+        unreachable!()
+    };
+    let mut child = Command::new(env!("CARGO_BIN_EXE_piquelctl"))
+        .args([
+            "--url",
+            url,
+            "--json",
+            "--timeout",
+            "10s",
+            "operation",
+            "operation-01",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (visible, observed) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            if line.unwrap().contains("Resolving image") {
+                visible.send(()).unwrap();
+            }
+        }
+    });
+    let streamed = observed.recv_timeout(Duration::from_secs(3));
+    let still_running = child.try_wait().unwrap().is_none();
+    release.send(()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    reader.join().unwrap();
+    server.finish();
+    streamed.expect("progress must be flushed before releasing the final response");
+    assert!(still_running);
+    assert_eq!(assert_json_success(&output)["state"], "succeeded");
+}
+
+#[test]
+fn blocked_plan_emits_json_then_fails_and_quiet_keeps_the_reason() {
+    let directory = tempdir().unwrap();
+    let manifest = write_manifest(&directory);
+    for json in [false, true] {
+        let server = start_server(false, 1, |_| {
+            let mut preview = plan("preview-00000001");
+            preview["plan"]["diagnostics"] = json!([{
+                "code": "ownership_conflict", "severity": "error", "resource": "network", "message": "owned by another application", "blocking": true
+            }]);
+            Reply::json(preview)
+        });
+        let output = run_with_format(
+            &server,
+            &["--quiet", "plan", "--file", manifest.to_str().unwrap()],
+            "2s",
+            json,
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if json {
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["plan"]["diagnostics"][0]["blocking"], true);
+        } else {
+            assert!(output.stdout.is_empty());
+        }
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("ownership_conflict [network]: owned by another application")
+        );
+        server.finish();
+    }
+}
+
+#[test]
 fn human_operation_progress_omits_duplicate_poll_results() {
     let mut calls = 0;
     let server = start_server(true, 3, move |_| {
@@ -741,9 +883,9 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
     assert_eq!(output.status.code(), Some(5));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Context:"));
-    assert!(stderr.contains("Resource     app-notes-network"));
-    assert!(stderr.contains("Code         runtime_failed"));
-    assert!(stderr.contains("Message      runtime reconciliation failed"));
+    assert!(stderr.contains("Resource: app-notes-network"));
+    assert!(stderr.contains("Code: runtime_failed"));
+    assert!(stderr.contains("Message: runtime reconciliation failed"));
     assert!(stderr.contains("Hint: retry with `piquelctl reconcile app-notes-01`"));
     assert!(!stderr.contains("created_at_ms"));
     let _ = server.finish();
@@ -1316,7 +1458,10 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
     let output = run_human(&server, &["--quiet", "builds", "logs", "1"]);
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("expired"));
+    assert!(stderr.contains("truncated"));
+    assert!(!stderr.contains("--before"));
     server.finish();
 
     let output = Command::new(env!("CARGO_BIN_EXE_piquelctl"))

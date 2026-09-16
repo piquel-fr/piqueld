@@ -9,7 +9,8 @@ mod support;
 
 use clap::{CommandFactory, FromArgMatches};
 use cli::Cli;
-use error::{CliError, ErrorKind, finish_error};
+use error::{CliError, ErrorKind, ErrorReport};
+use output::{Console, reports::ProfilesReport};
 use std::{process::ExitCode, time::Duration};
 use tokio::time::Instant;
 
@@ -17,21 +18,24 @@ use tokio::time::Instant;
 async fn main() -> ExitCode {
     let matches = Cli::command().get_matches();
     let mut cli = Cli::from_arg_matches(&matches).expect("validated command arguments");
-    let profiles = match profiles::Profiles::load(&cli) {
-        Ok(profiles) => profiles,
-        Err(error) => return finish_error(&cli, &error),
-    };
-    let result = if matches!(cli.command, cli::Command::Profiles) {
-        profiles.list(&cli)
-    } else {
-        if let Err(error) = profiles.resolve(&mut cli, &matches) {
-            return finish_error(&cli, &error);
+    let mut console = Console::new(&cli);
+    let result = async {
+        let profiles = profiles::Profiles::load(&cli)?;
+        if matches!(cli.command, cli::Command::Profiles) {
+            return console.emit(&ProfilesReport {
+                profiles: profiles.summaries(),
+            });
         }
-        run_with_timeout(&cli).await
-    };
+        profiles.resolve(&mut cli, &matches)?;
+        run_with_timeout(&cli, &mut console).await
+    }
+    .await;
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => finish_error(&cli, &error),
+        Err(error) => {
+            console.error(&ErrorReport::new(&error, &cli));
+            error.exit_code()
+        }
     }
 }
 
@@ -39,11 +43,11 @@ async fn main() -> ExitCode {
 /// operator think time must not consume the network-phase budget. The command
 /// future stays polled even while a prompt is open so its completion and
 /// signal handling keep making progress.
-async fn run_with_timeout(cli: &Cli) -> Result<(), CliError> {
+async fn run_with_timeout(cli: &Cli, console: &mut Console) -> Result<(), CliError> {
     // Validate the endpoint before the deadline can win the select below, so
     // timeout diagnostics can never echo rejected URL input.
     let client = commands::build_client(cli)?;
-    let command = commands::run(cli, &client);
+    let command = commands::run(cli, &client, console);
     tokio::pin!(command);
     let mut deadline = checked_deadline(Instant::now(), cli.timeout)
         .map_err(|error| error.configuration(cli.connection_sources.timeout.to_string()))?;
@@ -163,7 +167,7 @@ mod tests {
             Cli::try_parse_from(["piquelctl", "--timeout", "18446744073709551615s", "status"])
                 .expect("the duration parser accepts a syntactically valid value");
 
-        let error = super::run_with_timeout(&cli)
+        let error = super::run_with_timeout(&cli, &mut super::Console::new(&cli))
             .await
             .expect_err("the platform cannot represent the deadline");
 

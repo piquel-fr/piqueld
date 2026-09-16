@@ -1,7 +1,10 @@
-use crate::cli::Cli;
-use piqueld_client::{ClientError, TransportFailure};
+use crate::{
+    cli::Cli,
+    output::{DiagnosticReport, HumanWriter},
+};
+use piqueld_client::{ClientError, PlanView, TransportFailure};
 use serde_json::Value;
-use std::{fmt, process::ExitCode};
+use std::{fmt, io, process::ExitCode};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ErrorKind {
@@ -74,65 +77,8 @@ impl CliError {
         self.diagnostic(Diagnostic::Response)
     }
 
-    /// Render only evidence available from configuration and the failed exchange.
-    pub(crate) fn render_connection(&self, cli: &Cli) {
-        let Some(diagnostic) = self.diagnostic.as_deref() else {
-            return;
-        };
-        if let Diagnostic::Configuration(source) = diagnostic {
-            eprintln!("  Configuration source: {source}");
-        } else {
-            // Rejected endpoint input can contain credentials; never echo it.
-            if !matches!(diagnostic, Diagnostic::Endpoint) {
-                eprintln!("  Endpoint: {}", crate::support::transport_description(cli));
-            }
-            eprintln!("  Endpoint source: {}", cli.connection_sources.endpoint);
-        }
-        if matches!(
-            diagnostic,
-            Diagnostic::CommandTimeout | Diagnostic::Transport(TransportFailure::Timeout)
-        ) {
-            eprintln!(
-                "  Timeout: {}",
-                crate::support::format_duration(cli.timeout)
-            );
-            eprintln!("  Timeout source: {}", cli.connection_sources.timeout);
-        }
-        let hint = match diagnostic {
-            Diagnostic::Endpoint => {
-                "Check the selected endpoint configuration; use a Unix socket or a plain loopback HTTP origin."
-            }
-            Diagnostic::Configuration(_) => {
-                "Check the configuration source above. Profiles require exactly one socket or URL and an optional positive timeout."
-            }
-            Diagnostic::Transport(TransportFailure::Connect(kind)) => match kind {
-                std::io::ErrorKind::NotFound if cli.url.is_none() => {
-                    "Check the socket path and whether the daemon has created its socket."
-                }
-                std::io::ErrorKind::PermissionDenied if cli.url.is_none() => {
-                    "Check whether your user has access to the socket and its parent directories."
-                }
-                std::io::ErrorKind::PermissionDenied => {
-                    "Check whether local network access is permitted for this process."
-                }
-                std::io::ErrorKind::ConnectionRefused => {
-                    "Check whether the daemon is listening at the selected endpoint."
-                }
-                _ => {
-                    "Check the selected endpoint and whether the daemon is listening and accessible."
-                }
-            },
-            Diagnostic::Transport(TransportFailure::Timeout) => {
-                "Check daemon responsiveness and whether the configured timeout is sufficient."
-            }
-            Diagnostic::CommandTimeout => {
-                "Check daemon responsiveness and whether the timeout allows the command to finish. A server-side operation may still be running."
-            }
-            Diagnostic::Transport(TransportFailure::Exchange) | Diagnostic::Response => {
-                "Check that the selected endpoint serves the piqueld API and inspect the daemon logs."
-            }
-        };
-        eprintln!("  Hint: {hint}");
+    pub(crate) fn exit_code(&self) -> ExitCode {
+        ExitCode::from(self.kind.exit_code())
     }
 
     pub(crate) fn api(mut self, code: String, request_id: String, details: Value) -> Self {
@@ -145,6 +91,31 @@ impl CliError {
     pub(crate) fn with_details(mut self, details: Value) -> Self {
         self.details = Some(details);
         self
+    }
+
+    /// Keep blocking reasons visible even when quiet mode hides the plan result.
+    pub(crate) fn blocked_plan(plan: &PlanView) -> Self {
+        let diagnostics = plan
+            .plan
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.blocking)
+            .map(|diagnostic| {
+                format!(
+                    "{} [{}]: {}",
+                    diagnostic.code, diagnostic.resource, diagnostic.message
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self::new(
+            ErrorKind::Conflict,
+            if diagnostics.is_empty() {
+                "plan contains blocking diagnostics".into()
+            } else {
+                format!("plan is blocked ({diagnostics})")
+            },
+        )
     }
 }
 
@@ -208,71 +179,133 @@ impl From<ClientError> for CliError {
 
 pub(crate) type Result<T> = std::result::Result<T, CliError>;
 
-pub(crate) fn finish_error(cli: &Cli, error: &CliError) -> ExitCode {
-    if cli.json {
-        eprintln!(
-            "piquelctl: {}{}{}{}",
-            error.message,
-            error
-                .api_code
-                .as_deref()
-                .map_or_else(String::new, |code| format!("; API code {code}")),
-            error
-                .request_id
-                .as_deref()
-                .map_or_else(String::new, |id| format!("; request ID {id}")),
-            error
-                .details
-                .as_ref()
-                .map_or_else(String::new, |details| format!("; details {details}")),
-        );
-        if let Some(application) = error
-            .details
-            .as_ref()
-            .and_then(|details| details.get("operation"))
-            .and_then(|operation| operation.get("application_id"))
-            .and_then(Value::as_str)
-        {
-            eprintln!("hint: retry with `piquelctl reconcile {application}`");
+pub(crate) struct ErrorReport<'a> {
+    error: &'a CliError,
+    cli: &'a Cli,
+    application: Option<&'a str>,
+}
+impl<'a> ErrorReport<'a> {
+    /// Borrow resolved configuration at emission time, never a stale startup copy.
+    pub(crate) fn new(error: &'a CliError, cli: &'a Cli) -> Self {
+        Self {
+            error,
+            cli,
+            application: None,
         }
-    } else {
-        eprintln!("Error: {}", error.message);
+    }
+    pub(crate) fn warning(error: &'a CliError, cli: &'a Cli, application: &'a str) -> Self {
+        Self {
+            error,
+            cli,
+            application: Some(application),
+        }
+    }
+    /// Render only evidence available from configuration and the failed exchange.
+    fn connection(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        let cli = self.cli;
+        let Some(diagnostic) = self.error.diagnostic.as_deref() else {
+            return Ok(());
+        };
+        if let Diagnostic::Configuration(source) = diagnostic {
+            out.label("  Configuration source", source)?;
+        } else {
+            // Rejected endpoint input can contain credentials; never echo it.
+            if !matches!(diagnostic, Diagnostic::Endpoint) {
+                out.label("  Endpoint", crate::support::transport_description(cli))?;
+            }
+            out.label("  Endpoint source", &cli.connection_sources.endpoint)?;
+        }
+        if matches!(
+            diagnostic,
+            Diagnostic::CommandTimeout | Diagnostic::Transport(TransportFailure::Timeout)
+        ) {
+            out.label("  Timeout", crate::support::format_duration(cli.timeout))?;
+            out.label("  Timeout source", &cli.connection_sources.timeout)?;
+        }
+        let hint = match diagnostic {
+            Diagnostic::Endpoint => {
+                "Check the selected endpoint configuration; use a Unix socket or a plain HTTP origin."
+            }
+            Diagnostic::Configuration(_) => {
+                "Check the configuration source above. Profiles require exactly one socket or URL and an optional positive timeout."
+            }
+            Diagnostic::Transport(TransportFailure::Connect(kind)) => match kind {
+                std::io::ErrorKind::NotFound if cli.url.is_none() => {
+                    "Check the socket path and whether the daemon has created its socket."
+                }
+                std::io::ErrorKind::PermissionDenied if cli.url.is_none() => {
+                    "Check whether your user has access to the socket and its parent directories."
+                }
+                std::io::ErrorKind::PermissionDenied => {
+                    "Check whether local network access is permitted for this process."
+                }
+                std::io::ErrorKind::ConnectionRefused => {
+                    "Check whether the daemon is listening at the selected endpoint."
+                }
+                _ => {
+                    "Check the selected endpoint and whether the daemon is listening and accessible."
+                }
+            },
+            Diagnostic::Transport(TransportFailure::Timeout) => {
+                "Check daemon responsiveness and whether the configured timeout is sufficient."
+            }
+            Diagnostic::CommandTimeout => {
+                "Check daemon responsiveness and whether the timeout allows the command to finish. A server-side operation may still be running."
+            }
+            Diagnostic::Transport(TransportFailure::Exchange) | Diagnostic::Response => {
+                "Check that the selected endpoint serves the piqueld API and inspect the daemon logs."
+            }
+        };
+        out.label("  Hint", hint)
+    }
+
+    fn details(details: &Value, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        let Some(operation) = details.get("operation") else {
+            return out.label("Details", details);
+        };
+        out.blank()?;
+        out.heading("Context:")?;
+        for (label, field) in [
+            ("Operation", "id"),
+            ("Application", "application_id"),
+            ("Phase", "phase"),
+            ("Resource", "resource"),
+            ("Code", "error_code"),
+            ("Message", "error_message"),
+        ] {
+            if let Some(value) = operation.get(field).and_then(Value::as_str) {
+                out.label(label, value)?;
+            }
+        }
+        if let Some(application) = operation.get("application_id").and_then(Value::as_str) {
+            out.label(
+                "Hint",
+                format_args!("retry with `piquelctl reconcile {application}`"),
+            )?;
+        }
+        Ok(())
+    }
+}
+impl DiagnosticReport for ErrorReport<'_> {
+    fn render(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        let error = self.error;
+        if let Some(application) = self.application {
+            out.label(
+                "Warning",
+                format_args!("{application}: status unavailable: {}", error.message),
+            )?;
+        } else {
+            out.label("Error", &error.message)?;
+        }
         if let Some(code) = &error.api_code {
-            eprintln!("  API code:   {code}");
+            out.label("  API code", code)?;
         }
-        if let Some(request_id) = &error.request_id {
-            eprintln!("  Request ID: {request_id}");
+        if let Some(id) = &error.request_id {
+            out.label("  Request ID", id)?;
         }
         if let Some(details) = &error.details {
-            render_details(details);
+            Self::details(details, out)?;
         }
-    }
-    error.render_connection(cli);
-    ExitCode::from(error.kind.exit_code())
-}
-
-fn render_details(details: &Value) {
-    let Some(operation) = details.get("operation") else {
-        if let Ok(details) = serde_json::to_string_pretty(details) {
-            eprintln!("\nDetails:\n{details}");
-        }
-        return;
-    };
-
-    eprintln!("\nContext:");
-    for (label, field) in [
-        ("Operation", "id"),
-        ("Application", "application_id"),
-        ("Phase", "phase"),
-        ("Resource", "resource"),
-        ("Code", "error_code"),
-        ("Message", "error_message"),
-    ] {
-        if let Some(value) = operation.get(field).and_then(Value::as_str) {
-            eprintln!("  {label:<12} {value}");
-        }
-    }
-    if let Some(application) = operation.get("application_id").and_then(Value::as_str) {
-        eprintln!("\nHint: retry with `piquelctl reconcile {application}`");
+        self.connection(out)
     }
 }
