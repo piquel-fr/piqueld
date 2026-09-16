@@ -202,7 +202,7 @@ impl<D: DockerApi> Controller<D> {
         if latest.state == OperationState::Requested
             || (latest.state == OperationState::Running && latest.error_code.is_none())
         {
-            return self.run_operation(&latest, cancellation).await;
+            return Box::pin(self.run_operation(&latest, cancellation)).await;
         }
         if Self::retry_due(&latest) {
             let operation = if latest.state == OperationState::Running {
@@ -210,7 +210,7 @@ impl<D: DockerApi> Controller<D> {
             } else {
                 self.store.retry_operation(&latest).await?
             };
-            return self.run_operation(&operation, cancellation).await;
+            return Box::pin(self.run_operation(&operation, cancellation)).await;
         }
         let application = self.store.get(application.application.id()).await?;
         let observed = match self.docker.observe(application.application.id()).await {
@@ -271,14 +271,14 @@ impl<D: DockerApi> Controller<D> {
             || was_blocked
         {
             if latest.state == OperationState::Running {
-                return self.run_operation(&latest, cancellation).await;
+                return Box::pin(self.run_operation(&latest, cancellation)).await;
             }
             if let Some(operation) = self
                 .store
                 .request_reconcile(application.application.id(), &latest.id)
                 .await?
             {
-                self.run_operation(&operation, cancellation).await?;
+                Box::pin(self.run_operation(&operation, cancellation)).await?;
             }
         }
         Ok(())
