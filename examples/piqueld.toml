@@ -9,7 +9,7 @@
 # Private development state and a separate runtime directory.
 data_dir = "/tmp/piqueld-dev"
 runtime_dir = "/tmp/piqueld-dev-run"
-listen_mode = "localhost"
+listen_mode = "both"
 port = 7845
 
 [docker]
