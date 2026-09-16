@@ -417,16 +417,29 @@ fn invalid_configuration_reports_its_source_without_exposing_values() {
 }
 
 #[test]
-fn refused_connection_does_not_claim_the_socket_is_missing() {
+fn refused_connections_identify_the_listening_endpoint_check() {
     let fixture = ProfilesFixture::new();
     let socket = fixture.directory.path().join("stopped.sock");
     drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
-    let output = fixture.run(&["--socket", socket.to_str().unwrap(), "status"], &[]);
-    assert_eq!(output.status.code(), Some(4));
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        error.contains("Check whether the daemon is listening"),
-        "{error}"
-    );
-    assert!(!error.contains("Check the socket path"), "{error}");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let url = format!("http://127.0.0.1:{port}");
+    let dns_url = format!("http://localhost.:{port}");
+    for (flag, endpoint) in [
+        ("--socket", socket.to_str().unwrap()),
+        ("--url", url.as_str()),
+        ("--url", dns_url.as_str()),
+    ] {
+        let output = fixture.run(&[flag, endpoint, "status"], &[]);
+        assert_eq!(output.status.code(), Some(4));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(endpoint), "{error}");
+        assert!(
+            error.contains("Check whether the daemon is listening"),
+            "{error}"
+        );
+        assert!(!error.contains("Check the socket path"), "{error}");
+        assert!(!error.contains("inspect the daemon logs"), "{error}");
+    }
 }

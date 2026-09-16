@@ -208,7 +208,10 @@ mod native {
                     Target::Addresses(addresses) => TcpStream::connect(addresses.as_slice()).await,
                     Target::Dns(host, port) => TcpStream::connect((host.as_str(), *port)).await,
                 }
-                .map_err(|error| transport(format!("failed to connect to {authority}: {error}")))?;
+                .map_err(|error| ClientError::Transport {
+                    message: format!("failed to connect to {authority}: {error}"),
+                    kind: crate::TransportFailure::Connect(error.kind()),
+                })?;
                 speak(Ok(connection), request).await
             }
             #[cfg(unix)]

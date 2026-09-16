@@ -106,7 +106,7 @@ impl CliError {
                 "Check the configuration source above. Profiles require exactly one socket or URL and an optional positive timeout."
             }
             Diagnostic::Transport(TransportFailure::Connect(kind)) => match kind {
-                std::io::ErrorKind::NotFound => {
+                std::io::ErrorKind::NotFound if cli.url.is_none() => {
                     "Check the socket path and whether the daemon has created its socket."
                 }
                 std::io::ErrorKind::PermissionDenied if cli.url.is_none() => {
