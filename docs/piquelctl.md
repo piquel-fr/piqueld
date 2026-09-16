@@ -73,6 +73,7 @@ written to stderr, so stdout remains valid JSON.
 
 | Command | JSON output |
 | --- | --- |
+| `profiles` | `{ "profiles": [{ "name": string, "endpoint": string }] }` |
 | `status` | `SystemStatus` |
 | `list` | `{ "items": [{ "application": ApplicationSummary, "status": ApplicationStatusView }], "next_cursor": null }` |
 | `show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
