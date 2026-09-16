@@ -13,21 +13,33 @@ production default file is absent, the daemon uses its validated built-in
 defaults and explains how to select the repository's complete development
 example with `--config examples/piqueld.toml`. The development example
 keeps its state in `/tmp/piqueld-dev`, with its Unix API socket at
-`/tmp/piqueld-dev/piqueld.sock`.
+`/tmp/piqueld-dev-run/piqueld.sock`.
 
-The daemon keeps all state in one private data directory: the Unix API socket
-(`piqueld.sock`), the embedded database (`piqueld.db`), and future user data.
-Missing data-directory components are created with mode `0700`; existing
-components are never chmodded, symlinked components and unsafe writable
-ancestors are refused, and the final directory must be owned by the daemon user
-without access for group or other users. The production
-defaults are:
+The daemon keeps persistent state in a private data directory: the embedded
+database (`piqueld.db`) and future user data. Missing data-directory components
+are created with mode `0700`; existing components are never chmodded.
+
+The Unix API socket is separate, at `<runtime_dir>/piqueld.sock`. It is always
+`0660`, owned by the daemon's user and effective group. Group membership grants
+full deployment/operator access; authentication is not yet implemented.
+
+The service manager or installer must create the runtime directory before
+startup. Use daemon ownership and mode `0750` for group access, or `0700` for
+private development. Group-readable/traversable runtime directories must use
+the daemon's effective group. Group write and all access by others are rejected.
+Both paths reject symlinks and ancestors vulnerable to replacement by untrusted
+users. Both final directories must grant their owner read, write, and execute
+access. Existing directory permissions are never changed.
+
+For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
+`just dev` handles this automatically. The production defaults are:
 
 | Setting | Default |
 | --- | --- |
 | `server.data_dir` | `/var/lib/piqueld` |
+| `server.runtime_dir` | `/run/piqueld` (must already exist) |
 | `server.http_listen` | `127.0.0.1:7845` (omit to disable TCP) |
-| derived socket path | `<data_dir>/piqueld.sock` |
+| derived socket path | `<runtime_dir>/piqueld.sock` |
 | derived database path | `<data_dir>/piqueld.db` |
 | `docker.socket` | `/var/run/docker.sock` |
 | `docker.auto_initialize_swarm` | `true` |
@@ -42,12 +54,28 @@ One async controller overlaps pending work. Internal global limits allow two
 image resolutions, eight observations, and one resource mutation request. Timers
 consume no I/O slot. These limits are not configurable.
 
-The data directory is the only persistent daemon state. The daemon holds an
-exclusive OS lock on the directory itself for its entire lifetime. A second
-process using that directory fails immediately, before opening the database or
-replacing the Unix socket. Process exit (including a crash) releases the lock;
-there is no stale lock file to remove. The Unix listener and any configured TCP
-listener are bound before reconciliation starts.
+The data directory is the only persistent daemon state. The daemon holds
+exclusive OS locks on both directories for its lifetime. Separate instances
+require separate data and runtime directories. A competing process fails before
+opening the database or replacing a socket. Process exit (including a crash)
+releases the locks; there are no lock files to remove.
+
+The runtime directory is dedicated to piqueld. Its lock coordinates cooperating
+daemon instances, and its permissions prevent operator-group members from
+replacing entries. Processes running as the daemon user or root must also honor
+the lock; an unrelated process with that identity can otherwise replace the
+socket during recovery. The lock is not an isolation boundary between processes
+sharing the daemon's identity.
+
+Under the runtime lock, startup probes an existing socket. An active listener is
+left untouched; a connection-refused socket is removed and rebound. Unexpected
+files, symlinks, timeouts, and other probe errors stop startup without replacing
+the path. Both listeners are bound before reconciliation starts.
+
+The CLI now defaults to `/run/piqueld/piqueld.sock`; it does not fall back to the
+old state-directory socket. Existing custom installations must prepare a runtime
+directory and update their configuration. CLI socket overrides and profiles
+remain available for custom locations.
 
 The dashboard is not configurable at runtime: it is embedded when the daemon
 is built with the `embedded-ui` cargo feature and absent otherwise. It is

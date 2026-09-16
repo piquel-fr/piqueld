@@ -9,6 +9,7 @@ let
   configuration = (pkgs.formats.toml { }).generate "piqueld.toml" (
     lib.recursiveUpdate (lib.filterAttrsRecursive (_: value: value != null) cfg.settings) {
       server.data_dir = cfg.dataDir;
+      server.runtime_dir = cfg.runtimeDir;
     }
   );
 in
@@ -22,7 +23,12 @@ in
     dataDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/piqueld";
-      description = "Private state directory below /var/lib; includes the database and Unix API socket.";
+      description = "Private state directory below /var/lib; contains the database and user data.";
+    };
+    runtimeDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/piqueld";
+      description = "Runtime directory below /run containing piqueld.sock. Group members have full operator access.";
     };
     settings = lib.mkOption {
       type = lib.types.submodule {
@@ -71,7 +77,7 @@ in
         };
       };
       default = { };
-      description = "Typed daemon TOML settings. dataDir controls server.data_dir. Never put credentials here: these settings enter the Nix store.";
+      description = "Typed daemon TOML settings. dataDir and runtimeDir control server.data_dir and server.runtime_dir. Never put credentials here: these settings enter the Nix store.";
     };
   };
   config = lib.mkIf cfg.enable {
@@ -83,6 +89,14 @@ in
             lib.splitString "/" (lib.removePrefix "/var/lib/" cfg.dataDir)
           );
         message = "services.piqueld.dataDir must be a dedicated directory below /var/lib";
+      }
+      {
+        assertion =
+          lib.hasPrefix "/run/" cfg.runtimeDir
+          && lib.all (part: part != "" && part != "." && part != "..") (
+            lib.splitString "/" (lib.removePrefix "/run/" cfg.runtimeDir)
+          );
+        message = "services.piqueld.runtimeDir must be a dedicated directory below /run";
       }
     ];
     users.groups.piqueld = { };
@@ -110,6 +124,8 @@ in
         SupplementaryGroups = [ "docker" ];
         StateDirectory = lib.removePrefix "/var/lib/" cfg.dataDir;
         StateDirectoryMode = "0700";
+        RuntimeDirectory = lib.removePrefix "/run/" cfg.runtimeDir;
+        RuntimeDirectoryMode = "0750";
         UMask = "0077";
         Restart = "on-failure";
         RestartSec = "5s";
@@ -122,7 +138,10 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         RestrictSUIDSGID = true;
-        ReadWritePaths = [ cfg.dataDir ];
+        ReadWritePaths = [
+          cfg.dataDir
+          cfg.runtimeDir
+        ];
       };
     };
   };

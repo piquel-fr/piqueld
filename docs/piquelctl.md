@@ -47,7 +47,7 @@ piquelctl events --application <application-id> --limit 50
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit loopback
 HTTP origin such as `http://127.0.0.1:7845/`; the two transport options are
 mutually exclusive. The default socket is
-`/var/lib/piqueld/piqueld.sock`.
+`/run/piqueld/piqueld.sock`.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
@@ -175,7 +175,7 @@ selected missing profile is an error.
 
 ```toml
 [profiles.testing]
-socket = "/tmp/piqueld-dev/piqueld.sock"
+socket = "/tmp/piqueld-dev-run/piqueld.sock"
 timeout = "2m"
 
 [profiles.local-http]

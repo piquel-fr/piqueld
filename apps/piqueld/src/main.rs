@@ -7,11 +7,7 @@ use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::docker::{BollardDocker, DockerApi};
 use piqueld::reconcile::Controller;
 use piqueld::store::Store;
-use std::{
-    os::unix::fs::{FileTypeExt, PermissionsExt},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{path::PathBuf, sync::Arc};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -46,13 +42,14 @@ async fn main() -> Result<()> {
             )
         })?;
 
-    let _lock = piqueld::DataDirLock::acquire(&config.server.data_dir).with_context(|| {
+    let _lock = piqueld::DirectoryLock::acquire(&config.server.data_dir).with_context(|| {
         format!(
             "failed to lock data directory {}",
             config.server.data_dir.display()
         )
     })?;
     // Bind both endpoints before opening state or starting any background work.
+    let runtime_dir = piqueld::RuntimeDir::acquire(&config.server.runtime_dir).await?;
     let tcp_listener = match config.server.http_listen {
         Some(address) => Some(
             TcpListener::bind(address)
@@ -61,7 +58,7 @@ async fn main() -> Result<()> {
         ),
         None => None,
     };
-    let unix_listener = bind_unix_api(config.server.socket_path()).await?;
+    let unix_listener = runtime_dir.bind_api().await?;
 
     let store = Arc::new(
         Store::open(config.server.database_path())
@@ -242,33 +239,6 @@ fn spawn_tcp_api(
         cancellation.cancel();
         served
     })
-}
-
-async fn bind_unix_api(path: PathBuf) -> Result<UnixListener> {
-    match tokio::fs::symlink_metadata(&path).await {
-        Ok(metadata) if metadata.file_type().is_socket() => {
-            tokio::fs::remove_file(&path)
-                .await
-                .context("failed to replace stale Unix socket")?;
-        }
-        Ok(_) => anyhow::bail!("refusing to replace non-socket Unix API path"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("failed to inspect Unix API path"),
-    }
-    // The bind creates the socket inode under the process umask, so tighten
-    // the umask for the bind itself; the explicit chmod below remains as
-    // defense in depth. Other threads already run at this point, but they only
-    // create files inside the private data directory, so a briefly restrictive
-    // umask cannot make anything unexpectedly world-visible.
-    let previous_umask = rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
-    let bound = UnixListener::bind(&path).context("failed to bind Unix API");
-    rustix::process::umask(previous_umask);
-    let listener = bound?;
-    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-        .await
-        .context("failed to restrict Unix API socket permissions")?;
-    info!(socket = %path.display(), "Unix API socket bound");
-    Ok(listener)
 }
 
 fn spawn_unix_api(

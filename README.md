@@ -24,10 +24,12 @@ The daemon exposes a polling HTTP API over loopback TCP and a Unix socket. The
 CLI and optional dashboard share domain records and HTTP contracts.
 See [module boundaries](docs/architecture/dependency-flow.md) for the code layout.
 
-A single configured `data_dir` is the only state location and holds the Unix
-API socket (`piqueld.sock`) and the embedded database (`piqueld.db`). On a clean
-install the daemon creates it with mode `0700`, never modifies an existing
-directory, and refuses symlinked path components anywhere in the path.
+The private `data_dir` holds the embedded database (`piqueld.db`) and is created
+with mode `0700`. The Unix API socket lives separately at
+`<runtime_dir>/piqueld.sock`, defaulting to `/run/piqueld/piqueld.sock`, with
+mode `0660` for the daemon's effective group. The service manager prepares the
+runtime directory; the daemon validates both paths without changing existing
+directory permissions. Group membership grants full operator access.
 
 The supported manifest and runtime model are documented in:
 

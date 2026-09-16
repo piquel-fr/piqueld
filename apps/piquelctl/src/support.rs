@@ -13,7 +13,7 @@ use std::{
 };
 use tokio::{sync::Notify, time};
 
-pub(crate) const DEFAULT_SOCKET: &str = "/var/lib/piqueld/piqueld.sock";
+pub(crate) const DEFAULT_SOCKET: &str = "/run/piqueld/piqueld.sock";
 /// Must not exceed the daemon's `REQUEST_BODY_LIMIT_BYTES`, or a locally
 /// accepted manifest would fail server-side with 413.
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;

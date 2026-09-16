@@ -1,13 +1,14 @@
 # Minimal non-root development configuration.
-# The daemon prepares one private data directory holding the Unix API socket
-# (piqueld.sock), the embedded database (piqueld.db), and future user data. The
-# directory is created when missing with mode 0700; an existing directory must
-# already be private (no group or other access), owned by the daemon user,
-# and is never chmodded.
+# The daemon creates private state with mode 0700. Prepare the runtime directory
+# before starting: mkdir -p -m 0700 /tmp/piqueld-dev-run
+# just dev handles this setup automatically. Existing directories are validated,
+# never chmodded. The Unix socket is always 0660; this private runtime directory
+# keeps development access limited to your user.
 
 [server]
-# Private development state; change this path to use your user runtime directory.
+# Private development state and a separate runtime directory.
 data_dir = "/tmp/piqueld-dev"
+runtime_dir = "/tmp/piqueld-dev-run"
 http_listen = "127.0.0.1:7845"
 
 [docker]

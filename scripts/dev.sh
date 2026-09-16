@@ -47,6 +47,8 @@ trap cleanup EXIT
 trap handle_signal INT TERM HUP
 
 mkdir -p apps/piqueld-ui/generated
+# Existing directories are validated by the daemon, never silently chmodded.
+mkdir -p -m 0700 /tmp/piqueld-dev-run
 
 # The daemon embeds the dashboard at compile time, so the UI crate is watched
 # too: every dashboard edit re-runs the build script (Tailwind + Trunk) and
