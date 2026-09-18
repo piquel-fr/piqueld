@@ -71,9 +71,9 @@ web-sys               = "=0.3.103"
 
 proptest = "1.6.0"
 prettyplease = "0.2.37"
-progenitor = { version = "0.15.0", default-features = false }
-progenitor-client = "0.15.0"
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "query", "stream"] }
+progenitor = { version = "0.11.0", default-features = false }
+progenitor-client = "0.11.0"
+reqwest = { version = "0.12.12", default-features = false, features = ["json", "stream"] }
 syn = { version = "2.0.106", features = ["full"] }
 
 [workspace.lints.rust]
