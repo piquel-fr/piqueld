@@ -13,6 +13,7 @@
 #   ui-check / check-wasm -> wasm-ui
 #   docker-test       -> docker-integration
 #   build-embedded    -> embedded-release
+#   nix package builds -> nix
 #
 # `check` is deliberately not a separate job: `clippy --all-targets
 # --all-features` compiles everything it would and adds lints on top.
@@ -283,3 +284,20 @@ jobs:
             target/release/piqueld
             target/release/piquelctl
             examples/piqueld.toml
+
+  nix:
+    name: nix packages
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock', '**/Cargo.toml') }}-${{ github.sha }}
+          restore-prefixes-first-match: |
+            nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock', '**/Cargo.toml') }}-
+            nix-x86_64-linux-
+          gc-max-store-size-linux: 4294967296
+      - name: Build Nix packages
+        run: nix build -L . .#cli .#daemon
