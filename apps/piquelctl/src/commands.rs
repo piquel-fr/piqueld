@@ -53,6 +53,10 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
             } => builds(console, client, application.as_deref(), cursor.as_deref()).await,
             BuildCommand::Logs { id, before } => build_logs(console, client, *id, *before).await,
         },
+        Command::Secret {
+            application,
+            action,
+        } => action.run(cli, client, console, application).await,
         Command::Plan(args) => plan_command(console, client, args).await,
         Command::Apply(args) => apply(cli, client, console, args).await,
         Command::Delete(args) => delete(cli, client, console, args).await,
@@ -366,7 +370,10 @@ async fn find_by_name(client: &Client, name: &str) -> Result<Option<ApplicationS
     }
 }
 
-async fn resolve_application(client: &Client, name_or_id: &str) -> Result<ApplicationView> {
+pub(crate) async fn resolve_application(
+    client: &Client,
+    name_or_id: &str,
+) -> Result<ApplicationView> {
     if looks_like_application_id(name_or_id) {
         match client.application(name_or_id).await {
             Ok(application) => return Ok(application),

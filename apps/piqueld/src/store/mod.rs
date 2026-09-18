@@ -8,6 +8,7 @@ mod deployment;
 mod event;
 mod operation;
 mod repository;
+mod secret;
 mod status;
 
 use piqueld_core::{ApplicationId, NormalizedApplication, resource::ResolvedApplication};
@@ -38,6 +39,20 @@ pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 /// Persistence failures with stable classifications and retained source detail.
 #[derive(Debug, Error)]
 pub enum StoreError {
+    /// Secret ciphertext or its master key could not be used.
+    #[error("secret storage is unavailable")]
+    SecretSource(#[source] anyhow::Error),
+    /// Saved configuration or a retained deployment still refers to the secret.
+    #[error("secret is still referenced by application configuration or deployment")]
+    SecretReferenced,
+    /// A secret changed after the caller inspected its metadata.
+    #[error("secret generation changed: expected {expected}, actual {actual}")]
+    SecretVersionConflict {
+        /// Version supplied by the caller.
+        expected: i64,
+        /// Current logical secret version.
+        actual: i64,
+    },
     /// A storage operation failed without a lower-level source.
     #[error("database operation failed")]
     Database,
@@ -200,6 +215,8 @@ pub struct Store {
     pool: SqlitePool,
     instance_id: String,
     build_history: crate::config::BuildHistoryConfig,
+
+    secret_key_path: std::path::PathBuf,
     writers: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -308,6 +325,8 @@ impl Store {
             pool,
             instance_id,
             build_history: crate::config::BuildHistoryConfig::default(),
+
+            secret_key_path: path.with_file_name("secrets.key"),
             writers: std::sync::Arc::default(),
         })
     }

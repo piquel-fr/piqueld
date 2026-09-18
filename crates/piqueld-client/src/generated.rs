@@ -951,6 +951,180 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Sends a `GET` request to `/api/v1/applications/{id}/secrets`
+
+    */
+    pub async fn application_secrets<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<Vec<piqueld_core::api::SecretMetadata>>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/secrets",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "application_secrets",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/secrets/{name}`
+
+    */
+    pub async fn put_application_secret<'a, B: Into<reqwest::Body>>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        x_expected_generation: i64,
+        body: B,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SecretMetadata>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/secrets/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&name.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        header_map.append(
+            "X-Expected-Generation",
+            x_expected_generation.to_string().try_into()?,
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .header(
+                ::reqwest::header::CONTENT_TYPE,
+                ::reqwest::header::HeaderValue::from_static("application/octet-stream"),
+            )
+            .body(body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "put_application_secret",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `DELETE` request to `/api/v1/applications/{id}/secrets/{name}`
+
+    */
+    pub async fn delete_application_secret<'a>(
+        &'a self,
+        id: &'a str,
+        name: &'a str,
+        x_expected_generation: i64,
+    ) -> Result<ResponseValue<piqueld_core::api::Envelope<bool>>, Error<piqueld_core::api::ErrorBody>>
+    {
+        let url = format!(
+            "{}/api/v1/applications/{}/secrets/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&name.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        header_map.append(
+            "X-Expected-Generation",
+            x_expected_generation.to_string().try_into()?,
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "delete_application_secret",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Get application status
 
     Sends a `GET` request to `/api/v1/applications/{id}/status`

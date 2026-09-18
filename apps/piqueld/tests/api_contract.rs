@@ -57,6 +57,14 @@ impl RuntimeBoundary for FakeRuntime {
         )
     }
 
+    async fn remove_secrets(
+        &self,
+        _application: &piqueld_core::ApplicationId,
+        _names: &[String],
+    ) -> Result<(), BoundaryError> {
+        Ok(())
+    }
+
     async fn prepare(
         &self,
         application: &NormalizedApplication,
@@ -85,7 +93,10 @@ impl RuntimeBoundary for FakeRuntime {
         let resolved = compile_application(
             application,
             self.instance.clone(),
-            &ResolutionSet { sources },
+            &ResolutionSet {
+                sources,
+                secret_names: BTreeMap::default(),
+            },
         )
         .map_err(BoundaryError::Compilation)?;
         Ok(resolved)
@@ -2447,4 +2458,55 @@ async fn readiness_distinguishes_engine_reachability_and_does_not_gate_saves() {
         .await
         .unwrap();
     assert_eq!(api.client.system_status().await.unwrap().status, "running");
+}
+
+#[tokio::test]
+async fn secret_api_is_application_scoped_write_only_and_versioned() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let api = router(state(&temp).await);
+    let server = tokio::spawn(serve(listener, api.clone()).into_future());
+    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let app = create_and_inspect(&client, &manifest()).await;
+    let response = api
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/api/v1/applications/{}/secrets/token",
+                    app.application_id
+                ))
+                .header("content-type", "application/octet-stream")
+                .header("x-expected-generation", "0")
+                .body(Body::from("private-token-value"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let raw = std::str::from_utf8(&bytes).unwrap();
+    assert!(!raw.contains("private-token-value"));
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["data"]["generation"], 1);
+    assert_eq!(client.secrets(&app.application_id).await.unwrap().len(), 1);
+    assert!(
+        matches!(client.put_secret(&app.application_id,"token",0,b"stale".to_vec()).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==409)
+    );
+    assert!(
+        matches!(client.secrets("app-absent").await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
+    );
+    client
+        .delete_secret(&app.application_id, "token", 1)
+        .await
+        .unwrap();
+    assert!(
+        client
+            .secrets(&app.application_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    server.abort();
 }

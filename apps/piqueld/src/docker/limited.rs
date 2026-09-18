@@ -54,6 +54,21 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         self.inner.ping().await
     }
 
+    async fn ensure_secret(
+        &self,
+        name: &str,
+        value: &[u8],
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        self.inner.ensure_secret(name, value, ownership).await
+    }
+    async fn remove_secrets(
+        &self,
+        names: &[String],
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        self.inner.remove_secrets(names, ownership).await
+    }
     async fn ensure_swarm(&self, auto: bool) -> Result<SwarmState, DockerError> {
         self.inner.ensure_swarm(auto).await
     }
