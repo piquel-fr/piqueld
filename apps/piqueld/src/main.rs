@@ -3,11 +3,9 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use piqueld::api::{ApiState, UiAssets};
+use piqueld::application::ApplicationService;
 use piqueld::config::{ConfigError, DaemonConfig};
-use piqueld::docker::{BollardDocker, DockerApi};
-use piqueld::reconcile::Controller;
-use piqueld::store::Store;
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -53,60 +51,10 @@ async fn main() -> Result<()> {
     let tcp_listeners = config.server.bind_tcp().await?;
     let unix_listener = runtime_dir.bind_api().await?;
 
-    let store = Arc::new(
-        Store::open(config.server.database_path())
-            .await
-            .context("failed to open control-plane state")?
-            .with_build_history(config.build_history.clone()),
-    );
-    info!(
-        path = %config.server.database_path().display(),
-        "opened control-plane state"
-    );
-
-    let docker = connect_docker(&config.docker).await?;
-
-    let wake = Arc::new(tokio::sync::Notify::new());
-
-    let reconciler = Controller::new(Arc::clone(&docker), Arc::clone(&store)).with_retry_policy(
-        piqueld::reconcile::RetryPolicy {
-            convergence_timeout: std::time::Duration::from_secs(
-                config.reconciliation.convergence_timeout_seconds,
-            ),
-            ..piqueld::reconcile::RetryPolicy::default()
-        },
-    );
-
-    let reconciler = reconciler.with_prepare_timeout(std::time::Duration::from_secs(
-        config.reconciliation.prepare_timeout_seconds,
-    ));
-    let runtime = reconciler.runtime(Arc::clone(&wake));
+    let cancellation = CancellationToken::new();
+    let (state, controller) = ApplicationService::start(&config, cancellation.clone()).await?;
     let ui_assets = UiAssets::resolve();
     log_ui_status(&ui_assets);
-    let state = ApiState::new(Arc::clone(&store), runtime).with_configuration(config.view());
-
-    // cancellation token for workers
-    let cancellation = CancellationToken::new();
-
-    // worker to run reconciliations
-    let controller_token = cancellation.child_token();
-    let controller_cancellation = cancellation.clone();
-    let scan_interval = std::time::Duration::from_secs(config.reconciliation.scan_interval_seconds);
-    let finished_operation_days = config.retention.finished_operation_days;
-    let event_days = config.retention.event_days;
-    let controller = tokio::spawn(async move {
-        let result = reconciler
-            .run(
-                wake,
-                scan_interval,
-                finished_operation_days,
-                event_days,
-                controller_token,
-            )
-            .await;
-        controller_cancellation.cancel();
-        result
-    });
 
     // OS signal handling
     let signal_cancellation = cancellation.clone();
@@ -140,22 +88,6 @@ async fn main() -> Result<()> {
         .context("reconciliation controller failed")?
         .context("reconciliation controller stopped unexpectedly")?;
     Ok(())
-}
-
-async fn connect_docker(config: &piqueld::config::DockerConfig) -> Result<Arc<BollardDocker>> {
-    let docker = Arc::new(
-        BollardDocker::connect(&config.socket).context("failed to connect to Docker Engine")?,
-    );
-    docker
-        .ensure_swarm(config.auto_initialize_swarm)
-        .await
-        .context("Docker Engine is not an active single-node Swarm manager")?;
-    info!(
-        socket = %config.socket.display(),
-        auto_initialize_swarm = config.auto_initialize_swarm,
-        "connected to Docker Engine as a single-node Swarm manager"
-    );
-    Ok(docker)
 }
 
 /// Reports dashboard availability once at startup so a binary without the

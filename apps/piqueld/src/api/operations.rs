@@ -23,5 +23,5 @@ pub(super) async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    Ok(ok(state.store.operation(&id).await?))
+    Ok(ok(state.operation(&id).await?))
 }

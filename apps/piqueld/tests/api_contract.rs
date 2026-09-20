@@ -2448,3 +2448,224 @@ async fn readiness_distinguishes_engine_reachability_and_does_not_gate_saves() {
         .unwrap();
     assert_eq!(api.client.system_status().await.unwrap().status, "running");
 }
+
+#[tokio::test]
+async fn service_and_http_share_acceptance_receipts_and_application_views() {
+    use piqueld::application::{ApplicationService, Mutation, MutationResponse};
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let service = ApplicationService::new(api.store.clone(), api.runtime.clone());
+    let request = AcceptanceApi::request();
+    let MutationResponse::Saved(saved) = service
+        .accept(
+            Mutation::save(request.manifest.clone().validate().unwrap(), None, true),
+            Some(0),
+            false,
+            Some("shared-command"),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("expected saved configuration")
+    };
+    let replay = api
+        .client
+        .clone()
+        .with_request_id("shared-command")
+        .apply_and_deploy(&request)
+        .await
+        .unwrap();
+    assert_eq!(saved.operation_id, Some(replay.operation_id));
+    assert_eq!(saved.generation, replay.generation);
+    let id = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
+    let direct = service.clone().application_detail(&id).await.unwrap();
+    let response = api_router(service.clone())
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/applications/{id}/detail"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["data"], serde_json::to_value(direct).unwrap());
+
+    let mut changed = request.clone();
+    changed.expected_generation = Some(saved.generation);
+    changed.expected_application_id = Some(saved.application_id);
+    changed.manifest.spec.services[0].replicas = 2;
+    let saved = api
+        .client
+        .clone()
+        .with_request_id("http-command")
+        .apply_application(&changed)
+        .await
+        .unwrap();
+    let MutationResponse::Saved(replay) = service
+        .accept(
+            Mutation::save(
+                changed.manifest.validate().unwrap(),
+                changed.expected_application_id,
+                false,
+            ),
+            changed.expected_generation,
+            false,
+            Some("http-command"),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("expected receipt")
+    };
+    assert_eq!(replay.generation, saved.generation);
+    assert_eq!(
+        service.application(&id).await.unwrap().generation,
+        saved.generation
+    );
+}
+
+#[tokio::test]
+async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
+    use piqueld::application::{ApplicationError, Mutation, MutationResponse};
+    let temp = tempfile::tempdir().unwrap();
+    let service = state(&temp).await;
+    let manifest = manifest().validate().unwrap();
+    let id = piqueld_core::ApplicationId::parse("absent-application").unwrap();
+    for mutation in [
+        Mutation::apply(manifest.clone(), None),
+        Mutation::save(manifest.clone(), None, false),
+        Mutation::Deploy { id: id.clone() },
+        Mutation::Delete { id: id.clone() },
+        Mutation::Rename {
+            id,
+            name: "renamed".into(),
+        },
+    ] {
+        assert!(matches!(
+            service.accept(mutation, None, false, None).await,
+            Err(ApplicationError::PreconditionRequired)
+        ));
+    }
+    assert!(
+        service
+            .applications(None, None)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let MutationResponse::Saved(saved) = service
+        .accept(
+            Mutation::save(manifest.clone(), None, false),
+            Some(0),
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("expected saved configuration")
+    };
+    assert!(matches!(
+        service
+            .accept(
+                Mutation::save(manifest.clone(), None, false),
+                Some(saved.generation),
+                false,
+                None,
+            )
+            .await,
+        Err(ApplicationError::PreconditionRequired)
+    ));
+    let id = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
+    assert!(matches!(
+        service
+            .accept(
+                Mutation::save(manifest.clone(), Some("wrong-application".into()), false),
+                Some(saved.generation),
+                false,
+                None,
+            )
+            .await,
+        Err(ApplicationError::Store(
+            piqueld::store::StoreError::IdentityConflict
+        ))
+    ));
+    // An explicit override uses the same path for every transport.
+    service
+        .accept(Mutation::save(manifest, None, true), None, true, None)
+        .await
+        .unwrap();
+    service
+        .accept(Mutation::Reconcile { id }, None, false, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn direct_service_validates_log_bounds_and_deployment_ownership() {
+    use piqueld::application::{ApplicationError, Mutation, MutationResponse};
+    let temp = tempfile::tempdir().unwrap();
+    let service = state(&temp).await;
+    let missing = piqueld_core::ApplicationId::parse("absent-application").unwrap();
+    for (name, tail, since) in [
+        (None, 0, 60),
+        (None, 1001, 60),
+        (None, 5, 0),
+        (None, 5, 86401),
+        (Some(""), 5, 60),
+    ] {
+        assert!(matches!(
+            service.logs(&missing, name, tail, since, None).await,
+            Err(ApplicationError::InvalidLogQuery)
+        ));
+    }
+    assert!(matches!(
+        service.logs(&missing, Some("web"), 5, 60, None).await,
+        Err(ApplicationError::Store(
+            piqueld::store::StoreError::NotFound
+        ))
+    ));
+    assert!(matches!(
+        service.applications(None, Some(0)).await,
+        Err(ApplicationError::InvalidPagination)
+    ));
+    let MutationResponse::Saved(saved) = service
+        .accept(
+            Mutation::save(manifest().validate().unwrap(), None, true),
+            Some(0),
+            false,
+            None,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("expected deployment")
+    };
+    let deployment = saved.operation_id.unwrap();
+    assert!(matches!(
+        service
+            .deployment_attempts(&missing, &deployment, None)
+            .await,
+        Err(ApplicationError::Store(
+            piqueld::store::StoreError::NotFound
+        ))
+    ));
+    let id = piqueld_core::ApplicationId::parse(saved.application_id).unwrap();
+    service
+        .deployment_attempts(&id, &deployment, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .logs(&id, Some("web"), 5, 60, None)
+            .await
+            .unwrap()
+            .items[0]
+            .message,
+        "hello"
+    );
+}

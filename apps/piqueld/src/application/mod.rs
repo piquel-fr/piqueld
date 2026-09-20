@@ -1,6 +1,13 @@
-//! Accept manifest intent immediately; Docker preparation belongs to operation execution.
+//! Transport-independent daemon operations and runtime orchestration.
+
+mod history;
+mod queries;
+mod startup;
+mod system;
+mod views;
 
 mod runtime;
+pub use history::ManifestExport;
 pub use runtime::ApplicationRuntime;
 
 use crate::{
@@ -9,8 +16,8 @@ use crate::{
 };
 use async_trait::async_trait;
 use piqueld_core::{
-    ApplicationId, CompileError, NormalizedApplication, ObservedApplication, Operation,
-    ValidatedApplication, resource::ResolvedApplication,
+    ApplicationId, CompileError, NormalizedApplication, ObservedApplication, ValidatedApplication,
+    resource::ResolvedApplication,
 };
 use std::sync::Arc;
 
@@ -66,9 +73,24 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     ) -> Result<ObservedApplication, BoundaryError>;
 }
 
-/// Errors while accepting an application target.
+/// Errors returned by transport-independent daemon operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ApplicationError {
+    /// A mutation needs an inspected revision and identity or an explicit force override.
+    #[error("mutation preconditions are required")]
+    PreconditionRequired,
+    /// Application pagination is outside its supported bounds or has an invalid cursor.
+    #[error("pagination parameters are invalid")]
+    InvalidPagination,
+    /// Workload log bounds or service filter are invalid.
+    #[error("invalid log query")]
+    InvalidLogQuery,
+    /// No effective host configuration was attached to this service.
+    #[error("effective host configuration is unavailable")]
+    ConfigurationUnavailable,
+    /// Saved configuration could not be rendered as TOML.
+    #[error("could not render saved configuration")]
+    ManifestSerialization(#[source] toml::ser::Error),
     /// Persistence failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -136,35 +158,58 @@ pub enum MutationResponse {
 }
 
 impl Mutation {
+    /// Creates save intent, optionally deploying the saved snapshot atomically.
+    /// # Panics
+    /// Panics if the built-in placeholder ID is invalid.
+    #[must_use]
+    pub fn save(
+        manifest: ValidatedApplication,
+        expected_application_id: Option<String>,
+        deploy: bool,
+    ) -> Self {
+        Self::Save {
+            application: Self::pending_application(manifest),
+            expected_application_id,
+            deploy,
+        }
+    }
+
     /// Creates normalized apply intent before the store assigns application identity.
     /// # Panics
     /// Panics if the built-in placeholder ID is invalid.
     #[must_use]
     pub fn apply(manifest: ValidatedApplication, expected_application_id: Option<String>) -> Self {
         Self::Apply {
-            application: manifest.normalize(
-                ApplicationId::parse("pending-application").expect("valid placeholder ID"),
-            ),
+            application: Self::pending_application(manifest),
             expected_application_id,
         }
     }
+
+    fn pending_application(manifest: ValidatedApplication) -> NormalizedApplication {
+        manifest
+            .normalize(ApplicationId::parse("pending-application").expect("valid placeholder ID"))
+    }
 }
 
-/// Entry point for mutations from the HTTP API and direct callers.
+/// Cheaply clonable entry point for all daemon operations.
+///
+/// HTTP, MCP, and scheduled jobs share this service; adapters only decode inputs
+/// and encode results. Runtime and persistence stay private to this layer.
 ///
 /// This service validates request IDs and names, commits intent and the replay
 /// receipt atomically through the store, then wakes reconciliation. Keeping this
 /// here makes those callers share the same acceptance rules without requiring
 /// the database layer to know about the controller.
 #[derive(Clone)]
-pub struct Applications {
-    pub(crate) configuration: Option<piqueld_core::api::HostConfiguration>,
-    pub(crate) store: Arc<Store>,
-    pub(crate) runtime: Arc<dyn RuntimeBoundary>,
+pub struct ApplicationService {
+    configuration: Option<Arc<piqueld_core::api::HostConfiguration>>,
+    store: Arc<Store>,
+    runtime: Arc<dyn RuntimeBoundary>,
 }
 
-impl Applications {
-    /// Creates the application service.
+impl ApplicationService {
+    /// Creates a service over supplied storage and runtime adapters.
+    /// No background work is started; use [`Self::start`] for daemon startup.
     #[must_use]
     pub fn new(store: Arc<Store>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
         Self {
@@ -180,14 +225,15 @@ impl Applications {
         mut self,
         configuration: piqueld_core::api::HostConfiguration,
     ) -> Self {
-        self.configuration = Some(configuration);
+        self.configuration = Some(Arc::new(configuration));
         self
     }
 
     /// Accepts a mutation and records its receipt in the same transaction.
     /// `expected_generation` is the last inspected intent revision: zero requires
-    /// absence and `None` skips the revision check. An explicit force override
-    /// bypasses revision and name-based identity checks.
+    /// absence. Mutations other than reconcile require a revision; apply and save
+    /// also require the inspected identity when the revision is nonzero. An
+    /// explicit force override bypasses revision and name-based identity checks.
     /// `request_id` is the caller's idempotency key, not an operation ID: replay
     /// returns the original response, including for rename which has no operation.
     /// # Errors
@@ -199,6 +245,28 @@ impl Applications {
         force: bool,
         request_id: Option<&str>,
     ) -> Result<MutationResponse, ApplicationError> {
+        if !force {
+            let missing = match &mutation {
+                Mutation::Apply {
+                    expected_application_id,
+                    ..
+                }
+                | Mutation::Save {
+                    expected_application_id,
+                    ..
+                } => {
+                    expected_generation.is_none()
+                        || (expected_generation != Some(0) && expected_application_id.is_none())
+                }
+                Mutation::Deploy { .. } | Mutation::Delete { .. } | Mutation::Rename { .. } => {
+                    expected_generation.is_none()
+                }
+                Mutation::Reconcile { .. } => false,
+            };
+            if missing {
+                return Err(ApplicationError::PreconditionRequired);
+            }
+        }
         if request_id.is_some_and(|id| {
             id.is_empty()
                 || id.len() > 128
@@ -221,67 +289,5 @@ impl Applications {
             self.runtime.trigger_reconciliation();
         }
         Ok(response)
-    }
-
-    /// Accepts normalized intent after checking Docker availability, without waiting for image preparation.
-    /// # Errors
-    /// Returns storage or generation errors.
-    pub async fn apply(
-        &self,
-        manifest: ValidatedApplication,
-        expected_generation: Option<u64>,
-    ) -> Result<Operation, ApplicationError> {
-        self.operation(Mutation::apply(manifest, None), expected_generation)
-            .await
-    }
-
-    /// Requests deletion of the application's services and networks.
-    /// # Errors
-    /// Returns storage, absence, or generation errors.
-    pub async fn delete(
-        &self,
-        id: &ApplicationId,
-        expected_generation: Option<u64>,
-    ) -> Result<Operation, ApplicationError> {
-        self.operation(Mutation::Delete { id: id.clone() }, expected_generation)
-            .await
-    }
-
-    /// Repairs latest intent using already prepared digests when available.
-    /// # Errors
-    /// Returns storage, absence, or generation errors.
-    pub async fn reconcile(
-        &self,
-        id: &ApplicationId,
-        expected_generation: Option<u64>,
-    ) -> Result<Operation, ApplicationError> {
-        self.operation(Mutation::Reconcile { id: id.clone() }, expected_generation)
-            .await
-    }
-
-    /// Deploys saved configuration with fresh source resolution.
-    /// # Errors
-    /// Returns storage, deletion-intent, or generation errors.
-    pub async fn deploy(
-        &self,
-        id: &ApplicationId,
-        expected_generation: Option<u64>,
-    ) -> Result<Operation, ApplicationError> {
-        self.operation(Mutation::Deploy { id: id.clone() }, expected_generation)
-            .await
-    }
-
-    async fn operation(
-        &self,
-        mutation: Mutation,
-        expected_generation: Option<u64>,
-    ) -> Result<Operation, ApplicationError> {
-        let MutationResponse::Operation(accepted) = self
-            .accept(mutation, expected_generation, false, None)
-            .await?
-        else {
-            return Err(StoreError::Corrupt.into());
-        };
-        Ok(self.store.operation(&accepted.operation_id).await?)
     }
 }

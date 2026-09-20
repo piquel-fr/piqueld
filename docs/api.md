@@ -1,5 +1,20 @@
 # HTTP API
 
+The daemon's transport-independent API is `piqueld::application::ApplicationService`.
+It is a cheap, clonable handle shared by HTTP handlers and future MCP or scheduled
+callers. Its private store and runtime back every domain operation: mutation
+acceptance, planning, application views, history, logs, manifest export, and host
+status. Adapters decode transport inputs and map service results and errors.
+`accept` enforces revision/identity preconditions, explicit force overrides, and
+idempotency for every caller; `Mutation::save` saves configuration and optionally
+deploys it. Inputs use validated manifests and typed application IDs.
+
+`ApplicationService::start` opens the store, connects Docker, and starts the
+reconciliation worker. The process binds listeners and holds directory locks
+before calling it, then cancels and joins the returned worker before releasing
+those locks. `ApplicationService::new` accepts supplied storage and runtime
+adapters for tests or embedded use; it does not start background work.
+
 The API is rooted at `/api/v1` over a Unix socket and optional localhost or Tailscale TCP.
 Responses use a `data` envelope; lists contain `items` and an opaque
 `next_cursor`. Errors expose a safe message, code, details, and request ID.

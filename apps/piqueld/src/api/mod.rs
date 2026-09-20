@@ -32,7 +32,7 @@ mod operations;
 mod system;
 mod ui;
 
-pub use crate::application::Applications as ApiState;
+pub use crate::application::ApplicationService as ApiState;
 use crate::application::{ApplicationError, BoundaryError};
 pub use openapi::openapi_document;
 pub use ui::{EmbeddedBundle, UiAssets};
@@ -579,6 +579,34 @@ fn parse_manifest(
 impl From<ApplicationError> for ApiError {
     fn from(error: ApplicationError) -> Self {
         match error {
+            ApplicationError::PreconditionRequired => Self::new(
+                StatusCode::BAD_REQUEST,
+                "precondition_required",
+                "Supply the inspected revision and application identity, or explicitly set force=true",
+            ),
+            ApplicationError::InvalidPagination => Self::new(
+                StatusCode::BAD_REQUEST,
+                "pagination_invalid",
+                "pagination parameters are invalid",
+            ),
+            ApplicationError::InvalidLogQuery => Self::new(
+                StatusCode::BAD_REQUEST,
+                "logs_query_invalid",
+                "Tail must be 1–1000 and time window 1–86400 seconds",
+            ),
+            ApplicationError::ConfigurationUnavailable => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "configuration_unavailable",
+                "Effective host configuration is unavailable",
+            ),
+            ApplicationError::ManifestSerialization(error) => {
+                tracing::error!(?error, "serialize saved manifest");
+                Self::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "manifest_serialization_failed",
+                    "Could not render saved configuration",
+                )
+            }
             ApplicationError::Store(error) => error.into(),
             ApplicationError::Runtime(error) => error.into(),
             ApplicationError::PlanBlocked(diagnostics) => Self::new(

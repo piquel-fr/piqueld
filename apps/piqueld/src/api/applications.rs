@@ -1,8 +1,5 @@
-use super::{
-    ApiError, ApiState, BoundaryError, accepted, ok, openapi::ApiErrorResponse, parse_manifest,
-};
+use super::{ApiError, ApiState, accepted, ok, openapi::ApiErrorResponse, parse_manifest};
 use crate::application::{Mutation, MutationResponse};
-use crate::store::{ApplicationStatus, StoreError, StoredApplication};
 use axum::{
     body::Bytes,
     extract::{
@@ -12,16 +9,11 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use piqueld_core::ApplicationId;
 use piqueld_core::api::{
     AcceptedOperation, ApplicationDetailView, ApplicationStatusView, ApplicationSummary,
-    ApplicationView, ApplyApplicationRequest, DiagnosticView, Envelope, MAX_APPLICATION_PAGE_SIZE,
-    ManifestChange, ObservedApplicationView, ObservedServiceView, Page, PlanView,
-    RenameApplicationRequest, RenamedApplication, SavedApplication,
-};
-use piqueld_core::{
-    ApplicationId, NormalizedApplication, ObservedApplication, Plan, PlanRequest, ResolutionSet,
-    compile_application, preview_resolution,
-    resource::{Convergence, ObservedService, TaskDiagnostic, TaskState},
+    ApplicationView, ApplyApplicationRequest, Envelope, Page, PlanView, RenameApplicationRequest,
+    RenamedApplication, SavedApplication,
 };
 use serde::Deserialize;
 
@@ -50,49 +42,11 @@ pub(super) async fn list(
     State(state): State<ApiState>,
     query: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "pagination_invalid",
-            "pagination parameters are invalid",
-        )
-    })?;
-    let limit = query.limit.unwrap_or(MAX_APPLICATION_PAGE_SIZE);
-    if !(1..=MAX_APPLICATION_PAGE_SIZE).contains(&limit) {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "pagination_invalid",
-            "pagination parameters are invalid",
-        ));
-    }
-    let page = state
-        .store
-        .list_summaries(query.cursor.as_deref(), usize::from(limit))
-        .await
-        .map_err(|error| match error {
-            StoreError::InvalidInput | StoreError::InvalidInputSource(_) => ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "pagination_invalid",
-                "pagination parameters are invalid",
-            ),
-            error => error.into(),
-        })?;
-    Ok(ok(Page {
-        items: page
-            .items
-            .into_iter()
-            .map(|stored| ApplicationSummary {
-                id: stored.id,
-                name: stored.name,
-                generation: stored.generation,
-                resolved_generation: stored.resolved_generation,
-                delete_intent: stored.delete_intent,
-                created_at_ms: stored.created_at_ms,
-                updated_at_ms: stored.updated_at_ms,
-            })
-            .collect(),
-        next_cursor: page.next_cursor,
-    }))
+    let Query(query) = query
+        .map_err(|_| ApiError::from(crate::application::ApplicationError::InvalidPagination))?;
+    Ok(ok(state
+        .applications(query.cursor.as_deref(), query.limit)
+        .await?))
 }
 
 #[utoipa::path(
@@ -113,8 +67,7 @@ pub(super) async fn get(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let id = ApplicationId::parse(&id)?;
-    Ok(ok(application_view(state.store.get(&id).await?)))
+    Ok(ok(state.application(&ApplicationId::parse(id)?).await?))
 }
 
 #[utoipa::path(
@@ -136,35 +89,9 @@ pub(super) async fn detail(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let id = ApplicationId::parse(&id)?;
-    let (stored, status) = state.store.get_with_status(&id).await?;
-    let (observed, observation_error) = if stored.resolved.is_none() {
-        (ObservedApplication::default(), None)
-    } else {
-        match state.runtime.observe(&stored).await {
-            Ok(observed) => (observed, None),
-            Err(error) => {
-                tracing::warn!(%error,"application detail observation failed");
-                (ObservedApplication::default(),Some(DiagnosticView{code:"runtime_unavailable".into(),message:"Runtime observation is unavailable. Saved configuration and deployment history are still available.".into()}))
-            }
-        }
-    };
-    let observed_view = observed_view(
-        &stored,
-        &observed,
-        observation_error.is_none() && status.state == piqueld_core::ApplicationState::Ready,
-    );
-    let status = status_view(status);
-    let latest_operation = state.store.latest_operation_for_application(&id).await?;
-    let mut diagnostics = detail_diagnostics(&status, &observed_view, latest_operation.as_ref());
-    diagnostics.extend(observation_error);
-    Ok(ok(ApplicationDetailView {
-        application: application_view(stored),
-        status,
-        observed: observed_view,
-        latest_operation,
-        diagnostics,
-    }))
+    Ok(ok(state
+        .application_detail(&ApplicationId::parse(id)?)
+        .await?))
 }
 
 #[utoipa::path(
@@ -201,12 +128,7 @@ pub(super) async fn apply(
     let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
     accept_mutation(
         &state,
-        Mutation::Save {
-            application: manifest
-                .normalize(ApplicationId::parse("pending-application").expect("valid placeholder")),
-            expected_application_id: expected_id,
-            deploy: query.deploy,
-        },
+        Mutation::save(manifest, expected_id, query.deploy),
         expected,
         query.force,
         &headers,
@@ -279,88 +201,7 @@ pub(super) async fn plan(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let (manifest, expected, expected_id) = parse_manifest(&headers, &request_body(body)?)?;
-    let current = state.store.find_by_name(manifest.name().as_str()).await?;
-    crate::store::Store::check_generation(
-        expected,
-        current.as_ref().map_or(0, |app| app.generation),
-    )?;
-    if let Some(expected_id) = expected_id
-        && current
-            .as_ref()
-            .is_none_or(|app| app.application.id().as_str() != expected_id)
-    {
-        return Err(StoreError::IdentityConflict.into());
-    }
-    let id = current.as_ref().map_or_else(
-        || ApplicationId::parse("preview-application").expect("valid preview ID"),
-        |app| app.application.id().clone(),
-    );
-    let application = manifest.normalize(id.clone());
-    let plan = preview_plan(&state, &application, current.as_ref()).await?;
-    let operation = if let Some(current) = &current {
-        state
-            .store
-            .latest_operation_for_application(current.application.id())
-            .await?
-    } else {
-        None
-    };
-    let baseline = if let Some(op) = &operation {
-        if op.kind == piqueld_core::OperationKind::Delete {
-            None
-        } else {
-            Some(state.store.deployment_manifest(&op.id).await?)
-        }
-    } else {
-        None
-    };
-    Ok(ok(PlanView {
-        application_id: id.to_string(),
-        generation: current.as_ref().map_or(0, |app| app.generation),
-        identical: baseline
-            .as_ref()
-            .is_some_and(|app| app.spec() == application.spec()),
-        operation,
-        changes: ManifestChange::between(baseline.as_ref(), &application),
-        plan,
-    }))
-}
-
-async fn preview_plan(
-    state: &ApiState,
-    app: &NormalizedApplication,
-    current: Option<&StoredApplication>,
-) -> Result<piqueld_core::Plan, ApiError> {
-    let observed = if let Some(current) = current {
-        state.runtime.observe(current).await?
-    } else {
-        state.runtime.check_available().await?;
-        ObservedApplication::default()
-    };
-    let resolutions = ResolutionSet::default();
-    let unresolved = preview_resolution(app, &resolutions);
-    let desired = if unresolved.is_empty() {
-        Some(
-            compile_application(
-                app,
-                piqueld_core::InstanceId::parse(state.store.instance_id())
-                    .map_err(StoreError::corrupt)?,
-                &resolutions,
-            )
-            .map_err(BoundaryError::Compilation)?,
-        )
-    } else {
-        None
-    };
-    let mut plan = Plan::from_request(
-        &PlanRequest::Preview {
-            unresolved,
-            desired,
-        },
-        &observed,
-    );
-    plan.redact_configuration();
-    Ok(plan)
+    Ok(ok(state.plan(manifest, expected, expected_id).await?))
 }
 
 fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes, ApiError> {
@@ -399,267 +240,9 @@ pub(super) async fn status(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let id = ApplicationId::parse(&id)?;
-    Ok(ok(status_view(state.store.status(&id).await?)))
-}
-
-fn application_view(stored: StoredApplication) -> ApplicationView {
-    ApplicationView {
-        generation: stored.generation,
-        resolved_generation: stored.resolved_generation,
-        spec_hash: stored.application.spec_hash(),
-        application: stored.application,
-        delete_intent: stored.delete_intent,
-        created_at_ms: stored.created_at_ms,
-        updated_at_ms: stored.updated_at_ms,
-    }
-}
-
-fn status_view(status: ApplicationStatus) -> ApplicationStatusView {
-    ApplicationStatusView {
-        application_id: status.application_id.to_string(),
-        state: status.state,
-        runtime_health: status.runtime_health,
-        message: status.message,
-        updated_at_ms: status.updated_at_ms,
-    }
-}
-
-const MAX_DETAIL_DIAGNOSTICS: usize = 24;
-const MAX_SERVICE_DIAGNOSTICS: usize = 8;
-
-fn observed_view(
-    stored: &StoredApplication,
-    observed: &ObservedApplication,
-    reconciled: bool,
-) -> ObservedApplicationView {
-    let services = stored
-        .resolved
-        .iter()
-        .flat_map(|target| &target.services)
-        .map(|desired| {
-            let runtime = observed
-                .services
-                .iter()
-                .find(|service| service.name == desired.name.as_str());
-            let (image, observed_replicas, healthy_replicas, convergence, diagnostics) = runtime
-                .map_or_else(
-                    || {
-                        let diagnostics = if reconciled {
-                            vec![DiagnosticView {
-                                code: "service_missing".into(),
-                                message:
-                                    "the desired service was not found in the runtime observation"
-                                        .into(),
-                            }]
-                        } else {
-                            Vec::new()
-                        };
-                        (
-                            None,
-                            0,
-                            0,
-                            if reconciled {
-                                Convergence::Failed
-                            } else {
-                                Convergence::Updating
-                            },
-                            diagnostics,
-                        )
-                    },
-                    |service| {
-                        (
-                            Some(service.image.clone()),
-                            service.replicas,
-                            healthy_replicas(service),
-                            service.convergence.clone(),
-                            service_diagnostics(service),
-                        )
-                    },
-                );
-            ObservedServiceView {
-                name: desired.logical_name.to_string(),
-                image,
-                desired_replicas: desired.replicas,
-                observed_replicas,
-                healthy_replicas,
-                convergence,
-                diagnostics,
-            }
-        })
-        .collect();
-    ObservedApplicationView {
-        services,
-        network_count: u32::try_from(observed.networks.len()).unwrap_or(u32::MAX),
-        volume_count: u32::try_from(observed.volumes.len()).unwrap_or(u32::MAX),
-    }
-}
-
-fn healthy_replicas(service: &ObservedService) -> u16 {
-    u16::try_from(
-        service
-            .tasks
-            .iter()
-            .filter(|task| {
-                task.desired_running
-                    && task.state == TaskState::Running
-                    && if service.healthcheck_configured {
-                        task.healthy == Some(true)
-                    } else {
-                        task.healthy != Some(false)
-                    }
-            })
-            .count(),
-    )
-    .unwrap_or(u16::MAX)
-}
-
-fn service_diagnostics(service: &ObservedService) -> Vec<DiagnosticView> {
-    let mut diagnostics = Vec::new();
-    if matches!(
-        service.convergence,
-        Convergence::Degraded | Convergence::Failed
-    ) {
-        let healthy_replicas = healthy_replicas(service);
-        diagnostics.push(DiagnosticView {
-            code: "service_not_converged".into(),
-            message: format!(
-                "{} of {} observed replicas are healthy",
-                healthy_replicas, service.replicas
-            ),
-        });
-    }
-    diagnostics.extend(
-        service
-            .tasks
-            .iter()
-            .filter(|task| task.desired_running)
-            .filter_map(|task| task.diagnostic.as_ref())
-            .map(|diagnostic| match diagnostic {
-                TaskDiagnostic::Failed { exit_code } => DiagnosticView {
-                    code: "task_failed".into(),
-                    message: exit_code.map_or_else(
-                        || "a desired task exited unsuccessfully".into(),
-                        |code| format!("a desired task exited with status code {code}"),
-                    ),
-                },
-                TaskDiagnostic::Rejected => DiagnosticView {
-                    code: "task_rejected".into(),
-                    message: "the runtime rejected a desired task before it started".into(),
-                },
-            }),
-    );
-    diagnostics.truncate(MAX_SERVICE_DIAGNOSTICS);
-    diagnostics
-}
-
-fn detail_diagnostics(
-    status: &ApplicationStatusView,
-    observed: &ObservedApplicationView,
-    operation: Option<&piqueld_core::Operation>,
-) -> Vec<DiagnosticView> {
-    let mut diagnostics = Vec::new();
-    if let Some(message) = &status.message {
-        diagnostics.push(DiagnosticView {
-            code: "application_status".into(),
-            message: message.clone(),
-        });
-    }
-    if let Some(operation) = operation
-        && let (Some(code), Some(message)) = (&operation.error_code, &operation.error_message)
-    {
-        diagnostics.push(DiagnosticView {
-            code: code.clone(),
-            message: message.clone(),
-        });
-    }
-    diagnostics.extend(
-        observed
-            .services
-            .iter()
-            .flat_map(|service| service.diagnostics.iter().cloned()),
-    );
-    diagnostics.truncate(MAX_DETAIL_DIAGNOSTICS);
-    diagnostics
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use piqueld_core::resource::{ObservedTask, TaskDiagnostic};
-
-    use super::*;
-
-    #[test]
-    fn service_diagnostics_ignore_historical_tasks() {
-        let service = ObservedService {
-            name: "web".into(),
-            image: "example/web@sha256:digest".into(),
-            replicas: 1,
-            environment: BTreeMap::new(),
-            command: Vec::new(),
-            arguments: Vec::new(),
-            mounts: Vec::new(),
-            healthcheck: None,
-            healthcheck_configured: false,
-            resources: None,
-            networks: Vec::new(),
-            labels: BTreeMap::new(),
-            runtime_configuration_matches: true,
-            tasks: vec![
-                ObservedTask {
-                    state: TaskState::Failed,
-                    healthy: None,
-                    desired_running: false,
-                    diagnostic: Some(TaskDiagnostic::Failed { exit_code: Some(1) }),
-                },
-                ObservedTask {
-                    state: TaskState::Rejected,
-                    healthy: None,
-                    desired_running: true,
-                    diagnostic: Some(TaskDiagnostic::Rejected),
-                },
-            ],
-            convergence: Convergence::Converged,
-        };
-
-        let diagnostics = service_diagnostics(&service);
-
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].code, "task_rejected");
-    }
-
-    #[test]
-    fn pending_runtime_health_is_not_reported_as_healthy() {
-        let task = ObservedTask {
-            state: TaskState::Running,
-            healthy: None,
-            desired_running: true,
-            diagnostic: None,
-        };
-        let mut service = ObservedService {
-            name: "web".into(),
-            image: "example/web@sha256:digest".into(),
-            replicas: 1,
-            environment: BTreeMap::new(),
-            command: Vec::new(),
-            arguments: Vec::new(),
-            mounts: Vec::new(),
-            healthcheck: None,
-            healthcheck_configured: true,
-            resources: None,
-            networks: Vec::new(),
-            labels: BTreeMap::new(),
-            runtime_configuration_matches: false,
-            tasks: vec![task],
-            convergence: Convergence::Updating,
-        };
-
-        assert_eq!(healthy_replicas(&service), 0);
-        service.healthcheck_configured = false;
-        assert_eq!(healthy_replicas(&service), 1);
-    }
+    Ok(ok(state
+        .application_status(&ApplicationId::parse(id)?)
+        .await?))
 }
 
 #[derive(Default, Deserialize, utoipa::IntoParams)]
@@ -717,29 +300,6 @@ pub(super) async fn accept_mutation(
     force: bool,
     headers: &HeaderMap,
 ) -> Result<Response, ApiError> {
-    if !force {
-        let missing = match &mutation {
-            Mutation::Apply {
-                expected_application_id,
-                ..
-            }
-            | Mutation::Save {
-                expected_application_id,
-                ..
-            } => expected.is_none() || (expected != Some(0) && expected_application_id.is_none()),
-            Mutation::Deploy { .. } | Mutation::Delete { .. } | Mutation::Rename { .. } => {
-                expected.is_none()
-            }
-            Mutation::Reconcile { .. } => false,
-        };
-        if missing {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "precondition_required",
-                "Supply the inspected revision and application identity, or explicitly set force=true",
-            ));
-        }
-    }
     let request_id = super::optional_header(headers, "idempotency-key")?;
     match state
         .accept(mutation, expected, force, request_id.as_deref())
@@ -824,24 +384,9 @@ pub(super) async fn manifest_download(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let application = state
-        .store
-        .get(&ApplicationId::parse(&id)?)
-        .await?
-        .application;
-    let filename = format!(
-        "attachment; filename=\"{}.toml\"",
-        application.metadata().name
-    );
-    let manifest = application.to_manifest();
-    let body = toml::to_string_pretty(&manifest).map_err(|error| {
-        tracing::error!(?error, "serialize saved manifest");
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "manifest_serialization_failed",
-            "Could not render saved configuration",
-        )
-    })?;
+    let manifest = state.manifest(&ApplicationId::parse(id)?).await?;
+    let filename = format!("attachment; filename=\"{}\"", manifest.filename);
+    let body = manifest.contents;
     Ok((
         [
             (header::CONTENT_TYPE, "application/toml".to_owned()),

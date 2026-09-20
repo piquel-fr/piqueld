@@ -36,7 +36,6 @@ pub(super) async fn list(
     })?;
     let id = query.application_id.map(ApplicationId::parse).transpose()?;
     Ok(ok(state
-        .store
         .builds(
             id.as_ref(),
             query.cursor.as_deref(),
@@ -65,8 +64,5 @@ pub(super) async fn logs(
             "invalid build log query",
         )
     })?;
-    Ok(ok(state
-        .store
-        .build_logs(id, query.before, query.stream)
-        .await?))
+    Ok(ok(state.build_logs(id, query.before, query.stream).await?))
 }

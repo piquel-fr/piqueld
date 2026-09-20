@@ -36,7 +36,6 @@ pub(super) async fn list(
     })?;
     let id = query.application_id.map(ApplicationId::parse).transpose()?;
     Ok(ok(state
-        .store
         .events(
             id.as_ref(),
             query.cursor.as_deref(),
