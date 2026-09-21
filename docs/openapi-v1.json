@@ -676,6 +676,24 @@
         ],
         "type": "object"
       },
+      "AuthStatus": {
+        "description": "Public initialization state and canonical browser origin.",
+        "properties": {
+          "initialized": {
+            "description": "Whether the first account has been created.",
+            "type": "boolean"
+          },
+          "public_url": {
+            "description": "Canonical website origin.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "initialized",
+          "public_url"
+        ],
+        "type": "object"
+      },
       "Build": {
         "description": "Explicit build backend, extensible independently from source selection.",
         "oneOf": [
@@ -854,6 +872,40 @@
         ],
         "type": "string"
       },
+      "Ceremony": {
+        "description": "Server-generated, browser-bound `WebAuthn` challenge.",
+        "properties": {
+          "id": {
+            "description": "Single-use ceremony identifier.",
+            "type": "string"
+          },
+          "options": {
+            "description": "`WebAuthn` creation/request options, including `publicKey`."
+          }
+        },
+        "required": [
+          "id",
+          "options"
+        ],
+        "type": "object"
+      },
+      "CeremonyFinish": {
+        "description": "Browser's signed response to a pending ceremony.",
+        "properties": {
+          "credential": {
+            "description": "Serialized `WebAuthn` credential response."
+          },
+          "id": {
+            "description": "Pending ceremony identifier.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "credential"
+        ],
+        "type": "object"
+      },
       "Convergence": {
         "description": "Aggregate health state derived from observed tasks.",
         "enum": [
@@ -877,6 +929,46 @@
         },
         "required": [
           "value"
+        ],
+        "type": "object"
+      },
+      "CredentialView": {
+        "description": "Revocable browser session, CLI session, or automation token metadata.",
+        "properties": {
+          "expires_at": {
+            "description": "Absolute expiry, as Unix seconds; absent for non-expiring tokens.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Revocation identifier, never a bearer secret.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`browser`, `cli`, or `token`.",
+            "type": "string"
+          },
+          "last_used_at": {
+            "description": "Last use, as Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "description": "Human-readable label.",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "Account identifier.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "kind",
+          "name",
+          "last_used_at"
         ],
         "type": "object"
       },
@@ -1149,6 +1241,106 @@
         ],
         "type": "object"
       },
+      "DeviceApprove": {
+        "description": "Browser confirmation of the code shown by the initiating CLI.",
+        "properties": {
+          "user_code": {
+            "description": "Code entered by the user.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_code"
+        ],
+        "type": "object"
+      },
+      "DevicePoll": {
+        "description": "CLI polling request.",
+        "properties": {
+          "device_code": {
+            "description": "Secret from device initiation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_code"
+        ],
+        "type": "object"
+      },
+      "DeviceStart": {
+        "description": "Device login challenge for an interactive CLI.",
+        "properties": {
+          "device_code": {
+            "description": "Secret used only by the initiating CLI to poll.",
+            "type": "string"
+          },
+          "expires_in": {
+            "description": "Lifetime in seconds.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "interval": {
+            "description": "Minimum polling interval, in seconds.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user_code": {
+            "description": "Human-readable code explicitly confirmed in the browser.",
+            "type": "string"
+          },
+          "verification_uri": {
+            "description": "Canonical browser login page.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_code",
+          "user_code",
+          "verification_uri",
+          "expires_in",
+          "interval"
+        ],
+        "type": "object"
+      },
+      "DeviceToken": {
+        "description": "Poll result; the token is returned exactly once after explicit approval.",
+        "properties": {
+          "status": {
+            "description": "`authorization_pending`, `slow_down`, or `complete`.",
+            "type": "string"
+          },
+          "token": {
+            "description": "Issued CLI credential.",
+            "nullable": true,
+            "type": "string"
+          },
+          "user": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/User"
+                  }
+                ],
+                "description": "Account associated with the credential."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
       "DiagnosticSeverity": {
         "description": "Severity of a planning diagnostic.",
         "enum": [
@@ -1173,6 +1365,46 @@
         "required": [
           "code",
           "message"
+        ],
+        "type": "object"
+      },
+      "Directory": {
+        "description": "Account management directory, available in full to every authenticated user.",
+        "properties": {
+          "credentials": {
+            "description": "Sessions and tokens, without secrets.",
+            "items": {
+              "$ref": "#/components/schemas/CredentialView"
+            },
+            "type": "array"
+          },
+          "invitations": {
+            "description": "Unexpired invitations.",
+            "items": {
+              "$ref": "#/components/schemas/InvitationView"
+            },
+            "type": "array"
+          },
+          "passkeys": {
+            "description": "Enrolled passkeys.",
+            "items": {
+              "$ref": "#/components/schemas/PasskeyView"
+            },
+            "type": "array"
+          },
+          "users": {
+            "description": "Accounts.",
+            "items": {
+              "$ref": "#/components/schemas/User"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "users",
+          "passkeys",
+          "credentials",
+          "invitations"
         ],
         "type": "object"
       },
@@ -2544,6 +2776,30 @@
         "pattern": "^(?:sha256:[0-9a-f]{64}|(?=.{1,512}$)(?=.{1,255}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$)(?:(?:(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)(?::0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?|[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?:0*(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64})$",
         "type": "string"
       },
+      "InvitationView": {
+        "description": "Pending invitation metadata. Its secret is returned only at creation.",
+        "properties": {
+          "expires_at": {
+            "description": "Expiry as Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Revocation identifier.",
+            "type": "string"
+          },
+          "issuer_id": {
+            "description": "Issuing account.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "issuer_id",
+          "expires_at"
+        ],
+        "type": "object"
+      },
       "LogRecord": {
         "description": "One line of workload output with replica identity.",
         "properties": {
@@ -2584,6 +2840,229 @@
           "stderr"
         ],
         "type": "string"
+      },
+      "Manage": {
+        "description": "Account management commands. There are deliberately no ownership restrictions.",
+        "oneOf": [
+          {
+            "description": "Edit any account's profile.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "update_user"
+                ],
+                "type": "string"
+              },
+              "display_name": {
+                "description": "Display name.",
+                "type": "string"
+              },
+              "user_id": {
+                "description": "Target account.",
+                "type": "string"
+              },
+              "username": {
+                "description": "Unique name.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "username",
+              "display_name",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Delete any account except the last remaining one.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "delete_user"
+                ],
+                "type": "string"
+              },
+              "user_id": {
+                "description": "Target account.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Remove an authenticator without revoking existing sessions.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "remove_passkey"
+                ],
+                "type": "string"
+              },
+              "id": {
+                "description": "Passkey identifier.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Rename an authenticator.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "rename_passkey"
+                ],
+                "type": "string"
+              },
+              "id": {
+                "description": "Passkey identifier.",
+                "type": "string"
+              },
+              "name": {
+                "description": "New label.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Revoke a session or API token.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "revoke_credential"
+                ],
+                "type": "string"
+              },
+              "id": {
+                "description": "Credential identifier.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Revoke all sessions and tokens belonging to an account.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "revoke_all"
+                ],
+                "type": "string"
+              },
+              "user_id": {
+                "description": "Target account.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Create a transferable invitation, valid for 24 hours.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "create_invitation"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Revoke a pending invitation.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "revoke_invitation"
+                ],
+                "type": "string"
+              },
+              "id": {
+                "description": "Invitation identifier.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Create an automation token; callers supply 90 days for the default.",
+            "properties": {
+              "action": {
+                "enum": [
+                  "create_token"
+                ],
+                "type": "string"
+              },
+              "days": {
+                "description": "Lifetime in days; absent means no expiry.",
+                "format": "int32",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "name": {
+                "description": "Token label.",
+                "type": "string"
+              },
+              "user_id": {
+                "description": "Target account.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id",
+              "name",
+              "action"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Managed": {
+        "description": "Management result. Secrets are disclosed only once.",
+        "properties": {
+          "invitation_url": {
+            "description": "Newly created invitation link.",
+            "nullable": true,
+            "type": "string"
+          },
+          "token": {
+            "description": "Newly created automation token.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "type": "object"
       },
       "ManifestChange": {
         "description": "A change to a manifest field. Environment and process values are redacted.",
@@ -2919,6 +3398,29 @@
         ],
         "type": "object"
       },
+      "PasskeyView": {
+        "description": "Named enrolled authenticator, excluding its internal credential data.",
+        "properties": {
+          "id": {
+            "description": "Credential identifier.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Editable label.",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "Account identifier.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "name"
+        ],
+        "type": "object"
+      },
       "Plan": {
         "additionalProperties": false,
         "description": "Ordered runtime plan and its diagnostics.",
@@ -3079,6 +3581,39 @@
           "database",
           "docker",
           "swarm"
+        ],
+        "type": "object"
+      },
+      "RegistrationStart": {
+        "description": "New account information and its single-use invitation or setup secret.",
+        "properties": {
+          "display_name": {
+            "description": "New account display name.",
+            "type": "string"
+          },
+          "invitation": {
+            "description": "Invitation or initial setup secret; absent when adding to an existing account.",
+            "nullable": true,
+            "type": "string"
+          },
+          "passkey_name": {
+            "description": "Human-readable passkey label.",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "Existing target account; any authenticated user may enroll its passkeys.",
+            "nullable": true,
+            "type": "string"
+          },
+          "username": {
+            "description": "New account name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "display_name",
+          "passkey_name"
         ],
         "type": "object"
       },
@@ -3610,6 +4145,29 @@
         ],
         "type": "object"
       },
+      "User": {
+        "description": "Public account information; accounts have identical capabilities.",
+        "properties": {
+          "display_name": {
+            "description": "Optional human-readable name (empty when unset).",
+            "type": "string"
+          },
+          "id": {
+            "description": "Immutable `WebAuthn` user handle.",
+            "type": "string"
+          },
+          "username": {
+            "description": "Unique, editable account name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "display_name"
+        ],
+        "type": "object"
+      },
       "ValidatedMetadata": {
         "description": "Validated application metadata.",
         "properties": {
@@ -3830,6 +4388,17 @@
           "value"
         ],
         "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "browserSession": {
+        "in": "cookie",
+        "name": "piqueld_session",
+        "type": "apiKey"
       }
     }
   },
@@ -12007,6 +12576,277 @@
         }
       }
     },
+    "/api/v1/auth/device/approve": {
+      "post": {
+        "operationId": "authDeviceApprove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceApprove"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Managed"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/v1/auth/device/poll": {
+      "post": {
+        "operationId": "authDevicePoll",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePoll"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceToken"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/auth/device/start": {
+      "post": {
+        "operationId": "authDeviceStart",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStart"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/auth/directory": {
+      "get": {
+        "operationId": "authDirectory",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Directory"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login/finish": {
+      "post": {
+        "operationId": "authLoginFinish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CeremonyFinish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/auth/login/start": {
+      "post": {
+        "operationId": "authLoginStart",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ceremony"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "authLogout",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Managed"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/v1/auth/manage": {
+      "post": {
+        "operationId": "authManage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Manage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Managed"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "operationId": "authMe",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/v1/auth/register/finish": {
+      "post": {
+        "operationId": "authRegistrationFinish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CeremonyFinish"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/auth/register/start": {
+      "post": {
+        "operationId": "authRegistrationStart",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistrationStart"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ceremony"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/auth/status": {
+      "get": {
+        "operationId": "authStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthStatus"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": []
+      }
+    },
     "/api/v1/builds": {
       "get": {
         "operationId": "listBuilds",
@@ -12362,5 +13202,13 @@
         "summary": "Get daemon status"
       }
     }
-  }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    },
+    {
+      "browserSession": []
+    }
+  ]
 }

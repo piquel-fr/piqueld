@@ -195,8 +195,9 @@ never manifests, environment values, or raw Docker errors. Failure events preser
 resource. Significant resource mutations and active-target repairs are recorded,
 while unchanged observations and timer ticks are omitted.
 
-The unauthenticated TCP API trusts every caller able to reach its configured
-localhost or Tailscale listeners. The dashboard
+The API requires a session cookie or bearer credential on every transport.
+Only setup/login endpoints and TCP `/health` are public; see
+[authentication](authentication.md). The dashboard
 is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
 The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
 [the generated contract](openapi-v1.json).

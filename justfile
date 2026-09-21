@@ -89,3 +89,8 @@ generate:
 
 docker-test:
     @bash ./scripts/run-docker-integration-test.sh
+
+# Real browser passkeys and CLI login. Requires CHROMIUM, CHROMEDRIVER, and Python 3.
+test-auth-browser:
+    @cargo build --locked --package piquelctl
+    @cargo test --locked --package piqueld --features embedded-ui --test auth_browser -- --ignored --nocapture

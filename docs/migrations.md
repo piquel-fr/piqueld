@@ -53,3 +53,8 @@ Migration 0004 adds executor-independent build attempts and bounded output chunk
 Build metadata is owned by the application rather than an operation, so pruning
 operation history cannot erase build history. Interrupted running records are
 recovered at coordinator startup; output retention leaves metadata intact.
+
+Migration 0006 adds accounts, passkeys, hashed session/API credentials, invitations,
+and a durable initial-setup marker. Existing installations require first-account
+setup after upgrading; application data and running reconciliation are preserved.
+There is no anonymous API compatibility mode. See [authentication](authentication.md).

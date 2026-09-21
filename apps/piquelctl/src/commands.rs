@@ -26,6 +26,9 @@ use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_descrip
 
 pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     match &cli.command {
+        Command::Login => unreachable!("login has its own interactive deadline"),
+        Command::Logout => crate::auth::logout(cli, client, console).await,
+        Command::Whoami => console.emit(&crate::auth::AccountReport(client.auth_me().await?)),
         Command::Profiles => unreachable!("profiles are listed before connecting"),
         Command::Status => status(cli, client, console).await,
         Command::App { command } => app(cli, client, console, command).await,
@@ -144,6 +147,7 @@ pub(crate) fn build_client(cli: &Cli) -> Result<Client> {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET)),
         )
     };
+    let client = crate::auth::Credentials::attach(cli, client)?;
     Ok(client
         .with_timeout(cli.timeout)
         .with_request_id(uuid::Uuid::now_v7().to_string()))

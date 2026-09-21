@@ -23,7 +23,11 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATH", conflicts_with = "url")]
     pub(crate) socket: Option<PathBuf>,
 
-    /// Explicit HTTP endpoint, for example <http://127.0.0.1:8080/>.
+    /// Account username or ID from the private credential file.
+    #[arg(long, global = true)]
+    pub(crate) account: Option<String>,
+
+    /// Explicit HTTP or HTTPS endpoint.
     #[arg(long, global = true, value_name = "URL", conflicts_with = "socket")]
     pub(crate) url: Option<String>,
 
@@ -48,6 +52,12 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Sign in with a passkey through the browser (also works over SSH).
+    Login,
+    /// Revoke the current credential and remove its local copy.
+    Logout,
+    /// Show the authenticated account.
+    Whoami,
     /// List effective connection profile names and endpoints without contacting a daemon.
     Profiles,
     /// Report daemon availability and version.

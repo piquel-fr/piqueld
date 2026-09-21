@@ -47,8 +47,10 @@ read-only. There is no raw manifest editor or deployment restoration workflow.
 The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
 configured localhost or Tailscale TCP listeners. The Unix socket is API-only,
-and the daemon does not add CORS, authentication, cookies, telemetry, or a public
-binding. Log display preferences persist in browser local storage.
+and the daemon does not add CORS, telemetry, or a public binding. Passkey login
+establishes an HTTP-only session cookie; the Accounts page manages users,
+invitations, passkeys, and tokens. Log display preferences persist in browser
+local storage. See [authentication](authentication.md).
 
 ## Development
 
@@ -64,7 +66,7 @@ just dev
 
 This watches the daemon and dashboard sources, builds the embedded bundle
 with Tailwind and Trunk, and runs the daemon using
-`examples/piqueld.toml`. Open `http://127.0.0.1:7845/dashboard/` and
+`examples/piqueld.toml`. Open `http://localhost:7845/dashboard/` and
 refresh the browser after a rebuild. Stopping the command allows the daemon
 its graceful shutdown period before terminating any remaining processes.
 
@@ -129,7 +131,7 @@ Safari, or Edge release with WebAssembly, ES modules, Fetch, and standard CSS
 media-query support. Internet Explorer, JavaScript-disabled browsing, and
 older browsers without those primitives are outside the support target.
 
-Secrets, streaming logs, state transfer, and authentication remain outside the
+Secrets, streaming logs, and state transfer remain outside the
 current dashboard scope. Event history is available through the API and CLI.
 Deployment history polls every two seconds while its tab and the page are visible.
 

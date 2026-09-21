@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 impl ApplicationService {
-    /// Opens persistence, connects Docker, and starts reconciliation.
+    /// Opens persistence, initializes authentication, connects Docker, and starts reconciliation.
     ///
     /// The process must hold its data-directory lock and bind its listeners first.
     /// Cancelling the supplied token stops reconciliation; the returned task must
@@ -25,7 +25,7 @@ impl ApplicationService {
     pub async fn start(
         config: &DaemonConfig,
         cancellation: CancellationToken,
-    ) -> anyhow::Result<(Self, JoinHandle<Result<(), StoreError>>)> {
+    ) -> anyhow::Result<(Self, crate::auth::Auth, JoinHandle<Result<(), StoreError>>)> {
         let store = Arc::new(
             Store::open(config.server.database_path())
                 .await
@@ -33,6 +33,7 @@ impl ApplicationService {
                 .with_build_history(config.build_history.clone()),
         );
         info!(path = %config.server.database_path().display(), "opened control-plane state");
+        let auth = crate::auth::Auth::initialize(&store, config).await?;
         let docker = Arc::new(
             BollardDocker::connect(&config.docker.socket)
                 .context("failed to connect to Docker Engine")?,
@@ -75,6 +76,6 @@ impl ApplicationService {
                 )
                 .await
         });
-        Ok((service, controller))
+        Ok((service, auth, controller))
     }
 }

@@ -2,6 +2,8 @@
 
 pub mod api;
 pub mod application;
+/// Passkey authentication and durable sessions.
+pub mod auth;
 /// Executor-independent durable build recording.
 pub mod build;
 pub mod config;

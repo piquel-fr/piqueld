@@ -203,7 +203,7 @@ pub struct ApplicationSummaryPage {
 /// SQLite repository shared by the application service and controller.
 #[derive(Clone)]
 pub struct Store {
-    pool: SqlitePool,
+    pub(crate) pool: SqlitePool,
     instance_id: String,
     build_history: crate::config::BuildHistoryConfig,
     writers: std::sync::Arc<tokio::sync::Mutex<()>>,

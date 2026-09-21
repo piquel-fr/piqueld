@@ -4694,6 +4694,426 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Sends a `POST` request to `/api/v1/auth/device/approve`
+
+    */
+    pub async fn auth_device_approve<'a>(
+        &'a self,
+        body: &'a piqueld_core::auth::DeviceApprove,
+    ) -> Result<ResponseValue<piqueld_core::auth::Managed>, Error<()>> {
+        let url = format!("{}/api/v1/auth/device/approve", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_device_approve",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/auth/device/poll`
+
+    */
+    pub async fn auth_device_poll<'a>(
+        &'a self,
+        body: &'a piqueld_core::auth::DevicePoll,
+    ) -> Result<ResponseValue<piqueld_core::auth::DeviceToken>, Error<()>> {
+        let url = format!("{}/api/v1/auth/device/poll", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_device_poll",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/auth/device/start`
+
+    */
+    pub async fn auth_device_start<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<piqueld_core::auth::DeviceStart>, Error<()>> {
+        let url = format!("{}/api/v1/auth/device/start", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_device_start",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `GET` request to `/api/v1/auth/directory`
+
+    */
+    pub async fn auth_directory<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<piqueld_core::auth::Directory>, Error<()>> {
+        let url = format!("{}/api/v1/auth/directory", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_directory",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/auth/login/finish`
+
+    */
+    pub async fn auth_login_finish<'a>(
+        &'a self,
+        body: &'a piqueld_core::auth::CeremonyFinish,
+    ) -> Result<ResponseValue<piqueld_core::auth::User>, Error<()>> {
+        let url = format!("{}/api/v1/auth/login/finish", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_login_finish",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/auth/login/start`
+
+    */
+    pub async fn auth_login_start<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<piqueld_core::auth::Ceremony>, Error<()>> {
+        let url = format!("{}/api/v1/auth/login/start", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_login_start",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/auth/logout`
+
+    */
+    pub async fn auth_logout<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<piqueld_core::auth::Managed>, Error<()>> {
+        let url = format!("{}/api/v1/auth/logout", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_logout",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/auth/manage`
+
+    */
+    pub async fn auth_manage<'a>(
+        &'a self,
+        body: &'a piqueld_core::auth::Manage,
+    ) -> Result<ResponseValue<piqueld_core::auth::Managed>, Error<()>> {
+        let url = format!("{}/api/v1/auth/manage", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_manage",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `GET` request to `/api/v1/auth/me`
+
+    */
+    pub async fn auth_me<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<piqueld_core::auth::User>, Error<()>> {
+        let url = format!("{}/api/v1/auth/me", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_me",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/auth/register/finish`
+
+    */
+    pub async fn auth_registration_finish<'a>(
+        &'a self,
+        body: &'a piqueld_core::auth::CeremonyFinish,
+    ) -> Result<ResponseValue<piqueld_core::auth::User>, Error<()>> {
+        let url = format!("{}/api/v1/auth/register/finish", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_registration_finish",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/auth/register/start`
+
+    */
+    pub async fn auth_registration_start<'a>(
+        &'a self,
+        body: &'a piqueld_core::auth::RegistrationStart,
+    ) -> Result<ResponseValue<piqueld_core::auth::Ceremony>, Error<()>> {
+        let url = format!("{}/api/v1/auth/register/start", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_registration_start",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `GET` request to `/api/v1/auth/status`
+
+    */
+    pub async fn auth_status<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<piqueld_core::auth::AuthStatus>, Error<()>> {
+        let url = format!("{}/api/v1/auth/status", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_status",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Sends a `GET` request to `/api/v1/builds`
 
     */

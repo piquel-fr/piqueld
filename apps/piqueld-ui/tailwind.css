@@ -26,3 +26,9 @@
     --color-pending-bg: var(--pending-bg);
     --shadow-panel: 0 8px 24px rgb(15 23 42 / 8%);
 }
+
+.auth-page { max-width: 36rem; margin: 8vh auto; padding: 1rem; }
+.auth-page label, .auth-account label { display: grid; gap: .35rem; margin-block: .75rem; }
+.auth-page button, .auth-account button { margin: .4rem .4rem .4rem 0; }
+.auth-account { margin-bottom: 1.5rem; }
+.auth-secret { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }

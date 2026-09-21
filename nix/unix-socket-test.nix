@@ -19,14 +19,18 @@ pkgs.testers.runNixOSTest {
       };
       outsider.isNormalUser = true;
     };
-    environment.systemPackages = [ cli ];
+    environment.systemPackages = [ cli pkgs.curl ];
     virtualisation.memorySize = 2048;
   };
 
   testScript = ''
     start_all()
     machine.wait_for_unit("piqueld.service")
-    machine.wait_until_succeeds("runuser -u operator -- piquelctl status")
+    machine.wait_until_succeeds("runuser -u operator -- curl --fail --unix-socket /run/piqueld/piqueld.sock http://localhost/api/v1/auth/status")
+
+    with subtest("account authentication is required even for socket group members"):
+        machine.fail("runuser -u operator -- piquelctl status")
+        machine.succeed("test $(stat -c %a /var/lib/piqueld/setup-link) = 600")
 
     with subtest("group access without private-state or directory write access"):
         machine.succeed("test $(stat -c %a /run/piqueld) = 750")
@@ -49,7 +53,7 @@ pkgs.testers.runNixOSTest {
         machine.fail("runuser -u piqueld -- ${daemon}/bin/piqueld --config /tmp/second.toml > /tmp/second.log 2>&1")
         machine.succeed("grep 'failed to lock runtime directory' /tmp/second.log")
         machine.succeed("test ! -e /var/lib/piqueld-second/piqueld.db")
-        machine.succeed("runuser -u operator -- piquelctl status")
+        machine.succeed("runuser -u operator -- curl --fail --unix-socket /run/piqueld/piqueld.sock http://localhost/api/v1/auth/status")
 
     with subtest("runtime directory ownership and group validation"):
         machine.succeed("install -d -o root -g piqueld -m 0750 /run/piqueld-unsafe")
@@ -65,6 +69,6 @@ pkgs.testers.runNixOSTest {
         machine.succeed("install -d -o piqueld -g piqueld -m 0750 /run/piqueld")
         machine.succeed("runuser -u piqueld -- ${pkgs.python3}/bin/python -c 'import socket; s = socket.socket(socket.AF_UNIX); s.bind(\"/run/piqueld/piqueld.sock\")'")
         machine.succeed("systemctl start piqueld.service")
-        machine.wait_until_succeeds("runuser -u operator -- piquelctl status")
+        machine.wait_until_succeeds("runuser -u operator -- curl --fail --unix-socket /run/piqueld/piqueld.sock http://localhost/api/v1/auth/status")
   '';
 }
