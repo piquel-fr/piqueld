@@ -246,7 +246,12 @@ out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.
 
 The dashboard provides application management forms and recent application logs. Remote
-authentication, registry management, and advanced interactive CLI flows remain future work.
+registry management and advanced interactive CLI flows remain future work.
+
+Use `piquelctl login` for passkey login through the browser, `whoami` to inspect
+the current account, and `logout` to revoke it. Saved credentials are separate
+from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
+a saved account. See [authentication](authentication.md) for details.
 
 `app deploy` fetches repository-backed configuration when configured, then explicitly
 resolves image or Git build sources. It supersedes pending work for the selected

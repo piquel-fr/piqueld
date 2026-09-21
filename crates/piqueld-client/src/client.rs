@@ -16,6 +16,7 @@ const TIMEOUT_MESSAGE: &str = "request timed out";
 pub(crate) struct ClientState {
     timeout: Duration,
     request_id: Option<String>,
+    bearer: Option<reqwest::header::HeaderValue>,
 }
 
 #[derive(Clone, Debug)]
@@ -25,10 +26,10 @@ pub struct Client {
 }
 
 impl Client {
-    /// Creates a client for an HTTP endpoint.
+    /// Creates a client for an HTTP or HTTPS endpoint.
     ///
-    /// Accepts IP addresses and DNS names. HTTP has no application-layer
-    /// encryption: use a trusted network such as Tailscale for remote access.
+    /// Accepts IP addresses and DNS names. Prefer HTTPS for remote access;
+    /// HTTP needs an encrypted transport such as Tailscale.
     ///
     /// # Errors
     /// Returns [`ClientError::Endpoint`] when `base_url` is not an HTTP origin.
@@ -36,14 +37,14 @@ impl Client {
     pub fn tcp(base_url: &str) -> Result<Self, ClientError> {
         let url = url::Url::parse(base_url)
             .map_err(|_| invalid_request("base URL is not a valid URL"))?;
-        if url.scheme() != "http"
+        if !matches!(url.scheme(), "http" | "https")
             || url.path() != "/"
             || url.query().is_some()
             || url.fragment().is_some()
             || base_url.contains('@')
             || url.host().is_none()
         {
-            return Err(invalid_request("base URL must be a plain HTTP origin"));
+            return Err(invalid_request("base URL must be an HTTP or HTTPS origin"));
         }
 
         let mut builder = reqwest::ClientBuilder::new()
@@ -51,7 +52,7 @@ impl Client {
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy();
         if url.host_str() == Some("localhost") {
-            let port = url.port().unwrap_or(80);
+            let port = url.port_or_known_default().unwrap_or(80);
             builder = builder.resolve_to_addrs(
                 "localhost",
                 &[
@@ -65,9 +66,7 @@ impl Client {
 
     /// Creates a client for a Unix-domain socket.
     ///
-    /// # Trust model
-    /// Any process able to reach `path` can drive the daemon. Only pass paths
-    /// provisioned by the piqueld daemon itself.
+    /// Account credentials are required, just as for the TCP transport.
     ///
     /// # Panics
     /// Panics only if reqwest rejects its fixed, library-owned configuration.
@@ -96,6 +95,7 @@ impl Client {
                 ClientState {
                     timeout: Duration::from_secs(30),
                     request_id: None,
+                    bearer: None,
                 },
             ),
         })
@@ -114,9 +114,21 @@ impl Client {
                 ClientState {
                     timeout: Duration::from_secs(30),
                     request_id: None,
+                    bearer: None,
                 },
             ),
         }
+    }
+
+    /// Sets a bearer credential for subsequent requests. Debug output redacts it.
+    /// # Errors
+    /// Rejects secrets that cannot be represented as an HTTP header.
+    pub fn with_bearer(mut self, token: &str) -> Result<Self, ClientError> {
+        let mut value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|_| invalid_request("invalid bearer credential"))?;
+        value.set_sensitive(true);
+        self.generated.inner.bearer = Some(value);
+        Ok(self)
     }
 
     /// Overrides the per-request timeout.
@@ -191,6 +203,11 @@ fn prepare_request(state: &ClientState, request: &mut reqwest::Request) -> Resul
     u32::try_from(state.timeout.as_millis())
         .map_err(|_| "browser request timeout exceeds u32::MAX milliseconds".to_owned())?;
     *request.timeout_mut() = Some(state.timeout);
+    if let Some(bearer) = &state.bearer {
+        request
+            .headers_mut()
+            .insert(reqwest::header::AUTHORIZATION, bearer.clone());
+    }
     if request.method() != reqwest::Method::GET
         && request.method() != reqwest::Method::HEAD
         && !request.headers().contains_key("idempotency-key")

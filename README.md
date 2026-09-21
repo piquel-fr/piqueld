@@ -33,7 +33,9 @@ with mode `0700`. The Unix API socket lives separately at
 `<runtime_dir>/piqueld.sock`, defaulting to `/run/piqueld/piqueld.sock`, with
 mode `0660` for the daemon's effective group. The service manager prepares the
 runtime directory; the daemon validates both paths without changing existing
-directory permissions. Group membership grants full operator access.
+directory permissions. Group membership permits socket connections; account
+authentication is required. See [authentication](docs/authentication.md) for setup,
+passkeys, invitations, and CLI login.
 
 The supported manifest and runtime model are documented in:
 
@@ -50,7 +52,7 @@ The supported manifest and runtime model are documented in:
 | Supported | Deferred until later releases |
 | --- | --- |
 | Prebuilt images, Git/Docker builds, repository-backed manifests, replicas, environment, command/args, health checks, resource limits, named volumes, and mounts | Automatic deployment, registry management, credentials, and secrets |
-| Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, application log snapshots, and the essential `piquelctl` workflow | Published ports, routes, Traefik, state transfer, authentication, and multi-node operation |
+| Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, application log snapshots, and the essential `piquelctl` workflow | Published ports, routes, Traefik, state transfer and multi-node operation |
 | Unix-socket, localhost, and Tailscale API transports, plus a Leptos/WASM dashboard for saving configuration, deploying, inspecting history, and reading recent logs | Secrets, streams, and the advanced web UI |
 
 ## Development

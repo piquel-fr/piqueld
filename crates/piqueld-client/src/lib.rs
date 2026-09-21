@@ -19,6 +19,9 @@ pub mod operations;
 /// Control-plane status contracts.
 pub mod system;
 
+/// Passkey login and account management.
+pub mod auth;
+
 mod generated;
 
 mod builds;

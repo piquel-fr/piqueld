@@ -28,6 +28,8 @@ pub(super) fn dashboard_header() -> View {
                 <A href="/dashboard/system" class="nav-link" active_class="active">"Daemon status"</A>
                 <A href="/dashboard/analytics" class="nav-link" active_class="active">"Analytics"</A>
                 <A href="/dashboard/notifications" class="nav-link" active_class="active">"Notifications"</A>
+                <A href="/dashboard/accounts" class="nav-link" active_class="active">"Accounts"</A>
+                <super::auth::Logout />
             </nav>
         </aside>
     }

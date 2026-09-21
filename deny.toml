@@ -22,6 +22,14 @@ skip = [
 
 [licenses]
 confidence-threshold = 0.8
+# Native HTTPS uses rustls/ring and Mozilla root-certificate data. Keep these
+# additional licenses scoped to the dependencies that require them.
+exceptions = [
+  { crate = "ring", allow = ["ISC"] },
+  { crate = "rustls-webpki", allow = ["ISC"] },
+  { crate = "untrusted", allow = ["ISC"] },
+  { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+]
 allow = [
   "Apache-2.0",
   "BSL-1.0",

@@ -520,7 +520,6 @@ async fn application_limits_outside_server_range_are_rejected_before_transport()
 #[test]
 fn tcp_transport_accepts_remote_hosts_but_requires_an_http_origin() {
     for rejected in [
-        "https://127.0.0.1/",
         "http://user@localhost/",
         "http://:secret@localhost/",
         "http://:@localhost/",

@@ -1,5 +1,6 @@
 //! Leptos client-side-rendered dashboard routes and shared data services.
 
+mod auth;
 mod builds;
 mod dashboard;
 mod logs;
@@ -105,7 +106,7 @@ struct DashboardContext {
 
 /// Mounts the CSR application into the document body.
 pub fn mount() {
-    mount_to_body(|| view! { <App /> });
+    mount_to_body(|| view! { <auth::Gate /> });
 }
 
 #[component]
@@ -119,6 +120,7 @@ fn App() -> impl IntoView {
                     <Route path="/" view={OverviewPage} />
                     <Route path="/applications" view={ApplicationsPage} />
                     <Route path="/settings" view={management::HostPage} />
+                    <Route path="/accounts" view={auth::AccountsPage} />
                     <Route path="/builds" view={builds::BuildsPage} />
                     <Route path="/events" view={observability::HistoryPage} />
                     <Route path="/errors" view={observability::ErrorsPage} />
@@ -136,6 +138,7 @@ fn App() -> impl IntoView {
                     <Route path="" view={DashboardRedirect} />
                     <Route path="/applications" view={ApplicationsPage} />
                     <Route path="/settings" view={management::HostPage} />
+                    <Route path="/accounts" view={auth::AccountsPage} />
                     <Route path="/builds" view={builds::BuildsPage} />
                     <Route path="/events" view={observability::HistoryPage} />
                     <Route path="/errors" view={observability::ErrorsPage} />
