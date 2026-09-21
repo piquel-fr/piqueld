@@ -155,7 +155,10 @@ impl From<StoreError> for ApiError {
 
 impl From<BoundaryError> for ApiError {
     fn from(value: BoundaryError) -> Self {
-        tracing::error!(error = ?value, "runtime boundary request failed");
+        // Storage conversion handles its own logging, including expected client errors.
+        if !matches!(&value, BoundaryError::Store(_)) {
+            tracing::error!(error = ?value, "runtime boundary request failed");
+        }
         match value {
             BoundaryError::Store(error) => error.into(),
             BoundaryError::Runtime(
