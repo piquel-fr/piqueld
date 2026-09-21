@@ -1,7 +1,7 @@
 //! Generates or checks the `OpenAPI` specification and its Rust client bindings.
 
 use anyhow::{Context, Result, anyhow, ensure};
-use piqueld::api::openapi_document;
+use piqueld::api::http::openapi_document;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{

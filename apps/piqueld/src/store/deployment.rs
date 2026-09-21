@@ -155,7 +155,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::{Mutation, MutationResponse};
+    use crate::api::{Mutation, MutationResponse};
     use piqueld_core::{ApplicationState, OperationState};
 
     fn empty() -> NormalizedApplication {

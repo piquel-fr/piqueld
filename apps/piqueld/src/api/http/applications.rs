@@ -1,5 +1,5 @@
 use super::{ApiError, ApiState, accepted, ok, openapi::ApiErrorResponse, parse_manifest};
-use crate::application::{Mutation, MutationResponse};
+use crate::api::{Mutation, MutationResponse};
 use axum::{
     body::Bytes,
     extract::{
@@ -42,8 +42,8 @@ pub(super) async fn list(
     State(state): State<ApiState>,
     query: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query
-        .map_err(|_| ApiError::from(crate::application::ApplicationError::InvalidPagination))?;
+    let Query(query) =
+        query.map_err(|_| ApiError::from(crate::api::ApplicationError::InvalidPagination))?;
     Ok(ok(state
         .applications(query.cursor.as_deref(), query.limit)
         .await?))

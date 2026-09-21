@@ -2,8 +2,8 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use piqueld::api::{ApiState, UiAssets};
-use piqueld::application::ApplicationService;
+use piqueld::api::ApplicationService;
+use piqueld::api::http::{ApiState, UiAssets};
 use piqueld::config::{ConfigError, DaemonConfig};
 use std::path::PathBuf;
 use tokio::net::{TcpListener, UnixListener};
@@ -143,7 +143,7 @@ fn spawn_tcp_api(
     tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(listener, piqueld::api::web_router(state, ui_assets))
+            axum::serve(listener, piqueld::api::http::web_router(state, ui_assets))
                 .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);
@@ -176,7 +176,7 @@ fn spawn_unix_api(
     tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(listener, piqueld::api::api_router(state))
+            axum::serve(listener, piqueld::api::http::api_router(state))
                 .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);

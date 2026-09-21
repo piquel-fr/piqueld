@@ -1,8 +1,7 @@
 //! Controller-test commands that inspect identity before submitting intent.
 
-use piqueld::application::{
-    ApplicationError, ApplicationService, Mutation, MutationResponse, RuntimeBoundary,
-};
+use piqueld::api::{ApplicationError, ApplicationService, Mutation, MutationResponse};
+use piqueld::application::RuntimeBoundary;
 use piqueld::store::{Store, StoreError};
 use piqueld_core::{ApplicationId, Operation, ValidatedApplication};
 use std::sync::Arc;

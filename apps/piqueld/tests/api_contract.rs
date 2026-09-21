@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use axum::{body::Body, http::Request, serve};
 use http_body_util::BodyExt;
-use piqueld::api::{ApiState, EmbeddedBundle, UiAssets, api_router, router, web_router};
+use piqueld::api::http::{ApiState, EmbeddedBundle, UiAssets, api_router, router, web_router};
 use piqueld::application::{BoundaryError, RuntimeBoundary};
 use piqueld::store::{Store, StoredApplication};
 use piqueld_client::{AcceptedOperation, ApplyApplicationRequest, Client};
@@ -1253,7 +1253,7 @@ async fn served_openapi_document_matches_the_generated_snapshot_and_resolves_ref
     .await;
     assert_eq!(document_response.status, StatusCode::OK);
     let generated =
-        serde_json::to_value(piqueld::api::openapi_document()).expect("document serializes");
+        serde_json::to_value(piqueld::api::http::openapi_document()).expect("document serializes");
     assert_eq!(document_response.body, generated);
     for schema in ["ImageReference", "RepositoryDigest", "ImmutableImage"] {
         assert!(
@@ -2304,7 +2304,7 @@ async fn routed_statuses_and_media_types_are_documented_in_openapi() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
-    let document = serde_json::to_value(piqueld::api::openapi_document()).unwrap();
+    let document = serde_json::to_value(piqueld::api::http::openapi_document()).unwrap();
     let cases = [
         (Method::GET, "/system/status", 200),
         (Method::GET, "/system/configuration", 503),
@@ -2451,7 +2451,7 @@ async fn readiness_distinguishes_engine_reachability_and_does_not_gate_saves() {
 
 #[tokio::test]
 async fn service_and_http_share_acceptance_receipts_and_application_views() {
-    use piqueld::application::{ApplicationService, Mutation, MutationResponse};
+    use piqueld::api::{ApplicationService, Mutation, MutationResponse};
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
     let service = ApplicationService::new(api.store.clone(), api.runtime.clone());
@@ -2529,7 +2529,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
 
 #[tokio::test]
 async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
-    use piqueld::application::{ApplicationError, Mutation, MutationResponse};
+    use piqueld::api::{ApplicationError, Mutation, MutationResponse};
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
     let manifest = manifest().validate().unwrap();
@@ -2607,7 +2607,7 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
 
 #[tokio::test]
 async fn direct_service_validates_log_bounds_and_deployment_ownership() {
-    use piqueld::application::{ApplicationError, Mutation, MutationResponse};
+    use piqueld::api::{ApplicationError, Mutation, MutationResponse};
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
     let missing = piqueld_core::ApplicationId::parse("absent-application").unwrap();

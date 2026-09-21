@@ -1102,7 +1102,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
         applications
             .apply(manifest.clone().validate().unwrap(), Some(1))
             .await,
-        Err(piqueld::application::ApplicationError::Store(
+        Err(piqueld::api::ApplicationError::Store(
             piqueld::store::StoreError::GenerationConflict {
                 expected: 1,
                 actual: 2
@@ -1431,7 +1431,7 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
     assert!(before.services[0].image.as_str().ends_with(&"b".repeat(64)));
     let renamed = applications
         .accept(
-            piqueld::application::Mutation::Rename {
+            piqueld::api::Mutation::Rename {
                 id: first.application_id.clone(),
                 name: "renamed".into(),
             },
@@ -1441,7 +1441,7 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
         )
         .await
         .unwrap();
-    let piqueld::application::MutationResponse::Rename(renamed) = renamed else {
+    let piqueld::api::MutationResponse::Rename(renamed) = renamed else {
         panic!("rename response")
     };
     assert_eq!(renamed.generation, 3);
@@ -1532,7 +1532,7 @@ async fn failed_preparation_preserves_active_repair_and_identical_apply_does_not
 
 #[tokio::test]
 async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
-    use piqueld::application::{Mutation, MutationResponse};
+    use piqueld::api::{Mutation, MutationResponse};
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let mut input = manifest();
@@ -1676,7 +1676,7 @@ async fn mixed_sources_report_the_failing_source() {
 
 mod repository_deployments {
     use super::*;
-    use piqueld::application::{ApplicationError, Mutation, MutationResponse};
+    use piqueld::api::{ApplicationError, Mutation, MutationResponse};
     use piqueld::store::StoreError;
     use piqueld_core::manifest::{ApplicationManifest, GitRepository, RepositoryManifest};
 

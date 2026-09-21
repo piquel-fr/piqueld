@@ -1,10 +1,13 @@
 # HTTP API
 
-The daemon's transport-independent API is `piqueld::application::ApplicationService`.
+The daemon's transport-independent API is `piqueld::api::ApplicationService`.
 It is a cheap, clonable handle shared by HTTP handlers and future MCP or scheduled
 callers. Its private store and runtime back every domain operation: mutation
 acceptance, planning, application views, history, logs, manifest export, and host
-status. Adapters decode transport inputs and map service results and errors.
+status. Its implementation lives in the private `api::service` module; the Axum
+adapter lives in `api::http`. Future MCP and cron adapters can be added alongside
+HTTP. Adapters decode transport inputs and map service results and errors, while
+runtime implementation and boundary types remain in `application`.
 `accept` enforces revision/identity preconditions, explicit force overrides, and
 idempotency for every caller; `Mutation::save` saves configuration and optionally
 deploys it. Inputs use validated manifests and typed application IDs.

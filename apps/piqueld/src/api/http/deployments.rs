@@ -34,7 +34,7 @@ pub(super) async fn deploy(
     let query = super::applications::GenerationQuery::decode(query)?;
     super::applications::accept_mutation(
         &state,
-        crate::application::Mutation::Deploy {
+        crate::api::Mutation::Deploy {
             id: ApplicationId::parse(id)?,
         },
         query.expected_generation,
