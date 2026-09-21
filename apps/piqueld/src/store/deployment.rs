@@ -20,6 +20,7 @@ impl Store {
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
+        Self::reserve_hostnames_on(tx, id).await?;
         if previous == 0 {
             Self::write_status(tx, id, "not_deployed", None, now).await?;
         }

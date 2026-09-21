@@ -4,6 +4,7 @@ mod logs;
 use logs::ApplicationLogs;
 mod deployments;
 mod navigation;
+mod routes;
 mod services;
 mod settings;
 
@@ -351,7 +352,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         <EditorFeedback />
         <Tabs
             label="Application sections"
-            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics", "Builds", "Logs"]}
+            options={&["Overview", "Source", "Services", "Routes", "Volumes", "Deployments", "Diagnostics", "Builds", "Logs"]}
             selected={context.tab}
             class="tabs"
         />
@@ -523,7 +524,7 @@ fn EditorFeedback() -> impl IntoView {
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
     view! {
-        <div hidden={move || !matches!(context.tab.get(), "Source" | "Services" | "Volumes")}>
+        <div hidden={move || !matches!(context.tab.get(), "Source" | "Services" | "Routes" | "Volumes")}>
             <div hidden={move || context.tab.get() != "Source"}>
                 <RepositorySettings />
             </div>
@@ -538,7 +539,7 @@ fn ApplicationSettings() -> impl IntoView {
                     .then(|| {
                         view! {
                             <p class="help">
-                                "Managed in Git. Disconnect the repository in Source to edit services and volumes here."
+                                "Managed in Git. Disconnect the repository in Source to edit services, routes, and volumes here."
                             </p>
                         }
                     })
@@ -550,6 +551,7 @@ fn ApplicationSettings() -> impl IntoView {
                     </div>
                     <services::ServiceList />
                 </div>
+                <div hidden={move || context.tab.get() != "Routes"}><routes::RouteSettings /></div>
                 <div hidden={move || context.tab.get() != "Volumes"}>
                     <VolumeSettings />
                 </div>

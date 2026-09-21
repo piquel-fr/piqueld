@@ -6,6 +6,7 @@ pub mod application;
 pub mod build;
 pub mod config;
 pub mod docker;
+pub mod ingress;
 pub mod operations;
 pub mod reconcile;
 pub mod store;

@@ -222,6 +222,9 @@ pub fn safe_decode_path(path: &str) -> String {
         "target",
         "read_only",
         "port",
+        "routes",
+        "hostname",
+        "service",
         "path",
         "interval_seconds",
         "timeout_seconds",
@@ -265,6 +268,55 @@ fn valid_path_indices(mut value: &str) -> bool {
 }
 
 impl ApplicationManifest {
+    fn validate_routes(&mut self, errors: &mut Vec<ValidationError>) {
+        let mut hostnames = BTreeSet::new();
+        for (index, route) in self.spec.routes.iter_mut().enumerate() {
+            route.hostname = route
+                .hostname
+                .strip_suffix('.')
+                .unwrap_or(&route.hostname)
+                .to_ascii_lowercase();
+            let path = format!("spec.routes[{index}]");
+            if super::Hostname::parse(&route.hostname).is_err() {
+                error(
+                    errors,
+                    "route_hostname_invalid",
+                    &format!("{path}.hostname"),
+                    "an exact public ASCII DNS hostname is required",
+                );
+            }
+            if !hostnames.insert(route.hostname.clone()) {
+                error(
+                    errors,
+                    "route_hostname_duplicate",
+                    &format!("{path}.hostname"),
+                    "hostname is already used in this application",
+                );
+            }
+            if !self
+                .spec
+                .services
+                .iter()
+                .any(|service| service.name == route.service)
+            {
+                error(
+                    errors,
+                    "route_service_missing",
+                    &format!("{path}.service"),
+                    "route must reference a service in this application",
+                );
+            }
+            if route.port == 0 {
+                error(
+                    errors,
+                    "route_port_invalid",
+                    &format!("{path}.port"),
+                    "HTTP backend port must be 1..=65535",
+                );
+            }
+        }
+    }
+
     /// Validates manifest semantics and returns a normalized-input wrapper.
     ///
     /// # Errors
@@ -286,11 +338,22 @@ impl ApplicationManifest {
             }
         }
         // Bound work before walking attacker-controlled collections.
+        if self.spec.routes.len() > 64 {
+            error(
+                &mut errors,
+                "routes_limit",
+                "spec.routes",
+                "at most 64 routes are allowed per application",
+            );
+            return Err(ValidationErrors(errors));
+        }
+
         if !validate_budgets(&self, &mut errors) {
             errors
                 .sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
             return Err(ValidationErrors(errors));
         }
+        self.validate_routes(&mut errors);
         unique_names(
             self.spec.services.iter().map(|service| &service.name),
             "spec.services",

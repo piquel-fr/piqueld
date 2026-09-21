@@ -75,6 +75,7 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(StoreError::database)?;
+        Self::reserve_hostnames_on(&mut tx, app_id).await?;
         Self::operation_event(&mut tx, &operation.id, "manifest_fetched", commit, now_ms()).await?;
         tx.commit().await.map_err(StoreError::database)
     }

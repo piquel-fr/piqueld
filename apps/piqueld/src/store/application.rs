@@ -97,6 +97,7 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
+        Self::reserve_hostnames_on(tx, id).await?;
         Self::write_status(tx, id, "pending", None, now).await?;
         Ok(operation)
     }
@@ -223,6 +224,7 @@ impl Store {
             return Err(StoreError::IllegalTransition);
         }
         Self::accept_deployment_on(&mut tx, operation).await?;
+        Self::reserve_hostnames_on(&mut tx, operation.application_id.as_str()).await?;
         Self::operation_event(&mut tx, &operation.id, "target_resolved", None, now_ms()).await?;
         tx.commit().await.map_err(StoreError::database)
     }
@@ -245,6 +247,7 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .rows_affected();
+        Self::reserve_hostnames_on(&mut tx, app_id).await?;
         if promoted == 1 {
             Self::operation_event(&mut tx, &operation.id, "target_promoted", None, now_ms())
                 .await?;

@@ -24,6 +24,9 @@ pub struct ValidatedSpec {
     pub services: Vec<ValidatedService>,
     /// Declared named volumes.
     pub volumes: Vec<ValidatedVolume>,
+    /// Exact public HTTP routes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<super::ValidatedRoute>,
 }
 
 /// Validated application service.
@@ -89,6 +92,23 @@ impl ValidatedMetadata {
 impl ValidatedSpec {
     pub(super) fn from_input(value: input::ApplicationSpec) -> Result<Self, ValidationErrors> {
         Ok(Self {
+            routes: value
+                .routes
+                .into_iter()
+                .enumerate()
+                .map(|(index, route)| {
+                    let path = format!("spec.routes[{index}]");
+                    Ok(super::ValidatedRoute {
+                        hostname: super::Hostname::parse(route.hostname)
+                            .map_err(|e| ValidationErrors::invalid_name(&path, e))?,
+                        service: ServiceName::parse(route.service)
+                            .map_err(|e| ValidationErrors::invalid_name(&path, e))?,
+                        port: std::num::NonZeroU16::new(route.port).ok_or_else(|| {
+                            ValidationErrors::invalid_name(&path, "port must be nonzero")
+                        })?,
+                    })
+                })
+                .collect::<Result<_, ValidationErrors>>()?,
             manifest: value.manifest,
             services: value
                 .services
@@ -116,6 +136,11 @@ impl ValidatedSpec {
 
     pub(super) fn to_input(&self) -> input::ApplicationSpec {
         input::ApplicationSpec {
+            routes: self
+                .routes
+                .iter()
+                .map(super::ValidatedRoute::to_input)
+                .collect(),
             manifest: self.manifest.clone(),
             services: self
                 .services

@@ -68,7 +68,7 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
         }
         let operation = &self.store.operation(&operation.id).await?;
-        let result = self.execute_operation(operation, cancellation).await;
+        let result = Box::pin(self.execute_operation(operation, cancellation)).await;
         if cancellation.is_cancelled() {
             return Ok("cancelled");
         }
@@ -137,30 +137,13 @@ impl<D: DockerApi> Controller<D> {
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
-        self.store
-            .progress(&operation.id, "preparing", None)
-            .await
-            .map_err(OperationError::from)?;
-        let application = self
-            .store
-            .get(&operation.application_id)
-            .await
-            .map_err(OperationError::from)?;
-        let request = if operation.kind == OperationKind::Delete {
-            PlanRequest::Delete {
-                application_id: operation.application_id.clone(),
-                instance_id: piqueld_core::InstanceId::parse(self.store.instance_id())
-                    .expect("valid store identity"),
-            }
-        } else {
-            PlanRequest::Reconcile {
-                desired: tokio::select! {
-                    ()=cancellation.cancelled()=>return Err(OperationError::Cancelled),
-                    result=tokio::time::timeout(self.prepare_timeout, self.prepare_target(operation,&application))=>result.map_err(|_| OperationError::ValidationFailed("preparation timed out"))??,
-                },
-            }
-        };
-        let ownership = self.ownership_labels(application.application.id());
+        let request = self.operation_request(operation, cancellation).await?;
+        if operation.kind == OperationKind::Delete {
+            let _guard = self.mutations.lock().await;
+            self.check_current(operation).await?;
+            self.sync_routes(operation, &[], true).await?;
+        }
+        let ownership = self.ownership_labels(&operation.application_id);
         if operation.kind != OperationKind::Delete
             && !self
                 .store
@@ -194,12 +177,16 @@ impl<D: DockerApi> Controller<D> {
                 .record_health(&operation.id, &observed)
                 .await
                 .map_err(OperationError::from)?;
-            let plan = Plan::from_request(&request, &observed);
-            tracing::debug!(
-                actions = plan.actions.len(),
-                blocked = plan.is_blocked(),
-                "observation planned"
-            );
+            let accepted_routes = self.store.applied_routes(&operation.application_id).await?;
+            let runtime_request = match &request {
+                PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
+                    desired: desired
+                        .clone()
+                        .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
+                },
+                _ => request.clone(),
+            };
+            let plan = Plan::from_request(&runtime_request, &observed);
             self.check_plan(operation, &plan).await?;
             if operation.kind != OperationKind::Delete {
                 let _guard = self.mutations.lock().await;
@@ -208,6 +195,22 @@ impl<D: DockerApi> Controller<D> {
                     .publish_prepared(operation)
                     .await
                     .map_err(OperationError::from)?;
+                if let PlanRequest::Reconcile { desired } = &request {
+                    tokio::time::timeout_at(
+                        deadline,
+                        self.sync_routes(
+                            operation,
+                            &desired.routes,
+                            plan.desired_resources_ready(),
+                        ),
+                    )
+                    .await
+                    .map_err(|_| OperationError::ConvergenceTimeout)??;
+                }
+            }
+            if self.store.applied_routes(&operation.application_id).await? != accepted_routes {
+                // Replan after cutover before dropping old ingress attachments.
+                continue;
             }
             let action = plan.actions.iter().find(|action| {
                 !matches!(action.kind, piqueld_core::ActionKind::RetainVolume { .. })
@@ -233,7 +236,71 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
+    async fn operation_request(
+        &self,
+        operation: &Operation,
+        cancellation: &CancellationToken,
+    ) -> Result<PlanRequest, OperationError> {
+        self.store
+            .progress(&operation.id, "preparing", None)
+            .await
+            .map_err(OperationError::from)?;
+        let application = self
+            .store
+            .get(&operation.application_id)
+            .await
+            .map_err(OperationError::from)?;
+        Ok(if operation.kind == OperationKind::Delete {
+            PlanRequest::Delete {
+                application_id: operation.application_id.clone(),
+                instance_id: piqueld_core::InstanceId::parse(self.store.instance_id())
+                    .expect("valid store identity"),
+            }
+        } else {
+            PlanRequest::Reconcile {
+                desired: tokio::select! {
+                    ()=cancellation.cancelled()=>return Err(OperationError::Cancelled),
+                    result=tokio::time::timeout(self.prepare_timeout, self.prepare_target(operation,&application))=>result.map_err(|_| OperationError::ValidationFailed("preparation timed out"))??,
+                },
+            }
+        })
+    }
+
+    async fn sync_routes(
+        &self,
+        operation: &Operation,
+        routes: &[piqueld_core::manifest::ValidatedRoute],
+        ready: bool,
+    ) -> Result<(), OperationError> {
+        if routes.is_empty() && !self.store.has_routes(&operation.application_id).await? {
+            return Ok(());
+        }
+        self.store.progress(&operation.id, "routing", None).await?;
+        if let Some(ingress) = &self.ingress {
+            Box::pin(ingress.apply(operation, routes, ready))
+                .await
+                .map_err(OperationError::Ingress)?;
+        } else {
+            self.store
+                .stage_routes(
+                    &operation.application_id,
+                    routes,
+                    ready,
+                    Some(&operation.id),
+                )
+                .await?;
+            let table = self.store.routing_table().await?;
+            self.store.acknowledge_routes(&table).await?;
+        }
+        Ok(())
+    }
+
     async fn check_plan(&self, operation: &Operation, plan: &Plan) -> Result<(), OperationError> {
+        tracing::debug!(
+            actions = plan.actions.len(),
+            blocked = plan.is_blocked(),
+            "observation planned"
+        );
         let resource = plan
             .diagnostics
             .iter()

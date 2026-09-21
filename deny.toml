@@ -26,6 +26,10 @@ allow = [
   "Apache-2.0",
   "BSL-1.0",
   "BSD-3-Clause",
+  # Mozilla certificate roots bundled by webpki-roots for public HTTPS probes.
+  "CDLA-Permissive-2.0",
+  # ring, rustls-webpki, and untrusted in the Rustls verification stack.
+  "ISC",
   "MIT",
   "MPL-2.0",
   "Unicode-3.0",

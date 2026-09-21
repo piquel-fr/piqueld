@@ -33,7 +33,8 @@ name = "data"
 Services support replicas, environment variables, command and argument arrays,
 health checks, CPU/memory limits, and mounts of declared named volumes. Named
 volumes are retained when an application is deleted. There are no manifest
-fields for managed credentials, secrets, routes, or published ports.
+fields for managed credentials, secrets, or directly published ports. Exact-host
+HTTP routes are declared in `spec.routes`; see [managed ingress](ingress.md).
 
 Names are 1–63 lowercase ASCII letters, digits, or hyphens; they start with a
 letter and cannot end with a hyphen. Applications may be empty. Deploying an empty application removes its services and network, retaining volume data.
@@ -170,3 +171,24 @@ Connection settings alone remain editable through apply so an incorrect path
 can be repaired. Manifest connection settings do not change the runtime spec
 hash. Source builds, deployment, and rollback retain the behavior described above.
 Automatic synchronization and webhooks are not implemented.
+
+## Public routes
+
+```toml
+[[spec.routes]]
+hostname = "notes.example.com"
+service = "web"
+port = 3000
+```
+
+Each route references a service in the same application and its internal HTTP
+port (1–65535). Up to 64 routes are allowed. Hostnames are exact public ASCII
+DNS names (use Punycode for internationalized domains), normalized to lowercase
+without a trailing dot. Wildcards, paths, schemes, and hostname ports are rejected.
+A hostname belongs to one application across saved, captured, and deployed state.
+Conflicts fail atomically with `hostname_conflict`, including when ingress is off.
+
+Save does not change live routes. Deploy activates additions/destination changes
+once backends converge; explicit removals are withdrawn before backend cleanup.
+Routes are still accepted and deployed while ingress is disabled, but are not
+exposed until the daemon's global `ingress.enabled` setting is enabled.

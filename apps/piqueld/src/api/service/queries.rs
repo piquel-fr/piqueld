@@ -185,7 +185,8 @@ impl ApplicationService {
                         .map_err(StoreError::corrupt)?,
                     &resolutions,
                 )
-                .map_err(BoundaryError::Compilation)?,
+                .map_err(BoundaryError::Compilation)?
+                .with_ingress(self.ingress.as_ref().is_some_and(|ingress| ingress.enabled)),
             )
         } else {
             None

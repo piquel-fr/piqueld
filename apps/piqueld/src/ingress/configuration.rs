@@ -1,0 +1,46 @@
+use super::Ingress;
+use crate::store::ingress::RoutingTable;
+use piqueld_core::DockerServiceName;
+use serde_json::{Value, json};
+
+impl Ingress {
+    pub(super) fn configuration(&self, table: &RoutingTable) -> Value {
+        let mut https = Vec::new();
+        let mut redirects = Vec::new();
+        for (id, routes) in table {
+            for route in routes {
+                let host = route.hostname.as_str();
+                // A bounded, side-effect-free endpoint lets the daemon distinguish
+                // this gateway from a different server behind an incorrect DNS record.
+                https.push(json!({"match":[{"host":[host],"path":["/.well-known/piqueld-ingress"]}],"handle":[{"handler":"static_response","body":self.instance_id}],"terminal":true}));
+                https.push(json!({"match":[{"host":[host]}],"handle":[{
+                    "handler":"reverse_proxy",
+                    "upstreams":[{"dial":format!("{}:{}", DockerServiceName::for_service(id,&route.service),route.port)}],
+                    "transport":{"protocol":"http","versions":["1.1"]},
+                    "stream_close_delay":300_000_000_000_u64
+                }],"terminal":true}));
+                redirects.push(json!({"match":[{"host":[host]}],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
+            }
+        }
+        let not_found =
+            json!({"handle":[{"handler":"static_response","status_code":404}],"terminal":true});
+        https.push(not_found.clone());
+        redirects.push(not_found);
+        let configuration = json!({
+            "admin":{"listen":"unix//control/admin.sock"},
+            "apps":{"http":{"servers":{
+                "https":{"protocols":["h1","h2"],"listen":[":443"],"routes":https,"strict_sni_host":true,
+                    "tls_connection_policies":[{}],"automatic_https":{"disable_redirects":true}},
+                "http":{"listen":[":80"],"routes":redirects}
+            }}}
+        });
+        #[cfg(test)]
+        if let Some(issuer) = &self.issuer {
+            let mut configuration = configuration;
+            configuration["apps"]["tls"] =
+                json!({"automation":{"policies":[{"issuers":[issuer]}]}});
+            return configuration;
+        }
+        configuration
+    }
+}
