@@ -29,6 +29,22 @@ validated_string!(
 );
 
 impl DockerNetworkName {
+    /// Whether this is the canonical private or ingress network for an application.
+    #[must_use]
+    pub fn is_for_application(&self, id: &ApplicationId) -> bool {
+        self == &Self::for_application(id) || self == &Self::for_ingress(id)
+    }
+
+    /// Derives a separate network for this application's exposed services.
+    #[must_use]
+    pub fn for_ingress(id: &ApplicationId) -> Self {
+        Self(docker_resource_name(
+            id,
+            ResourceKind::Network,
+            Some("ingress"),
+        ))
+    }
+
     /// Derives the application's private network name.
     #[must_use]
     pub fn for_application(id: &ApplicationId) -> Self {

@@ -41,6 +41,11 @@ impl BollardDocker {
                 return true;
             }
             if let Ok(owner) = ApplicationId::parse(owner.clone()) {
+                if piqueld_core::DockerNetworkName::parse(name).is_ok_and(|name| {
+                    name.is_for_application(&owner) && !name.is_for_application(app)
+                }) {
+                    return false;
+                }
                 let kind = if labels.contains_key(SERVICE_LABEL) {
                     ResourceKind::Service
                 } else {
@@ -154,7 +159,8 @@ impl BollardDocker {
         };
         Self::owns(observed, expected)
             && !observed.contains_key(SERVICE_LABEL)
-            && docker_resource_name(&application, ResourceKind::Network, None) == name
+            && piqueld_core::DockerNetworkName::parse(name)
+                .is_ok_and(|name| name.is_for_application(&application))
     }
 
     /// Returns whether a managed spec label is a valid SHA-256 digest.
@@ -238,10 +244,13 @@ mod tests {
         );
         for (kind, logical_name) in [
             (ResourceKind::Network, None),
+            (ResourceKind::Network, Some("ingress")),
             (ResourceKind::Service, Some("web")),
         ] {
             let mut labels = BTreeMap::from([(APPLICATION_LABEL.into(), foreign.to_string())]);
-            if let Some(logical_name) = logical_name {
+            if kind == ResourceKind::Service
+                && let Some(logical_name) = logical_name
+            {
                 labels.insert(SERVICE_LABEL.into(), logical_name.into());
             }
             let foreign_name = docker_resource_name(&foreign, kind, logical_name);

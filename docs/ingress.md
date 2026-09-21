@@ -1,0 +1,91 @@
+# Managed HTTP ingress
+
+Piqueld manages one Caddy gateway for a single-node installation used by one trusted
+person or team. Applications own exact-host routes; the installation owns public
+listeners and certificate storage. Apps must implement their own authentication.
+
+## Enable and expose an application
+
+Set the read-only global daemon TOML, then restart piqueld:
+
+```toml
+[ingress]
+enabled = true
+```
+
+Docker Engine 28+ with API 1.48+ is required. Ports 80 and 443 must be free and
+reachable from the internet. Create an A record for the server's public IPv4
+address; add AAAA only if public IPv6 actually reaches the gateway. DNS changes
+are manual. Caddy obtains and renews certificates without DNS-provider credentials.
+
+Add a route to an application manifest and deploy it:
+
+```toml
+[[spec.routes]]
+hostname = "notes.example.com"
+service = "web"
+port = 3000
+```
+
+The dashboard's Routes tab supports the same save/deploy lifecycle. Removing a
+service in the UI also removes its routes from saved configuration. A domain can
+point at only one application's service; multiple domains may point at one service.
+The backend serves plain HTTP on its internal port. WebSockets and streaming are
+supported. Wildcards, path rewriting/routing, tunnels, arbitrary TCP/UDP, and
+HTTPS backends are outside this release.
+
+## Traffic and isolation
+
+Only Caddy publishes ports. HTTP redirects to HTTPS for known hosts; unknown HTTP
+hosts receive 404 and unknown TLS names receive no automatically issued certificate.
+Each application's exposed services share a dedicated ingress overlay with Caddy.
+Application ingress networks are separate from each other and from private backend
+networks. The gateway is trusted across all exposed applications.
+
+Caddy runs as the daemon's UID/GID in a standalone Docker container, with only the
+`NET_BIND_SERVICE` capability (required by the official binary), a read-only root filesystem, and a private Unix administration socket.
+The gateway does not receive Docker API access. Its pinned image version follows
+piqueld releases. The stable bridge network provides outbound DNS/ACME connectivity;
+application overlay attachment does not replace the gateway container.
+
+Ordinary configuration changes preserve listener availability. WebSocket connections
+may reconnect after a five-minute close delay. Gateway replacement or host failure
+can briefly interrupt traffic. This does not add blue-green application deployment.
+
+## Status and recovery
+
+System status displays ingress alongside Docker health; effective Settings remain
+read-only. Caddy startup/port/configuration failures leave the daemon available.
+Detailed causes and Caddy certificate diagnostics are logged by piqueld. Core
+readiness (`ready`) continues to describe database/Docker/Swarm; ingress has its own
+`enabled`, `healthy`, `message`, and `routes` fields under system readiness.
+
+Deployed route status is separate from application health. A `ready` route means
+an HTTPS request from the daemon validated a publicly trusted certificate and reached
+this gateway at `/.well-known/piqueld-ingress`. This small reserved endpoint returns
+the installation ID and never invokes the application. It is not a backend health
+check or proof of reachability from every external network. DNS, firewall, NAT
+loopback, or pending certificate issuance can keep a route `pending`; inspect A/AAAA
+records and daemon logs. Gateway failure leaves routes pending, and disabled ingress
+is reported explicitly. Applications should configure their own container health
+checks to establish backend readiness before route cutover.
+
+Public DNS or certificate delays do not fail a deployment once its runtime and route
+configuration are applied. Failure to apply required gateway configuration does fail
+it, retains required old backends, and retries. Explicit route removals withdraw
+public exposure as deployment execution starts, before obsolete service/network
+cleanup. Hostname reservations survive pending deployments and incomplete withdrawals.
+
+Disabling ingress in TOML and restarting stops public routing, retains certificate
+and route state, and continues accepting route-bearing manifests. Re-enabling exposes
+only deployed route intent. A normal daemon shutdown leaves Caddy serving and renewing
+certificates independently. Back up the private daemon data directory, including
+`ingress/data` and `ingress/config`, together with SQLite.
+
+## Validation
+
+`just docker-test` runs Caddy in the isolated Docker-in-Docker harness, with a private
+test CA and randomly allocated loopback host ports. It checks trusted TLS, routing,
+redirects, unknown-host rejection, network separation, live network attachment and route cutover,
+independent restart, and disable/re-enable behavior. Production Caddy uses public ACME;
+the isolated test does not request public certificates or require a real domain.

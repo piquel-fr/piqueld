@@ -80,6 +80,10 @@ diagnostic_codes! {
     Superseded => "superseded",
     /// Observed application health is degraded.
     ServiceDegraded => "service_degraded",
+    /// A route hostname is reserved by another application.
+    HostnameConflict => "hostname_conflict",
+    /// The managed gateway could not apply a routing transition.
+    IngressUnavailable => "ingress_unavailable",
 }
 
 const INSPECT_DIAGNOSTIC: &str =
@@ -131,6 +135,16 @@ impl DiagnosticCode {
                 Application,
                 true,
                 "Inspect service health and resource capacity. Reconciliation will retry.",
+            ),
+            Self::IngressUnavailable => (
+                Application,
+                true,
+                "Check ingress health and daemon logs. Reconciliation reapplies routes from durable intent.",
+            ),
+            Self::HostnameConflict => (
+                Application,
+                false,
+                "Choose a hostname that no other application reserves, then deploy again.",
             ),
             Self::OwnershipConflict | Self::DockerConfigurationConflict => (
                 Application,
@@ -220,6 +234,8 @@ mod tests {
             (DiagnosticCode::ImageResolutionFailed, true),
             (DiagnosticCode::DockerRequestFailed, true),
             (DiagnosticCode::ConvergenceTimeout, true),
+            (DiagnosticCode::IngressUnavailable, true),
+            (DiagnosticCode::HostnameConflict, false),
             (DiagnosticCode::ImageResolutionRejected, false),
             (DiagnosticCode::OwnershipConflict, false),
             (DiagnosticCode::ServiceDegraded, false),

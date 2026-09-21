@@ -4,6 +4,12 @@ use piqueld_core::observability::DiagnosticCode;
 /// Sanitized failure returned while executing a durable operation.
 #[derive(Debug, thiserror::Error)]
 pub enum OperationError {
+    /// A saved or captured route belongs to another application.
+    #[error("hostname {0} is reserved by another application")]
+    HostnameConflict(String),
+    /// Managed gateway could not apply the required routing transition.
+    #[error("ingress configuration could not be applied; see ingress health and daemon logs")]
+    Ingress(#[source] anyhow::Error),
     /// Docker failure with its complete diagnostic cause chain.
     #[error("{}", .0.operation_classification())]
     Docker(#[source] crate::docker::DockerError),
@@ -97,6 +103,8 @@ impl OperationError {
     #[must_use]
     pub fn diagnostic_code(&self) -> DiagnosticCode {
         match self {
+            Self::HostnameConflict(_) => DiagnosticCode::HostnameConflict,
+            Self::Ingress(_) => DiagnosticCode::IngressUnavailable,
             Self::Docker(error) => error.diagnostic_code(),
             Self::Journal(_) => DiagnosticCode::JournalUnavailable,
             Self::SecretStorageUnavailable(_) => DiagnosticCode::SecretStorageUnavailable,
@@ -192,6 +200,9 @@ impl From<crate::store::StoreError> for OperationError {
             }
             crate::store::StoreError::SecretUnavailable { names } => {
                 Self::SecretUnavailable { names }
+            }
+            crate::store::StoreError::HostnameConflict { hostname } => {
+                Self::HostnameConflict(hostname)
             }
             other => Self::Journal(other),
         }

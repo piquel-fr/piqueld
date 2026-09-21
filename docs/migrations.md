@@ -86,6 +86,14 @@ Deletion reservations survive restarts; retry deletion to finish cleanup. Lost-k
 recovery marks discarded versions unavailable without changing pins, and
 unavailable values are excluded from retained-value quotas.
 
+`0009_ingress.sql` adds transactional hostname reservations and a per-application
+routing projection. Desired routes are journaled before gateway I/O; the last
+accepted projection retains ownership until a removal is acknowledged. Saved
+configuration, captured deployment inputs, resolved targets, and both routing
+projections participate in reservation checks within the same SQLite transaction.
+An interrupted gateway update is reapplied from durable intent. Application deletion
+cascades routing records only after gateway withdrawal and runtime cleanup succeed.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

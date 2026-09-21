@@ -81,7 +81,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let remove_name = name.clone();
     let return_href = app_href.clone();
     let remove = move |_| {
-        if !window().confirm_with_message("Remove this service from saved configuration? Its running containers remain until Deploy.").unwrap_or(false) {return;}
+        if !window().confirm_with_message("Remove this service and its routes from saved configuration? Its running containers remain until Deploy.").unwrap_or(false) {return;}
         let navigate = navigate.clone();
         let href = return_href.clone();
         context.save(

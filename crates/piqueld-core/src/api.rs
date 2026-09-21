@@ -393,6 +393,9 @@ pub struct ReadinessStatus {
     pub docker: DependencyStatus,
     /// Docker is a compatible single-node Swarm manager.
     pub swarm: DependencyStatus,
+    /// Managed ingress is independent of core deployment dependencies.
+    #[serde(default)]
+    pub ingress: IngressStatus,
 }
 
 /// Durable source-preparation attempt, independent of the build executor.
@@ -510,4 +513,34 @@ pub struct SecretKeyRecovery {
     pub affected_secrets: i64,
     /// Stored versions discarded; already unavailable versions are excluded.
     pub discarded_versions: i64,
+}
+
+/// Managed gateway health and public route diagnostics.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct IngressStatus {
+    /// Effective read-only daemon setting.
+    pub enabled: bool,
+    /// Whether the gateway has accepted its desired configuration (or is stopped).
+    pub healthy: bool,
+    /// Safe diagnostic, with detailed causes in daemon logs.
+    pub message: String,
+    /// Deployed routes and their latest independent HTTPS probes.
+    pub routes: Vec<RouteStatus>,
+}
+
+/// Public HTTPS readiness is separate from application rollout success.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct RouteStatus {
+    /// Owning application identity.
+    pub application_id: String,
+    /// Exact public DNS hostname.
+    pub hostname: String,
+    /// Logical backend service.
+    pub service: String,
+    /// Internal HTTP backend port.
+    pub port: u16,
+    /// disabled, pending, ready, or failed.
+    pub state: String,
+    /// Public diagnostic explaining DNS, TLS, or gateway readiness.
+    pub message: String,
 }

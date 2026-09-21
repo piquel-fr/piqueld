@@ -8,6 +8,7 @@ pub mod auth;
 pub mod build;
 pub mod config;
 pub mod docker;
+pub mod ingress;
 pub mod operations;
 pub mod reconcile;
 mod secrets;

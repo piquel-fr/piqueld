@@ -121,6 +121,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                                 {dependency_readiness("Database", status.database)}
                                 {dependency_readiness("Docker Engine", status.docker)}
                                 {dependency_readiness("Swarm manager", status.swarm)}
+                                {readiness_card("HTTP ingress", if status.ingress.healthy {"ready"} else {"failed"}, if !status.ingress.healthy {"Unhealthy"} else if !status.ingress.enabled {"Disabled"} else {"Ready"}, &status.ingress.message)}
                             }
                         })
                     }}
