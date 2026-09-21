@@ -6,6 +6,10 @@ mod application;
 mod build;
 mod deployment;
 mod event;
+mod journal;
+mod notifications;
+mod observability;
+pub(crate) use journal::JournalAction;
 mod operation;
 mod repository;
 mod status;
@@ -97,6 +101,9 @@ pub enum StoreError {
     /// A repository command contained invalid input.
     #[error("repository input is invalid")]
     InvalidInput,
+    /// Requested stream history was pruned.
+    #[error("requested event history is no longer available")]
+    HistoryExpired,
     /// Repository input could not be converted to its bounded representation.
     #[error("repository input is invalid")]
     InvalidInputSource(#[source] Box<dyn StdError + Send + Sync>),
@@ -207,6 +214,12 @@ pub struct Store {
     instance_id: String,
     build_history: crate::config::BuildHistoryConfig,
     writers: std::sync::Arc<tokio::sync::Mutex<()>>,
+    pub(crate) database_path: std::path::PathBuf,
+    pub(crate) started: std::time::Instant,
+    pub(crate) stats_cache:
+        std::sync::Arc<tokio::sync::Mutex<Option<piqueld_core::observability::DaemonStats>>>,
+    pub(crate) notifications: crate::config::NotificationConfig,
+    daemon_event_days: u64,
 }
 
 impl Store {
@@ -315,6 +328,11 @@ impl Store {
             instance_id,
             build_history: crate::config::BuildHistoryConfig::default(),
             writers: std::sync::Arc::default(),
+            database_path: path.to_path_buf(),
+            started: std::time::Instant::now(),
+            stats_cache: std::sync::Arc::default(),
+            notifications: crate::config::NotificationConfig::default(),
+            daemon_event_days: 0,
         })
     }
 
@@ -378,7 +396,7 @@ static LAST_NOW_MS: AtomicI64 = AtomicI64::new(0);
 
 /// Returns the current Unix time in milliseconds, monotonic within this
 /// process so clock step-backs can never violate schema timestamp checks.
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -472,3 +490,6 @@ impl ApplicationRow {
         })
     }
 }
+
+#[cfg(test)]
+mod observability_tests;

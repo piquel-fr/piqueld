@@ -670,6 +670,7 @@ impl super::EditorContext {
 
 #[component]
 fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
+    let history = format!("/dashboard/events?operation={}", attempt.id);
     view! {
         <p class="attempt">
             {format!(
@@ -679,6 +680,7 @@ fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
                 attempt.error_code.unwrap_or_default(),
                 attempt.error_message.unwrap_or_default(),
             )}
+            <leptos_router::A href=history>" View events and diagnostics"</leptos_router::A>
         </p>
     }
 }

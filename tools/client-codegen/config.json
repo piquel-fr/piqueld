@@ -204,6 +204,36 @@
       "schema": "VolumesValue",
       "name": "VolumesValue",
       "rustType": "piqueld_core::edit::VolumesValue"
+    },
+    {
+      "schema": "Envelope_Event",
+      "name": "EnvelopeEvent",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::Event>"
+    },
+    {
+      "schema": "Envelope_DaemonStats",
+      "name": "EnvelopeDaemonStats",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::observability::DaemonStats>"
+    },
+    {
+      "schema": "Envelope_DeploymentAnalytics",
+      "name": "EnvelopeDeploymentAnalytics",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::observability::DeploymentAnalytics>"
+    },
+    {
+      "schema": "Envelope_Page_NotificationDelivery",
+      "name": "EnvelopePageNotificationDelivery",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::observability::NotificationDelivery>>"
+    },
+    {
+      "schema": "Envelope_bool",
+      "name": "EnvelopeBool",
+      "rustType": "piqueld_core::api::Envelope<bool>"
+    },
+    {
+      "schema": "EventScope",
+      "name": "EventScope",
+      "rustType": "piqueld_core::observability::EventScope"
     }
   ]
 }

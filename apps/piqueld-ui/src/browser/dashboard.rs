@@ -42,6 +42,11 @@ pub(super) fn dashboard_header() -> View {
                     "Host settings"
                 </A>
                 <A href="/dashboard/builds" class={move || if location.pathname.get().ends_with("/builds") { "nav-link active" } else { "nav-link" }}>"Builds"</A>
+                <A href="/dashboard/events" class="nav-link">"Events"</A>
+                <A href="/dashboard/errors" class="nav-link">"Errors"</A>
+                <A href="/dashboard/system" class="nav-link">"Daemon status"</A>
+                <A href="/dashboard/analytics" class="nav-link">"Analytics"</A>
+                <A href="/dashboard/notifications" class="nav-link">"Notifications"</A>
             </nav>
         </aside>
     }
@@ -99,7 +104,7 @@ pub(super) fn OverviewPage() -> impl IntoView {
 }
 
 #[component]
-fn ReadinessPanel() -> impl IntoView {
+pub(super) fn ReadinessPanel() -> impl IntoView {
     let context = dashboard_context();
     let signals = context.signals;
     let refresh = Rc::clone(&context.refresh);

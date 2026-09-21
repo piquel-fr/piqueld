@@ -102,6 +102,7 @@ impl Store {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
         let changed=sqlx::query!("UPDATE application_status SET runtime_health=?1 WHERE runtime_health IS NOT ?1 AND application_id=(SELECT application_id FROM operations WHERE id=?2) AND ?2=(SELECT latest.id FROM operations latest WHERE latest.application_id=application_status.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",health,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
+        sqlx::query!("UPDATE application_status SET health_observed_at_ms=?1 WHERE application_id=(SELECT application_id FROM operations WHERE id=?2) AND ?2=(SELECT id FROM operations WHERE application_id=application_status.application_id ORDER BY created_at_ms DESC,id DESC LIMIT 1)",now,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?;
         if changed == 1 {
             sqlx::query!("INSERT INTO events(application_id,operation_id,generation,kind,message,created_at_ms) SELECT application_id,id,generation,'health_changed',?1,?2 FROM operations WHERE id=?3",health,now,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?;
         }

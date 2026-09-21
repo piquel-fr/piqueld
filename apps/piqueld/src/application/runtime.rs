@@ -22,8 +22,7 @@ pub struct ApplicationRuntime<D> {
     wake: Arc<Notify>,
     prepare_timeout: Duration,
     // Set only for execution, never API previews. Records the source-preparation
-    // phase and service names in the existing operation row so polling/events
-    // can explain a slow or failed pull; it is not an execution journal.
+    // phase and service names, and journals each source-preparation action.
     progress: Option<(Arc<crate::store::Store>, String)>,
 }
 
@@ -115,61 +114,11 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
                     .progress(id, "preparing_sources", Some(&names))
                     .await?;
             }
-            let docker = Arc::clone(&self.docker);
-            let sources = stream::iter(pending.into_iter().map(move |(name, source)| {
-                let docker = Arc::clone(&docker);
-                async move {
-                    let resolved = match &source {
-                        Source::Image { image } => {
-                            let digest_reference = DockerTimeout::ImageResolution
-                                .run("resolve image", docker.resolve_image(image))
-                                .await
-                                .map_err(|error| {
-                                    (
-                                        name.clone(),
-                                        "resolving_image",
-                                        BoundaryError::Runtime(error),
-                                    )
-                                })?;
-                            ResolvedSource::parse_image(image.clone(), digest_reference).map_err(
-                                |source| {
-                                    (
-                                        name.clone(),
-                                        "resolving_image",
-                                        BoundaryError::Runtime(DockerError::RequestSource {
-                                            operation: "validate resolved image",
-                                            source: Box::new(source),
-                                        }),
-                                    )
-                                },
-                            )?
-                        }
-                        Source::Git { repository, build } => {
-                            let (commit, image_id) = self
-                                .prepare_git(
-                                    application,
-                                    name.as_str(),
-                                    &source,
-                                    repository,
-                                    build,
-                                    docker.as_ref(),
-                                )
-                                .await
-                                .map_err(|error| {
-                                    (name.clone(), "building_git", BoundaryError::GitBuild(error))
-                                })?;
-                            ResolvedSource::Git {
-                                requested: source,
-                                commit,
-                                image_id,
-                            }
-                        }
-                    };
-                    Ok::<_, (piqueld_core::ServiceName, &'static str, BoundaryError)>((
-                        name, resolved,
-                    ))
-                }
-            }))
+            let sources = stream::iter(
+                pending
+                    .into_iter()
+                    .map(|(name, source)| self.prepare_source(application, name, source)),
+            )
             .buffer_unordered(4)
             .try_collect::<Vec<_>>()
             .await;
@@ -216,6 +165,86 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
 }
 
 impl<D: DockerApi> ApplicationRuntime<D> {
+    async fn prepare_source(
+        &self,
+        application: &NormalizedApplication,
+        name: piqueld_core::ServiceName,
+        source: Source,
+    ) -> Result<
+        (piqueld_core::ServiceName, ResolvedSource),
+        (piqueld_core::ServiceName, &'static str, BoundaryError),
+    > {
+        let phase = if matches!(source, Source::Git { .. }) {
+            "building_git"
+        } else {
+            "resolving_image"
+        };
+        let journal = if let Some((store, id)) = &self.progress {
+            Some(
+                store
+                    .begin_action(Some(id), phase, Some(name.as_str()))
+                    .await
+                    .map_err(|error| (name.clone(), phase, BoundaryError::Store(error)))?,
+            )
+        } else {
+            None
+        };
+        let result = self
+            .resolve_source(application, name.as_str(), source)
+            .await;
+        if let (Some((store, _)), Some(journal)) = (&self.progress, &journal) {
+            store
+                .finish_action(
+                    journal,
+                    result.as_ref().err().map(BoundaryError::diagnostic),
+                )
+                .await
+                .map_err(|error| (name.clone(), phase, BoundaryError::Store(error)))?;
+        }
+        result
+            .map(|source| (name.clone(), source))
+            .map_err(|error| (name, phase, error))
+    }
+
+    async fn resolve_source(
+        &self,
+        application: &NormalizedApplication,
+        name: &str,
+        source: Source,
+    ) -> Result<ResolvedSource, BoundaryError> {
+        match &source {
+            Source::Image { image } => {
+                let digest = DockerTimeout::ImageResolution
+                    .run("resolve image", self.docker.resolve_image(image))
+                    .await?;
+                ResolvedSource::parse_image(image.clone(), digest).map_err(|source| {
+                    BoundaryError::Runtime(DockerError::RequestSource {
+                        operation: "validate resolved image",
+                        source: Box::new(source),
+                    })
+                })
+            }
+            Source::Git { repository, build } => {
+                let (commit, image_id) = self
+                    .prepare_git(
+                        application,
+                        name,
+                        &source,
+                        repository,
+                        build,
+                        self.docker.as_ref(),
+                    )
+                    .await
+                    .map_err(BoundaryError::GitBuild)?;
+                Ok(ResolvedSource::Git {
+                    requested: source,
+                    commit,
+                    image_id,
+                })
+            }
+        }
+    }
+
     async fn prepare_git(
         &self,
         application: &NormalizedApplication,

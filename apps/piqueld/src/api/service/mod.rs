@@ -1,6 +1,8 @@
 //! Shared daemon operations, independent of transport adapters.
 
 mod history;
+mod notification_worker;
+mod observability;
 mod queries;
 mod startup;
 mod system;

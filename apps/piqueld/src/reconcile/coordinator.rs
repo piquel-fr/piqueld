@@ -43,6 +43,7 @@ impl<D: DockerApi> Controller<D> {
                 discovery = Some(
                     async move {
                         if recover {
+                            self.store.interrupt_actions(None).await?;
                             self.store.recover_interrupted().await?;
                             self.store.recover_builds().await?;
                         }
@@ -96,16 +97,19 @@ impl<D: DockerApi> Controller<D> {
                                 });
                             }
                         }
-                        Err(error)=>tracing::error!(%error,"application discovery failed"),
+                        Err(error)=>{
+                            let failure=super::OperationError::Journal(error);
+                            self.store.report_diagnostic(&failure.diagnostic(),None).await;
+                        },
                     }
                 }
                 Some((id,operation_id,generation,result))=health_jobs.next(), if !health_jobs.is_empty()=> {
                     health_active.remove(&id);
-                    if let Err(error)=result { tracing::warn!(application_id=%id,%operation_id,generation,%error,"health reporting failed"); }
+                    if let Err(error)=result { self.store.report_diagnostic(&error.diagnostic(),Some(&id)).await; tracing::warn!(application_id=%id,%operation_id,generation,%error,"health reporting failed"); }
                 }
                 Some((id,result))=jobs.next(), if !jobs.is_empty()=> {
                     active.remove(&id);
-                    if let Err(error)=result { tracing::warn!(application_id=%id,%error,"application reconciliation failed"); }
+                    if let Err(error)=result { let failure=super::OperationError::Journal(error); self.store.report_diagnostic(&failure.diagnostic(),Some(&id)).await; }
                     requested=true;
                 }
             }
@@ -193,12 +197,8 @@ impl<D: DockerApi> Controller<D> {
         else {
             return Ok(());
         };
-        if let Err(error) = self
-            .maintain_active(application.application.id(), &latest.id)
-            .await
-        {
-            tracing::warn!(%error,"active target repair failed");
-        }
+        self.repair_before_execution(application, &latest.id)
+            .await?;
         if latest.state == OperationState::Requested
             || (latest.state == OperationState::Running && latest.error_code.is_none())
         {
@@ -216,7 +216,13 @@ impl<D: DockerApi> Controller<D> {
         let observed = match self.docker.observe(application.application.id()).await {
             Ok(observed) => observed,
             Err(error) => {
-                tracing::warn!(%error,"could not observe application health");
+                self.store
+                    .record_diagnostic(
+                        &super::OperationError::from(error).diagnostic(),
+                        None,
+                        Some(application.application.id()),
+                    )
+                    .await?;
                 return Ok(());
             }
         };
@@ -284,6 +290,30 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    async fn repair_before_execution(
+        &self,
+        application: &StoredApplication,
+        operation_id: &str,
+    ) -> Result<(), StoreError> {
+        if let Err(error) = self
+            .maintain_active(application.application.id(), operation_id)
+            .await
+        {
+            if let super::OperationError::Journal(error) = error {
+                return Err(error);
+            }
+            self.store
+                .record_diagnostic(
+                    &error.diagnostic(),
+                    None,
+                    Some(application.application.id()),
+                )
+                .await?;
+            tracing::warn!(%error,"active target repair failed");
+        }
+        Ok(())
+    }
+
     async fn maintain_active(
         &self,
         id: &piqueld_core::ApplicationId,
@@ -327,28 +357,30 @@ impl<D: DockerApi> Controller<D> {
             return Ok(());
         }
         let ownership = self.ownership_labels(id);
+        let journal = self
+            .store
+            .begin_action(
+                Some(operation_id),
+                action.kind.name(),
+                Some(action.kind.resource_name()),
+            )
+            .await?;
+        self.store.action_request(&journal, 1).await?;
         let result = self
             .mutate_action(&action.kind, &ownership)
             .await
             .map_err(super::OperationError::from);
-        let error = result
-            .as_ref()
-            .err()
-            .map(|error| (error.code(), error.message()));
         self.store
-            .maintenance_event(
-                operation_id,
-                action.kind.name(),
-                action.kind.resource_name(),
-                error
-                    .as_ref()
-                    .map(|(code, message)| (*code, message.as_str())),
+            .finish_action(
+                &journal,
+                result.as_ref().err().map(super::OperationError::diagnostic),
             )
             .await?;
         result
     }
 
     async fn prune_history(&self, operation_days: u64, event_days: u64) -> Result<(), StoreError> {
+        self.store.prune_daemon_events().await?;
         self.store.prune_receipts().await?;
         self.store.prune_build_logs().await?;
         let now = std::time::SystemTime::now()

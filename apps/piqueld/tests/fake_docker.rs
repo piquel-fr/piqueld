@@ -2090,3 +2090,32 @@ impl ControllerHarness {
         );
     }
 }
+
+#[tokio::test]
+async fn unavailable_action_journal_prevents_runtime_mutations() {
+    let harness = ControllerHarness::new().await;
+    harness.create().await;
+    let mut connection =
+        SqliteConnection::connect(&format!("sqlite://{}", harness.database_path.display()))
+            .await
+            .unwrap();
+    sqlx::query("CREATE TRIGGER reject_action_journal BEFORE INSERT ON events WHEN NEW.kind='action_requested' BEGIN SELECT RAISE(FAIL,'journal unavailable'); END").execute(&mut connection).await.unwrap();
+    assert!(
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .is_err()
+    );
+    assert_eq!(harness.docker.mutations.maximum.load(Ordering::SeqCst), 0);
+    sqlx::query("DROP TRIGGER reject_action_journal")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(harness.docker.mutations.maximum.load(Ordering::SeqCst) > 0);
+}

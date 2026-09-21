@@ -23,9 +23,30 @@ convergence_timeout_seconds = 120
 
 [retention]
 finished_operation_days = 10
-event_days = 30
+event_days = 0
+daemon_event_days = 0
 
 [build_history]
 # Metadata remains until application deletion; these limits apply only to output.
 log_max_bytes = 4194304
 log_retention_days = 30
+
+# Metrics have a separate listener with no administrative API routes.
+[metrics]
+listen = [] # Example: ["127.0.0.1:7846"]
+
+[notifications]
+enabled = false
+build_failures = true
+deployment_failures = true
+service_degradation = true
+daemon_failures = true
+recovery = true
+failure_threshold_seconds = 120
+retry_window_seconds = 86400
+# Destinations belong in a private configuration file; URLs can contain credentials.
+# [[notifications.destinations]]
+# name = "admins"
+# url = "https://example.com/webhook"
+# kind = "json" # or "discord"
+# enabled = true

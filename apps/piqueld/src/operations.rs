@@ -165,6 +165,85 @@ impl From<crate::store::StoreError> for OperationError {
     }
 }
 
+impl OperationError {
+    /// Creates a public diagnostic using only explicitly safe source fields.
+    #[must_use]
+    pub fn diagnostic(&self) -> piqueld_core::observability::Diagnostic {
+        let mut diagnostic = piqueld_core::observability::Diagnostic::new(
+            format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
+            self.code(),
+            self.message(),
+        );
+        if let Self::Docker(error) = self {
+            match error {
+                crate::docker::DockerError::ImageResolutionSource {
+                    source: bollard::errors::Error::DockerResponseServerError { status_code, .. },
+                    ..
+                } => {
+                    diagnostic.causes.push(format!(
+                        "Docker returned HTTP status {status_code} while resolving the image"
+                    ));
+                }
+                crate::docker::DockerError::UnavailableSource { source, .. }
+                | crate::docker::DockerError::RequestSource { source, .. } => {
+                    let mut cause: Option<&(dyn std::error::Error + 'static)> =
+                        Some(source.as_ref());
+                    for _ in 0..8 {
+                        let Some(current) = cause else {
+                            break;
+                        };
+                        if let Some(error) = current.downcast_ref::<std::io::Error>() {
+                            diagnostic
+                                .causes
+                                .push(format!("I/O failure: {:?}", error.kind()));
+                        }
+                        if let Some(bollard::errors::Error::DockerResponseServerError {
+                            status_code,
+                            ..
+                        }) = current.downcast_ref::<bollard::errors::Error>()
+                        {
+                            diagnostic
+                                .causes
+                                .push(format!("Docker returned HTTP status {status_code}"));
+                        }
+                        cause = current.source();
+                    }
+                }
+                _ => {}
+            }
+        }
+        diagnostic
+    }
+}
+
+impl crate::application::BoundaryError {
+    pub(crate) fn diagnostic(&self) -> piqueld_core::observability::Diagnostic {
+        let (code, summary) = match self {
+            Self::Runtime(error) => {
+                let classification = error.operation_classification();
+                (classification.code(), classification.message())
+            }
+            Self::Store(_) => (
+                "journal_unavailable",
+                "Control-plane storage is unavailable".into(),
+            ),
+            Self::GitBuild(_) => (
+                "git_build_failed",
+                "Git source build failed; inspect the associated build output".into(),
+            ),
+            Self::Compilation(_) => (
+                "application_compilation_failed",
+                "Resolved application could not be compiled".into(),
+            ),
+        };
+        piqueld_core::observability::Diagnostic::new(
+            format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
+            code,
+            summary,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::OperationError;

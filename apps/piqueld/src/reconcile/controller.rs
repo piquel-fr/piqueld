@@ -20,6 +20,7 @@ impl<D: DockerApi> Controller<D> {
         let started = std::time::Instant::now();
         tracing::info!("operation started");
         let result = self.run_operation_inner(operation, cancellation).await;
+        self.store.interrupt_actions(Some(&operation.id)).await?;
         let duration_ms = started.elapsed().as_secs_f64() * 1_000.0;
         match &result {
             Ok(outcome) => tracing::info!(outcome, duration_ms, "operation execution completed"),

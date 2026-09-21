@@ -28,6 +28,7 @@ mod deployments;
 mod editing;
 mod events;
 mod logs;
+mod observability;
 mod openapi;
 mod operations;
 mod system;
@@ -54,6 +55,7 @@ struct ApiError {
     message: &'static str,
     details: Value,
     allow: Option<String>,
+    diagnostic: Option<Box<piqueld_core::observability::Diagnostic>>,
 }
 
 impl ApiError {
@@ -64,6 +66,7 @@ impl ApiError {
             message,
             details: Value::Null,
             allow: None,
+            diagnostic: None,
         }
     }
     fn details(mut self, details: Value) -> Self {
@@ -130,6 +133,11 @@ impl From<StoreError> for ApiError {
                 "application_busy",
                 "application is busy; wait for its current operation to finish",
             ),
+            StoreError::HistoryExpired => Self::new(
+                StatusCode::GONE,
+                "history_expired",
+                "Requested event history was pruned; reload history before resuming",
+            ),
             StoreError::NotFound => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
             }
@@ -171,11 +179,12 @@ impl From<StoreError> for ApiError {
 
 impl From<BoundaryError> for ApiError {
     fn from(value: BoundaryError) -> Self {
+        let diagnostic = value.diagnostic();
         // Storage conversion handles its own logging, including expected client errors.
         if !matches!(&value, BoundaryError::Store(_)) {
             tracing::error!(error = ?value, "runtime boundary request failed");
         }
-        match value {
+        let mut error = match value {
             BoundaryError::Store(error) => error.into(),
             BoundaryError::Runtime(
                 crate::docker::DockerError::Unavailable(_)
@@ -200,7 +209,9 @@ impl From<BoundaryError> for ApiError {
                 "application_compilation_failed",
                 "application compilation failed",
             ),
-        }
+        };
+        error.diagnostic = Some(Box::new(diagnostic));
+        error
     }
 }
 
@@ -252,6 +263,9 @@ impl IntoResponse for ApiError {
             axum::Json(body),
         )
             .into_response();
+        if let Some(diagnostic) = self.diagnostic {
+            response.extensions_mut().insert(*diagnostic);
+        }
         if let Some(allow) = self.allow
             && let Ok(value) = header::HeaderValue::from_str(&allow)
         {
@@ -310,12 +324,12 @@ fn finish_router(
         async move { method_not_allowed(&allow_routes, request.uri().path()) }
     });
     router
-        .with_state(state)
+        .with_state(state.clone())
         .layer(Extension(Arc::new(openapi)))
         // The propagator stamps errors with their request ID, and the binder
         // echoes that same identifier in every structured error body.
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
-        .layer(middleware::from_fn(bind_error_request_id))
+        .layer(middleware::from_fn_with_state(state, bind_error_request_id))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
         .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT_BYTES))
         .layer(
@@ -355,19 +369,43 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(deployments::list))
         .routes(routes!(deployments::attempts))
         .routes(routes!(events::list))
+        .routes(routes!(events::stream))
+        .routes(routes!(observability::diagnostic))
+        .routes(routes!(observability::resources))
+        .routes(routes!(observability::analytics))
+        .routes(routes!(observability::deliveries))
+        .routes(routes!(observability::retry_delivery))
         .routes(routes!(logs::get))
         .routes(routes!(builds::list))
         .routes(routes!(builds::logs))
         .routes(routes!(operations::get))
 }
 
-async fn bind_error_request_id(request: Request, next: Next) -> Response {
+async fn bind_error_request_id(
+    axum::extract::State(state): axum::extract::State<ApiState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let application = request
+        .uri()
+        .path()
+        .strip_prefix("/api/v1/applications/")
+        .and_then(|path| path.split('/').next())
+        .and_then(|id| piqueld_core::ApplicationId::parse(id).ok());
     let request_id = request
         .extensions()
         .get::<RequestId>()
         .and_then(|value| value.header_value().to_str().ok())
         .map(str::to_owned);
-    let response = next.run(request).await;
+    let response = {
+        use tracing::Instrument as _;
+        next.run(request)
+            .instrument(tracing::info_span!(
+                "request_context",
+                request_id = request_id.as_deref().unwrap_or("unknown")
+            ))
+            .await
+    };
     if !response.status().is_client_error() && !response.status().is_server_error() {
         return response;
     }
@@ -391,6 +429,27 @@ async fn bind_error_request_id(request: Request, next: Next) -> Response {
     };
     if let Some(request_id) = request_id {
         error.request_id = request_id;
+    }
+    if parts.status.is_server_error() && error.code != "configuration_unavailable" {
+        let diagnostic = parts
+            .extensions
+            .get::<piqueld_core::observability::Diagnostic>()
+            .cloned()
+            .unwrap_or_else(|| {
+                piqueld_core::observability::Diagnostic::new(
+                    format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
+                    &error.code,
+                    error.message.clone(),
+                )
+            });
+        state
+            .record_diagnostic(&diagnostic, Some(&error.request_id), application.as_ref())
+            .await;
+        tracing::error!(diagnostic_id=%diagnostic.id, request_id=%error.request_id, code=%diagnostic.code, "API request failed");
+        if !error.details.is_object() {
+            error.details = json!({});
+        }
+        error.details["diagnostic_id"] = json!(diagnostic.id);
     }
     let bytes = serde_json::to_vec(&error).unwrap_or_else(|_| b"{}".to_vec());
     Response::from_parts(parts, Body::from(bytes))
@@ -660,4 +719,32 @@ fn optional_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, Ap
             })
         })
         .transpose()
+}
+
+/// Builds an isolated metrics-only router; no administrative routes are installed.
+pub fn metrics_router(state: ApiState) -> Router {
+    Router::new()
+        .route(
+            "/metrics",
+            get(
+                |axum::extract::State(state): axum::extract::State<ApiState>| async move {
+                    match state.metrics().await {
+                        Ok(body) => (
+                            StatusCode::OK,
+                            [(
+                                header::CONTENT_TYPE,
+                                "text/plain; version=0.0.4; charset=utf-8",
+                            )],
+                            body,
+                        ),
+                        Err(_) => (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            [(header::CONTENT_TYPE, "text/plain")],
+                            "Metrics collection unavailable\n".into(),
+                        ),
+                    }
+                },
+            ),
+        )
+        .with_state(state)
 }
