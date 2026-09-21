@@ -353,7 +353,16 @@ impl Scenario {
                     .scan(&CancellationToken::new())
                     .await
                     .unwrap();
-                if self.gateway.synchronize().await.is_ok() {
+                // Re-enable may recreate Swarm endpoints; route application and
+                // public backend reachability are deliberately separate states.
+                if self.gateway.synchronize().await.is_ok()
+                    && let Ok(response) = self.client.get(self.url("two.example.test")).send().await
+                    && response.status().is_success()
+                    && response
+                        .text()
+                        .await
+                        .is_ok_and(|body| body == "second backend")
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
