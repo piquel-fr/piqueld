@@ -34,7 +34,7 @@ pub(super) async fn deploy(
     let query = super::applications::GenerationQuery::decode(query)?;
     super::applications::accept_mutation(
         &state,
-        crate::application::Mutation::Deploy {
+        crate::api::Mutation::Deploy {
             id: ApplicationId::parse(id)?,
         },
         query.expected_generation,
@@ -61,8 +61,7 @@ pub(super) async fn list(
         )
     })?;
     Ok(ok(state
-        .store
-        .deployments(&ApplicationId::parse(id)?, query.cursor.as_deref(), 3)
+        .deployments(&ApplicationId::parse(id)?, query.cursor.as_deref())
         .await?))
 }
 
@@ -82,13 +81,11 @@ pub(super) async fn attempts(
             "invalid pagination parameters",
         )
     })?;
-    let operation = state.store.operation(&deployment).await?;
-    if operation.application_id != ApplicationId::parse(id)? {
-        return Err(crate::store::StoreError::NotFound.into());
-    }
-    state.store.deployment_manifest(&deployment).await?;
     Ok(ok(state
-        .store
-        .deployment_attempts(&deployment, query.cursor.as_deref(), 100)
+        .deployment_attempts(
+            &ApplicationId::parse(id)?,
+            &deployment,
+            query.cursor.as_deref(),
+        )
         .await?))
 }

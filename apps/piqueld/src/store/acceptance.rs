@@ -1,7 +1,7 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
 use super::{ApplicationRow, OperationKind, Store, StoreError, now_ms};
 use super::{Operation, StoredApplication};
-use crate::application::{Mutation, MutationResponse};
+use crate::api::{Mutation, MutationResponse};
 use piqueld_core::ApplicationId;
 use piqueld_core::api::{AcceptedOperation, RenamedApplication};
 use sha2::{Digest, Sha256};

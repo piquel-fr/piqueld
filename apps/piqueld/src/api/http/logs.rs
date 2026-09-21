@@ -44,23 +44,8 @@ pub(super) async fn get(
             "Invalid log query",
         )
     })?;
-    if !(1..=1000).contains(&query.tail)
-        || !(1..=86400).contains(&query.since_seconds)
-        || query
-            .service
-            .as_ref()
-            .is_some_and(|s| s.is_empty() || s.len() > 63)
-    {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "logs_query_invalid",
-            "Tail must be 1–1000 and time window 1–86400 seconds",
-        ));
-    }
     let id = ApplicationId::parse(id)?;
-    state.store.get(&id).await?;
     Ok(ok(state
-        .runtime
         .logs(
             &id,
             query.service.as_deref(),

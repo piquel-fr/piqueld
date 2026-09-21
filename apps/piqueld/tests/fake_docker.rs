@@ -3,6 +3,10 @@
 #[path = "support/git.rs"]
 mod git_fixture;
 
+#[path = "support/application.rs"]
+mod application_fixture;
+use application_fixture::TestApplications;
+
 use async_trait::async_trait;
 use piqueld::docker::{DockerApi, DockerError, ImageSource, SwarmState, resolve_image_digest};
 use piqueld::reconcile::Controller;
@@ -992,8 +996,8 @@ impl Probe {
 }
 
 impl ControllerHarness {
-    fn applications(&self) -> piqueld::application::Applications {
-        piqueld::application::Applications::new(
+    fn applications(&self) -> TestApplications {
+        TestApplications::new(
             Arc::clone(&self.store),
             self.controller
                 .runtime(Arc::new(tokio::sync::Notify::new())),
@@ -1098,7 +1102,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
         applications
             .apply(manifest.clone().validate().unwrap(), Some(1))
             .await,
-        Err(piqueld::application::ApplicationError::Store(
+        Err(piqueld::api::ApplicationError::Store(
             piqueld::store::StoreError::GenerationConflict {
                 expected: 1,
                 actual: 2
@@ -1241,10 +1245,8 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     });
     let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store));
     let wake = Arc::new(tokio::sync::Notify::new());
-    let applications = piqueld::application::Applications::new(
-        Arc::clone(&store),
-        controller.runtime(Arc::clone(&wake)),
-    );
+    let applications =
+        TestApplications::new(Arc::clone(&store), controller.runtime(Arc::clone(&wake)));
     let mut slow = manifest();
     slow.metadata.name = "slow".into();
     let original = applications
@@ -1340,7 +1342,7 @@ async fn controller_enforces_global_io_bounds_on_a_single_thread() {
         ..FakeDocker::default()
     });
     let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store));
-    let applications = piqueld::application::Applications::new(
+    let applications = TestApplications::new(
         Arc::clone(&store),
         controller.runtime(Arc::new(tokio::sync::Notify::new())),
     );
@@ -1429,7 +1431,7 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
     assert!(before.services[0].image.as_str().ends_with(&"b".repeat(64)));
     let renamed = applications
         .accept(
-            piqueld::application::Mutation::Rename {
+            piqueld::api::Mutation::Rename {
                 id: first.application_id.clone(),
                 name: "renamed".into(),
             },
@@ -1439,7 +1441,7 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
         )
         .await
         .unwrap();
-    let piqueld::application::MutationResponse::Rename(renamed) = renamed else {
+    let piqueld::api::MutationResponse::Rename(renamed) = renamed else {
         panic!("rename response")
     };
     assert_eq!(renamed.generation, 3);
@@ -1530,7 +1532,7 @@ async fn failed_preparation_preserves_active_repair_and_identical_apply_does_not
 
 #[tokio::test]
 async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
-    use piqueld::application::{Mutation, MutationResponse};
+    use piqueld::api::{Mutation, MutationResponse};
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let mut input = manifest();
@@ -1544,7 +1546,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         id: first.application_id.clone(),
     };
     let MutationResponse::Operation(replacement) = applications
-        .accept(deploy(), None, false, None)
+        .accept(deploy(), None, true, None)
         .await
         .unwrap()
     else {
@@ -1572,14 +1574,14 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
     );
     let pulls = harness.pulls().await;
     let MutationResponse::Operation(accepted) = applications
-        .accept(deploy(), None, false, Some("git-deploy"))
+        .accept(deploy(), None, true, Some("git-deploy"))
         .await
         .unwrap()
     else {
         panic!("expected operation")
     };
     let MutationResponse::Operation(replay) = applications
-        .accept(deploy(), None, false, Some("git-deploy"))
+        .accept(deploy(), None, true, Some("git-deploy"))
         .await
         .unwrap()
     else {
@@ -1674,7 +1676,7 @@ async fn mixed_sources_report_the_failing_source() {
 
 mod repository_deployments {
     use super::*;
-    use piqueld::application::{ApplicationError, Mutation, MutationResponse};
+    use piqueld::api::{ApplicationError, Mutation, MutationResponse};
     use piqueld::store::StoreError;
     use piqueld_core::manifest::{ApplicationManifest, GitRepository, RepositoryManifest};
 
@@ -1751,7 +1753,7 @@ mod repository_deployments {
         async fn deploy(harness: &ControllerHarness, id: &ApplicationId) -> Operation {
             let MutationResponse::Operation(accepted) = harness
                 .applications()
-                .accept(Mutation::Deploy { id: id.clone() }, None, false, None)
+                .accept(Mutation::Deploy { id: id.clone() }, None, true, None)
                 .await
                 .unwrap()
             else {
@@ -1905,7 +1907,7 @@ mod repository_deployments {
         repository.commit();
         let reopened = Arc::new(Store::open(&harness.database_path).await.unwrap());
         let controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&reopened));
-        let applications = piqueld::application::Applications::new(
+        let applications = TestApplications::new(
             Arc::clone(&reopened),
             controller.runtime(Arc::new(tokio::sync::Notify::new())),
         );

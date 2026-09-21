@@ -13,12 +13,7 @@ use super::{ApiState, ok};
     )
 )]
 pub(super) async fn status(State(state): State<ApiState>) -> impl IntoResponse {
-    ok(SystemStatus {
-        status: "running".into(),
-        api_version: "v1".into(),
-        daemon_version: env!("CARGO_PKG_VERSION").into(),
-        instance_id: state.store.instance_id().to_owned(),
-    })
+    ok(state.system_status())
 }
 
 #[derive(serde::Serialize)]
@@ -36,32 +31,14 @@ pub(super) async fn health() -> impl IntoResponse {
 pub(super) async fn configuration(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, super::ApiError> {
-    Ok(ok(state.configuration.ok_or_else(|| {
-        super::ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "configuration_unavailable",
-            "Effective host configuration is unavailable",
-        )
-    })?))
+    Ok(ok(state.configuration()?.clone()))
 }
 
 #[utoipa::path(get,path="/api/v1/system/readiness",operation_id="systemReadiness",
  responses((status=200,description="Deployment dependencies ready",body=Envelope<piqueld_core::api::ReadinessStatus>),
  (status=503,description="Deployment dependencies unavailable",body=Envelope<piqueld_core::api::ReadinessStatus>)))]
 pub(super) async fn readiness(State(state): State<ApiState>) -> impl IntoResponse {
-    use piqueld_core::api::{DependencyStatus, ReadinessStatus};
-    let (database, runtime) = tokio::join!(
-        tokio::time::timeout(std::time::Duration::from_secs(2), state.store.probe()),
-        tokio::time::timeout(std::time::Duration::from_secs(6), state.runtime.readiness())
-    );
-    let database = database.is_ok_and(|r| r.is_ok());
-    let (docker, swarm) = runtime.unwrap_or((false, false));
-    let status = ReadinessStatus {
-        ready: database && docker && swarm,
-        database: DependencyStatus::new(database, "Database is unavailable or timed out"),
-        docker: DependencyStatus::new(docker, "Docker Engine is unavailable or timed out"),
-        swarm: DependencyStatus::new(swarm, "A compatible single-node Swarm manager is required"),
-    };
+    let status = state.readiness().await;
     (
         if status.ready {
             StatusCode::OK
