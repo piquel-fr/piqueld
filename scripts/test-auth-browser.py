@@ -218,7 +218,17 @@ try:
     assert issued['status']==200
     env['PIQUELD_TOKEN']=issued['body']['token']
     assert subprocess.run(command+['whoami'],env=env,capture_output=True).returncode==0
-    assert browser.api('manage',{'action':'delete_user','user_id':alice['id']})['status']==200
+    browser.visit(ORIGIN+'/dashboard/accounts')
+    browser.wait("return document.body.innerText.includes('alice-edited')")
+    browser.click('Delete account')
+    assert 'alice-edited' in browser.call('GET', browser.path('/alert/text'))
+    browser.call('POST', browser.path('/alert/dismiss'), {})
+    assert any(user['id']==alice['id'] for user in browser.api('directory')['body']['users'])
+    browser.click('Delete account')
+    browser.call('POST', browser.path('/alert/accept'), {})
+    browser.wait("return !document.body.innerText.includes('alice-edited')")
+    assert all(user['id']!=alice['id'] for user in browser.api('directory')['body']['users'])
+    print('PASS: account deletion requires confirmation and cancellation preserves the account', flush=True)
     assert browser.api('manage',{'action':'delete_user','user_id':bob['id']})['status']==400
     assert browser.api('manage',{'action':'revoke_all','user_id':bob['id']})['status']==200
     assert subprocess.run(command+['whoami'],env=env,capture_output=True).returncode!=0

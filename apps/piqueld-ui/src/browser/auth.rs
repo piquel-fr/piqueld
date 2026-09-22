@@ -317,7 +317,12 @@ fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoVie
                 match parsed {Ok(days)=>feedback.manage(Manage::CreateToken{user_id:id.get_value(),name:token_name.get_untracked(),days}),Err(_)=>feedback.error.set("Enter a positive number of days, or leave blank".into())}
             }>"Create token"</button>
             <hr/>
-            <button class="danger" on:click=move |_|feedback.manage(Manage::DeleteUser{user_id:id.get_value()})>"Delete account"</button>
+            <button class="danger" on:click=move |_| {
+                let message = format!("Delete account '{}' and all its passkeys, sessions, and tokens? This cannot be undone.", username.get_untracked());
+                if web_sys::window().is_some_and(|window| window.confirm_with_message(&message).unwrap_or(false)) {
+                    feedback.manage(Manage::DeleteUser{user_id:id.get_value()});
+                }
+            }>"Delete account"</button>
         </section>
     }
 }
