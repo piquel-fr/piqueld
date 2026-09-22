@@ -3408,11 +3408,19 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
     let events = api.client.events(None, None, 100).await.unwrap().items;
     let after = events[events.len() - 2].id;
     let router = router(ApiState::new(api.store.clone(), api.runtime.clone()));
+    for limit in [0, 101] {
+        let response = router
+            .clone()
+            .oneshot(request(&format!("/api/v1/events/stream?limit={limit}")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+    }
     let response = router
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/events/stream?errors_only=true")
+                .uri("/api/v1/events/stream?errors_only=true&limit=1")
                 .header("last-event-id", format!("v1:{after}"))
                 .body(Body::empty())
                 .unwrap(),

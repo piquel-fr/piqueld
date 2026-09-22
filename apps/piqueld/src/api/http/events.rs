@@ -105,9 +105,10 @@ pub(super) async fn stream(
         state.check_event_resume(after).await?;
     }
     let filter = query.filter();
+    let batch_size = query.limit.unwrap_or(100);
     // Validate before sending headers; all later errors explicitly terminate the stream.
     let initial = state
-        .filtered_events(&filter, Some(&cursor), 100)
+        .filtered_events(&filter, Some(&cursor), batch_size)
         .await?
         .items;
     let stream = futures_util::stream::unfold(
@@ -118,7 +119,7 @@ pub(super) async fn stream(
             std::collections::VecDeque::from(initial),
             false,
         ),
-        |(state, filter, mut cursor, mut pending, done)| async move {
+        move |(state, filter, mut cursor, mut pending, done)| async move {
             if done {
                 return None;
             }
@@ -145,7 +146,9 @@ pub(super) async fn stream(
                     if after > 0 {
                         state.check_event_resume(after).await?;
                     }
-                    state.filtered_events(&filter, Some(&cursor), 100).await
+                    state
+                        .filtered_events(&filter, Some(&cursor), batch_size)
+                        .await
                 }
                 .await;
                 match result {
