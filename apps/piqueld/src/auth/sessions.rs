@@ -31,24 +31,34 @@ impl Auth {
         if secret.len() != 43 {
             return Err(AuthError::Unauthorized);
         }
-        let mut tx = self.0.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let row = sqlx::query("UPDATE auth_credentials SET last_used_at=? WHERE secret_hash=? AND (expires_at IS NULL OR expires_at>?) AND (kind!='browser' OR last_used_at>?) RETURNING id,user_id,kind")
-            .bind(Self::now()).bind(Self::hash(secret)).bind(Self::now()).bind(Self::now()-DAY).fetch_optional(&mut *tx).await?.ok_or(AuthError::Unauthorized)?;
-        let user = sqlx::query("SELECT id,username,display_name FROM auth_users WHERE id=?")
-            .bind(row.get::<String, _>("user_id"))
-            .fetch_one(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(Identity {
-            user: Self::user_row(&user),
-            credential_id: row.get("id"),
-        })
+        let now = Self::now();
+        let row = sqlx::query("SELECT c.id AS credential_id,c.last_used_at,u.id,u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=? AND (c.expires_at IS NULL OR c.expires_at>?) AND (c.kind!='browser' OR c.last_used_at>?)")
+            .bind(Self::hash(secret)).bind(now).bind(now-DAY).fetch_optional(&self.0.store.pool).await?.ok_or(AuthError::Unauthorized)?;
+        let identity = Identity {
+            user: Self::user_row(&row),
+            credential_id: row.get("credential_id"),
+        };
+        // Keep ordinary requests read-only. A refresh queues with reconciliation
+        // writers and rechecks validity after waiting, so revocation still wins.
+        if row.get::<i64, _>("last_used_at") <= now - 60 {
+            let (_writer, mut tx) = self.0.store.begin_immediate().await?;
+            let now = Self::now();
+            let updated = sqlx::query("UPDATE auth_credentials SET last_used_at=MAX(last_used_at,?) WHERE id=? AND (expires_at IS NULL OR expires_at>?) AND (kind!='browser' OR last_used_at>?)")
+                .bind(now).bind(&identity.credential_id).bind(now).bind(now-DAY).execute(&mut *tx).await?.rows_affected();
+            if updated == 0 {
+                return Err(AuthError::Unauthorized);
+            }
+            tx.commit().await?;
+        }
+        Ok(identity)
     }
     pub(crate) async fn logout(&self, credential_id: &str) -> Result<()> {
+        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
         sqlx::query("DELETE FROM auth_credentials WHERE id=?")
             .bind(credential_id)
-            .execute(&self.0.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
     pub(crate) async fn device_start(&self) -> Result<DeviceStart> {
@@ -125,7 +135,7 @@ impl Auth {
                 user: None,
             });
         };
-        let mut tx = self.0.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
         let row = sqlx::query("SELECT u.id,u.username,u.display_name FROM auth_users u JOIN auth_credentials c ON c.user_id=u.id WHERE c.id=? AND (c.expires_at IS NULL OR c.expires_at>?) AND (c.kind!='browser' OR c.last_used_at>?)")
             .bind(approved_by).bind(now).bind(now-DAY).fetch_optional(&mut *tx).await?.ok_or(AuthError::Unauthorized)?;
         let user = Self::user_row(&row);

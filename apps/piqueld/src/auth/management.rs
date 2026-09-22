@@ -3,7 +3,7 @@ use piqueld_core::auth::{CredentialView, Directory, InvitationView, Manage, Mana
 use sqlx::Row;
 impl Auth {
     pub(crate) async fn directory(&self) -> Result<Directory> {
-        let mut tx = self.0.pool.begin().await?;
+        let mut tx = self.0.store.pool.begin().await?;
         let users =
             sqlx::query("SELECT id,username,display_name FROM auth_users ORDER BY username")
                 .fetch_all(&mut *tx)
@@ -33,7 +33,7 @@ impl Auth {
         })
     }
     pub(crate) async fn manage(&self, actor: &str, command: Manage) -> Result<Managed> {
-        let mut tx = self.0.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
         let mut result = Managed::default();
         match command {
             Manage::UpdateUser {
