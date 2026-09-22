@@ -103,6 +103,8 @@ impl Ingress {
     }
 
     async fn ingress_networks(&self, table: &RoutingTable) -> Result<BTreeSet<String>> {
+        // Validate the complete table: dropping an invalid app here would withdraw
+        // its live routes instead of preserving the last accepted configuration.
         let mut networks = BTreeSet::new();
         for (id, routes) in table {
             if routes.is_empty() {

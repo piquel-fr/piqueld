@@ -76,6 +76,10 @@ it, retains required old backends, and retries. Explicit route removals withdraw
 public exposure as deployment execution starts, before obsolete service/network
 cleanup. Hostname reservations survive pending deployments and incomplete withdrawals.
 
+Gateway updates apply as one installation-wide configuration. A missing or conflicting
+application network blocks updates for all applications until repaired, preserving the
+last accepted configuration rather than silently withdrawing the affected app's routes.
+
 Disabling ingress in TOML and restarting stops public routing, retains certificate
 and route state, and continues accepting route-bearing manifests. Re-enabling exposes
 only deployed route intent. A normal daemon shutdown leaves Caddy serving and renewing

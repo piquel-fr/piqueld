@@ -218,5 +218,6 @@ pub struct Route {
     /// Logical service in this application.
     pub service: String,
     /// Internal HTTP backend port.
+    #[schema(minimum = 1)]
     pub port: u16,
 }
