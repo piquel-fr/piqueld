@@ -1,12 +1,27 @@
 //! Transactional hostname ownership and the gateway's durable routing projection.
 use super::{Store, StoreError};
 use piqueld_core::{ApplicationId, manifest::ValidatedRoute};
-use sqlx::SqliteConnection;
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 use std::collections::BTreeMap;
 
 pub(crate) type RoutingTable = BTreeMap<ApplicationId, Vec<ValidatedRoute>>;
 
 impl Store {
+    /// Finalizes writes to application intent, deployment inputs/targets, or gateway state.
+    /// Refresh ownership from the final transaction state before committing, so a
+    /// hostname conflict rolls back the mutation, events, and replay receipt together.
+    /// Write helpers must leave this to their transaction owner rather than checking
+    /// intermediate state (a save can also replace the pending deployment).
+    pub(super) async fn commit_application_changes<'a>(
+        mut tx: Transaction<'_, Sqlite>,
+        applications: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), StoreError> {
+        for id in applications {
+            Self::reserve_hostnames_on(&mut tx, id).await?;
+        }
+        tx.commit().await.map_err(StoreError::database)
+    }
+
     pub(crate) async fn applied_routes(
         &self,
         id: &ApplicationId,
@@ -34,7 +49,7 @@ impl Store {
 
     /// Recomputes reservations inside the transaction changing their source.
     /// Captured deployment inputs also reserve names while a newer save is pending.
-    pub(super) async fn reserve_hostnames_on(
+    async fn reserve_hostnames_on(
         connection: &mut SqliteConnection,
         application_id: &str,
     ) -> Result<(), StoreError> {
@@ -116,8 +131,7 @@ impl Store {
         let json = serde_json::to_string(&desired).map_err(StoreError::corrupt)?;
         sqlx::query!("INSERT INTO application_routes(application_id,desired_json) VALUES(?1,?2) ON CONFLICT(application_id) DO UPDATE SET desired_json=excluded.desired_json",id,json)
             .execute(&mut *tx).await.map_err(StoreError::database)?;
-        Self::reserve_hostnames_on(&mut tx, id).await?;
-        tx.commit().await.map_err(StoreError::database)
+        Self::commit_application_changes(tx, [id]).await
     }
 
     pub(crate) async fn routing_table(&self) -> Result<RoutingTable, StoreError> {
@@ -151,9 +165,8 @@ impl Store {
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
-            Self::reserve_hostnames_on(&mut tx, id).await?;
         }
-        tx.commit().await.map_err(StoreError::database)
+        Self::commit_application_changes(tx, table.keys().map(ApplicationId::as_str)).await
     }
 }
 
@@ -201,6 +214,82 @@ mod tests {
             panic!("saved response")
         };
         Ok(saved)
+    }
+
+    #[tokio::test]
+    async fn replacing_pending_deployment_releases_only_superseded_hostnames() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        save(&store, app("one", Some("old.example.com")), true)
+            .await
+            .unwrap();
+        save(&store, app("one", Some("new.example.com")), true)
+            .await
+            .unwrap();
+        // Commit validates the final snapshot, after the new deployment has
+        // replaced the old captured input, rather than the intermediate save.
+        save(&store, app("two", Some("old.example.com")), false)
+            .await
+            .unwrap();
+        assert!(matches!(
+            save(&store, app("three", Some("new.example.com")), false).await,
+            Err(StoreError::HostnameConflict { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn hostname_conflict_rolls_back_deployment_and_replay_receipt() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        save(&store, app("one", Some("taken.example.com")), false)
+            .await
+            .unwrap();
+        let saved = save(&store, app("two", None), false).await.unwrap();
+        let id = ApplicationId::parse(saved.application_id).unwrap();
+        let result = store
+            .accept(
+                Mutation::Save {
+                    application: app("two", Some("taken.example.com")),
+                    expected_application_id: None,
+                    deploy: true,
+                },
+                None,
+                true,
+                Some("conflicting-deploy"),
+            )
+            .await;
+        assert!(matches!(result, Err(StoreError::HostnameConflict { .. })));
+        assert!(
+            store
+                .get(&id)
+                .await
+                .unwrap()
+                .application
+                .spec()
+                .routes
+                .is_empty()
+        );
+        assert!(
+            store
+                .latest_operation_for_application(&id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // The rejected request must not consume the replay key.
+        store
+            .accept(
+                Mutation::Save {
+                    application: app("two", Some("free.example.com")),
+                    expected_application_id: None,
+                    deploy: true,
+                },
+                None,
+                true,
+                Some("conflicting-deploy"),
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
