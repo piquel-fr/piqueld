@@ -10,7 +10,7 @@ mod tests;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use piqueld_core::auth::{AuthStatus, User};
 use sha2::{Digest, Sha256};
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 use std::{
     collections::HashMap,
     path::Path,
@@ -39,6 +39,9 @@ pub enum AuthError {
     /// Database operation failed.
     #[error("authentication storage failed")]
     Database(#[from] sqlx::Error),
+    /// Shared database writer queue failed.
+    #[error("authentication storage transaction failed")]
+    Store(#[from] crate::store::StoreError),
     /// Stored data or challenge encoding failed.
     #[error("authentication encoding failed")]
     Encoding(#[from] serde_json::Error),
@@ -55,7 +58,7 @@ type Result<T> = std::result::Result<T, AuthError>;
 #[derive(Clone)]
 pub struct Auth(Arc<Inner>);
 struct Inner {
-    pool: SqlitePool,
+    store: crate::store::Store,
     webauthn: WebauthnCore,
     origin: String,
     secure: bool,
@@ -97,7 +100,7 @@ impl Auth {
             Some(false),
         );
         Ok(Self(Arc::new(Inner {
-            pool: store.pool.clone(),
+            store: store.clone(),
             webauthn,
             origin: origin.origin().ascii_serialization(),
             secure: origin.scheme() == "https",
@@ -156,10 +159,12 @@ impl Auth {
         )?;
         writeln!(file, "{}/dashboard/auth#invite={secret}", self.0.origin)?;
         file.as_file().sync_all()?;
+        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
         sqlx::query("UPDATE auth_setup SET secret_hash=? WHERE singleton=1 AND initialized=0")
             .bind(Self::hash(&secret))
-            .execute(&self.0.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         file.persist(path).context("persist private setup link")?;
         Ok(())
     }
@@ -196,7 +201,7 @@ impl Auth {
     pub(crate) async fn status(&self) -> Result<AuthStatus> {
         let initialized: bool =
             sqlx::query_scalar("SELECT initialized FROM auth_setup WHERE singleton=1")
-                .fetch_one(&self.0.pool)
+                .fetch_one(&self.0.store.pool)
                 .await?;
         Ok(AuthStatus {
             initialized,
@@ -206,7 +211,7 @@ impl Auth {
     async fn user(&self, id: &str) -> Result<User> {
         let row = sqlx::query("SELECT id,username,display_name FROM auth_users WHERE id=?")
             .bind(id)
-            .fetch_optional(&self.0.pool)
+            .fetch_optional(&self.0.store.pool)
             .await?
             .ok_or(AuthError::Unauthorized)?;
         Ok(Self::user_row(&row))
@@ -235,6 +240,6 @@ impl Auth {
     async fn invitation_valid(&self, secret: &str) -> Result<bool> {
         let hash = Self::hash(secret);
         Ok(sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM auth_setup WHERE initialized=0 AND secret_hash=?) OR EXISTS(SELECT 1 FROM auth_invitations WHERE secret_hash=? AND expires_at>?)")
-            .bind(&hash).bind(&hash).bind(Self::now()).fetch_one(&self.0.pool).await?)
+            .bind(&hash).bind(&hash).bind(Self::now()).fetch_one(&self.0.store.pool).await?)
     }
 }

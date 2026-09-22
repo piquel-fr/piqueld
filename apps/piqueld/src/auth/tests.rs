@@ -18,7 +18,7 @@ impl Fixture {
     }
     async fn account(&self, name: &str, kind: &str, expires: Option<i64>) -> (String, String) {
         let id = Auth::id();
-        let mut tx = self.auth.0.pool.begin().await.unwrap();
+        let mut tx = self.auth.0.store.pool.begin().await.unwrap();
         sqlx::query("INSERT INTO auth_users VALUES(?,?,?,?)")
             .bind(&id)
             .bind(name)
@@ -48,7 +48,7 @@ async fn sessions_expire_revoke_and_survive_restart_without_storing_secrets() {
     let identity = f.auth.authenticate(&token).await.unwrap();
     assert_eq!(identity.user.id, id);
     let stored: String = sqlx::query_scalar("SELECT secret_hash FROM auth_credentials")
-        .fetch_one(&f.auth.0.pool)
+        .fetch_one(&f.auth.0.store.pool)
         .await
         .unwrap();
     assert_ne!(stored, token);
@@ -59,7 +59,7 @@ async fn sessions_expire_revoke_and_survive_restart_without_storing_secrets() {
     restarted.authenticate(&token).await.unwrap();
     sqlx::query("UPDATE auth_credentials SET last_used_at=?")
         .bind(Auth::now() - DAY)
-        .execute(&f.auth.0.pool)
+        .execute(&f.auth.0.store.pool)
         .await
         .unwrap();
     assert!(matches!(
@@ -80,6 +80,65 @@ async fn sessions_expire_revoke_and_survive_restart_without_storing_secrets() {
         f.auth.authenticate(&api).await,
         Err(AuthError::Unauthorized)
     ));
+}
+
+#[tokio::test]
+async fn authentication_reads_do_not_wait_for_writers_and_refreshes_respect_revocation() {
+    let f = Fixture::new().await;
+    let (_, token) = f.account("alice", "browser", Some(Auth::now() + DAY)).await;
+    let (writer, mut tx) = f.auth.0.store.begin_immediate().await.unwrap();
+    // Even with SQLite's write lock held, a recently used credential is read-only.
+    tokio::time::timeout(Duration::from_secs(1), f.auth.authenticate(&token))
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("UPDATE auth_credentials SET last_used_at=?")
+        .bind(Auth::now() - 120)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    drop(writer);
+
+    f.auth.authenticate(&token).await.unwrap();
+    let refreshed: i64 = sqlx::query_scalar("SELECT last_used_at FROM auth_credentials")
+        .fetch_one(&f.auth.0.store.pool)
+        .await
+        .unwrap();
+    assert!(refreshed >= Auth::now() - 1);
+
+    let (writer, mut tx) = f.auth.0.store.begin_immediate().await.unwrap();
+    sqlx::query("UPDATE auth_credentials SET last_used_at=?")
+        .bind(Auth::now() - 120)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // Poll a stale credential until it blocks on the shared writer queue.
+    let refresh = f.auth.authenticate(&token);
+    tokio::pin!(refresh);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut refresh)
+            .await
+            .is_err()
+    );
+    // The queue does not hold a pool connection while a writer is active.
+    let mut connections = Vec::new();
+    for _ in 0..8 {
+        connections.push(
+            tokio::time::timeout(Duration::from_secs(1), f.auth.0.store.pool.acquire())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    sqlx::query("DELETE FROM auth_credentials")
+        .execute(&mut *connections[0])
+        .await
+        .unwrap();
+    drop(connections);
+    drop(writer);
+    assert!(matches!(refresh.await, Err(AuthError::Unauthorized)));
 }
 
 #[tokio::test]
@@ -235,7 +294,7 @@ async fn setup_link_is_private_stable_and_never_reopens() {
     f.auth.prepare_setup(&path).await.unwrap();
     assert!(!path.exists());
     sqlx::query("DELETE FROM auth_users")
-        .execute(&f.auth.0.pool)
+        .execute(&f.auth.0.store.pool)
         .await
         .unwrap();
     f.auth.prepare_setup(&path).await.unwrap();

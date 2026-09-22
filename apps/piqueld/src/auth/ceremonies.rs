@@ -86,7 +86,7 @@ impl Auth {
         let existing: Vec<String> =
             sqlx::query_scalar("SELECT credential FROM auth_passkeys WHERE user_id=?")
                 .bind(&user.id)
-                .fetch_all(&self.0.pool)
+                .fetch_all(&self.0.store.pool)
                 .await?;
         let excluded = existing
             .iter()
@@ -143,7 +143,7 @@ impl Auth {
             .register_credential(&response, &state, None)?;
         let id = super::URL_SAFE_NO_PAD.encode(&credential.cred_id);
         let credential = serde_json::to_string(&credential)?;
-        let mut tx = self.0.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
         let is_new = invitation.is_some();
         if let Some(hash) = invitation {
             let setup = sqlx::query("UPDATE auth_setup SET initialized=1, secret_hash=NULL WHERE initialized=0 AND secret_hash=?").bind(&hash).execute(&mut *tx).await?.rows_affected();
@@ -223,7 +223,7 @@ impl Auth {
         let credential_id = super::URL_SAFE_NO_PAD.encode(response.get_credential_id());
         // Serializing credential lookup, verification, counter updates, and session
         // issuance prevents a concurrent deletion/replay from resurrecting access.
-        let mut tx = self.0.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
         let row = sqlx::query("SELECT p.credential,u.id,u.username,u.display_name FROM auth_passkeys p JOIN auth_users u ON u.id=p.user_id WHERE p.id=? AND u.id=?")
             .bind(&credential_id).bind(user_id).fetch_optional(&mut *tx).await?.ok_or(AuthError::Unauthorized)?;
         let user = Self::user_row(&row);
