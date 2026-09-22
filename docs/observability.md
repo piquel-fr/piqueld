@@ -134,7 +134,8 @@ Discord messages include diagnostic context and disable mentions. Every request
 carries `Idempotency-Key: <delivery_id>`; delivery is at least once, so receivers
 should deduplicate. Retries preserve that ID through restart and manual retry.
 
-Requests time out after ten seconds and do not follow redirects. Transport
+Destinations require HTTPS; HTTP is allowed only for localhost or loopback IP
+addresses. Requests time out after ten seconds and do not follow redirects. Transport
 failures, HTTP 408/429 and 5xx retry with exponential backoff, capped at one hour,
 within the configured window (24 hours by default). Integer `Retry-After` values
 are honored up to one hour. Other non-2xx responses fail permanently. Manual retry

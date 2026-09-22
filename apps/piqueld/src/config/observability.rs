@@ -68,14 +68,22 @@ impl NotificationConfig {
             }
             let url = reqwest::Url::parse(&destination.url)
                 .map_err(|_| ConfigError::Invalid("webhook URL is invalid".into()))?;
-            if !matches!(url.scheme(), "https" | "http")
+            let loopback_http = url.scheme() == "http"
+                && url.host_str().is_some_and(|host| {
+                    host == "localhost"
+                        || host
+                            .trim_matches(['[', ']'])
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_loopback())
+                });
+            if !(url.scheme() == "https" || loopback_http)
                 || url.host_str().is_none()
                 || !url.username().is_empty()
                 || url.password().is_some()
                 || url.fragment().is_some()
             {
                 return Err(ConfigError::Invalid(
-                    "webhook URL requires HTTP(S), a host, and no userinfo or fragment".into(),
+                    "webhook URL requires HTTPS (or HTTP on loopback), a host, and no userinfo or fragment".into(),
                 ));
             }
         }
@@ -140,5 +148,39 @@ impl std::fmt::Debug for WebhookDestination {
             .field("enabled", &self.enabled)
             .field("kind", &self.kind)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webhook_urls_require_tls_except_on_loopback() {
+        for (url, accepted) in [
+            ("https://hooks.example.com/secret", true),
+            ("http://localhost:8080/secret", true),
+            ("http://127.0.0.1:8080/secret", true),
+            ("http://127.0.0.2/secret", true),
+            ("http://[::1]:8080/secret", true),
+            ("http://hooks.example.com/secret", false),
+            ("http://192.168.1.2/secret", false),
+            ("http://[2001:db8::1]/secret", false),
+            ("http://localhost.example.com/secret", false),
+            ("https://user:password@hooks.example.com/secret", false),
+            ("https://hooks.example.com/secret#fragment", false),
+            ("file:///secret", false),
+        ] {
+            let config = NotificationConfig {
+                destinations: vec![WebhookDestination {
+                    name: "test".into(),
+                    url: url.into(),
+                    enabled: true,
+                    kind: WebhookKind::Json,
+                }],
+                ..NotificationConfig::default()
+            };
+            assert_eq!(config.validate().is_ok(), accepted, "{url}");
+        }
     }
 }

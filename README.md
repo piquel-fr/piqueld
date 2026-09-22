@@ -100,7 +100,8 @@ for the development shell.
 
 The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
 another host configuration. Configuration only covers local paths, listeners,
-SQLite, Docker, and reconciliation timing. The complete non-root development
+SQLite, Docker, reconciliation timing, and observability (retention, metrics,
+and notifications). The complete non-root development
 example is [`examples/piqueld.toml`](examples/piqueld.toml).
 See [`docs/web-ui.md`](docs/web-ui.md) for development and release dashboard
 asset commands.
