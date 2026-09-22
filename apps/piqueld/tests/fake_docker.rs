@@ -2203,9 +2203,15 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
     harness.finish(&clean).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let service = piqueld::api::ApplicationService::new(
+        Arc::clone(&harness.store),
+        harness
+            .controller
+            .runtime(Arc::new(tokio::sync::Notify::new())),
+    );
     let server = tokio::spawn({
         use std::future::IntoFuture;
-        axum::serve(listener, piqueld::api::router(applications)).into_future()
+        axum::serve(listener, piqueld::api::http::router(service)).into_future()
     });
     let client = piqueld_client::Client::tcp(&format!("http://{address}")).unwrap();
     client

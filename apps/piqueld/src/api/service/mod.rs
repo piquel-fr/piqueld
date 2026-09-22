@@ -182,6 +182,9 @@ impl ApplicationService {
     }
 
     /// Lists secret metadata without exposing stored values.
+    ///
+    /// # Errors
+    /// Returns a storage error when the application or its metadata cannot be read.
     pub async fn secrets(
         &self,
         application: &ApplicationId,
@@ -190,6 +193,9 @@ impl ApplicationService {
     }
 
     /// Stores a new secret version after checking the inspected generation.
+    ///
+    /// # Errors
+    /// Returns a validation, generation conflict, or storage error.
     pub async fn put_secret(
         &self,
         application: &ApplicationId,
@@ -204,6 +210,9 @@ impl ApplicationService {
     }
 
     /// Removes an unreferenced secret and all of its runtime versions.
+    ///
+    /// # Errors
+    /// Returns when the secret is referenced or storage or runtime cleanup fails.
     pub async fn delete_secret(
         &self,
         application: &ApplicationId,
