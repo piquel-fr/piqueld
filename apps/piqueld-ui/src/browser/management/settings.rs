@@ -289,13 +289,11 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
     let save = move |_| {
         let mut manifest = context.manifest();
         let Some(service) = manifest.spec.services.iter_mut().find(|s| s.name == name) else {
-            context
-                .error
-                .set(Some("Service was removed. Reload configuration.".into()));
+            context.set_error(Some("Service was removed. Reload configuration.".into()));
             return;
         };
         if let Err(error) = draft.get_untracked().patch(section, service) {
-            context.error.set(Some(error));
+            context.set_error(Some(error));
             return;
         }
         let sent = draft.get_untracked();
@@ -676,7 +674,7 @@ pub(super) fn NewService() -> impl IntoView {
             busy={context.busy}
             on_close={Callback::new(move |()| {
                 fields.set(baseline.get_untracked());
-                context.error.set(None);
+                context.set_error(None);
             })}
         >
             <form on:submit={move |event| {

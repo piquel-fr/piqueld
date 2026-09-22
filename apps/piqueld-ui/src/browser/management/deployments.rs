@@ -15,12 +15,16 @@ pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
     let preview = create_rw_signal(None::<piqueld_client::PlanView>);
     let deploy = move |_| {
-        let Ok(client) = mutation_client() else {
-            return;
+        context.set_error(None);
+        let client = match mutation_client() {
+            Ok(client) => client,
+            Err(error) => {
+                context.set_error(Some(error));
+                return;
+            }
         };
         let app = context.saved.get_untracked();
         context.busy.set(true);
-        context.error.set(None);
         spawn_local(async move {
             let mut result = client
                 .deploy_application(app.application.id().as_str(), app.generation)
@@ -51,11 +55,11 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             expected_application_id: Some(app.application.id().to_string()),
         };
         context.busy.set(true);
-        context.error.set(None);
+        context.set_error(None);
         spawn_local(async move {
             match Client::browser().plan_application(&request).await {
                 Ok(plan) => preview.set(Some(plan)),
-                Err(error) => context.error.set(Some(client_error_message(&error))),
+                Err(error) => context.set_error(Some(client_error_message(&error))),
             }
             context.busy.set(false);
         });
