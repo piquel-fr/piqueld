@@ -18,11 +18,12 @@ The daemon runs on Linux. With its listen mode set to `tailscale` or `both`,
 connect from a tailnet peer using its IP address or MagicDNS name:
 
 ```console
-piquelctl --url http://linux-host:7845 status
+piquelctl --allow-insecure-http --url http://linux-host:7845 login
+piquelctl --allow-insecure-http --url http://linux-host:7845 status
 ```
 
 For persistent configuration, set a named profile's `url` to
-`http://linux-host:7845` and select it with `--profile`. See
+`http://linux-host:7845` and select it with `--profile` and `--allow-insecure-http`. See
 [daemon configuration](configuration.md#tcp-listen-modes-and-tailscale).
 
 Both platforms discover system and user profiles at runtime, including binaries
@@ -48,15 +49,17 @@ piquelctl events --application <application-id> --limit 50
 ```
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
-HTTP origin such as `http://127.0.0.1:7845/`; the two transport options are
+HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are
 mutually exclusive. The default socket is
 `/run/piqueld/piqueld.sock`.
 
-Remote IP addresses and DNS names are accepted. HTTPS, credentials, non-root
-paths, queries, and fragments are rejected. DNS resolution and connection setup
-share the request timeout; redirects are not followed. The client does not
-verify that a destination belongs to Tailscale: HTTP outside a protected network
-is unencrypted.
+Remote IP addresses and DNS names are accepted. HTTPS is supported; embedded URL
+credentials, non-root paths, queries, and fragments are rejected. DNS resolution
+and connection setup share the request timeout; redirects are not followed.
+Remote HTTP authentication, including `login`, requires `--allow-insecure-http`
+when using separate transport encryption such as Tailscale. The client does not
+verify tailnet membership or add encryption with this flag. Prefer HTTPS otherwise;
+loopback HTTP and Unix sockets need no opt-in.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
@@ -362,7 +365,3 @@ warnings, errors, and authorized prompts.
 attempts. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
 output page, or an older page before the supplied cursor. It prints the cursor
 for loading older output when available. Both support `--json`.
-
-Remote HTTP authentication requires `--allow-insecure-http` when using separate
-transport encryption such as Tailscale. Prefer HTTPS otherwise; localhost and
-Unix sockets need no opt-in. This flag also applies to `login`.

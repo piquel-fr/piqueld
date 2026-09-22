@@ -54,9 +54,11 @@ and must not contain credentials.
 `dataDir` defaults to `/var/lib/piqueld`, with mode `0700`, holding `piqueld.db`.
 `runtimeDir` defaults to `/run/piqueld`, prepared by systemd with mode `0750`.
 The socket is `/run/piqueld/piqueld.sock`, owned by `piqueld:piqueld` with mode
-`0660`. After logging in again to refresh group membership, operators can run
-`piquelctl status` without sudo. Membership grants full deployment/operator
-access, but no direct access to private state or permission to replace the socket.
+`0660`. After logging in again to refresh group membership, users can connect
+to the socket without sudo. Membership permits only a socket connection; run
+`piquelctl login` to authenticate an account before `piquelctl status` or other
+API operations. It grants no direct access to private state or permission to
+replace the socket.
 Only the existing `piqueld.service` is needed; no proxy or socket unit is required.
 
 Custom `runtimeDir` values must be dedicated directories below `/run`. Configure
