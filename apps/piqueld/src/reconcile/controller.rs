@@ -19,7 +19,8 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<(), StoreError> {
         let started = std::time::Instant::now();
         tracing::info!("operation started");
-        let result = self.run_operation_inner(operation, cancellation).await;
+        // Keep preparation and persistence state out of the discovery future.
+        let result = Box::pin(self.run_operation_inner(operation, cancellation)).await;
         {
             // Repair uses this operation's context too. Let any in-flight repair
             // commit its result before recovering abandoned execution actions.

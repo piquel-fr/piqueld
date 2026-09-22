@@ -34,8 +34,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let stream = stream.as_str();
         let timestamp = now_ms();
-        let _writer = self.writers.lock().await;
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let (_writer, mut tx) = self.begin_immediate().await?;
         let row = sqlx::query!(
             "SELECT log_bytes,log_expired,log_truncated,state FROM builds WHERE id=?1",
             id
@@ -92,6 +91,7 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)
     }
     pub(crate) async fn build_commit(&self, id: i64, commit: &str) -> Result<(), StoreError> {
+        let _writer = self.writers.lock().await;
         sqlx::query!("UPDATE builds SET commit_hash=?1 WHERE id=?2", commit, id)
             .execute(&self.pool)
             .await
@@ -111,11 +111,13 @@ impl Store {
             BuildState::Interrupted => "interrupted",
         };
         let now = now_ms();
+        let _writer = self.writers.lock().await;
         sqlx::query!("UPDATE builds SET state=?1,finished_at_ms=?2,image_id=?3 WHERE id=?4 AND state='running'",state,now,image,id).execute(&self.pool).await.map_err(StoreError::database)?;
         Ok(())
     }
     pub(crate) async fn recover_builds(&self) -> Result<(), StoreError> {
         let now = now_ms();
+        let _writer = self.writers.lock().await;
         sqlx::query!(
             "UPDATE builds SET state='interrupted',finished_at_ms=?1 WHERE state='running'",
             now
@@ -128,8 +130,7 @@ impl Store {
     pub(crate) async fn prune_build_logs(&self) -> Result<(), StoreError> {
         let cutoff =
             now_ms().saturating_sub(i64::from(self.build_history.log_retention_days) * 86_400_000);
-        let _writer = self.writers.lock().await;
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let (_writer, mut tx) = self.begin_immediate().await?;
         sqlx::query!("DELETE FROM build_log_chunks WHERE build_id IN (SELECT id FROM builds WHERE finished_at_ms<?1)",cutoff).execute(&mut *tx).await.map_err(StoreError::database)?;
         sqlx::query!(
             "UPDATE builds SET log_expired=1,log_bytes=0 WHERE finished_at_ms<?1",
@@ -301,6 +302,73 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn build_metadata_obeys_the_writer_gate() {
+        let Fixture {
+            _temp, store, id, ..
+        } = Fixture::new().await;
+        let writer = store.writers.lock().await;
+        let blocked = std::time::Duration::from_millis(50);
+        let (commit, finish, recover) = tokio::join!(
+            tokio::time::timeout(blocked, store.build_commit(id, "commit")),
+            tokio::time::timeout(blocked, store.finish_build(id, BuildState::Failed, None)),
+            tokio::time::timeout(blocked, store.recover_builds()),
+        );
+        assert!(commit.is_err(), "commit metadata bypassed the writer gate");
+        assert!(finish.is_err(), "completion bypassed the writer gate");
+        assert!(recover.is_err(), "recovery bypassed the writer gate");
+        drop(writer);
+        store.build_commit(id, "commit").await.unwrap();
+        store
+            .finish_build(id, BuildState::Failed, None)
+            .await
+            .unwrap();
+        store.recover_builds().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn output_survives_concurrent_metadata_writes_for_another_build() {
+        let Fixture {
+            _temp,
+            store,
+            app,
+            operation,
+            id,
+        } = Fixture::new().await;
+        let other = store
+            .start_build(app.id(), &operation, "web", &app.spec().services[0].source)
+            .await
+            .unwrap();
+        let output = async {
+            for _ in 0..8 {
+                store
+                    .append_build_log(id, &[b'a'; 4096], LogStream::Stdout)
+                    .await?;
+            }
+            Ok::<_, StoreError>(())
+        };
+        let metadata = async {
+            for _ in 0..8 {
+                store.build_commit(other, "commit").await?;
+            }
+            store
+                .finish_build(other, BuildState::Succeeded, Some("sha256:fixture"))
+                .await
+        };
+        tokio::try_join!(output, metadata).unwrap();
+        let logs = store.build_logs(id, None, None).await.unwrap();
+        assert_eq!(logs.items.len(), 8);
+        for (index, chunk) in logs.items.iter().enumerate() {
+            assert_eq!(chunk.offset, i64::try_from(index * 4096).unwrap());
+            assert_eq!(chunk.text, "a".repeat(4096));
+        }
+        let records = store.builds(Some(app.id()), None, 50).await.unwrap();
+        assert_eq!(records.items[0].state, BuildState::Succeeded);
+        assert_eq!(records.items[0].commit.as_deref(), Some("commit"));
+        assert_eq!(records.items[1].log_bytes, 32768);
+    }
+
     #[tokio::test]
     async fn output_is_bounded_paged_and_expired_without_losing_metadata() {
         let Fixture {
