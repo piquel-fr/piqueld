@@ -362,3 +362,7 @@ warnings, errors, and authorized prompts.
 attempts. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
 output page, or an older page before the supplied cursor. It prints the cursor
 for loading older output when available. Both support `--json`.
+
+Remote HTTP authentication requires `--allow-insecure-http` when using separate
+transport encryption such as Tailscale. Prefer HTTPS otherwise; localhost and
+Unix sockets need no opt-in. This flag also applies to `login`.

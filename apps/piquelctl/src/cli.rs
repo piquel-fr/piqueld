@@ -23,9 +23,8 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATH", conflicts_with = "url")]
     pub(crate) socket: Option<PathBuf>,
 
-    /// Account username or ID from the private credential file.
-    #[arg(long, global = true)]
-    pub(crate) account: Option<String>,
+    #[command(flatten)]
+    pub(crate) auth: AuthArgs,
 
     /// Explicit HTTP or HTTPS endpoint.
     #[arg(long, global = true, value_name = "URL", conflicts_with = "socket")]
@@ -48,6 +47,18 @@ pub(crate) struct Cli {
 
     #[command(subcommand)]
     pub(crate) command: Command,
+}
+
+/// Account selection and authentication transport options.
+#[derive(Debug, Args)]
+pub(crate) struct AuthArgs {
+    /// Account username or ID from the private credential file.
+    #[arg(long, global = true)]
+    pub(crate) account: Option<String>,
+
+    /// Allow remote HTTP authentication (only with separate transport encryption, e.g. Tailscale).
+    #[arg(long, global = true)]
+    pub(crate) allow_insecure_http: bool,
 }
 
 #[derive(Debug, Subcommand)]

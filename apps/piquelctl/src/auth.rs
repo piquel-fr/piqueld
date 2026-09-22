@@ -92,14 +92,14 @@ impl Credentials {
     fn selected<'a>(&'a self, cli: &Cli) -> Result<Option<(&'a str, &'a Account)>> {
         let endpoint = self.endpoints.get(&Self::key(cli));
         let account = endpoint.and_then(|endpoint| {
-            let selected = cli.account.as_deref().unwrap_or(&endpoint.selected);
+            let selected = cli.auth.account.as_deref().unwrap_or(&endpoint.selected);
             endpoint
                 .accounts
                 .iter()
                 .find(|(id, account)| id.as_str() == selected || account.username == selected)
                 .map(|(id, account)| (id.as_str(), account))
         });
-        if cli.account.is_some() && account.is_none() {
+        if cli.auth.account.is_some() && account.is_none() {
             return Err(CliError::new(
                 ErrorKind::Input,
                 "no saved login for this account and daemon; run piquelctl login",
