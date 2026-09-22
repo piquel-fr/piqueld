@@ -2,6 +2,7 @@
 
 mod cli;
 mod commands;
+mod editing;
 mod error;
 mod output;
 mod profiles;
@@ -113,13 +114,20 @@ mod tests {
     fn parser_covers_the_initial_command_surface() {
         let cases = [
             vec!["piquelctl", "status"],
-            vec!["piquelctl", "list"],
-            vec!["piquelctl", "show", "notes"],
+            vec!["piquelctl", "app", "list"],
+            vec!["piquelctl", "app", "show", "notes"],
             vec!["piquelctl", "builds", "list", "--application", "app-01"],
             vec!["piquelctl", "builds", "logs", "1", "--before", "64"],
-            vec!["piquelctl", "plan", "--file", "application.toml"],
-            vec!["piquelctl", "apply", "--file", "application.toml", "--yes"],
-            vec!["piquelctl", "delete", "notes", "--yes", "--no-wait"],
+            vec!["piquelctl", "app", "plan", "--file", "application.toml"],
+            vec![
+                "piquelctl",
+                "app",
+                "apply",
+                "--file",
+                "application.toml",
+                "--yes",
+            ],
+            vec!["piquelctl", "app", "delete", "notes", "--yes", "--no-wait"],
             vec!["piquelctl", "operation", "operation-01", "--no-wait"],
         ];
         for arguments in cases {
@@ -142,7 +150,7 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["piquelctl", "--timeout", "zero", "status"]).is_err());
         assert!(Cli::try_parse_from(["piquelctl", "--timeout", "0s", "status"]).is_err());
-        assert!(Cli::try_parse_from(["piquelctl", "plan", "status"]).is_err());
+        assert!(Cli::try_parse_from(["piquelctl", "app", "plan", "status"]).is_err());
     }
 
     #[test]

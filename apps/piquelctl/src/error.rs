@@ -285,7 +285,7 @@ impl<'a> ErrorReport<'a> {
         if let Some(application) = operation.get("application_id").and_then(Value::as_str) {
             out.label(
                 "Hint",
-                format_args!("retry with `piquelctl reconcile {application}`"),
+                format_args!("retry with `piquelctl app reconcile {application}`"),
             )?;
         }
         Ok(())

@@ -109,6 +109,101 @@
       "schema": "ErrorBody",
       "name": "ErrorBody",
       "rustType": "piqueld_core::api::ErrorBody"
+    },
+    {
+      "schema": "CpuValue",
+      "name": "CpuValue",
+      "rustType": "piqueld_core::edit::CpuValue"
+    },
+    {
+      "schema": "EnvironmentValue",
+      "name": "EnvironmentValue",
+      "rustType": "piqueld_core::edit::EnvironmentValue"
+    },
+    {
+      "schema": "HealthValue",
+      "name": "HealthValue",
+      "rustType": "piqueld_core::edit::HealthValue"
+    },
+    {
+      "schema": "MemoryValue",
+      "name": "MemoryValue",
+      "rustType": "piqueld_core::edit::MemoryValue"
+    },
+    {
+      "schema": "Mount",
+      "name": "Mount",
+      "rustType": "piqueld_core::manifest::Mount"
+    },
+    {
+      "schema": "MountsValue",
+      "name": "MountsValue",
+      "rustType": "piqueld_core::edit::MountsValue"
+    },
+    {
+      "schema": "OptionalStringValue",
+      "name": "OptionalStringValue",
+      "rustType": "piqueld_core::edit::OptionalStringValue"
+    },
+    {
+      "schema": "ReplicasValue",
+      "name": "ReplicasValue",
+      "rustType": "piqueld_core::edit::ReplicasValue"
+    },
+    {
+      "schema": "RepositoryValue",
+      "name": "RepositoryValue",
+      "rustType": "piqueld_core::edit::RepositoryValue"
+    },
+    {
+      "schema": "ResourcesValue",
+      "name": "ResourcesValue",
+      "rustType": "piqueld_core::edit::ResourcesValue"
+    },
+    {
+      "schema": "SecondsValue",
+      "name": "SecondsValue",
+      "rustType": "piqueld_core::edit::SecondsValue"
+    },
+    {
+      "schema": "Service",
+      "name": "Service",
+      "rustType": "piqueld_core::manifest::Service"
+    },
+    {
+      "schema": "ServiceGeneral",
+      "name": "ServiceGeneral",
+      "rustType": "piqueld_core::edit::ServiceGeneral"
+    },
+    {
+      "schema": "ServiceProcess",
+      "name": "ServiceProcess",
+      "rustType": "piqueld_core::edit::ServiceProcess"
+    },
+    {
+      "schema": "SourceValue",
+      "name": "SourceValue",
+      "rustType": "piqueld_core::edit::SourceValue"
+    },
+    {
+      "schema": "StringValue",
+      "name": "StringValue",
+      "rustType": "piqueld_core::edit::StringValue"
+    },
+    {
+      "schema": "StringsValue",
+      "name": "StringsValue",
+      "rustType": "piqueld_core::edit::StringsValue"
+    },
+    {
+      "schema": "Volume",
+      "name": "Volume",
+      "rustType": "piqueld_core::manifest::Volume"
+    },
+    {
+      "schema": "VolumesValue",
+      "name": "VolumesValue",
+      "rustType": "piqueld_core::edit::VolumesValue"
     }
   ]
 }

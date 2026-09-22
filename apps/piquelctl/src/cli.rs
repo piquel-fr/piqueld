@@ -52,6 +52,48 @@ pub(crate) enum Command {
     Profiles,
     /// Report daemon availability and version.
     Status,
+    /// Create, inspect, edit, and deploy applications.
+    App {
+        #[command(subcommand)]
+        command: AppCommand,
+    },
+    /// Inspect build attempts and their persisted output.
+    Builds(BuildArgs),
+    /// Inspect or wait for one asynchronous operation.
+    Operation(OperationArgs),
+    /// Read one page of informational events, oldest first.
+    Events {
+        /// Filter by stable application ID, including deleted applications.
+        #[arg(long)]
+        application: Option<String>,
+        /// Continue after a cursor returned by the previous page.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Maximum number of events in the page.
+        #[arg(long,default_value_t=50,value_parser=clap::value_parser!(u16).range(1..=100))]
+        limit: u16,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AppCommand {
+    /// Save an empty application; add services and volumes independently.
+    Create(CreateArgs),
+    /// Edit individual service settings.
+    Service {
+        #[command(subcommand)]
+        command: crate::editing::ServiceCommand,
+    },
+    /// Add or remove declared named volumes.
+    Volume {
+        #[command(subcommand)]
+        command: crate::editing::VolumeCommand,
+    },
+    /// Connect, edit, or disconnect the manifest repository.
+    Repository {
+        #[command(subcommand)]
+        command: crate::editing::RepositoryCommand,
+    },
     /// List applications and their concise reconciliation status.
     List,
     /// Show one application by name or ID.
@@ -69,34 +111,30 @@ pub(crate) enum Command {
         #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
         since_seconds: u32,
     },
-    /// Inspect build attempts and their persisted output.
-    Builds(BuildArgs),
     /// Preview creation or replacement from a TOML manifest.
     Plan(ManifestArgs),
-    /// Plan, confirm, and apply a TOML manifest.
+    /// Save a TOML manifest; optionally deploy with --deploy.
     Apply(ApplyArgs),
     /// Confirm and delete an application by name or ID.
     Delete(DeleteArgs),
-    /// Inspect or wait for one asynchronous operation.
-    Operation(OperationArgs),
     /// Repair latest intent without refreshing resolved images.
     Reconcile(ReconcileArgs),
     /// Deploy saved configuration with fresh source resolution.
     Deploy(ReconcileArgs),
-    /// Rename an idle application without redeploying it.
+    /// Rename an idle application; optionally deploy with the change.
     Rename(RenameArgs),
-    /// Read one page of informational events, oldest first.
-    Events {
-        /// Filter by stable application ID, including deleted applications.
-        #[arg(long)]
-        application: Option<String>,
-        /// Continue after a cursor returned by the previous page.
-        #[arg(long)]
-        cursor: Option<String>,
-        /// Maximum number of events in the page.
-        #[arg(long,default_value_t=50,value_parser=clap::value_parser!(u16).range(1..=100))]
-        limit: u16,
-    },
+    /// Export the saved manifest as TOML.
+    Manifest { name_or_id: String },
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct CreateArgs {
+    pub(crate) name: String,
+    #[command(flatten)]
+    pub(crate) deployment: DeploymentArgs,
+    /// Skip interactive confirmation.
+    #[arg(long)]
+    pub(crate) yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -238,15 +276,8 @@ pub(crate) struct RenameArgs {
     pub(crate) name_or_id: String,
     /// New unique application name.
     pub(crate) new_name: String,
-    /// Require this intent generation.
-    #[arg(long)]
-    pub(crate) expected_generation: Option<u64>,
-    /// Skip the interactive confirmation prompt.
-    #[arg(long)]
-    pub(crate) yes: bool,
-    /// Override the revision precondition (does not skip confirmation).
-    #[arg(long, conflicts_with = "expected_generation")]
-    pub(crate) force: bool,
+    #[command(flatten)]
+    pub(crate) edit: crate::editing::EditFlags,
 }
 
 #[derive(Debug, Args)]

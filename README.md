@@ -5,8 +5,11 @@ single-node Swarm. Submit an application
 manifest naming prebuilt images; the server resolves those images to digests
 and reconciles a private network, named volumes, and replicated services.
 
-Applications are identified by name. Apply saves the full configuration without
-deploying; `piquelctl apply --deploy` explicitly saves and deploys. Every deployment
+Applications are identified by name or stable ID. `piquelctl app service`,
+`app volume`, and `app repository` edit individual saved settings. Each edit
+validates and updates the internal manifest atomically; add `--deploy` to deploy
+with the change. The dashboard uses the same editing endpoints. Apply remains
+available for importing a complete manifest without deploying; `piquelctl app apply --deploy` explicitly saves and deploys. Every deployment
 captures its configuration in SQLite and refreshes image tags. Reconciliation and
 retries use deployment snapshots, never pending configuration edits. Preconditions
 prevent stale saves and deployments. Idempotency receipts survive restarts for

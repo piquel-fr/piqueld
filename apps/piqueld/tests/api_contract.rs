@@ -992,7 +992,7 @@ async fn method_not_allowed_advertises_only_the_matched_route_methods() {
     .await;
     assert_eq!(
         collection.headers.get(http::header::ALLOW),
-        Some(&HeaderValue::from_static("GET, HEAD"))
+        Some(&HeaderValue::from_static("GET, HEAD, POST"))
     );
 
     let by_id = send_raw(
@@ -2668,4 +2668,662 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
             .message,
         "hello"
     );
+}
+
+#[tokio::test]
+async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision() {
+    use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    api.runtime
+        .unavailable
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let id = &saved.application_id;
+    let edit = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::Replicas(3),
+    };
+    let options = EditOptions {
+        expected_generation: Some(saved.generation),
+        ..EditOptions::default()
+    };
+    let keyed = api.client.clone().with_request_id("field-save");
+    let receipt = keyed.edit_application(id, &edit, &options).await.unwrap();
+    assert_eq!(receipt.generation, 2);
+    assert_eq!(receipt.operation_id, None);
+    assert!(
+        api.client
+            .deployments(id, None)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let app = api.client.application(id).await.unwrap();
+    assert_eq!(app.application.to_manifest().spec.services[0].replicas, 3);
+    assert_eq!(
+        app.application.to_manifest().spec.services[0].source,
+        manifest().spec.services[0].source
+    );
+    let stale = api
+        .client
+        .edit_application(id, &edit, &options)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(stale, piqueld_client::ClientError::Api { error, .. } if error.code == "generation_conflict")
+    );
+    let replay = keyed.edit_application(id, &edit, &options).await.unwrap();
+    assert_eq!(replay.generation, receipt.generation);
+    let deploy = EditOptions {
+        expected_generation: Some(2),
+        deploy: true,
+        force: false,
+    };
+    let next = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::EnvironmentEntry(("MESSAGE".into(), Some("hello = world".into()))),
+    };
+    let deployed = api
+        .client
+        .edit_application(id, &next, &deploy)
+        .await
+        .unwrap();
+    let operation = deployed.operation_id.unwrap();
+    let pending = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::Replicas(5),
+    };
+    let options = EditOptions {
+        expected_generation: Some(3),
+        ..EditOptions::default()
+    };
+    api.client
+        .edit_application(id, &pending, &options)
+        .await
+        .unwrap();
+    let snapshot = api.store.deployment_manifest(&operation).await.unwrap();
+    assert_eq!(snapshot.to_manifest().spec.services[0].replicas, 3);
+    assert_eq!(
+        snapshot.to_manifest().spec.services[0].environment["MESSAGE"],
+        "hello = world"
+    );
+    assert_eq!(
+        api.client
+            .application(id)
+            .await
+            .unwrap()
+            .application
+            .to_manifest()
+            .spec
+            .services[0]
+            .replicas,
+        5
+    );
+}
+
+#[tokio::test]
+async fn field_edits_validate_atomically_and_preserve_git_ownership() {
+    use piqueld_client::{
+        GitRepository, RepositoryManifest,
+        edit::{ApplicationEdit, EditOptions, ServiceEdit},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let id = &saved.application_id;
+    let options = EditOptions {
+        expected_generation: Some(1),
+        ..EditOptions::default()
+    };
+    let invalid = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::Replicas(0),
+    };
+    let error = api
+        .client
+        .edit_application(id, &invalid, &options)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, piqueld_client::ClientError::Api { status, error } if status == http::StatusCode::UNPROCESSABLE_ENTITY && !error.details.is_null())
+    );
+    assert_eq!(api.client.application(id).await.unwrap().generation, 1);
+    let repository = ApplicationEdit::Repository(Some(RepositoryManifest {
+        repository: GitRepository {
+            url: "https://example.com/infra.git".into(),
+            branch: "main".into(),
+            commit: None,
+        },
+        path: "app.toml".into(),
+    }));
+    api.client
+        .edit_application(id, &repository, &options)
+        .await
+        .unwrap();
+    let options = EditOptions {
+        expected_generation: Some(2),
+        force: true,
+        deploy: false,
+    };
+    let blocked = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::Replicas(2),
+    };
+    let error = api
+        .client
+        .edit_application(id, &blocked, &options)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, piqueld_client::ClientError::Api { error, .. } if error.code == "repository_managed")
+    );
+    api.client
+        .edit_application(
+            id,
+            &ApplicationEdit::RepositoryBranch("release".into()),
+            &options,
+        )
+        .await
+        .unwrap();
+    let before = api
+        .client
+        .application(id)
+        .await
+        .unwrap()
+        .application
+        .to_manifest();
+    api.client
+        .edit_application(id, &ApplicationEdit::Repository(None), &options)
+        .await
+        .unwrap();
+    let after = api
+        .client
+        .application(id)
+        .await
+        .unwrap()
+        .application
+        .to_manifest();
+    assert_eq!(after.spec.services, before.spec.services);
+    assert!(after.spec.manifest.is_none());
+    api.client
+        .edit_application(id, &blocked, &options)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_field_edits_reject_stale_revisions_without_losing_updates() {
+    use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let replicas = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::Replicas(4),
+    };
+    let env = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::EnvironmentEntry(("X".into(), Some("y".into()))),
+    };
+    let options = EditOptions {
+        expected_generation: Some(1),
+        ..EditOptions::default()
+    };
+    let (a, b) = tokio::join!(
+        api.client
+            .edit_application(&saved.application_id, &replicas, &options),
+        api.client
+            .edit_application(&saved.application_id, &env, &options)
+    );
+    assert_ne!(a.is_ok(), b.is_ok());
+    let (retry, error) = if let Err(error) = a {
+        (&replicas, error)
+    } else {
+        (&env, b.unwrap_err())
+    };
+    assert!(
+        matches!(error, piqueld_client::ClientError::Api { error, .. } if error.code == "generation_conflict")
+    );
+    let options = EditOptions {
+        expected_generation: Some(2),
+        ..EditOptions::default()
+    };
+    api.client
+        .edit_application(&saved.application_id, retry, &options)
+        .await
+        .unwrap();
+    let manifest = api
+        .client
+        .application(&saved.application_id)
+        .await
+        .unwrap()
+        .application
+        .to_manifest();
+    assert_eq!(manifest.spec.services[0].replicas, 4);
+    assert_eq!(manifest.spec.services[0].environment["X"], "y");
+}
+
+impl AcceptanceApi {
+    async fn edit_field(
+        &self,
+        id: &str,
+        edit: piqueld_client::edit::ApplicationEdit,
+    ) -> piqueld_core::manifest::ApplicationManifest {
+        let generation = self.client.application(id).await.unwrap().generation;
+        self.client
+            .edit_application(
+                id,
+                &edit,
+                &piqueld_client::edit::EditOptions {
+                    expected_generation: Some(generation),
+                    ..piqueld_client::edit::EditOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        self.client
+            .application(id)
+            .await
+            .unwrap()
+            .application
+            .to_manifest()
+    }
+    async fn edit_service_field(
+        &self,
+        id: &str,
+        edit: piqueld_client::edit::ServiceEdit,
+    ) -> piqueld_core::manifest::Service {
+        self.edit_field(
+            id,
+            piqueld_client::edit::ApplicationEdit::Service {
+                name: "web".into(),
+                edit,
+            },
+        )
+        .await
+        .spec
+        .services
+        .remove(0)
+    }
+}
+
+#[tokio::test]
+async fn field_edit_source_endpoints_preserve_other_git_settings() {
+    use piqueld_client::{Build, GitRepository, edit::ServiceEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let id = &saved.application_id;
+    let source = Source::Git {
+        repository: GitRepository {
+            url: "https://example.com/first.git".into(),
+            branch: "main".into(),
+            commit: None,
+        },
+        build: Build::Docker {
+            dockerfile: "Dockerfile".into(),
+            context: ".".into(),
+        },
+    };
+    api.edit_service_field(id, ServiceEdit::Source(source))
+        .await;
+    for (edit, pointer, expected) in [
+        (
+            ServiceEdit::GitUrl("https://example.com/second.git".into()),
+            "/source/repository/url",
+            "https://example.com/second.git",
+        ),
+        (
+            ServiceEdit::GitBranch("release".into()),
+            "/source/repository/branch",
+            "release",
+        ),
+        (
+            ServiceEdit::Dockerfile("build/Dockerfile".into()),
+            "/source/build/dockerfile",
+            "build/Dockerfile",
+        ),
+        (
+            ServiceEdit::Context("build".into()),
+            "/source/build/context",
+            "build",
+        ),
+    ] {
+        let service = api.edit_service_field(id, edit).await;
+        assert_eq!(
+            serde_json::to_value(service)
+                .unwrap()
+                .pointer(pointer)
+                .unwrap(),
+            expected
+        );
+    }
+    let pinned = api
+        .edit_service_field(id, ServiceEdit::GitCommit(Some("a".repeat(40))))
+        .await;
+    let Source::Git { repository, build } = pinned.source else {
+        panic!("Git source")
+    };
+    assert_eq!(repository.branch, "release");
+    assert_eq!(repository.commit, Some("a".repeat(40)));
+    assert_eq!(
+        build,
+        Build::Docker {
+            dockerfile: "build/Dockerfile".into(),
+            context: "build".into()
+        }
+    );
+    let unpinned = api
+        .edit_service_field(id, ServiceEdit::GitCommit(None))
+        .await;
+    assert!(
+        matches!(unpinned.source, Source::Git { repository, .. } if repository.commit.is_none())
+    );
+    let image = api
+        .edit_service_field(id, ServiceEdit::Image("nginx:stable".into()))
+        .await;
+    assert_eq!(
+        image.source,
+        Source::Image {
+            image: "nginx:stable".into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn field_edit_health_process_and_resource_endpoints_clear_optional_values() {
+    use piqueld_client::{HealthCheck, edit::ServiceEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let id = &saved.application_id;
+    api.edit_service_field(
+        id,
+        ServiceEdit::Healthcheck(Some(HealthCheck::Http {
+            port: 8080,
+            path: "/health".into(),
+            interval_seconds: 10,
+            timeout_seconds: 3,
+        })),
+    )
+    .await;
+    api.edit_service_field(id, ServiceEdit::HealthPort(9090))
+        .await;
+    api.edit_service_field(id, ServiceEdit::HealthPath("/live".into()))
+        .await;
+    api.edit_service_field(id, ServiceEdit::HealthInterval(20))
+        .await;
+    let health = api
+        .edit_service_field(id, ServiceEdit::HealthTimeout(5))
+        .await;
+    assert_eq!(
+        health.healthcheck,
+        Some(HealthCheck::Http {
+            port: 9090,
+            path: "/live".into(),
+            interval_seconds: 20,
+            timeout_seconds: 5
+        })
+    );
+    api.edit_service_field(
+        id,
+        ServiceEdit::Healthcheck(Some(HealthCheck::Command {
+            command: vec!["true".into()],
+            interval_seconds: 10,
+            timeout_seconds: 3,
+        })),
+    )
+    .await;
+    let health = api
+        .edit_service_field(
+            id,
+            ServiceEdit::HealthCommand(vec!["check".into(), "--ready".into()]),
+        )
+        .await;
+    assert!(
+        matches!(health.healthcheck, Some(HealthCheck::Command { command, .. }) if command == ["check", "--ready"])
+    );
+    assert!(
+        api.edit_service_field(id, ServiceEdit::Healthcheck(None))
+            .await
+            .healthcheck
+            .is_none()
+    );
+    api.edit_service_field(id, ServiceEdit::Command(vec!["entrypoint".into()]))
+        .await;
+    let process = api
+        .edit_service_field(
+            id,
+            ServiceEdit::Arguments(vec!["arg with spaces".into(), "--flag".into()]),
+        )
+        .await;
+    assert_eq!(process.command, ["entrypoint"]);
+    assert_eq!(process.arguments, ["arg with spaces", "--flag"]);
+    api.edit_service_field(id, ServiceEdit::Cpu(Some(500)))
+        .await;
+    api.edit_service_field(id, ServiceEdit::Memory(Some(1024)))
+        .await;
+    let resources = api
+        .edit_service_field(id, ServiceEdit::Cpu(None))
+        .await
+        .resources
+        .unwrap();
+    assert_eq!(resources.cpu_millis, None);
+    assert_eq!(resources.memory_bytes, Some(1024));
+    assert!(
+        api.edit_service_field(id, ServiceEdit::Memory(None))
+            .await
+            .resources
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn field_edit_resource_lifecycle_rejects_referenced_volume_removal() {
+    use piqueld_client::{
+        Mount, Volume,
+        edit::{ApplicationEdit, EditOptions, ServiceEdit},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api.client.create_application("empty", false).await.unwrap();
+    let id = &saved.application_id;
+    assert!(saved.operation_id.is_none());
+    api.edit_field(
+        id,
+        ApplicationEdit::AddService(manifest().spec.services.remove(0)),
+    )
+    .await;
+    api.edit_field(
+        id,
+        ApplicationEdit::AddVolume(Volume {
+            name: "data".into(),
+        }),
+    )
+    .await;
+    let mount = Mount {
+        volume: "data".into(),
+        target: "/var/lib/data".into(),
+        read_only: true,
+    };
+    let service = api
+        .edit_service_field(id, ServiceEdit::Mount(mount.clone()))
+        .await;
+    assert_eq!(service.mounts, [mount]);
+    let before = api.client.application(id).await.unwrap();
+    let error = api
+        .client
+        .edit_application(
+            id,
+            &ApplicationEdit::RemoveVolume("data".into()),
+            &EditOptions {
+                expected_generation: Some(before.generation),
+                ..EditOptions::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, piqueld_client::ClientError::Api { status, .. } if status == http::StatusCode::UNPROCESSABLE_ENTITY)
+    );
+    assert_eq!(
+        api.client.application(id).await.unwrap().generation,
+        before.generation
+    );
+    api.edit_service_field(id, ServiceEdit::RemoveMount("/var/lib/data".into()))
+        .await;
+    assert!(
+        api.edit_field(id, ApplicationEdit::RemoveVolume("data".into()))
+            .await
+            .spec
+            .volumes
+            .is_empty()
+    );
+    api.edit_service_field(
+        id,
+        ServiceEdit::EnvironmentEntry(("KEY".into(), Some("value".into()))),
+    )
+    .await;
+    assert!(
+        api.edit_service_field(id, ServiceEdit::EnvironmentEntry(("KEY".into(), None)))
+            .await
+            .environment
+            .is_empty()
+    );
+    let renamed = api
+        .edit_service_field(id, ServiceEdit::Name("worker".into()))
+        .await;
+    assert_eq!(renamed.name, "worker");
+    assert!(
+        api.edit_field(id, ApplicationEdit::RemoveService("worker".into()))
+            .await
+            .spec
+            .services
+            .is_empty()
+    );
+    assert_eq!(
+        api.edit_field(id, ApplicationEdit::Name("renamed".into()))
+            .await
+            .metadata
+            .name,
+        "renamed"
+    );
+}
+
+#[tokio::test]
+async fn field_edit_receipts_survive_restart_and_reject_key_reuse() {
+    use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let edit = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::Replicas(3),
+    };
+    let options = EditOptions {
+        expected_generation: Some(1),
+        ..EditOptions::default()
+    };
+    let receipt = api
+        .client
+        .clone()
+        .with_request_id("field-save")
+        .edit_application(&saved.application_id, &edit, &options)
+        .await
+        .unwrap();
+    drop(api);
+    let api = AcceptanceApi::start(&temp).await;
+    let keyed = api.client.clone().with_request_id("field-save");
+    let replay = keyed
+        .edit_application(&saved.application_id, &edit, &options)
+        .await
+        .unwrap();
+    assert_eq!(replay.generation, receipt.generation);
+    let changed = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::Replicas(5),
+    };
+    let error = keyed
+        .edit_application(&saved.application_id, &changed, &options)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, piqueld_client::ClientError::Api { error, .. } if error.code == "request_id_conflict")
+    );
+}
+
+#[tokio::test]
+async fn field_edit_requires_an_explicit_value_and_revision() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(&temp).await;
+    let saved = state
+        .accept(
+            piqueld::api::Mutation::save(manifest().validate().unwrap(), None, false),
+            Some(0),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+    let piqueld::api::MutationResponse::Saved(saved) = saved else {
+        panic!("save receipt")
+    };
+    let app = router(state);
+    for (query, body, status) in [
+        ("?expected_generation=1", "{}", StatusCode::BAD_REQUEST),
+        (
+            "?expected_generation=1",
+            r#"{"value":500,"unexpected":true}"#,
+            StatusCode::BAD_REQUEST,
+        ),
+        ("", r#"{"value":500}"#, StatusCode::BAD_REQUEST),
+        (
+            "?expected_generation=1",
+            r#"{"value":null}"#,
+            StatusCode::OK,
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(format!(
+                        "/api/v1/applications/{}/services/web/resources/cpu{query}",
+                        saved.application_id
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "body {body}");
+    }
 }

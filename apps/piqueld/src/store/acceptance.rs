@@ -105,19 +105,12 @@ impl Store {
         expected_generation: Option<u64>,
         now: i64,
     ) -> Result<(MutationResponse, bool), StoreError> {
-        let actual = current.as_ref().map_or_else(
-            || {
-                latest
-                    .as_ref()
-                    .filter(|op| {
-                        matches!(mutation, Mutation::Delete { .. })
-                            && op.kind == OperationKind::Delete
-                    })
-                    .map_or(0, |op| op.generation)
-            },
-            |app| app.generation,
-        );
-        Self::check_generation(expected_generation, actual)?;
+        Self::check_mutation_generation(
+            &mutation,
+            current.as_ref(),
+            latest.as_ref(),
+            expected_generation,
+        )?;
         Ok(match mutation {
             Mutation::Apply {
                 application,
@@ -144,13 +137,20 @@ impl Store {
                 )?);
                 let mut saved =
                     Self::save_configuration_on(tx, &application, expected_generation).await?;
-                if deploy {
-                    let op = Self::request_deploy_on(tx, application.id(), Some(saved.generation))
-                        .await?;
-                    Self::insert_deployment_on(tx, &op, &application).await?;
-                    saved.operation_id = Some(op.id);
-                }
+                Self::deploy_saved(tx, &application, &mut saved, deploy).await?;
                 (MutationResponse::Saved(saved), deploy)
+            }
+            Mutation::Edit { id, edit, deploy } => {
+                Self::accept_edit(
+                    tx,
+                    current.ok_or(StoreError::NotFound)?,
+                    latest,
+                    id,
+                    edit,
+                    deploy,
+                    now,
+                )
+                .await?
             }
             Mutation::Deploy { id } => {
                 let app = current.ok_or(StoreError::NotFound)?;
@@ -198,6 +198,78 @@ impl Store {
                 .await?
             }
         })
+    }
+
+    fn check_mutation_generation(
+        mutation: &Mutation,
+        current: Option<&StoredApplication>,
+        latest: Option<&Operation>,
+        expected_generation: Option<u64>,
+    ) -> Result<(), StoreError> {
+        let actual = current.map_or_else(
+            || {
+                latest
+                    .filter(|op| {
+                        matches!(mutation, Mutation::Delete { .. })
+                            && op.kind == OperationKind::Delete
+                    })
+                    .map_or(0, |op| op.generation)
+            },
+            |app| app.generation,
+        );
+        Self::check_generation(expected_generation, actual)
+    }
+
+    async fn accept_edit(
+        tx: &mut Transaction<'_, Sqlite>,
+        current: StoredApplication,
+        latest: Option<Operation>,
+        id: ApplicationId,
+        edit: piqueld_core::edit::ApplicationEdit,
+        deploy: bool,
+        now: i64,
+    ) -> Result<(MutationResponse, bool), StoreError> {
+        use piqueld_core::edit::ApplicationEdit;
+        if current.delete_intent {
+            return Err(StoreError::Busy);
+        }
+        if current.application.spec().manifest.is_some() && !edit.is_repository_setting() {
+            return Err(StoreError::RepositoryManaged);
+        }
+        let mut manifest = current.application.to_manifest();
+        edit.clone().apply(&mut manifest)?;
+        let application = manifest.validate()?.normalize(id.clone());
+        let mut saved = if let ApplicationEdit::Name(name) = edit {
+            let (MutationResponse::Rename(renamed), _) =
+                Self::rename_on(tx, current, latest, id, name, now).await?
+            else {
+                unreachable!("rename returns its receipt")
+            };
+            piqueld_core::api::SavedApplication {
+                application_id: renamed.application_id,
+                generation: renamed.generation,
+                operation_id: None,
+            }
+        } else {
+            Self::save_configuration_on(tx, &application, Some(current.generation)).await?
+        };
+        Self::deploy_saved(tx, &application, &mut saved, deploy).await?;
+        Ok((MutationResponse::Saved(saved), deploy))
+    }
+
+    async fn deploy_saved(
+        tx: &mut Transaction<'_, Sqlite>,
+        application: &piqueld_core::NormalizedApplication,
+        saved: &mut piqueld_core::api::SavedApplication,
+        deploy: bool,
+    ) -> Result<(), StoreError> {
+        if deploy {
+            let operation =
+                Self::request_deploy_on(tx, application.id(), Some(saved.generation)).await?;
+            Self::insert_deployment_on(tx, &operation, application).await?;
+            saved.operation_id = Some(operation.id);
+        }
+        Ok(())
     }
 
     fn application_identity(
@@ -249,7 +321,8 @@ impl Store {
             Mutation::Apply { application, .. } | Mutation::Save { application, .. } => {
                 (None, Some(application.metadata().name.as_str()))
             }
-            Mutation::Deploy { id }
+            Mutation::Edit { id, .. }
+            | Mutation::Deploy { id }
             | Mutation::Delete { id }
             | Mutation::Reconcile { id }
             | Mutation::Rename { id, .. } => (Some(id.as_str()), None),

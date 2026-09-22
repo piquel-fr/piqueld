@@ -33,17 +33,17 @@ built with Cargo. See [connection profiles](#connection-profiles).
 ```console
 piquelctl profiles
 piquelctl status
-piquelctl list
-piquelctl show <name-or-id>
-piquelctl logs <name-or-id> [--service <name>]
-piquelctl plan --file application.toml
-piquelctl apply --file application.toml
-piquelctl apply --file application.toml --deploy
-piquelctl delete <name-or-id>
+piquelctl app list
+piquelctl app show <name-or-id>
+piquelctl app logs <name-or-id> [--service <name>]
+piquelctl app plan --file application.toml
+piquelctl app apply --file application.toml
+piquelctl app apply --file application.toml --deploy
+piquelctl app delete <name-or-id>
 piquelctl operation <operation-id>
-piquelctl reconcile <name-or-id>
-piquelctl deploy <name-or-id>
-piquelctl rename <name-or-id> <new-name>
+piquelctl app reconcile <name-or-id>
+piquelctl app deploy <name-or-id>
+piquelctl app rename <name-or-id> <new-name>
 piquelctl events --application <application-id> --limit 50
 ```
 
@@ -75,20 +75,21 @@ written to stderr, so stdout remains valid JSON.
 | --- | --- |
 | `profiles` | `{ "profiles": [{ "name": string, "endpoint": string }] }` |
 | `status` | `SystemStatus` |
-| `list` | `{ "items": [{ "application": ApplicationSummary, "status": ApplicationStatusView }], "next_cursor": null }` |
-| `show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
-| `logs` | `ApplicationLogs` |
-| `plan` | `PlanView` |
-| `rename` | `RenamedApplication` |
-| `apply` | `SavedApplication` with null `operation_id` |
-| `apply --deploy --no-wait` | `SavedApplication` with a deployment operation ID |
-| `apply --deploy` | `{ "saved": SavedApplication, "outcome": OperationState, "operation": Operation }` |
-| `delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
-| `delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": true }` |
+| `app list` | `{ "items": [{ "application": ApplicationSummary, "status": ApplicationStatusView }], "next_cursor": null }` |
+| `app show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
+| `app logs` | `ApplicationLogs` |
+| `app plan` | `PlanView` |
+| `app create` / `app rename` / field edits | `SavedApplication`; `--deploy` uses the same output as `app apply --deploy` |
+| `app manifest` | Saved TOML as a JSON string |
+| `app apply` | `SavedApplication` with null `operation_id` |
+| `app apply --deploy --no-wait` | `SavedApplication` with a deployment operation ID |
+| `app apply --deploy` | `{ "saved": SavedApplication, "outcome": OperationState, "operation": Operation }` |
+| `app delete --no-wait` | `{ "accepted": AcceptedOperation, "volumes_retained": true }` |
+| `app delete` | `{ "accepted": AcceptedOperation, "outcome": "deleted", "volumes_retained": true }` |
 | `operation --no-wait` | `Operation` |
 | `operation` | `Operation` |
-| `reconcile` / `deploy` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
-| `reconcile --no-wait` / `deploy --no-wait` | `AcceptedOperation` |
+| `app reconcile` / `app deploy` | `{ "accepted": AcceptedOperation, "outcome": OperationState, "operation": Operation }` |
+| `app reconcile --no-wait` / `app deploy --no-wait` | `AcceptedOperation` |
 | `events` | `{ "items": [Event], "next_cursor": string or null }` |
 
 The DTO fields and error envelope are defined by the versioned API and the
@@ -125,16 +126,75 @@ context; ordinary application errors keep their existing reporting. Diagnostics
 remain human-readable on stderr with `--json` or `--quiet`, and exit codes and
 successful output are unchanged.
 
+## Field editing
+
+Application commands now live under `piquelctl app`. The old top-level application
+commands have been removed. `status`, `profiles`, `operation`, `events`, and
+`builds` remain top-level. Manifest import (`app apply`) and preview (`app plan`)
+remain available, but ordinary editing sends only the selected setting.
+
+```console
+piquelctl app create notes --yes
+piquelctl app service add notes web nginx:stable --yes
+piquelctl app service replicas notes web 3 --yes
+piquelctl app service env set notes web RUST_LOG debug --yes
+piquelctl app service env remove notes web RUST_LOG --yes
+piquelctl app service command notes web --yes -- /usr/bin/server
+piquelctl app service arguments notes web --yes -- --listen "0.0.0.0:8080"
+piquelctl app service add notes worker --git https://example.com/app.git --branch main --yes
+piquelctl app service source git notes web https://example.com/app.git --branch main --yes
+piquelctl app service source branch notes web release --yes
+piquelctl app service source commit notes web --clear --yes
+piquelctl app service source dockerfile notes web build/Dockerfile --yes
+piquelctl app service source context notes web build --yes
+piquelctl app service source image notes web nginx:stable --yes
+piquelctl app service cpu notes web 500 --yes
+piquelctl app service memory notes web 268435456 --yes
+piquelctl app service cpu notes web --clear --yes
+piquelctl app volume add notes data --yes
+piquelctl app service mount set notes web data /var/lib/data --yes
+piquelctl app service mount remove notes web /var/lib/data --yes
+piquelctl app volume remove notes data --yes
+piquelctl app service health http notes web 8080 --path /live --check-timeout 3 --yes
+piquelctl app service health interval notes web 20 --yes
+piquelctl app service health clear notes web --yes
+piquelctl app service replicas notes web 2 --deploy --yes
+piquelctl app manifest notes
+```
+
+Every edit saves to the daemon's internal manifest by default. `--deploy` saves
+and captures a deployment atomically, then waits for it; add `--no-wait` to return
+its receipt immediately. No local manifest file is read or rewritten. The server
+validates the complete result, so removing a mounted volume is rejected until its
+mounts are removed. Removing declarations retains Docker volume data.
+
+Command and argument arrays preserve individual shell arguments; place command
+options before `--`. An empty array clears the setting. Optional limits and pinned
+commits use `--clear`; health checks use `health clear`. Nested Git/health settings
+require the corresponding source/check to be configured first. Use `--help` on
+any command for its values and options.
+
+Git-backed applications keep services, volumes, and the application name under
+repository ownership. Connection settings remain editable. Disconnect explicitly
+to retain the saved manifest and edit it locally:
+
+```console
+piquelctl app repository connect notes https://example.com/infra.git infra/app.toml --yes
+piquelctl app repository branch notes release --yes
+piquelctl app repository path notes corrected/app.toml --yes
+piquelctl app repository disconnect notes --yes
+```
+
 ## Mutation safety
 
-`apply` saves configuration only. `apply --deploy` saves and deploys atomically.
+`app apply` saves configuration only. `app apply --deploy` saves and deploys atomically.
 Both inspect the application identity and saved revision before confirmation;
-neither requires a runtime preview or Docker availability. Use `plan` separately
+neither requires a runtime preview or Docker availability. Use `app plan` separately
 to inspect redacted changes and image resolution requirements. Preview may fail
 when Docker observation is unavailable.
 
 Mutating commands require TTY confirmation unless `--yes` is supplied. Apply,
-delete and rename accept `--force` independently of confirmation. Every explicit
+delete, rename, and field edits accept `--force` independently of confirmation. Every explicit
 deployment creates a new snapshot, refreshes image references and supersedes pending
 work. Completed deployments retain their terminal state in history.
 Reconciliation retries the deployment snapshot using prepared digests.
@@ -145,13 +205,13 @@ resources are absent. Named Docker volumes remain; output includes
 `volumes_retained: true`. The CLI waits for application absence because deletion
 also removes its operation record.
 
-For apply, delete, and rename, the CLI automatically sends the revision it
+For apply, delete, rename, and field edits, the CLI automatically sends the revision it
 inspected before confirmation. Apply also sends the inspected application ID,
 or generation zero for create-only. `--expected-generation N` supplies an explicit
 revision for scripts. Conflicts stop the command without adopting the newer
 revision. `--force` skips these preconditions: forced apply targets whichever
 application currently has the name, or creates it if absent. Validation, resource
-ownership, and rename busy/name-collision checks still apply. `show` reports intent
+ownership, and rename busy/name-collision checks still apply. `app show` reports intent
 and active target generations and separate runtime health.
 
 The CLI retains one automatic transport retry, using the same command UUID in
@@ -162,7 +222,7 @@ a transport retry cannot overwrite changes accepted after the original command.
 
 Rename checks the inspected generation and name availability. It rejects pending
 or running operations and deletion intent. It preserves identity, services,
-networks, and volumes without image resolution or redeployment. A changed name
+networks, and volumes. It saves without deployment unless `--deploy` is given. A changed name
 advances generation and records an event. Update `metadata.name` in your manifest
 file afterward; the CLI does not edit files automatically.
 
@@ -188,12 +248,12 @@ interrupted.
 The dashboard provides application management forms and recent application logs. Remote
 authentication, registry management, and advanced interactive CLI flows remain future work.
 
-`deploy` fetches repository-backed configuration when configured, then explicitly
+`app deploy` fetches repository-backed configuration when configured, then explicitly
 resolves image or Git build sources. It supersedes pending work for the selected
 application. Use `--yes` to skip interactive confirmation, `--no-wait` to return
 after acceptance, or a longer global `--timeout` for builds. The server continues
 deployment if the CLI wait times out. `refresh` resolves only the stored service
-sources; `reconcile` retries or repairs the latest deployment snapshot and prepared target.
+sources; `app reconcile` retries or repairs the latest deployment snapshot and prepared target.
 
 Human output uses bold labels and color on terminals, application lists,
 and elapsed operation progress. Redirected output stays plain and `NO_COLOR`
@@ -218,7 +278,7 @@ permanent completion lines. Redirected progress prints meaningful transitions,
 without repeated identical updates. JSON remains a single result document, not
 a progress stream; stderr stays human-readable in JSON mode. Paginated results
 can collect typed records before that document is emitted. If an application's
-status cannot be fetched during `list`, its status is `null` and a contextual
+status cannot be fetched during `app list`, its status is `null` and a contextual
 warning is emitted immediately; other applications are still returned.
 
 Dynamic human-readable values escape terminal control characters. Logs preserve
@@ -235,7 +295,7 @@ but ordinary console writes remain serialized. Only explicit task completion
 prints an outcome; dropping the last unfinished handle clears its transient row
 without claiming the server-side operation was cancelled.
 
-`piquelctl logs NAME_OR_ID [--service NAME] [--tail 200] [--since-seconds 3600]`
+`piquelctl app logs NAME_OR_ID [--service NAME] [--tail 200] [--since-seconds 3600]`
 reads a recent Docker snapshot with timestamps, service, task, and stream labels.
 `--json` returns the structured records and a truncation indicator.
 

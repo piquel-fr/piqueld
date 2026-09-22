@@ -157,6 +157,73 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Sends a `POST` request to `/api/v1/applications`
+
+    */
+    pub async fn create_application<'a>(
+        &'a self,
+        deploy: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!("{}/api/v1/applications", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "create_application",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Apply an application manifest
 
     Sends a `POST` request to `/api/v1/applications/apply`
@@ -808,6 +875,95 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/name`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_application_name<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/name",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_application_name",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Sends a `POST` request to `/api/v1/applications/{id}/reconcile`
 
     Arguments:
@@ -951,6 +1107,3276 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/repository`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_manifest_repository<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::RepositoryValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/repository",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_manifest_repository",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `DELETE` request to `/api/v1/applications/{id}/repository`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    */
+    pub async fn disconnect_manifest_repository<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/repository",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "disconnect_manifest_repository",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/repository/branch`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_manifest_repository_branch<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/repository/branch",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_manifest_repository_branch",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/repository/commit`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_manifest_repository_commit<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::OptionalStringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/repository/commit",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_manifest_repository_commit",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/repository/path`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_manifest_repository_path<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/repository/path",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_manifest_repository_path",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/repository/url`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_manifest_repository_url<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/repository/url",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_manifest_repository_url",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/applications/{id}/services`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn add_application_service<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::manifest::Service,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "add_application_service",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `DELETE` request to `/api/v1/applications/{id}/services/{service}`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    */
+    pub async fn remove_application_service<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "remove_application_service",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/arguments`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_arguments<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringsValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/arguments",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_arguments",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/command`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_command<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringsValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/command",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_command",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/environment`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_environment<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::EnvironmentValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/environment",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_environment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/environment/{key}`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `key`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_environment_entry<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        key: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/environment/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+            encode_path(&key.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_environment_entry",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `DELETE` request to `/api/v1/applications/{id}/services/{service}/environment/{key}`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `key`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    */
+    pub async fn remove_service_environment_entry<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        key: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/environment/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+            encode_path(&key.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "remove_service_environment_entry",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/general`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_general<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::ServiceGeneral,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/general",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_general",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/healthcheck`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_healthcheck<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::HealthValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/healthcheck",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_healthcheck",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/healthcheck/command`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_health_command<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringsValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/healthcheck/command",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_health_command",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/healthcheck/interval`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_health_interval<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::SecondsValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/healthcheck/interval",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_health_interval",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/healthcheck/path`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_health_path<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/healthcheck/path",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_health_path",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/healthcheck/port`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_health_port<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::ReplicasValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/healthcheck/port",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_health_port",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/healthcheck/timeout`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_health_timeout<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::SecondsValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/healthcheck/timeout",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_health_timeout",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/mount`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_mount<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::manifest::Mount,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/mount",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_mount",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `DELETE` request to `/api/v1/applications/{id}/services/{service}/mount`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn remove_service_mount<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/mount",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "remove_service_mount",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/mounts`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_mounts<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::MountsValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/mounts",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_mounts",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/name`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_name<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/name",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_name",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/process`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_process<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::ServiceProcess,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/process",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_process",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/replicas`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_replicas<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::ReplicasValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/replicas",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_replicas",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/resources`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_resources<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::ResourcesValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/resources",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_resources",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/resources/cpu`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_cpu<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::CpuValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/resources/cpu",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_cpu",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/resources/memory`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_memory<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::MemoryValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/resources/memory",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_memory",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/source`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_source<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::SourceValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/source",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_source",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/source/git/branch`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_git_branch<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/source/git/branch",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_git_branch",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/source/git/commit`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_git_commit<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::OptionalStringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/source/git/commit",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_git_commit",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/source/git/context`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_context<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/source/git/context",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_context",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/source/git/dockerfile`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_dockerfile<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/source/git/dockerfile",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_dockerfile",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/source/git/url`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_git_url<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/source/git/url",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_git_url",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/source/image`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_image<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::StringValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/source/image",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_image",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Get application status
 
     Sends a `GET` request to `/api/v1/applications/{id}/status`
@@ -996,6 +4422,267 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/volumes`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_application_volumes<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::VolumesValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/volumes",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_application_volumes",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/applications/{id}/volumes`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn add_application_volume<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::manifest::Volume,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/volumes",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "add_application_volume",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `DELETE` request to `/api/v1/applications/{id}/volumes/{volume}`
+
+    Arguments:
+    - `id`
+    - `volume`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    */
+    pub async fn remove_application_volume<'a>(
+        &'a self,
+        id: &'a str,
+        volume: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/volumes/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&volume.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .delete(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "remove_application_volume",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             500u16 => Err(Error::ErrorResponse(

@@ -72,6 +72,12 @@ spec. The application name selects which application an apply targets; changing
 it targets a different application. Use the explicit rename action to retain
 identity and resources, then update the manifest name.
 
+Individual field endpoints edit the saved internal manifest atomically, validate
+the result, and save without deployment unless requested. Git ownership and
+configuration revision checks apply to field edits as well as manifest imports.
+`piquelctl app repository disconnect NAME --yes` removes repository backing while
+retaining the current saved services and volumes.
+
 The parser is pure. Apply saves the complete normalized configuration without
 starting a deployment unless explicitly requested. Deploy captures that saved
 revision and prepares every source again. Reconciliation and retries reuse the
@@ -136,10 +142,10 @@ branch = "main"
 # commit = "0123456789012345678901234567890123456789"
 ```
 
-Create the application manually with `piquelctl apply --file bootstrap.toml`.
+Create the application manually with `piquelctl app apply --file bootstrap.toml`.
 A bootstrap manifest may contain only its header, metadata, and `spec.manifest`;
 services can be supplied by the first fetched manifest. Then click **Deploy** in
-the dashboard or run `piquelctl deploy NAME --yes`.
+the dashboard or run `piquelctl app deploy NAME --yes`.
 
 Deploy resolves the configured commit (or branch head), reads only the exact
 configured TOML/JSON file, and checks that its name matches the existing

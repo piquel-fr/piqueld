@@ -49,3 +49,6 @@ pub use docker_names::{DockerNetworkName, DockerServiceName, DockerVolumeName};
 /// Checked image references used by runtime compilation.
 pub mod images;
 pub use images::{ImageReference, ImmutableImage, RepositoryDigest};
+
+/// Typed saved-configuration editing contracts.
+pub mod edit;
