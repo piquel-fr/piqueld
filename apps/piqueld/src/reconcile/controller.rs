@@ -19,7 +19,8 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<(), StoreError> {
         let started = std::time::Instant::now();
         tracing::info!("operation started");
-        let result = self.run_operation_inner(operation, cancellation).await;
+        // Keep preparation and persistence state out of the discovery future.
+        let result = Box::pin(self.run_operation_inner(operation, cancellation)).await;
         let duration_ms = started.elapsed().as_secs_f64() * 1_000.0;
         match &result {
             Ok(outcome) => tracing::info!(outcome, duration_ms, "operation execution completed"),
