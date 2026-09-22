@@ -48,16 +48,19 @@ impl Ingress {
         use sha2::{Digest, Sha256};
         let suffix = format!("{:x}", Sha256::digest(store.instance_id().as_bytes()));
         let directory = data_dir.join("ingress");
+        // Local Docker and Caddy control requests share the daemon's request budget.
+        // Deployment convergence still imposes its configured outer deadline.
+        let request_timeout = crate::docker::DockerTimeout::Request.duration();
         Ok(Self {
             enabled,
             instance_id: store.instance_id().into(),
             name: format!("piqueld-ingress-{}", &suffix[..16]),
-            caddy: UnixApi(directory.join("control/admin.sock")),
+            caddy: UnixApi::new(directory.join("control/admin.sock"), request_timeout),
             directory,
-            docker: UnixApi(socket.into()),
+            docker: UnixApi::new(socket.into(), request_timeout),
             images: bollard::Docker::connect_with_unix(
                 socket.to_str().context("Docker socket is not UTF-8")?,
-                30,
+                request_timeout.as_secs(),
                 bollard::API_DEFAULT_VERSION,
             )?,
             client: reqwest::Client::builder()

@@ -138,10 +138,9 @@ impl<D: DockerApi> Controller<D> {
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         let request = self.operation_request(operation, cancellation).await?;
+        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
         if operation.kind == OperationKind::Delete {
-            let _guard = self.mutations.lock().await;
-            self.check_current(operation).await?;
-            self.sync_routes(operation, &[], true).await?;
+            self.withdraw_routes(operation, deadline).await?;
         }
         let ownership = self.ownership_labels(&operation.application_id);
         if operation.kind != OperationKind::Delete
@@ -157,7 +156,6 @@ impl<D: DockerApi> Controller<D> {
             timeout_seconds = self.retry.convergence_timeout.as_secs(),
             "convergence started"
         );
-        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
         loop {
             self.check_current(operation).await?;
             if cancellation.is_cancelled() {
@@ -234,6 +232,21 @@ impl<D: DockerApi> Controller<D> {
             .await
             .map_err(|_| OperationError::ConvergenceTimeout)??;
         }
+    }
+
+    /// Public exposure must be withdrawn within the deletion's convergence budget.
+    async fn withdraw_routes(
+        &self,
+        operation: &Operation,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), OperationError> {
+        tokio::time::timeout_at(deadline, async {
+            let _guard = self.mutations.lock().await;
+            self.check_current(operation).await?;
+            self.sync_routes(operation, &[], true).await
+        })
+        .await
+        .map_err(|_| OperationError::ConvergenceTimeout)?
     }
 
     async fn operation_request(
