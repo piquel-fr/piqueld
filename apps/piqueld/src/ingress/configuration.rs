@@ -1,9 +1,19 @@
+//! Builds Caddy's runtime JSON from the deployed routing table. The daemon loads
+//! it through Caddy's private Unix admin socket and persists it as the gateway's
+//! autosave configuration for independent container restarts.
+//!
+//! Known hosts redirect HTTP to HTTPS and proxy to their Swarm service's internal
+//! HTTP port. Caddy obtains/renews certificates for those hosts automatically;
+//! explicit redirects keep unknown HTTP hosts on the final 404 handler.
+
 use super::Ingress;
 use crate::store::ingress::RoutingTable;
 use piqueld_core::DockerServiceName;
 use serde_json::{Value, json};
 
 impl Ingress {
+    /// Produces the complete replacement configuration. Exact-host routes enable
+    /// automatic TLS without on-demand certificate issuance for arbitrary hosts.
     pub(super) fn configuration(&self, table: &RoutingTable) -> Value {
         let mut https = Vec::new();
         let mut redirects = Vec::new();
@@ -26,6 +36,8 @@ impl Ingress {
             json!({"handle":[{"handler":"static_response","status_code":404}],"terminal":true});
         https.push(not_found.clone());
         redirects.push(not_found);
+        // The Unix admin endpoint is private to the daemon. Strict SNI matching
+        // prevents a TLS connection for one hostname from selecting another host.
         let configuration = json!({
             "admin":{"listen":"unix//control/admin.sock"},
             "apps":{"http":{"servers":{
