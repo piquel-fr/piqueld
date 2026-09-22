@@ -7,19 +7,27 @@ use serde_json::Value;
 use std::{path::PathBuf, time::Duration};
 use tokio::net::UnixStream;
 
-pub(super) struct UnixApi(pub(super) PathBuf);
+pub(super) struct UnixApi {
+    socket: PathBuf,
+    timeout: Duration,
+}
 
 impl UnixApi {
+    /// The caller supplies the operation budget; this covers connect and the full body.
+    pub(super) fn new(socket: PathBuf, timeout: Duration) -> Self {
+        Self { socket, timeout }
+    }
+
     pub(super) async fn request(
         &self,
         method: Method,
         path: &str,
         value: Option<&Value>,
     ) -> Result<(StatusCode, Vec<u8>)> {
-        tokio::time::timeout(Duration::from_secs(30), async {
-            let stream = UnixStream::connect(&self.0)
+        tokio::time::timeout(self.timeout, async {
+            let stream = UnixStream::connect(&self.socket)
                 .await
-                .with_context(|| format!("connect to {}", self.0.display()))?;
+                .with_context(|| format!("connect to {}", self.socket.display()))?;
             let (mut sender, connection) =
                 hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
             let mut drivers = tokio::task::JoinSet::new();
@@ -90,5 +98,41 @@ impl UnixApi {
         Ok(Some(
             serde_json::from_slice(&body).context("decode ingress inspection")?,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn supplied_budget_covers_a_stalled_response_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("api.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let mut server = tokio::task::JoinSet::new();
+        server.spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream.read_exact(&mut [0; 1]).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx")
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let client = UnixApi::new(socket, Duration::from_millis(50));
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.request(Method::GET, "/", None),
+        )
+        .await
+        .expect("the supplied 50ms budget must override the usual request budget")
+        .unwrap_err();
+        assert!(
+            error
+                .chain()
+                .any(<dyn std::error::Error>::is::<tokio::time::error::Elapsed>)
+        );
     }
 }
