@@ -147,6 +147,11 @@ pub(crate) fn build_client(cli: &Cli) -> Result<Client> {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET)),
         )
     };
+    let client = if cli.auth.allow_insecure_http {
+        client.with_insecure_http()
+    } else {
+        client
+    };
     let client = crate::auth::Credentials::attach(cli, client)?;
     Ok(client
         .with_timeout(cli.timeout)

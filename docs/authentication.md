@@ -67,6 +67,14 @@ piquelctl --url https://piqueld.example.com status
 piquelctl --url https://piqueld.example.com logout
 ```
 
+Remote HTTP authentication is rejected by default, including device login.
+For an API connection protected separately by Tailscale, explicitly opt in with
+`piquelctl --allow-insecure-http --url http://<tailnet-host>:7845 login` (and use
+that flag for subsequent commands). This does not enable TLS; the caller must
+ensure transport encryption. HTTPS, loopback HTTP, and Unix sockets need no opt-in.
+The browser still uses the configured HTTPS `auth.public_url` for passkeys.
+Library callers can opt in with `Client::with_insecure_http()`.
+
 `login` prints a browser URL and code. Sign in with a passkey at that URL, enter
 the code from your terminal, and explicitly approve the CLI. The pending request
 expires after ten minutes. The CLI polls using a separate secret; the displayed

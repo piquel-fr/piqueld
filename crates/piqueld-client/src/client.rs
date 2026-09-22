@@ -17,6 +17,7 @@ pub(crate) struct ClientState {
     timeout: Duration,
     request_id: Option<String>,
     bearer: Option<reqwest::header::HeaderValue>,
+    allow_insecure_http: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -29,7 +30,8 @@ impl Client {
     /// Creates a client for an HTTP or HTTPS endpoint.
     ///
     /// Accepts IP addresses and DNS names. Prefer HTTPS for remote access;
-    /// HTTP needs an encrypted transport such as Tailscale.
+    /// Remote HTTP authentication requires an explicit [`Self::with_insecure_http`]
+    /// opt-in, even when an encrypted transport such as Tailscale is used.
     ///
     /// # Errors
     /// Returns [`ClientError::Endpoint`] when `base_url` is not an HTTP origin.
@@ -96,6 +98,7 @@ impl Client {
                     timeout: Duration::from_secs(30),
                     request_id: None,
                     bearer: None,
+                    allow_insecure_http: false,
                 },
             ),
         })
@@ -115,6 +118,7 @@ impl Client {
                     timeout: Duration::from_secs(30),
                     request_id: None,
                     bearer: None,
+                    allow_insecure_http: false,
                 },
             ),
         }
@@ -129,6 +133,14 @@ impl Client {
         value.set_sensitive(true);
         self.generated.inner.bearer = Some(value);
         Ok(self)
+    }
+
+    /// Allows authentication over remote HTTP, including device login secrets.
+    /// Only opt in when the connection is protected separately, such as by Tailscale.
+    #[must_use]
+    pub fn with_insecure_http(mut self) -> Self {
+        self.generated.inner.allow_insecure_http = true;
+        self
     }
 
     /// Overrides the per-request timeout.
@@ -169,8 +181,7 @@ impl Client {
         let mut request = builder
             .build()
             .map_err(|_| invalid_request("request could not be constructed"))?;
-        prepare_request(&self.generated.inner, &mut request)
-            .map_err(|_| invalid_request("request header or timeout is invalid"))?;
+        prepare_request(&self.generated.inner, &mut request).map_err(invalid_request)?;
         let response = self
             .generated
             .client
@@ -198,7 +209,30 @@ impl ClientHooks<ClientState> for generated::Client {
     }
 }
 
+impl ClientState {
+    fn validate_auth_transport(&self, url: &url::Url) -> Result<(), String> {
+        let local = match url.host() {
+            Some(url::Host::Domain("localhost")) => true,
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            _ => false,
+        };
+        if url.scheme() == "http"
+            && !local
+            && !self.allow_insecure_http
+            && (self.bearer.is_some() || url.path().starts_with("/api/v1/auth/"))
+        {
+            return Err(
+                "remote HTTP authentication requires HTTPS or an explicit insecure HTTP opt-in"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
 fn prepare_request(state: &ClientState, request: &mut reqwest::Request) -> Result<(), String> {
+    state.validate_auth_transport(request.url())?;
     #[cfg(target_arch = "wasm32")]
     u32::try_from(state.timeout.as_millis())
         .map_err(|_| "browser request timeout exceeds u32::MAX milliseconds".to_owned())?;
@@ -452,4 +486,52 @@ mod wasm_tests {
     }
 
     use std::time::Duration;
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::{Client, prepare_request};
+
+    #[test]
+    fn authentication_transport_policy_requires_explicit_remote_http_opt_in() {
+        for endpoint in [
+            "https://daemon.example",
+            "http://localhost:7845",
+            "http://127.0.0.1:7845",
+            "http://[::1]:7845",
+            "http://100.64.0.1:7845",
+            "http://daemon.example",
+        ] {
+            for opt_in in [false, true] {
+                let mut client = Client::tcp(endpoint)
+                    .unwrap()
+                    .with_bearer("secret")
+                    .unwrap();
+                if opt_in {
+                    client = client.with_insecure_http();
+                }
+                let mut request =
+                    reqwest::Request::new(reqwest::Method::GET, url::Url::parse(endpoint).unwrap());
+                let allowed = opt_in
+                    || endpoint.starts_with("https:")
+                    || endpoint.contains("localhost")
+                    || endpoint.contains("127.0.0.1")
+                    || endpoint.contains("[::1]");
+                assert_eq!(
+                    prepare_request(&client.generated.inner, &mut request).is_ok(),
+                    allowed
+                );
+                assert_eq!(request.headers().contains_key("authorization"), allowed);
+            }
+        }
+        let client = Client::unix("/tmp/piqueld-test.sock")
+            .with_bearer("secret")
+            .unwrap();
+        let mut request = reqwest::Request::new(
+            reqwest::Method::GET,
+            url::Url::parse("http://localhost/api/v1/auth/me").unwrap(),
+        );
+        prepare_request(&client.generated.inner, &mut request).unwrap();
+        assert!(request.headers().contains_key("authorization"));
+    }
 }
