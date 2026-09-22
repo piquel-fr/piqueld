@@ -23,7 +23,10 @@ until source preparation succeeds, and are removed with their operation history.
 Existing version-1 databases are upgraded while retaining instance identity.
 
 Startup reads `PRAGMA user_version`, rejects an unsupported newer schema, and
-applies missing embedded migrations transactionally.
+applies missing embedded migrations transactionally. Each migration commits its
+schema changes, `user_version`, and matching instance metadata together. A
+restart or later migration failure can resume from any committed version without
+changing the instance identity.
 
 `0002_deployments.sql` separates editable configuration from deployment inputs.
 Each deployment references its execution operation and captures a manifest and
