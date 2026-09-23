@@ -256,6 +256,7 @@ impl Store {
             ApplicationEdit::AddVolume(_)
             | ApplicationEdit::Volumes(_)
             | ApplicationEdit::RemoveVolume(_) => "volumes",
+            ApplicationEdit::Routes(_) => "routes",
         };
         let resource = match &edit {
             ApplicationEdit::Service { name, .. } | ApplicationEdit::RemoveService(name) => {
