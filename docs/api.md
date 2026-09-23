@@ -73,6 +73,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/services/{service}/{command,arguments}` | `{ "value": ["element", "..."] }` |
 | PUT | `/services/{service}/mount` | `Mount`; adds/replaces by container target |
 | DELETE | `/services/{service}/mount` | `{ "value": "/container/target" }` |
+| PUT | `/services/{service}/secrets` | `{ "value": [{ "name": "token", "target": "/run/secrets/token" }] }`; replaces file references without exposing values |
 | PUT | `/services/{service}/healthcheck` | `{ "value": HealthCheck }`; null clears |
 | PUT | `/services/{service}/healthcheck/{port,path,command,interval,timeout}` | Typed `{ "value": ... }` |
 | PUT | `/services/{service}/resources/{cpu,memory}` | `{ "value": 500 }`; null clears the selected limit |

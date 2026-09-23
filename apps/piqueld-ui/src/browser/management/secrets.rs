@@ -5,7 +5,10 @@ use leptos::{
     SignalUpdate, SignalWithUntracked, component, create_rw_signal, event_target_value,
     spawn_local, store_value, view, window,
 };
-use piqueld_client::{ApplicationView, Client};
+use piqueld_client::{
+    ApplicationView, Client,
+    edit::{ApplicationEdit, ServiceEdit},
+};
 
 #[component]
 pub(super) fn ApplicationSecrets() -> impl IntoView {
@@ -137,17 +140,11 @@ fn SecretFiles(service_name: String) -> impl IntoView {
     dirty_group(format!("secret-files:{service_name}"), mounts, baseline);
     let service = store_value(service_name.clone());
     let save = move |_| {
-        let mut manifest = context.manifest();
-        if let Some(target) = manifest
-            .spec
-            .services
-            .iter_mut()
-            .find(|s| s.name.as_str() == service.get_value())
-        {
-            target.secrets = mounts.get_untracked();
-        }
         context.save(
-            manifest,
+            ApplicationEdit::Service {
+                name: service.get_value(),
+                edit: ServiceEdit::Secrets(mounts.get_untracked()),
+            },
             Callback::new(move |saved: ApplicationView| {
                 if let Some(target) = saved
                     .application
