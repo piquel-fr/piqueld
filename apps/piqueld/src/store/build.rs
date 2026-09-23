@@ -6,6 +6,29 @@ use piqueld_core::{
     manifest::Source,
 };
 
+struct BuildRow {
+    id: i64,
+    application_id: String,
+    operation_id: String,
+    service: String,
+    source_json: String,
+    state: String,
+    started_at_ms: i64,
+    finished_at_ms: Option<i64>,
+    commit_hash: Option<String>,
+    image_id: Option<String>,
+    log_bytes: i64,
+    log_truncated: i64,
+    log_expired: i64,
+}
+
+struct BuildLogRow {
+    offset: i64,
+    data: Vec<u8>,
+    stream: String,
+    timestamp_ms: i64,
+}
+
 impl Store {
     /// Configures output retention and the per-build byte cap.
     #[must_use]
@@ -163,8 +186,32 @@ impl Store {
         if before < 1 {
             return Err(StoreError::InvalidInput);
         }
-        let app = application.map(ApplicationId::as_str);
-        let mut rows = sqlx::query!("SELECT id,application_id,operation_id,service,source_json,state,started_at_ms,finished_at_ms,commit_hash,image_id,log_bytes,log_truncated,log_expired FROM builds WHERE id<?1 AND (?2 IS NULL OR application_id=?2) ORDER BY id DESC LIMIT ?3",before,app,fetch).fetch_all(&self.pool).await.map_err(StoreError::database)?;
+        let mut rows = if let Some(application) = application {
+            let app = application.as_str();
+            sqlx::query_as!(
+                BuildRow,
+                "SELECT id AS \"id!\",application_id,operation_id,service,source_json,state,
+                 started_at_ms,finished_at_ms,commit_hash,image_id,log_bytes,log_truncated,log_expired
+                 FROM builds WHERE application_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+                app,
+                before,
+                fetch
+            )
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            sqlx::query_as!(
+                BuildRow,
+                "SELECT id AS \"id!\",application_id,operation_id,service,source_json,state,
+                 started_at_ms,finished_at_ms,commit_hash,image_id,log_bytes,log_truncated,log_expired
+                 FROM builds WHERE id<?1 ORDER BY id DESC LIMIT ?2",
+                before,
+                fetch
+            )
+            .fetch_all(&self.pool)
+            .await
+        }
+        .map_err(StoreError::database)?;
         let more = rows.len() > limit;
         rows.truncate(limit);
         let next_cursor = more
@@ -219,18 +266,31 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
-        let filter = stream.map(LogStream::as_str);
-        let mut chunks = sqlx::query!(
-            "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
-             WHERE build_id=?1 AND (?2 IS NULL OR stream=?2)
-             AND (?3 IS NULL OR offset<?3)
-             ORDER BY offset DESC LIMIT 17",
-            id,
-            filter,
-            before
-        )
-        .fetch_all(&mut *tx)
-        .await
+        let before = before.unwrap_or(i64::MAX);
+        let mut chunks = if let Some(stream) = stream {
+            let filter = stream.as_str();
+            sqlx::query_as!(
+                BuildLogRow,
+                "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
+                 WHERE build_id=?1 AND stream=?2 AND offset<?3
+                 ORDER BY offset DESC LIMIT 17",
+                id,
+                filter,
+                before
+            )
+            .fetch_all(&mut *tx)
+            .await
+        } else {
+            sqlx::query_as!(
+                BuildLogRow,
+                "SELECT offset,data,stream,timestamp_ms FROM build_log_chunks
+                 WHERE build_id=?1 AND offset<?2 ORDER BY offset DESC LIMIT 17",
+                id,
+                before
+            )
+            .fetch_all(&mut *tx)
+            .await
+        }
         .map_err(StoreError::database)?;
         let more = chunks.len() > 16;
         chunks.truncate(16);
@@ -367,6 +427,58 @@ mod tests {
         assert_eq!(records.items[0].state, BuildState::Succeeded);
         assert_eq!(records.items[0].commit.as_deref(), Some("commit"));
         assert_eq!(records.items[1].log_bytes, 32768);
+    }
+
+    #[tokio::test]
+    async fn build_pages_filter_before_applying_the_limit() {
+        let Fixture {
+            _temp,
+            store,
+            app,
+            operation,
+            id,
+        } = Fixture::new().await;
+        let mut manifest = app.to_manifest();
+        manifest.metadata.name = "other".into();
+        let other = manifest
+            .validate()
+            .unwrap()
+            .normalize(ApplicationId::parse("app-other").unwrap());
+        let other_operation = store.save_application(&other, None, Some(0)).await.unwrap();
+        let latest = store
+            .start_build(app.id(), &operation, "web", &app.spec().services[0].source)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            store
+                .start_build(
+                    other.id(),
+                    &other_operation.id,
+                    "web",
+                    &other.spec().services[0].source,
+                )
+                .await
+                .unwrap();
+        }
+        let first = store.builds(Some(app.id()), None, 1).await.unwrap();
+        assert_eq!(first.items[0].id, latest);
+        let second = store
+            .builds(Some(app.id()), first.next_cursor.as_deref(), 1)
+            .await
+            .unwrap();
+        assert_eq!(second.items[0].id, id);
+        assert!(second.next_cursor.is_none());
+        let global = store.builds(None, None, 1).await.unwrap();
+        assert_eq!(global.items[0].application_id, other.id().as_str());
+        let absent = ApplicationId::parse("app-absent").unwrap();
+        assert!(
+            store
+                .builds(Some(&absent), None, 1)
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
     }
 
     #[tokio::test]
