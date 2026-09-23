@@ -117,6 +117,10 @@ impl Scenario {
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(3))
+            // Caddy closes idle connections on reload. Probe listener availability
+            // across cutover without racing a reused client connection.
+            .http1_only()
+            .pool_max_idle_per_host(0)
             .redirect(reqwest::redirect::Policy::none())
             .add_root_certificate(reqwest::Certificate::from_pem(&root_cert).unwrap())
             .resolve("one.example.test", "127.0.0.1:443".parse().unwrap())
