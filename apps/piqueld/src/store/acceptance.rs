@@ -133,7 +133,7 @@ impl Store {
                     current.ok_or(StoreError::NotFound)?,
                     latest,
                     id,
-                    edit,
+                    *edit,
                     deploy,
                     now,
                 )
