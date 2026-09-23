@@ -61,7 +61,7 @@ pub enum Mutation {
         /// Stable application identity.
         id: ApplicationId,
         /// Typed field or resource change.
-        edit: piqueld_core::edit::ApplicationEdit,
+        edit: Box<piqueld_core::edit::ApplicationEdit>,
         /// Capture a deployment after saving.
         deploy: bool,
     },
