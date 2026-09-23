@@ -737,9 +737,20 @@ impl ObservedNetwork {
         desired: &DesiredNetwork,
         application: &ResolvedApplication,
     ) -> bool {
-        OwnershipState::from_labels(&self.labels, &application.instance_id, &application.id)
-            == OwnershipState::Owned
+        self.is_owned_by(&application.instance_id, &application.id)
             && self.name == desired.name.as_str()
+    }
+
+    /// Returns whether the labels, role, and canonical name identify this network.
+    #[must_use]
+    pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
+        OwnershipState::for_resource(
+            &self.labels,
+            instance,
+            application,
+            ResourceKind::Network,
+            &self.name,
+        ) == OwnershipState::Owned
     }
 }
 
@@ -753,6 +764,20 @@ pub struct ObservedVolume {
     pub runtime_configuration_matches: bool,
     /// Ownership labels observed on the volume.
     pub labels: BTreeMap<String, String>,
+}
+
+impl ObservedVolume {
+    /// Returns whether this volume has the expected owner and volume label role.
+    #[must_use]
+    pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
+        OwnershipState::for_resource(
+            &self.labels,
+            instance,
+            application,
+            ResourceKind::Volume,
+            &self.name,
+        ) == OwnershipState::Owned
+    }
 }
 
 /// Observed Docker service state.
@@ -817,6 +842,12 @@ impl ObservedService {
         )
     }
 
+    pub(crate) fn healthcheck_matches(&self, desired: &DesiredService) -> bool {
+        self.healthcheck == desired.healthcheck
+            || self.healthcheck.as_ref().map(HealthCheck::execution)
+                == desired.healthcheck.as_ref().map(HealthCheck::execution)
+    }
+
     /// Returns whether all desired service fields match.
     #[must_use]
     pub fn matches(&self, desired: &DesiredService) -> bool {
@@ -826,7 +857,7 @@ impl ObservedService {
             && self.command == desired.command
             && self.arguments == desired.arguments
             && self.mounts_match(desired)
-            && self.healthcheck == desired.healthcheck
+            && self.healthcheck_matches(desired)
             && self.healthcheck_configured == desired.healthcheck.is_some()
             && self.resources == desired.resources
             && self.networks_match(desired)
@@ -841,8 +872,7 @@ impl ObservedService {
         desired: &DesiredService,
         application: &ResolvedApplication,
     ) -> bool {
-        OwnershipState::from_labels(&self.labels, &application.instance_id, &application.id)
-            == OwnershipState::Owned
+        self.is_owned_by(&application.instance_id, &application.id)
             && self.labels.get(SERVICE_LABEL).map(String::as_str)
                 == Some(desired.logical_name.as_str())
             && self.name == desired.name.as_str()
@@ -851,18 +881,13 @@ impl ObservedService {
     /// Returns whether labels and the canonical name identify this service.
     #[must_use]
     pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
-        if OwnershipState::from_labels(&self.labels, instance, application) != OwnershipState::Owned
-        {
-            return false;
-        }
-        let Some(logical_name) = self
-            .labels
-            .get(SERVICE_LABEL)
-            .filter(|name| !name.is_empty())
-        else {
-            return false;
-        };
-        self.name == docker_resource_name(application, ResourceKind::Service, Some(logical_name))
+        OwnershipState::for_resource(
+            &self.labels,
+            instance,
+            application,
+            ResourceKind::Service,
+            &self.name,
+        ) == OwnershipState::Owned
     }
 }
 
@@ -890,6 +915,39 @@ pub enum OwnershipState {
 }
 
 impl OwnershipState {
+    /// Checks shared ownership plus the resource's role and canonical identity.
+    /// Volumes have no logical-name label, so their name is checked separately
+    /// against the desired volume before use; retained volumes are never deleted.
+    #[must_use]
+    pub fn for_resource(
+        labels: &BTreeMap<String, String>,
+        instance: &InstanceId,
+        application: &ApplicationId,
+        kind: ResourceKind,
+        name: &str,
+    ) -> Self {
+        let shared = Self::from_labels(labels, instance, application);
+        if shared != Self::Owned {
+            return shared;
+        }
+        let valid_role = match kind {
+            ResourceKind::Service => labels.get(SERVICE_LABEL).is_some_and(|service| {
+                ServiceName::parse(service.clone()).is_ok()
+                    && name == docker_resource_name(application, kind, Some(service))
+            }),
+            ResourceKind::Network => {
+                !labels.contains_key(SERVICE_LABEL)
+                    && name == docker_resource_name(application, kind, None)
+            }
+            ResourceKind::Volume => !labels.contains_key(SERVICE_LABEL),
+        };
+        if valid_role {
+            Self::Owned
+        } else {
+            Self::Invalid
+        }
+    }
+
     /// Classifies ownership labels without exposing raw backend data.
     #[must_use]
     pub fn from_labels(

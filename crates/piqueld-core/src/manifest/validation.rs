@@ -853,7 +853,8 @@ fn valid_repository_component(value: &str) -> bool {
             index += 1;
         }
         let separator = &value[separator_start..index];
-        if index == bytes.len()
+        if separator.is_empty()
+            || index == bytes.len()
             || !(separator == "."
                 || separator == "_"
                 || separator == "__"

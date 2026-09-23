@@ -2,8 +2,7 @@
 
 use crate::resource::{
     Convergence, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
-    ObservedService, OwnershipState, ResolutionRequirement, ResolvedApplication,
-    owned_label_subset,
+    ObservedService, ResolutionRequirement, ResolvedApplication, owned_label_subset,
 };
 use crate::{ApplicationId, InstanceId};
 use serde::{Deserialize, Serialize};
@@ -547,13 +546,7 @@ impl Plan {
                         ActionReason::Missing,
                     ));
                 }
-                Some(found)
-                    if OwnershipState::from_labels(
-                        &found.labels,
-                        &desired.instance_id,
-                        &desired.id,
-                    ) != OwnershipState::Owned =>
-                {
+                Some(found) if !found.is_owned_by(&desired.instance_id, &desired.id) => {
                     ready = false;
                     self.collision(volume.name.as_str(), blocked);
                 }
@@ -581,9 +574,7 @@ impl Plan {
             .into_iter()
             .filter(|volume| !wanted.contains(volume.name.as_str()))
         {
-            if OwnershipState::from_labels(&volume.labels, &desired.instance_id, &desired.id)
-                == OwnershipState::Owned
-            {
+            if volume.is_owned_by(&desired.instance_id, &desired.id) {
                 self.actions.push(PlanAction::new(
                     ActionKind::RetainVolume {
                         name: volume.name.clone(),
@@ -710,9 +701,7 @@ impl Plan {
             .into_iter()
             .filter(|network| !wanted.contains(network.name.as_str()))
         {
-            if OwnershipState::from_labels(&network.labels, &desired.instance_id, &desired.id)
-                == OwnershipState::Owned
-            {
+            if network.is_owned_by(&desired.instance_id, &desired.id) {
                 if cleanup_ready {
                     self.actions.push(PlanAction::new(
                         ActionKind::RemoveNetwork {
@@ -752,9 +741,7 @@ impl Plan {
         }
         plan.actions.append(&mut waits);
         for network in sorted_by_name(&observed.networks, |network| &network.name) {
-            if OwnershipState::from_labels(&network.labels, instance_id, application_id)
-                == OwnershipState::Owned
-            {
+            if network.is_owned_by(instance_id, application_id) {
                 plan.actions.push(PlanAction::new(
                     ActionKind::RemoveNetwork {
                         name: network.name.clone(),
@@ -766,9 +753,7 @@ impl Plan {
             }
         }
         for volume in sorted_by_name(&observed.volumes, |volume| &volume.name) {
-            if OwnershipState::from_labels(&volume.labels, instance_id, application_id)
-                == OwnershipState::Owned
-            {
+            if volume.is_owned_by(instance_id, application_id) {
                 plan.actions.push(PlanAction::new(
                     ActionKind::RetainVolume {
                         name: volume.name.clone(),
@@ -827,7 +812,7 @@ fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<Strin
     if !found.networks_match(desired) {
         fields.push("networks".into());
     }
-    if found.healthcheck != desired.healthcheck {
+    if !found.healthcheck_matches(desired) {
         fields.push("healthcheck".into());
     }
     if found.resources != desired.resources {

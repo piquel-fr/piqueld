@@ -57,6 +57,7 @@ impl<D: DockerApi> Controller<D> {
         kind: &ActionKind,
         ownership: &std::collections::BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
+        self.docker.ensure_swarm(false).await?;
         match kind {
             ActionKind::EnsureNetwork { network } => self.docker.ensure_network(network).await,
             ActionKind::EnsureVolume { volume } => self.docker.ensure_volume(volume).await,

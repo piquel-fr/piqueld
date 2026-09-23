@@ -1,6 +1,6 @@
 use super::{
-    BTreeSet, BollardDocker, HEALTH_RETRIES, HealthCheck, HealthConfig, MountTypeEnum,
-    NANO_CPUS_PER_MILLICORE, RESTART_DELAY, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum,
+    BTreeSet, BollardDocker, HEALTH_RETRIES, HealthConfig, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
+    RESTART_DELAY, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum,
     ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec,
     TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
 };
@@ -19,7 +19,7 @@ use super::{
 pub(super) struct ServiceRuntimePolicy;
 
 impl ServiceRuntimePolicy {
-    pub(super) fn matches(spec: &ServiceSpec) -> bool {
+    pub(super) fn matches(spec: &ServiceSpec, node_id: &str) -> bool {
         let Some(task) = spec.task_template.as_ref() else {
             return false;
         };
@@ -35,13 +35,15 @@ impl ServiceRuntimePolicy {
             && Self::health(container)
             && Self::resource_limits(task)
             && Self::no_unsupported_service_settings(spec)
-            && Self::no_security_settings(task, container)
+            && Self::no_security_settings(task, container, node_id)
     }
 
-    /// Rejects security-sensitive settings piqueld never authors; an observed
-    /// service carrying them was modified out of band and must be reconciled
-    /// back to the authored specification.
-    fn no_security_settings(task: &TaskSpec, container: &TaskSpecContainerSpec) -> bool {
+    /// Rejects security-sensitive drift outside the supported single-node policy.
+    fn no_security_settings(
+        task: &TaskSpec,
+        container: &TaskSpecContainerSpec,
+        node_id: &str,
+    ) -> bool {
         // Docker echoes the default container runtime name back even though
         // the builder never authors it; only a non-default runtime is drift.
         task.runtime
@@ -50,8 +52,9 @@ impl ServiceRuntimePolicy {
             && task.log_driver.is_none()
             && task.plugin_spec.is_none()
             && task.network_attachment_spec.is_none()
-            && task.placement.as_ref().is_none_or(|placement| {
-                placement.constraints.as_ref().is_none_or(Vec::is_empty)
+            && task.placement.as_ref().is_some_and(|placement| {
+                placement.constraints.as_ref()
+                    == Some(&vec![BollardDocker::placement_constraint(node_id)])
                     && placement.preferences.as_ref().is_none_or(Vec::is_empty)
                     && placement.max_replicas.is_none_or(|value| value == 0)
                     && placement.platforms.as_ref().is_none_or(Vec::is_empty)
@@ -237,42 +240,19 @@ impl ServiceRuntimePolicy {
         {
             return false;
         }
-        match BollardDocker::observed_health(health) {
-            Some(HealthCheck::Command { ref command, .. }) => {
-                health.test.as_ref()
-                    == Some(
-                        &std::iter::once("CMD".into())
-                            .chain(command.clone())
-                            .collect::<Vec<_>>(),
-                    )
-            }
-            Some(HealthCheck::Http {
-                port,
-                ref path,
-                timeout_seconds,
-                ..
-            }) => {
-                health.test.as_ref()
-                    == Some(&vec![
-                        "CMD".into(),
-                        "wget".into(),
-                        "-q".into(),
-                        "-T".into(),
-                        timeout_seconds.to_string(),
-                        "-O".into(),
-                        "/dev/null".into(),
-                        format!("http://127.0.0.1:{port}{path}"),
-                    ])
-            }
-            None => false,
-        }
+        BollardDocker::observed_health(health).is_some_and(|observed| {
+            let canonical = BollardDocker::health_config(&observed);
+            health.test == canonical.test
+                && health.interval == canonical.interval
+                && health.timeout == canonical.timeout
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::HealthCheck;
     use super::*;
-    use crate::docker::DockerError;
     use bollard::models::ServiceSpecRollbackConfig;
     use piqueld_core::manifest::ResourceLimits;
     use piqueld_core::resource::{DesiredService, ResolvedSource};
@@ -300,21 +280,26 @@ mod tests {
             networks: Vec::new(),
             labels: BTreeMap::new(),
         };
-        let mut authored = BollardDocker::service_spec(&desired).expect("authored specification");
-        assert!(ServiceRuntimePolicy::matches(&authored));
+        let mut authored =
+            BollardDocker::service_spec(&desired, "local-node").expect("authored specification");
+        assert!(ServiceRuntimePolicy::matches(&authored, "local-node"));
+        assert!(!ServiceRuntimePolicy::matches(&authored, "another-node"));
+        let mut unpinned = authored.clone();
+        unpinned.task_template.as_mut().unwrap().placement = None;
+        assert!(!ServiceRuntimePolicy::matches(&unpinned, "local-node"));
 
         // The engine echoes the default container runtime back on every
         // inspection even though the builder never authors it.
         if let Some(task) = authored.task_template.as_mut() {
             task.runtime = Some("container".into());
         }
-        assert!(ServiceRuntimePolicy::matches(&authored));
+        assert!(ServiceRuntimePolicy::matches(&authored, "local-node"));
 
         // A non-default runtime is out-of-band modification.
         if let Some(task) = authored.task_template.as_mut() {
             task.runtime = Some("custom-runtime".into());
         }
-        assert!(!ServiceRuntimePolicy::matches(&authored));
+        assert!(!ServiceRuntimePolicy::matches(&authored, "local-node"));
     }
 
     #[test]
@@ -325,14 +310,14 @@ mod tests {
             interval_seconds: 10,
             timeout_seconds: 3,
         };
-        let config = BollardDocker::health_config(&health_check).expect("valid HTTP health check");
+        let config = BollardDocker::health_config(&health_check);
 
         assert_eq!(BollardDocker::observed_health(&config), Some(health_check));
         assert!(ServiceRuntimePolicy::supported_health_config(&config));
     }
 
     #[test]
-    fn command_health_check_rejects_reserved_wget_vector() {
+    fn command_health_check_accepts_equivalent_http_vector() {
         let health_check = HealthCheck::Command {
             command: vec![
                 "wget".into(),
@@ -347,10 +332,10 @@ mod tests {
             timeout_seconds: 3,
         };
 
-        assert!(matches!(
-            BollardDocker::health_config(&health_check),
-            Err(DockerError::Validation("validate health check"))
-        ));
+        let config = BollardDocker::health_config(&health_check);
+        let observed = BollardDocker::observed_health(&config).unwrap();
+        assert_eq!(observed.execution(), health_check.execution());
+        assert!(ServiceRuntimePolicy::supported_health_config(&config));
     }
 
     #[test]
@@ -378,8 +363,9 @@ mod tests {
             networks: Vec::new(),
             labels: BTreeMap::new(),
         };
-        let authored = BollardDocker::service_spec(&desired).expect("authored specification");
-        assert!(ServiceRuntimePolicy::matches(&authored));
+        let authored =
+            BollardDocker::service_spec(&desired, "local-node").expect("authored specification");
+        assert!(ServiceRuntimePolicy::matches(&authored, "local-node"));
 
         // Known Engine defaults are accepted, while unsupported non-default
         // behavior remains visible as drift.
@@ -389,7 +375,7 @@ mod tests {
             Some(bollard::models::ResourceObject::default());
         task.runtime = Some("container".into());
         task.force_update = Some(0);
-        task.placement = Some(bollard::models::TaskSpecPlacement::default());
+        task.placement.as_mut().expect("placement").max_replicas = Some(0);
         task.restart_policy.as_mut().expect("restart").max_attempts = Some(0);
         task.container_spec.as_mut().expect("container").dns_config =
             Some(bollard::models::TaskSpecContainerSpecDnsConfig::default());
@@ -403,7 +389,7 @@ mod tests {
             order: Some(bollard::models::ServiceSpecRollbackConfigOrderEnum::STOP_FIRST),
             ..Default::default()
         });
-        assert!(ServiceRuntimePolicy::matches(&echoed));
+        assert!(ServiceRuntimePolicy::matches(&echoed, "local-node"));
 
         echoed.rollback_config = Some(ServiceSpecRollbackConfig::default());
         if let Some(container) = echoed
@@ -414,14 +400,14 @@ mod tests {
             container.stop_grace_period = Some(12_345);
             container.hostname = Some("echoed".into());
         }
-        assert!(!ServiceRuntimePolicy::matches(&echoed));
+        assert!(!ServiceRuntimePolicy::matches(&echoed, "local-node"));
 
         // Drift in a field piqueld authors is still rejected.
         let mut drifted = authored.clone();
         if let Some(update) = drifted.update_config.as_mut() {
             update.parallelism = Some(4);
         }
-        assert!(!ServiceRuntimePolicy::matches(&drifted));
+        assert!(!ServiceRuntimePolicy::matches(&drifted, "local-node"));
 
         // Out-of-band security settings are rejected even though piqueld
         // cannot author them.
@@ -433,7 +419,10 @@ mod tests {
         {
             container.capability_add = Some(vec!["NET_ADMIN".into()]);
         }
-        assert!(!ServiceRuntimePolicy::matches(&injected_capability));
+        assert!(!ServiceRuntimePolicy::matches(
+            &injected_capability,
+            "local-node"
+        ));
 
         let mut injected_user = authored;
         if let Some(container) = injected_user
@@ -443,6 +432,6 @@ mod tests {
         {
             container.user = Some("0".into());
         }
-        assert!(!ServiceRuntimePolicy::matches(&injected_user));
+        assert!(!ServiceRuntimePolicy::matches(&injected_user, "local-node"));
     }
 }

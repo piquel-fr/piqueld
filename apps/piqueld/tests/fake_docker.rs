@@ -38,6 +38,7 @@ struct FakeDocker {
     observed: Arc<Mutex<ObservedApplication>>,
     registry: Arc<Mutex<RegistryState>>,
     deny_network_removal: Arc<AtomicBool>,
+    incompatible_swarm: Arc<AtomicBool>,
     resolution_gate: Option<Arc<ResolutionGate>>,
     isolate_observations: bool,
     mutations: Arc<Probe>,
@@ -226,6 +227,9 @@ impl DockerApi for FakeDocker {
     }
 
     async fn ensure_swarm(&self, _auto_initialize: bool) -> Result<SwarmState, DockerError> {
+        if self.incompatible_swarm.load(Ordering::SeqCst) {
+            return Err(DockerError::IncompatibleSwarm);
+        }
         Ok(SwarmState::Ready)
     }
 
@@ -2089,4 +2093,174 @@ impl ControllerHarness {
                 .any(|chunk| chunk.text.contains("Build failed"))
         );
     }
+}
+
+#[tokio::test]
+async fn preparation_timeout_is_retried_after_backoff() {
+    let mut harness = ControllerHarness::new().await;
+    let gate = Arc::new(ResolutionGate::default());
+    harness.docker = Arc::new(FakeDocker {
+        resolution_gate: Some(Arc::clone(&gate)),
+        ..FakeDocker::default()
+    });
+    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store))
+        .with_prepare_timeout(std::time::Duration::from_millis(100));
+    let mut manifest = manifest();
+    manifest.spec.services[0].source = piqueld_core::Source::Image {
+        image: "ghcr.io/example/slow:1".into(),
+    };
+    let operation = harness
+        .applications()
+        .apply(manifest.validate().unwrap(), None)
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let failed = harness.store.operation(&operation.id).await.unwrap();
+    assert_eq!(failed.state, OperationState::Failed);
+    assert_eq!(failed.error_code.as_deref(), Some("docker_unavailable"));
+    assert!(
+        harness
+            .store
+            .prepared_target(&operation.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(harness.docker.observed.lock().await.services.is_empty());
+    let mut connection =
+        SqliteConnection::connect(&format!("sqlite://{}", harness.database_path.display()))
+            .await
+            .unwrap();
+    sqlx::query("UPDATE operations SET updated_at_ms=1 WHERE id=?1")
+        .bind(&operation.id)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+    gate.release.notify_one();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let latest = harness
+        .store
+        .latest_operation_for_application(&operation.application_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.state, OperationState::Succeeded);
+    assert_eq!(harness.docker.observed.lock().await.services.len(), 1);
+}
+
+#[tokio::test]
+async fn changed_swarm_topology_blocks_preparation_and_recovers_after_backoff() {
+    let harness = ControllerHarness::new().await;
+    harness
+        .docker
+        .incompatible_swarm
+        .store(true, Ordering::SeqCst);
+    let operation = harness
+        .applications()
+        .apply(manifest().validate().unwrap(), None)
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        harness
+            .store
+            .operation(&operation.id)
+            .await
+            .unwrap()
+            .error_code
+            .as_deref(),
+        Some("swarm_topology_unsupported")
+    );
+    assert!(harness.docker.registry.lock().await.pulls.is_empty());
+    assert!(harness.docker.observed.lock().await.networks.is_empty());
+    harness
+        .docker
+        .incompatible_swarm
+        .store(false, Ordering::SeqCst);
+    let mut connection =
+        SqliteConnection::connect(&format!("sqlite://{}", harness.database_path.display()))
+            .await
+            .unwrap();
+    sqlx::query("UPDATE operations SET updated_at_ms=1 WHERE id=?1")
+        .bind(&operation.id)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let latest = harness
+        .store
+        .latest_operation_for_application(&operation.application_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.state, OperationState::Succeeded);
+}
+
+#[tokio::test]
+async fn topology_change_during_preparation_blocks_promotion_and_mutation() {
+    let mut harness = ControllerHarness::new().await;
+    let gate = Arc::new(ResolutionGate::default());
+    harness.docker = Arc::new(FakeDocker {
+        resolution_gate: Some(Arc::clone(&gate)),
+        ..FakeDocker::default()
+    });
+    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+    let mut manifest = manifest();
+    manifest.spec.services[0].source = piqueld_core::Source::Image {
+        image: "ghcr.io/example/slow:1".into(),
+    };
+    let operation = harness
+        .applications()
+        .apply(manifest.validate().unwrap(), None)
+        .await
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let scan = harness.controller.scan(&cancellation);
+    let change_topology = async {
+        gate.entered.notified().await;
+        harness
+            .docker
+            .incompatible_swarm
+            .store(true, Ordering::SeqCst);
+        gate.release.notify_one();
+    };
+    let (result, ()) = tokio::join!(scan, change_topology);
+    result.unwrap();
+    assert_eq!(
+        harness
+            .store
+            .operation(&operation.id)
+            .await
+            .unwrap()
+            .error_code
+            .as_deref(),
+        Some("swarm_topology_unsupported")
+    );
+    assert!(
+        harness
+            .store
+            .get(&operation.application_id)
+            .await
+            .unwrap()
+            .resolved
+            .is_none()
+    );
+    assert!(harness.docker.observed.lock().await.networks.is_empty());
 }

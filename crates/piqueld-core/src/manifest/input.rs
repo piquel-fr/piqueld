@@ -183,6 +183,39 @@ pub enum HealthCheck {
     },
 }
 
+impl HealthCheck {
+    /// Returns the executable arguments, interval, and timeout in seconds.
+    /// HTTP checks use the same direct command representation as Docker.
+    #[must_use]
+    pub fn execution(&self) -> (Vec<String>, u32, u32) {
+        match self {
+            Self::Command {
+                command,
+                interval_seconds,
+                timeout_seconds,
+            } => (command.clone(), *interval_seconds, *timeout_seconds),
+            Self::Http {
+                port,
+                path,
+                interval_seconds,
+                timeout_seconds,
+            } => (
+                vec![
+                    "wget".into(),
+                    "-q".into(),
+                    "-T".into(),
+                    timeout_seconds.to_string(),
+                    "-O".into(),
+                    "/dev/null".into(),
+                    format!("http://127.0.0.1:{port}{path}"),
+                ],
+                *interval_seconds,
+                *timeout_seconds,
+            ),
+        }
+    }
+}
+
 fn default_health_path() -> String {
     "/health".into()
 }
