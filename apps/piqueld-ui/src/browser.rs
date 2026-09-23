@@ -115,7 +115,8 @@ fn App() -> impl IntoView {
     view! {
         <Router trailing_slash={TrailingSlash::Exact} fallback={|| view! { <NotFoundPage /> }}>
             <Routes>
-                <Route path="/" view={DashboardLayout}>
+                <Route path="/dashboard/auth" view={auth::AuthPage} />
+                <Route path="/" view={auth::ProtectedDashboardLayout}>
                     <Route path="/" view={OverviewPage} />
                     <Route path="/applications" view={ApplicationsPage} />
                     <Route path="/settings" view={management::HostPage} />
@@ -127,7 +128,7 @@ fn App() -> impl IntoView {
                         view={ApplicationDetailPage}
                     />
                 </Route>
-                <Route path="/dashboard" view={DashboardLayout}>
+                <Route path="/dashboard" view={auth::ProtectedDashboardLayout}>
                     <Route path="" view={DashboardRedirect} />
                     <Route path="/applications" view={ApplicationsPage} />
                     <Route path="/settings" view={management::HostPage} />

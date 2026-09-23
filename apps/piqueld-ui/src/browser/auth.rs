@@ -132,37 +132,73 @@ impl Feedback {
     }
 }
 
+#[derive(Clone, Copy)]
+struct AuthState {
+    loaded: RwSignal<bool>,
+    initialized: RwSignal<bool>,
+    current: RwSignal<Option<User>>,
+    error: RwSignal<String>,
+}
+impl AuthState {
+    fn pending(self) -> View {
+        if !self.loaded.get() {
+            return view! { <main class="dashboard-main"><p>"Connecting…"</p></main> }.into_view();
+        }
+        if !self.error.get().is_empty() {
+            return view! { <main class="dashboard-main"><p role="alert">{self.error.get()}</p><button on:click=move |_| reload()>"Retry"</button></main> }.into_view();
+        }
+        view! { <SignIn initialized=self.initialized.get() current=self.current.get()/> }
+            .into_view()
+    }
+}
+
+/// Keep the router and route definitions mounted for the lifetime of the page.
+/// Only the route view changes when a browser session is established.
 #[component]
 pub(super) fn Gate() -> impl IntoView {
-    let loaded = create_rw_signal(false);
-    let initialized = create_rw_signal(false);
-    let current = create_rw_signal(None::<User>);
-    let error = create_rw_signal(String::new());
+    let state = AuthState {
+        loaded: create_rw_signal(false),
+        initialized: create_rw_signal(false),
+        current: create_rw_signal(None::<User>),
+        error: create_rw_signal(String::new()),
+    };
+    provide_context(state);
     spawn_local(async move {
         let client = Client::browser();
         match client.auth_status().await {
             Ok(status) => {
-                initialized.set(status.initialized);
+                state.initialized.set(status.initialized);
                 match client.auth_me().await {
-                    Ok(user) => current.set(Some(user)),
+                    Ok(user) => state.current.set(Some(user)),
                     Err(piqueld_client::ClientError::Api { status, .. })
                         if status.as_u16() == 401 => {}
-                    Err(e) => error.set(e.to_string()),
+                    Err(e) => state.error.set(e.to_string()),
                 }
             }
-            Err(e) => error.set(e.to_string()),
+            Err(e) => state.error.set(e.to_string()),
         }
-        loaded.set(true);
+        state.loaded.set(true);
     });
-    let auth_page = web_sys::window()
-        .and_then(|w| w.location().pathname().ok())
-        .is_some_and(|p| p.ends_with("/auth"));
-    view! { {move || {
-        if !loaded.get() {return view! { <main class="dashboard-main"><p>"Connecting…"</p></main> }.into_view();}
-        if !error.get().is_empty() {return view! { <main class="dashboard-main"><p role="alert">{error.get()}</p><button on:click=move |_| reload()>"Retry"</button></main> }.into_view();}
-        if current.get().is_some() && !auth_page {view!{<super::App/>}.into_view()}
-        else {view!{<SignIn initialized=initialized.get() current=current.get()/>}.into_view()}
-    }} }
+    view! { <super::App/> }
+}
+
+#[component]
+pub(super) fn ProtectedDashboardLayout() -> impl IntoView {
+    let state = use_context::<AuthState>().expect("authentication gate");
+    view! {
+        <Show
+            when=move || state.loaded.get() && state.error.get().is_empty() && state.current.get().is_some()
+            fallback=move || state.pending()
+        >
+            <super::DashboardLayout/>
+        </Show>
+    }
+}
+
+#[component]
+pub(super) fn AuthPage() -> impl IntoView {
+    let state = use_context::<AuthState>().expect("authentication gate");
+    move || state.pending()
 }
 
 #[component]
