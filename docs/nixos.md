@@ -87,7 +87,7 @@ see [authentication](authentication.md).
 
 `settings` declares typed options for `server.listen_mode`, `server.port`, `auth.public_url`, `docker.socket`,
 `docker.auto_initialize_swarm`, all three `reconciliation` intervals/timeouts,
-and both `retention` periods, with the daemon's defaults. Reconciliation values must be 1–86400 seconds; retention values are
+the `retention` periods, and both `build_history` limits, with the daemon's defaults. Reconciliation values must be 1–86400 seconds; retention values are
 nonnegative days, with zero disabling pruning. Unknown settings are rejected.
 The module always supplies
 `server.data_dir` from `dataDir` and `server.runtime_dir` from `runtimeDir`. It does not configure a registry, Traefik,
