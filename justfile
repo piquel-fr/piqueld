@@ -64,9 +64,9 @@ openapi-check:
 boundary:
     @./scripts/check-dependency-boundaries.sh
 
-# Browser UI development checks and the embedded-dashboard build are explicit
-# because they require the wasm target, Trunk, wasm-bindgen-cli, binaryen, and
-# Tailwind. They do not change the default validation.
+# UI checks and release builds require the wasm target, Trunk,
+# wasm-bindgen-cli, binaryen, and Tailwind. Default all-feature Clippy also
+# builds the embedded dashboard unless PIQUELD_UI_DIST supplies a bundle.
 ui-check:
     @cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
 
