@@ -7,7 +7,6 @@ use piqueld_client::system::DependencyStatus;
 use std::rc::Rc;
 
 pub(super) fn dashboard_header() -> View {
-    let location = leptos_router::use_location();
     view! {
         <aside class="sidebar">
             <A class="brand" href="/dashboard/">
@@ -15,33 +14,15 @@ pub(super) fn dashboard_header() -> View {
                 "piqueld"
             </A>
             <nav aria-label="Dashboard navigation">
-                <A
-                    href="/dashboard/applications"
-                    class={move || {
-                        if location.pathname.get().contains("/applications") {
-                            "nav-link active"
-                        } else {
-                            "nav-link"
-                        }
-                    }}
-                >
+                <A href="/dashboard/applications" class="nav-link" active_class="active">
                     <span aria-hidden="true">"▤"</span>
                     "Applications"
                 </A>
-                <A
-                    href="/dashboard/settings"
-                    class={move || {
-                        if location.pathname.get().ends_with("/settings") {
-                            "nav-link active"
-                        } else {
-                            "nav-link"
-                        }
-                    }}
-                >
+                <A href="/dashboard/settings" class="nav-link" active_class="active">
                     <span aria-hidden="true">"⚙"</span>
                     "Host settings"
                 </A>
-                <A href="/dashboard/builds" class={move || if location.pathname.get().ends_with("/builds") { "nav-link active" } else { "nav-link" }}>"Builds"</A>
+                <A href="/dashboard/builds" class="nav-link" active_class="active">"Builds"</A>
                 <A href="/dashboard/events" class="nav-link">"Events"</A>
                 <A href="/dashboard/errors" class="nav-link">"Errors"</A>
                 <A href="/dashboard/system" class="nav-link">"Daemon status"</A>

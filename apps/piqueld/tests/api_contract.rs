@@ -3396,6 +3396,10 @@ async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated()
     let id = error.details["diagnostic_id"].as_str().unwrap();
     let event = api.client.diagnostic(id).await.unwrap();
     assert_eq!(event.request_id.as_deref(), Some(error.request_id.as_str()));
+    assert_eq!(
+        event.application_id.as_ref().map(ToString::to_string),
+        Some(app.application_id.clone())
+    );
     assert_eq!(event.scope, piqueld_core::observability::EventScope::Daemon);
     let errors = api
         .client

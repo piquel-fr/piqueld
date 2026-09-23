@@ -3,7 +3,7 @@
 use axum::{
     Extension, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Request},
+    extract::{DefaultBodyLimit, MatchedPath, RawPathParams, Request},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -13,7 +13,7 @@ use piqueld_core::ApplicationIdError;
 use piqueld_core::api::{ApplyApplicationRequest, Envelope, ErrorBody};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
@@ -319,9 +319,9 @@ fn finish_router(
     // registers, so the values are derived from the OpenAPI document itself.
     let allow_routes = AllowRoutes::build(openapi);
     let openapi = openapi::openapi_30_document(openapi);
-    let router = router.method_not_allowed_fallback(move |request: Request| {
+    let router = router.method_not_allowed_fallback(move |matched: Option<MatchedPath>| {
         let allow_routes = Arc::clone(&allow_routes);
-        async move { method_not_allowed(&allow_routes, request.uri().path()) }
+        async move { method_not_allowed(&allow_routes, matched.as_ref()) }
     });
     router
         .with_state(state.clone())
@@ -383,15 +383,20 @@ fn documented_router() -> OpenApiRouter<ApiState> {
 
 async fn bind_error_request_id(
     axum::extract::State(state): axum::extract::State<ApiState>,
+    matched: Option<MatchedPath>,
+    params: Result<RawPathParams, axum::extract::rejection::RawPathParamsRejection>,
     request: Request,
     next: Next,
 ) -> Response {
-    let application = request
-        .uri()
-        .path()
-        .strip_prefix("/api/v1/applications/")
-        .and_then(|path| path.split('/').next())
-        .and_then(|id| piqueld_core::ApplicationId::parse(id).ok());
+    let application = matched
+        .filter(|path| path.as_str().starts_with("/api/v1/applications/{id}"))
+        .and_then(|_| params.ok())
+        .and_then(|params| {
+            params
+                .iter()
+                .find(|(name, _)| *name == "id")
+                .and_then(|(_, id)| piqueld_core::ApplicationId::parse(id).ok())
+        });
     let request_id = request
         .extensions()
         .get::<RequestId>()
@@ -476,7 +481,7 @@ async fn api_fallback(request: Request) -> Response {
     }
     ui::not_found()
 }
-fn method_not_allowed(allow_routes: &AllowRoutes, path: &str) -> ApiError {
+fn method_not_allowed(allow_routes: &AllowRoutes, matched: Option<&MatchedPath>) -> ApiError {
     let mut error = ApiError::new(
         StatusCode::METHOD_NOT_ALLOWED,
         "method_not_allowed",
@@ -484,34 +489,28 @@ fn method_not_allowed(allow_routes: &AllowRoutes, path: &str) -> ApiError {
     );
     // The header advertises only methods registered for the matched route;
     // when no documented route matches, the header is omitted.
-    error.allow = if path == "/health" {
+    error.allow = if matched.is_some_and(|path| path.as_str() == "/health") {
         Some("GET, HEAD".into())
     } else {
-        allow_routes.allow_for(path)
+        matched.and_then(|path| allow_routes.0.get(path.as_str()).cloned())
     };
     error
 }
 
 /// Per-route `Allow` values derived from the `OpenAPI` document.
 #[derive(Clone)]
-struct AllowRoutes(Arc<[(Vec<String>, String)]>);
+struct AllowRoutes(HashMap<String, String>);
 
 impl AllowRoutes {
     fn build(document: &utoipa::openapi::OpenApi) -> Arc<Self> {
-        let mut routes = Vec::new();
+        let mut routes = HashMap::new();
         for (path, item) in &document.paths.paths {
             let methods = Self::path_methods(item);
             if !methods.is_empty() {
-                routes.push((
-                    path.split('/')
-                        .filter(|segment| !segment.is_empty())
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>(),
-                    methods.join(", "),
-                ));
+                routes.insert(path.clone(), methods.join(", "));
             }
         }
-        Arc::new(Self(routes.into()))
+        Arc::new(Self(routes))
     }
 
     fn path_methods(item: &utoipa::openapi::path::PathItem) -> Vec<&'static str> {
@@ -536,25 +535,6 @@ impl AllowRoutes {
             methods.push("HEAD");
         }
         methods
-    }
-
-    /// Returns the comma-separated methods for the first route template that
-    /// matches the concrete request path, or `None` when none does.
-    fn allow_for(&self, request_path: &str) -> Option<String> {
-        let segments: Vec<&str> = request_path
-            .split('/')
-            .filter(|segment| !segment.is_empty())
-            .collect();
-        self.0
-            .iter()
-            .find(|(template, _)| {
-                template.len() == segments.len()
-                    && template
-                        .iter()
-                        .zip(&segments)
-                        .all(|(expected, actual)| expected.starts_with('{') || expected == actual)
-            })
-            .map(|(_, allow)| allow.clone())
     }
 }
 
