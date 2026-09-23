@@ -196,7 +196,11 @@ resource. Significant resource mutations and active-target repairs are recorded,
 while unchanged observations and timer ticks are omitted.
 
 The unauthenticated TCP API trusts every caller able to reach its configured
-localhost or Tailscale listeners. The dashboard
+localhost or Tailscale listeners. TCP requests validate Host and browser origin
+headers; DNS names need `server.allowed_hosts` (see [configuration](configuration.md)).
+Rejected browser requests return `403 browser_access_denied`. Invalid URL path
+parameters return `400 path_invalid`, with the usual JSON error and request ID.
+The dashboard
 is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
 The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
 [the generated contract](openapi-v1.json).

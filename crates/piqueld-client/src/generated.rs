@@ -148,6 +148,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             500u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -201,6 +204,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             409u16 => Err(Error::ErrorResponse(
@@ -289,6 +295,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             409u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -366,6 +375,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             409u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -432,6 +444,9 @@ impl Client {
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -504,6 +519,9 @@ impl Client {
         match response.status().as_u16() {
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -579,6 +597,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -640,6 +661,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -697,6 +721,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -748,6 +775,9 @@ impl Client {
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -818,6 +848,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -861,6 +894,9 @@ impl Client {
         match response.status().as_u16() {
             200u16 => Ok(ResponseValue::stream(response)),
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -938,6 +974,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -1022,6 +1061,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -1090,6 +1132,9 @@ impl Client {
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -1170,6 +1215,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -1258,6 +1306,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -1339,6 +1390,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -1430,6 +1484,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -1517,6 +1574,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -1608,6 +1668,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -1695,6 +1758,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -1786,6 +1852,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -1870,6 +1939,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -1964,6 +2036,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -2054,6 +2129,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -2151,6 +2229,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -2243,6 +2324,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -2327,6 +2411,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -2421,6 +2508,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -2511,6 +2601,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -2605,6 +2698,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -2695,6 +2791,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -2789,6 +2888,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -2879,6 +2981,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -2973,6 +3078,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -3063,6 +3171,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -3157,6 +3268,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -3247,6 +3361,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -3341,6 +3458,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -3431,6 +3551,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -3525,6 +3648,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -3615,6 +3741,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -3709,6 +3838,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -3799,6 +3931,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -3893,6 +4028,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -3983,6 +4121,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -4077,6 +4218,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -4167,6 +4311,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -4261,6 +4408,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -4353,6 +4503,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -4419,6 +4572,9 @@ impl Client {
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -4496,6 +4652,9 @@ impl Client {
             200u16 => crate::client::decode_response(response).await,
             202u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -4587,6 +4746,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -4676,6 +4838,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -4742,6 +4907,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             503u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -4792,6 +4960,9 @@ impl Client {
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
@@ -4849,6 +5020,9 @@ impl Client {
             400u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             503u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -4860,7 +5034,9 @@ impl Client {
     Sends a `GET` request to `/api/v1/openapi.json`
 
     */
-    pub async fn open_api_document<'a>(&'a self) -> Result<ResponseValue<ByteStream>, Error<()>> {
+    pub async fn open_api_document<'a>(
+        &'a self,
+    ) -> Result<ResponseValue<ByteStream>, Error<piqueld_core::api::ErrorBody>> {
         let url = format!("{}/api/v1/openapi.json", self.baseurl,);
         let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
         header_map.append(
@@ -4878,6 +5054,9 @@ impl Client {
         let response = result?;
         match response.status().as_u16() {
             200u16 => Ok(ResponseValue::stream(response)),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
@@ -4922,6 +5101,9 @@ impl Client {
         let response = result?;
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -4968,6 +5150,9 @@ impl Client {
         let response = result?;
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             503u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
@@ -5023,7 +5208,7 @@ impl Client {
         &'a self,
     ) -> Result<
         ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SystemStatus>>,
-        Error<()>,
+        Error<piqueld_core::api::ErrorBody>,
     > {
         let url = format!("{}/api/v1/system/status", self.baseurl,);
         let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
@@ -5050,6 +5235,9 @@ impl Client {
         let response = result?;
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }

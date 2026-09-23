@@ -47,6 +47,11 @@ in
             default = "off";
             description = "HTTP listen interfaces. Every caller able to reach the listener has full operator access.";
           };
+          server.allowed_hosts = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Additional trusted DNS hostnames for HTTP requests, without schemes or ports. IP literals and localhost are always allowed.";
+          };
           server.port = lib.mkOption {
             type = lib.types.ints.between 1 65535;
             default = 7845;

@@ -3889,6 +3889,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -3972,6 +3982,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "409": {
             "content": {
@@ -4138,6 +4158,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -4278,6 +4308,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -4416,6 +4456,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4493,6 +4543,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -4590,6 +4650,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4675,6 +4745,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4748,6 +4828,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -4806,6 +4896,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -4925,6 +5025,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5005,6 +5115,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -5130,6 +5250,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -5266,6 +5396,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5369,6 +5509,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -5493,6 +5643,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -5635,6 +5795,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -5800,6 +5970,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -5963,6 +6143,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -6128,6 +6318,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -6291,6 +6491,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -6456,6 +6666,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -6618,6 +6838,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -6769,6 +6999,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -6942,6 +7182,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -7114,6 +7364,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -7284,6 +7544,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -7441,6 +7711,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -7614,6 +7894,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -7785,6 +8075,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -7958,6 +8258,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -8129,6 +8439,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -8302,6 +8622,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -8473,6 +8803,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -8646,6 +8986,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -8818,6 +9168,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -8987,6 +9347,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -9160,6 +9530,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -9331,6 +9711,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -9504,6 +9894,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -9675,6 +10075,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -9848,6 +10258,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -10019,6 +10439,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -10192,6 +10622,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -10363,6 +10803,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -10536,6 +10986,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -10707,6 +11167,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -10880,6 +11350,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -11051,6 +11531,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -11224,6 +11714,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -11396,6 +11896,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -11504,6 +12014,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -11629,6 +12149,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -11792,6 +12322,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -11954,6 +12494,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -12059,6 +12609,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "503": {
             "content": {
               "application/json": {
@@ -12123,6 +12683,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -12199,6 +12769,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "503": {
             "content": {
               "application/json": {
@@ -12225,6 +12805,16 @@
               }
             },
             "description": "OpenAPI 3.0 document"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           }
         },
         "summary": "Get the `OpenAPI` document"
@@ -12255,6 +12845,16 @@
               }
             },
             "description": "Success"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
             "content": {
@@ -12304,6 +12904,16 @@
             },
             "description": "Effective read-only host settings"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "503": {
             "content": {
               "application/json": {
@@ -12331,6 +12941,16 @@
             },
             "description": "Deployment dependencies ready"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
           "503": {
             "content": {
               "application/json": {
@@ -12357,6 +12977,16 @@
               }
             },
             "description": "Success"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
           }
         },
         "summary": "Get daemon status"

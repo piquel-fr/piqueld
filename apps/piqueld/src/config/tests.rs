@@ -21,6 +21,10 @@ fn host_paths_and_listener_settings_are_validated() {
     for document in [
         "[server]\nhttp_listen = '0.0.0.0:7845'",
         "[server]\nport = 0",
+        "[server]\nallowed_hosts = ['*.example.com']",
+        "[server]\nallowed_hosts = ['http://example.com']",
+        "[server]\nallowed_hosts = ['example.com:7845']",
+        "[server]\nallowed_hosts = ['']",
         "[server]\nlisten_mode = 'all'",
         "[server]\ndata_dir = 'relative/state'",
         "[server]\ndata_dir = '/'",

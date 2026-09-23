@@ -23,6 +23,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::store::StoreError;
 
 mod applications;
+mod browser;
 mod builds;
 mod deployments;
 mod editing;
@@ -269,11 +270,21 @@ pub fn router(state: ApiState) -> Router {
 /// Builds the API-only router used by the Unix-socket client transport.
 pub fn api_router(state: ApiState) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
-    finish_router(router.fallback(api_fallback), state, &openapi)
+    finish_router(router.fallback(api_fallback), state, &openapi, None)
 }
 
 /// Builds the TCP router from the API, liveness, and optional UI boundaries.
 pub fn web_router(state: ApiState, ui_assets: UiAssets) -> Router {
+    web_router_with_hosts(state, ui_assets, Vec::new())
+}
+
+/// Builds a TCP router allowing additional explicitly trusted DNS hostnames.
+/// Literal IP addresses and localhost are always allowed.
+pub fn web_router_with_hosts(
+    state: ApiState,
+    ui_assets: UiAssets,
+    allowed_hosts: Vec<String>,
+) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
     let router = router.merge(health_router());
     let router = match ui_assets {
@@ -283,7 +294,12 @@ pub fn web_router(state: ApiState, ui_assets: UiAssets) -> Router {
             .route("/dashboard", get(ui::redirect))
             .fallback(move |request: Request| ui_fallback(bundle, request)),
     };
-    let router = finish_router(router, state, &openapi);
+    let router = finish_router(
+        router,
+        state,
+        &openapi,
+        Some(browser::BrowserPolicy::new(allowed_hosts)),
+    );
     match ui_assets {
         UiAssets::Disabled => router,
         UiAssets::Embedded(_) => router.layer(middleware::from_fn(ui::security_headers)),
@@ -299,6 +315,7 @@ fn finish_router(
     router: Router<ApiState>,
     state: ApiState,
     openapi: &utoipa::openapi::OpenApi,
+    browser_policy: Option<browser::BrowserPolicy>,
 ) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     // 405 responses must advertise exactly the methods each matched endpoint
@@ -309,6 +326,13 @@ fn finish_router(
         let allow_routes = Arc::clone(&allow_routes);
         async move { method_not_allowed(&allow_routes, request.uri().path()) }
     });
+    let router = if let Some(policy) = browser_policy {
+        router.layer(middleware::from_fn(move |request, next| {
+            policy.clone().enforce(request, next)
+        }))
+    } else {
+        router
+    };
     router
         .with_state(state)
         .layer(Extension(Arc::new(openapi)))
@@ -660,4 +684,31 @@ fn optional_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, Ap
             })
         })
         .transpose()
+}
+
+/// Keeps Axum path decoding failures inside the API's structured error contract.
+struct ApiPath<T>(T);
+
+impl<S, T> axum::extract::FromRequestParts<S> for ApiPath<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned + Send,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        axum::extract::Path::<T>::from_request_parts(parts, state)
+            .await
+            .map(|axum::extract::Path(value)| Self(value))
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "path_invalid",
+                    "invalid URL path parameter",
+                )
+            })
+    }
 }

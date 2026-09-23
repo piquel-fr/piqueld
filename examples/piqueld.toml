@@ -11,6 +11,8 @@ data_dir = "/tmp/piqueld-dev"
 runtime_dir = "/tmp/piqueld-dev-run"
 listen_mode = "both"
 port = 7845
+# Add exact trusted DNS names when using a hostname instead of a literal IP.
+allowed_hosts = []
 
 [docker]
 socket = "/var/run/docker.sock"

@@ -1,9 +1,9 @@
-use super::{ApiError, ApiState, accepted, ok, openapi::ApiErrorResponse, parse_manifest};
+use super::{ApiError, ApiPath, ApiState, accepted, ok, openapi::ApiErrorResponse, parse_manifest};
 use crate::api::{Mutation, MutationResponse};
 use axum::{
     body::Bytes,
     extract::{
-        Path, Query, State,
+        Query, State,
         rejection::{BytesRejection, QueryRejection},
     },
     http::{HeaderMap, StatusCode, header},
@@ -65,7 +65,7 @@ pub(super) async fn list(
 )]
 pub(super) async fn get(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(ok(state.application(&ApplicationId::parse(id)?).await?))
 }
@@ -87,7 +87,7 @@ pub(super) async fn get(
 )]
 pub(super) async fn detail(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(ok(state
         .application_detail(&ApplicationId::parse(id)?)
@@ -161,7 +161,7 @@ pub(super) struct ApplyQuery {
 )]
 pub(super) async fn delete(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
     query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
@@ -238,7 +238,7 @@ pub(super) fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes,
 )]
 pub(super) async fn status(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(ok(state
         .application_status(&ApplicationId::parse(id)?)
@@ -276,7 +276,7 @@ impl GenerationQuery {
     (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn reconcile(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
     query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
@@ -326,7 +326,7 @@ pub(super) async fn accept_mutation(
 pub(super) async fn rename(
     State(state): State<ApiState>,
     query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, ApiError> {
@@ -382,7 +382,7 @@ impl ForceQuery {
     (status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn manifest_download(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let manifest = state.manifest(&ApplicationId::parse(id)?).await?;
     let filename = format!("attachment; filename=\"{}\"", manifest.filename);

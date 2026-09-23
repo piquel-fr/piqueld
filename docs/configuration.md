@@ -40,6 +40,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `server.runtime_dir` | `/run/piqueld` (must already exist) |
 | `server.listen_mode` | `"off"` |
 | `server.port` | `7845` |
+| `server.allowed_hosts` | `[]` (additional trusted DNS hostnames) |
 | derived socket path | `<runtime_dir>/piqueld.sock` |
 | derived database path | `<data_dir>/piqueld.db` |
 | `docker.socket` | `/var/run/docker.sock` |
@@ -118,3 +119,18 @@ between tailnet nodes is encrypted by Tailscale; piqueld does not manage HTTPS,
 Tailscale Serve, enrollment, or certificates. Set `listen_mode = "localhost"`
 to remove the Tailscale listener, or `"off"` for Unix-socket-only access, and
 restart the daemon. Independently configured proxies can still expose localhost.
+
+TCP requests must use `localhost`, a literal IP address, or a DNS hostname listed
+in `server.allowed_hosts`. To use a Tailscale DNS name, for example, set
+`allowed_hosts = ["my-host.my-tailnet.ts.net"]` in `[server]`. Entries are exact
+hostnames without ports, schemes, or wildcards. Only add names controlled by
+trusted operators; this allowlist prevents an unrelated domain from rebinding
+to the daemon's address. DNS names are not discovered or trusted automatically.
+
+TCP browser requests with an `Origin` must match the request's HTTP origin,
+and mutations with cross-site or same-site Fetch Metadata are rejected. Native
+clients without browser headers continue to work. A TLS-terminating proxy needs
+to enforce its own origin policy and explicitly adapt the upstream origin;
+piqueld does not trust forwarded headers. The Unix socket has no browser policy.
+These checks are not authentication: every direct caller with network access
+remains an operator, so retain the listener and network access restrictions.
