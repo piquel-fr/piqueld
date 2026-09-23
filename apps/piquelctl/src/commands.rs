@@ -1,14 +1,14 @@
 use crate::{
     cli::{
-        ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs,
-        ReconcileArgs, RenameArgs,
+        AppCommand, ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs,
+        ReconcileArgs,
     },
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
         Console, TaskOutcome,
         reports::{
-            ApplicationRow, DeletionReport, OperationOutcomeReport, RenameReport,
-            SavedDeploymentReport, ShowReport, StatusReport,
+            ApplicationRow, DeletionReport, OperationOutcomeReport, SavedDeploymentReport,
+            ShowReport, StatusReport,
         },
     },
     support::{confirm, looks_like_application_id, manifest_name, read_manifest, retry_transport},
@@ -28,9 +28,38 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
     match &cli.command {
         Command::Profiles => unreachable!("profiles are listed before connecting"),
         Command::Status => status(cli, client, console).await,
-        Command::List => list(cli, client, console).await,
-        Command::Show { name_or_id } => show(console, client, name_or_id).await,
-        Command::Logs {
+        Command::App { command } => app(cli, client, console, command).await,
+        Command::Builds(args) => match &args.command {
+            BuildCommand::List {
+                application,
+                cursor,
+            } => builds(console, client, application.as_deref(), cursor.as_deref()).await,
+            BuildCommand::Logs { id, before } => build_logs(console, client, *id, *before).await,
+        },
+        Command::Operation(args) => operation(console, client, args).await,
+        Command::Events {
+            application,
+            cursor,
+            limit,
+        } => {
+            let page = client
+                .events(application.as_deref(), cursor.as_deref(), *limit)
+                .await?;
+            console.emit(&page)
+        }
+    }
+}
+
+async fn app(
+    cli: &Cli,
+    client: &Client,
+    console: &mut Console,
+    command: &AppCommand,
+) -> Result<()> {
+    match command {
+        AppCommand::List => list(cli, client, console).await,
+        AppCommand::Show { name_or_id } => show(console, client, name_or_id).await,
+        AppCommand::Logs {
             name_or_id,
             service,
             tail,
@@ -46,29 +75,32 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
             )
             .await
         }
-        Command::Builds(args) => match &args.command {
-            BuildCommand::List {
-                application,
-                cursor,
-            } => builds(console, client, application.as_deref(), cursor.as_deref()).await,
-            BuildCommand::Logs { id, before } => build_logs(console, client, *id, *before).await,
-        },
-        Command::Plan(args) => plan_command(console, client, args).await,
-        Command::Apply(args) => apply(cli, client, console, args).await,
-        Command::Delete(args) => delete(cli, client, console, args).await,
-        Command::Operation(args) => operation(console, client, args).await,
-        Command::Reconcile(args) => reconcile_or_deploy(cli, client, console, args, false).await,
-        Command::Rename(args) => rename(cli, client, console, args).await,
-        Command::Deploy(args) => reconcile_or_deploy(cli, client, console, args, true).await,
-        Command::Events {
-            application,
-            cursor,
-            limit,
-        } => {
-            let page = client
-                .events(application.as_deref(), cursor.as_deref(), *limit)
+        AppCommand::Plan(args) => plan_command(console, client, args).await,
+        AppCommand::Apply(args) => apply(cli, client, console, args).await,
+        AppCommand::Delete(args) => delete(cli, client, console, args).await,
+        AppCommand::Reconcile(args) => reconcile_or_deploy(cli, client, console, args, false).await,
+        AppCommand::Rename(args) => {
+            crate::editing::save(
+                cli,
+                client,
+                console,
+                &args.name_or_id,
+                &args.edit,
+                &piqueld_client::edit::ApplicationEdit::Name(args.new_name.clone()),
+            )
+            .await
+        }
+        AppCommand::Deploy(args) => reconcile_or_deploy(cli, client, console, args, true).await,
+        AppCommand::Create(args) => crate::editing::create(cli, client, console, args).await,
+        AppCommand::Service { command } => command.run(cli, client, console).await,
+        AppCommand::Volume { command } => command.run(cli, client, console).await,
+        AppCommand::Repository { command } => command.run(cli, client, console).await,
+        AppCommand::Manifest { name_or_id } => {
+            let app = resolve_application(client, name_or_id).await?;
+            let manifest = client
+                .application_manifest(app.application.id().as_str())
                 .await?;
-            console.emit(&page)
+            console.emit(&crate::output::reports::ManifestReport(manifest))
         }
     }
 }
@@ -366,7 +398,10 @@ async fn find_by_name(client: &Client, name: &str) -> Result<Option<ApplicationS
     }
 }
 
-async fn resolve_application(client: &Client, name_or_id: &str) -> Result<ApplicationView> {
+pub(crate) async fn resolve_application(
+    client: &Client,
+    name_or_id: &str,
+) -> Result<ApplicationView> {
     if looks_like_application_id(name_or_id) {
         match client.application(name_or_id).await {
             Ok(application) => return Ok(application),
@@ -385,7 +420,7 @@ async fn resolve_application(client: &Client, name_or_id: &str) -> Result<Applic
     Ok(client.application(summary.id.as_str()).await?)
 }
 
-async fn wait_for_operation(
+pub(crate) async fn wait_for_operation(
     console: &mut Console,
     client: &Client,
     operation_id: &str,
@@ -481,48 +516,6 @@ async fn reconcile_or_deploy(
         outcome: operation.state,
         operation: &operation,
     })
-}
-
-async fn rename(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    args: &RenameArgs,
-) -> Result<()> {
-    let application = resolve_application(client, &args.name_or_id).await?;
-    confirm(
-        console,
-        cli.noninteractive,
-        args.yes,
-        &format!(
-            "Rename application {:?} to {:?}? [y/N] ",
-            application.application.metadata().name,
-            args.new_name
-        ),
-    )
-    .await?;
-    let request = piqueld_client::RenameApplicationRequest {
-        name: args.new_name.clone(),
-        expected_generation: (!args.force)
-            .then_some(args.expected_generation.unwrap_or(application.generation)),
-    };
-    let renamed = retry_transport(|| {
-        client.rename_application_with_force(
-            application.application.id().as_str(),
-            &request,
-            args.force,
-        )
-    })
-    .await?;
-    console.emit(&RenameReport {
-        previous_name: application.application.metadata().name.as_str(),
-        renamed: &renamed,
-    })?;
-    console.warning(format_args!(
-        "Update metadata.name to {:?} in your manifest file before applying it again.",
-        renamed.name
-    ))?;
-    Ok(())
 }
 
 async fn wait_for_deletion(

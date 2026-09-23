@@ -63,6 +63,15 @@ pub enum Mutation {
         /// Whether to create a deployment after saving.
         deploy: bool,
     },
+    /// Edit saved configuration under the same revision check and transaction.
+    Edit {
+        /// Stable application identity.
+        id: ApplicationId,
+        /// Typed field or resource change.
+        edit: piqueld_core::edit::ApplicationEdit,
+        /// Capture a deployment after saving.
+        deploy: bool,
+    },
     /// Deploy the latest saved configuration.
     Deploy {
         /// Stable application identity.
@@ -199,9 +208,10 @@ impl ApplicationService {
                     expected_generation.is_none()
                         || (expected_generation != Some(0) && expected_application_id.is_none())
                 }
-                Mutation::Deploy { .. } | Mutation::Delete { .. } | Mutation::Rename { .. } => {
-                    expected_generation.is_none()
-                }
+                Mutation::Edit { .. }
+                | Mutation::Deploy { .. }
+                | Mutation::Delete { .. }
+                | Mutation::Rename { .. } => expected_generation.is_none(),
                 Mutation::Reconcile { .. } => false,
             };
             if missing {

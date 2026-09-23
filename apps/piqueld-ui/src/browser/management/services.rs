@@ -6,7 +6,7 @@ use leptos::{
     component, create_rw_signal, view, window,
 };
 use leptos_router::{A, NavigateOptions, use_navigate};
-use piqueld_client::Source;
+use piqueld_client::{Source, edit::ApplicationEdit};
 
 #[component]
 pub(super) fn ServiceList() -> impl IntoView {
@@ -82,15 +82,10 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let return_href = app_href.clone();
     let remove = move |_| {
         if !window().confirm_with_message("Remove this service from saved configuration? Its running containers remain until Deploy.").unwrap_or(false) {return;}
-        let mut manifest = context.manifest();
-        manifest
-            .spec
-            .services
-            .retain(|service| service.name != remove_name);
         let navigate = navigate.clone();
         let href = return_href.clone();
         context.save(
-            manifest,
+            ApplicationEdit::RemoveService(remove_name.clone()),
             Callback::new(move |_| navigate(&href, NavigateOptions::default())),
         );
     };

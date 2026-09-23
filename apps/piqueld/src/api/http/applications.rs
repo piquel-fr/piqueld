@@ -204,7 +204,7 @@ pub(super) async fn plan(
     Ok(ok(state.plan(manifest, expected, expected_id).await?))
 }
 
-fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes, ApiError> {
+pub(super) fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes, ApiError> {
     body.map_err(|rejection| {
         if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
             ApiError::new(

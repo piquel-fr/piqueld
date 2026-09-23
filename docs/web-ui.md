@@ -37,6 +37,9 @@ empty application removes its runtime services and network. Removing volumes or
 deleting an application retains Docker volume data; deleting an application
 also deletes its configuration and all database history.
 
+Forms save typed fields or settings sections through individual endpoints, without
+resubmitting the application manifest. Related fields within a form save atomically.
+All form saves update configuration only; Deploy remains explicit.
 Concurrent edits are rejected using configuration revisions; failed saves retain
 local form values. Navigation warns about unsaved edits. Host settings are
 read-only. There is no raw manifest editor or deployment restoration workflow.

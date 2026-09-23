@@ -38,6 +38,12 @@ pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 /// Persistence failures with stable classifications and retained source detail.
 #[derive(Debug, Error)]
 pub enum StoreError {
+    /// A field edit does not apply to the saved configuration.
+    #[error(transparent)]
+    Edit(#[from] piqueld_core::edit::EditError),
+    /// The edited manifest fails semantic validation.
+    #[error(transparent)]
+    Validation(#[from] piqueld_core::ValidationErrors),
     /// A storage operation failed without a lower-level source.
     #[error("database operation failed")]
     Database,

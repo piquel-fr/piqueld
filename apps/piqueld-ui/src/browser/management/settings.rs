@@ -1,13 +1,14 @@
 //! Saved configuration forms and service editors.
-use super::{Modal, dirty_group, editor, mutation_client, text_input};
+use super::{Modal, dirty_group, editor, text_input};
 use crate::editor::{Section, ServiceForm};
 use leptos::{
     Callback, For, IntoView, RwSignal, Show, SignalGet, SignalGetUntracked, SignalSet,
     SignalUpdate, SignalWith, SignalWithUntracked, View, component, create_rw_signal,
-    event_target_checked, event_target_value, spawn_local, view,
+    event_target_checked, event_target_value, view,
 };
 use piqueld_client::{
     ApplicationView, GitRepository, Mount, RepositoryManifest, Service, Source, Volume,
+    edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
 };
 use std::collections::BTreeMap;
 
@@ -44,10 +45,8 @@ pub(super) fn RepositorySettings() -> impl IntoView {
             return;
         }
         let value = draft.get_untracked();
-        let mut manifest = context.manifest();
-        manifest.spec.manifest = value.0.then_some(value.1);
         context.save(
-            manifest,
+            ApplicationEdit::Repository(value.0.then_some(value.1)),
             Callback::new(move |_| baseline.set(draft.get_untracked())),
         );
     };
@@ -118,49 +117,15 @@ pub(super) fn MetadataSettings() -> impl IntoView {
     let baseline = create_rw_signal(name.get_untracked());
     dirty_group("name".into(), name, baseline);
     let save = move |()| {
-        if context.blocked() {
-            return;
-        }
-        let Ok(client) = mutation_client() else {
-            context
-                .error
-                .set(Some("Unable to create request identity.".into()));
-            return;
-        };
-        let app = context.saved.get_untracked();
-        let validated_name = match piqueld_client::ApplicationName::parse(name.get_untracked()) {
-            Ok(name) => name,
-            Err(error) => {
-                context.error.set(Some(error.to_string()));
-                return;
-            }
-        };
-        let request = piqueld_client::RenameApplicationRequest {
-            name: name.get_untracked(),
-            expected_generation: Some(app.generation),
-        };
-        context.busy.set(true);
-        context.error.set(None);
-        spawn_local(async move {
-            let result = client
-                .rename_application(app.application.id().as_str(), &request)
-                .await;
-            match result {
-                Ok(renamed) => {
-                    context.saved.update(|app| {
-                        app.application = app.application.clone().with_name(validated_name);
-                        app.generation = renamed.generation;
-                    });
-                    name.set(renamed.name.clone());
-                    baseline.set(renamed.name);
-                    editing.set(false);
-                    context.notice.set("Application name saved.".into());
-                    context.dashboard.with_value(|d| (d.refresh)());
-                }
-                Err(error) => context.failure(&error),
-            }
-            context.busy.set(false);
-        });
+        context.save(
+            ApplicationEdit::Name(name.get_untracked()),
+            Callback::new(move |app: ApplicationView| {
+                let saved_name = app.application.metadata().name.to_string();
+                name.set(saved_name.clone());
+                baseline.set(saved_name);
+                editing.set(false);
+            }),
+        );
     };
     view! {
         <div class="application-name">
@@ -232,14 +197,13 @@ pub(super) fn VolumeSettings() -> impl IntoView {
     let baseline = create_rw_signal(volumes.get_untracked());
     dirty_group("volumes".into(), volumes, baseline);
     let save = move |_| {
-        let mut manifest = context.manifest();
-        manifest.spec.volumes = volumes
+        let changed = volumes
             .get_untracked()
             .into_iter()
             .map(|name| Volume { name })
             .collect();
         context.save(
-            manifest,
+            ApplicationEdit::Volumes(changed),
             Callback::new(move |app: ApplicationView| {
                 let names = app
                     .application
@@ -335,7 +299,27 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             return;
         }
         let sent = draft.get_untracked();
-        context.save(manifest, Callback::new(move |_| baseline.set(sent.clone())));
+        let edit = match section {
+            Section::General => ServiceEdit::General(ServiceGeneral {
+                source: service.source.clone(),
+                replicas: service.replicas,
+            }),
+            Section::Environment => ServiceEdit::Environment(service.environment.clone()),
+            Section::Process => ServiceEdit::Process(ServiceProcess {
+                command: service.command.clone(),
+                arguments: service.arguments.clone(),
+            }),
+            Section::Storage => ServiceEdit::Mounts(service.mounts.clone()),
+            Section::Health => ServiceEdit::Healthcheck(service.healthcheck.clone()),
+            Section::Resources => ServiceEdit::Resources(service.resources.clone()),
+        };
+        context.save(
+            ApplicationEdit::Service {
+                name: name.clone(),
+                edit,
+            },
+            Callback::new(move |_| baseline.set(sent.clone())),
+        );
     };
     view! {
         <section class="settings-card service-settings">
@@ -660,8 +644,7 @@ pub(super) fn NewService() -> impl IntoView {
     dirty_group("new-service".into(), fields, baseline);
     let save = move |()| {
         let (name, image) = fields.get_untracked();
-        let mut manifest = context.manifest();
-        manifest.spec.services.push(Service {
+        let service = Service {
             name,
             source: Source::Image { image },
             replicas: 1,
@@ -671,9 +654,9 @@ pub(super) fn NewService() -> impl IntoView {
             mounts: Vec::new(),
             healthcheck: None,
             resources: None,
-        });
+        };
         context.save(
-            manifest,
+            ApplicationEdit::AddService(service),
             Callback::new(move |_| {
                 fields.set((String::new(), String::new()));
                 opened.set(false);

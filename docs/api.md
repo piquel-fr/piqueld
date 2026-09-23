@@ -47,6 +47,55 @@ normalized manifest is needed.
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
 
+### Field endpoints
+
+All paths below are relative to `/api/v1/applications/{id}`. Edits accept
+`expected_generation=N` (required unless `force=true`), `deploy=true|false`
+(default false), and `Idempotency-Key`. They return `Envelope<SavedApplication>`
+with HTTP 200 for saving or HTTP 202 when a deployment is accepted. The server
+loads, edits, validates, and saves its internal manifest inside one transaction;
+clients do not need to read and replace it. The request receipt and optional
+immutable deployment snapshot commit in the same transaction.
+
+| Method | Path | JSON body |
+| --- | --- | --- |
+| PUT | `/name` | `{ "value": "new-name" }` |
+| POST | `/services` | `Service` (new name required) |
+| DELETE | `/services/{service}` | None |
+| POST | `/volumes` | `{ "name": "data" }` |
+| DELETE | `/volumes/{volume}` | None; mounted volumes are rejected |
+| PUT | `/services/{service}/name` | `{ "value": "worker" }` |
+| PUT | `/services/{service}/replicas` | `{ "value": 3 }` |
+| PUT | `/services/{service}/source` | `{ "value": Source }` |
+| PUT | `/services/{service}/source/image` | `{ "value": "nginx:stable" }` |
+| PUT | `/services/{service}/source/git/{url,branch,commit,dockerfile,context}` | `{ "value": "..." }`; commit may be null |
+| PUT / DELETE | `/services/{service}/environment/{key}` | PUT: `{ "value": "..." }`; DELETE: none |
+| PUT | `/services/{service}/{command,arguments}` | `{ "value": ["element", "..."] }` |
+| PUT | `/services/{service}/mount` | `Mount`; adds/replaces by container target |
+| DELETE | `/services/{service}/mount` | `{ "value": "/container/target" }` |
+| PUT | `/services/{service}/healthcheck` | `{ "value": HealthCheck }`; null clears |
+| PUT | `/services/{service}/healthcheck/{port,path,command,interval,timeout}` | Typed `{ "value": ... }` |
+| PUT | `/services/{service}/resources/{cpu,memory}` | `{ "value": 500 }`; null clears the selected limit |
+| PUT / DELETE | `/repository` | PUT: `{ "value": RepositoryManifest }`; DELETE: disconnect |
+| PUT | `/repository/{url,branch,commit,path}` | `{ "value": "..." }`; commit may be null |
+
+The braces listing multiple names denote separate documented endpoints. Nested
+source/check settings require the appropriate variant; switch variants through
+`source` or `healthcheck`. Unknown fields, missing values, invalid manifests, and
+missing resources are rejected. Optional values must explicitly use null to clear.
+The same validation and Git ownership rules apply even with `force=true`.
+Disconnecting a repository preserves saved services and volumes for local editing.
+
+For dashboard forms, typed section endpoints also allow atomically replacing
+`/volumes`, service `/environment`, `/mounts`, `/resources`, `/general`
+(source and replicas), and `/process` (command and arguments). These never replace
+the complete application manifest. See the generated OpenAPI document for exact
+request schemas and error responses.
+
+`POST /api/v1/applications` with `{ "value": "name" }` creates an empty application,
+requiring the name to be absent. It supports `deploy` and `Idempotency-Key`.
+Full-manifest apply remains available for import.
+
 Saving and deployment acceptance work while Docker is unavailable. Execution
 errors are recorded asynchronously. Preview requires runtime observation and
 returns `503 docker_unavailable` during an outage. Application detail remains
@@ -155,7 +204,7 @@ The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
 `POST /api/v1/applications/{id}/deploy` prepares all sources again, including
 Git builds. It requires the inspected generation unless forced and supersedes
 pending work. An identical idempotency-key replay returns the original acceptance.
-Use `piquelctl deploy NAME --yes` to request and wait for deployment.
+Use `piquelctl app deploy NAME --yes` to request and wait for deployment.
 
 When `spec.manifest` is configured, Deploy first fetches the selected manifest.
 Its `refresh` operation records `fetching_manifest` progress and a `manifest_fetched`

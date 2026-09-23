@@ -25,6 +25,7 @@ use crate::store::StoreError;
 mod applications;
 mod builds;
 mod deployments;
+mod editing;
 mod events;
 mod logs;
 mod openapi;
@@ -86,6 +87,21 @@ impl From<StoreError> for ApiError {
             tracing::error!(error = ?value, "storage request failed");
         }
         match value {
+            StoreError::Validation(errors) => errors.into(),
+            StoreError::Edit(error) => {
+                use piqueld_core::edit::EditError;
+                let (status, code) = match &error {
+                    EditError::NotFound { .. } => {
+                        (StatusCode::NOT_FOUND, "field_resource_not_found")
+                    }
+                    EditError::AlreadyExists { .. } => {
+                        (StatusCode::CONFLICT, "field_resource_exists")
+                    }
+                    EditError::Incompatible(_) => (StatusCode::CONFLICT, "field_incompatible"),
+                };
+                Self::new(status, code, "The field edit could not be applied")
+                    .details(json!({"reason": error.to_string()}))
+            }
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",
@@ -321,6 +337,7 @@ fn finish_router(
 // generated OpenAPI document receive the same method and path at the same time.
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
+        .merge(editing::router())
         .routes(routes!(system::status))
         .routes(routes!(system::readiness))
         .routes(routes!(system::configuration))

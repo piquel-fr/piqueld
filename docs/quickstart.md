@@ -26,22 +26,22 @@ In a second terminal:
 ```console
 just run --socket /tmp/piqueld-dev-run/piqueld.sock status
 just run --url http://127.0.0.1:7845 status
-just run --socket /tmp/piqueld-dev-run/piqueld.sock plan \
+just run --socket /tmp/piqueld-dev-run/piqueld.sock app plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
-just run --socket /tmp/piqueld-dev-run/piqueld.sock apply \
+just run --socket /tmp/piqueld-dev-run/piqueld.sock app apply \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml --deploy --yes
-just run --socket /tmp/piqueld-dev-run/piqueld.sock show notes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock app show notes
 ```
 
 `status` reports the daemon version and `--json` produces the same structured
-result as the public API. `apply` saves configuration; `apply --deploy` also
+result as the public API. `app apply` saves configuration; `app apply --deploy` also
 creates a deployment and waits for its operation. Add `--no-wait` to return after
 acceptance. Each explicit deployment prepares sources again and supersedes pending
 work. Use the same development socket for repair, source refresh, and history:
 
 ```console
-just run --socket /tmp/piqueld-dev-run/piqueld.sock reconcile notes --yes
-just run --socket /tmp/piqueld-dev-run/piqueld.sock deploy notes --yes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock app reconcile notes --yes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock app deploy notes --yes
 just run --socket /tmp/piqueld-dev-run/piqueld.sock events --application <application-id>
 ```
 
@@ -60,7 +60,7 @@ When finished, delete the application and note that its named volumes are
 retained:
 
 ```console
-just run --socket /tmp/piqueld-dev-run/piqueld.sock delete notes --yes
+just run --socket /tmp/piqueld-dev-run/piqueld.sock app delete notes --yes
 ```
 
 The retained named volumes are deliberate so deleting an application does not

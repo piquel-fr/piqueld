@@ -23,8 +23,8 @@ use leptos_router::{A, NavigateOptions, use_navigate};
 pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
 use piqueld_client::{
-    ApplicationManifest, ApplicationSpec, ApplicationView, ApplyApplicationRequest, Client,
-    ClientError, Metadata,
+    ApplicationManifest, ApplicationSpec, ApplicationView, Client, ClientError, Metadata,
+    edit::{ApplicationEdit, EditOptions},
 };
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
@@ -58,11 +58,16 @@ impl EditorContext {
             self.error.set(Some("The request outcome is unknown. Reload saved configuration and deployment history before another action.".into()));
         }
     }
-    fn save(self, manifest: ApplicationManifest, on_saved: Callback<ApplicationView>) {
+    fn save(self, edit: ApplicationEdit, on_saved: Callback<ApplicationView>) {
         if self.blocked() {
             return;
         }
-        let validated = match manifest.clone().validate() {
+        let mut manifest = self.manifest();
+        if let Err(error) = edit.clone().apply(&mut manifest) {
+            self.error.set(Some(error.to_string()));
+            return;
+        }
+        let validated = match manifest.validate() {
             Ok(v) => v,
             Err(error) => {
                 self.error.set(Some(error.to_string()));
@@ -70,10 +75,9 @@ impl EditorContext {
             }
         };
         let saved = self.saved.get_untracked();
-        let request = ApplyApplicationRequest {
-            manifest,
+        let options = EditOptions {
             expected_generation: Some(saved.generation),
-            expected_application_id: Some(saved.application.id().to_string()),
+            ..EditOptions::default()
         };
         let client = match mutation_client() {
             Ok(client) => client,
@@ -85,9 +89,13 @@ impl EditorContext {
         self.busy.set(true);
         self.error.set(None);
         spawn_local(async move {
-            let mut result = client.apply_application(&request).await;
+            let mut result = client
+                .edit_application(saved.application.id().as_str(), &edit, &options)
+                .await;
             if result.as_ref().is_err_and(transport_failure) {
-                result = client.apply_application(&request).await;
+                result = client
+                    .edit_application(saved.application.id().as_str(), &edit, &options)
+                    .await;
             }
             match result {
                 Ok(receipt) => {
@@ -181,14 +189,10 @@ pub(super) fn CreateApplication() -> impl IntoView {
         busy.set(true);
         error.set(None);
         spawn_local(async move {
-            let request = ApplyApplicationRequest {
-                manifest,
-                expected_generation: Some(0),
-                expected_application_id: None,
-            };
-            let mut result = client.apply_application(&request).await;
+            let name = manifest.metadata.name;
+            let mut result = client.create_application(&name, false).await;
             if result.as_ref().is_err_and(transport_failure) {
-                result = client.apply_application(&request).await;
+                result = client.create_application(&name, false).await;
             }
             match result {
                 Ok(saved) => {

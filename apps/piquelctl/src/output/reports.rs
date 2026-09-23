@@ -4,7 +4,7 @@ use crate::{profiles::ProfileSummary, support::desired_replicas};
 use piqueld_client::{
     AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationStatusView,
     ApplicationSummary, ApplicationView, BuildLogPage, BuildRecord, Event, Operation,
-    OperationState, Page, PlanView, RenamedApplication, SavedApplication, Source, SystemStatus,
+    OperationState, Page, PlanView, SavedApplication, Source, SystemStatus,
 };
 use serde::Serialize;
 use std::io;
@@ -279,20 +279,15 @@ report!(DeletionReport<'_>, self, out, {
     }
 });
 
-pub(crate) struct RenameReport<'a> {
-    pub(crate) previous_name: &'a str,
-    pub(crate) renamed: &'a RenamedApplication,
-}
-impl Report for RenameReport<'_> {
-    type Json = RenamedApplication;
-    fn json(&self) -> &Self::Json {
-        self.renamed
+/// Saved TOML in human mode; a JSON string in machine mode.
+pub(crate) struct ManifestReport(pub(crate) String);
+impl Report for ManifestReport {
+    type Json = str;
+    fn json(&self) -> &str {
+        &self.0
     }
     fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        out.line(format_args!(
-            "Renamed {} to {} (generation {}).",
-            self.previous_name, self.renamed.name, self.renamed.generation
-        ))
+        out.line(self.0.trim_end())
     }
 }
 

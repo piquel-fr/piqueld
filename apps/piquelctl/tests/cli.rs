@@ -474,7 +474,7 @@ fn list_paginates_and_includes_reconciliation_status() {
             }
             path => panic!("unexpected path {path}"),
         });
-        let output = run(&server, &["list"]);
+        let output = run(&server, &["app", "list"]);
         let value = assert_json_success(&output);
         assert_eq!(value["items"].as_array().expect("items").len(), 2);
         assert_eq!(value["items"][1]["status"]["state"], "degraded");
@@ -503,7 +503,7 @@ fn repeated_pagination_cursor_is_rejected() {
         ))
     });
 
-    let output = run(&server, &["list"]);
+    let output = run(&server, &["app", "list"]);
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("repeated pagination cursor"));
@@ -524,7 +524,7 @@ fn show_resolves_name_across_pages_and_id_directly() {
         "/api/v1/applications/app-notes-01/status" => Reply::json(status("app-notes-01", "ready")),
         path => panic!("unexpected path {path}"),
     });
-    let output = run(&first_server, &["show", "notes"]);
+    let output = run(&first_server, &["app", "show", "notes"]);
     let value = assert_json_success(&output);
     assert_eq!(
         value["application"]["application"]["metadata"]["name"],
@@ -537,7 +537,7 @@ fn show_resolves_name_across_pages_and_id_directly() {
         "/api/v1/applications/app-notes-01/status" => Reply::json(status("app-notes-01", "ready")),
         path => panic!("unexpected path {path}"),
     });
-    let output = run(&second_server, &["show", "app-notes-01"]);
+    let output = run(&second_server, &["app", "show", "app-notes-01"]);
     let value = assert_json_success(&output);
     assert_eq!(value["status"]["state"], "ready");
     let _ = second_server.finish();
@@ -569,6 +569,7 @@ fn apply_deploy_confirmation_and_transport_retry_are_exercised() {
         let output = run(
             &server,
             &[
+                "app",
                 "apply",
                 "--deploy",
                 "--file",
@@ -618,6 +619,7 @@ fn noninteractive_apply_stops_after_inspection() {
     let output = run(
         &server,
         &[
+            "app",
             "apply",
             "--deploy",
             "--file",
@@ -643,6 +645,7 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
     let output = run(
         &server,
         &[
+            "app",
             "apply",
             "--deploy",
             "--file",
@@ -678,7 +681,12 @@ fn human_plan_has_scannable_sections() {
 
     let output = run_human(
         &server,
-        &["plan", "--file", manifest.to_str().expect("manifest path")],
+        &[
+            "app",
+            "plan",
+            "--file",
+            manifest.to_str().expect("manifest path"),
+        ],
     );
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -712,9 +720,9 @@ fn partial_list_failures_preserve_results_and_context_in_all_modes() {
                 path => panic!("unexpected path {path}"),
             });
             let args = if quiet {
-                vec!["--quiet", "list"]
+                vec!["--quiet", "app", "list"]
             } else {
-                vec!["list"]
+                vec!["app", "list"]
             };
             let output = run_with_format(&server, &args, "2s", json);
             assert!(output.status.success());
@@ -806,7 +814,13 @@ fn blocked_plan_emits_json_then_fails_and_quiet_keeps_the_reason() {
         });
         let output = run_with_format(
             &server,
-            &["--quiet", "plan", "--file", manifest.to_str().unwrap()],
+            &[
+                "--quiet",
+                "app",
+                "plan",
+                "--file",
+                manifest.to_str().unwrap(),
+            ],
             "2s",
             json,
         );
@@ -873,6 +887,7 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
     let output = run_human(
         &server,
         &[
+            "app",
             "apply",
             "--deploy",
             "--file",
@@ -886,7 +901,7 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
     assert!(stderr.contains("Resource: app-notes-network"));
     assert!(stderr.contains("Code: runtime_failed"));
     assert!(stderr.contains("Message: runtime reconciliation failed"));
-    assert!(stderr.contains("Hint: retry with `piquelctl reconcile app-notes-01`"));
+    assert!(stderr.contains("Hint: retry with `piquelctl app reconcile app-notes-01`"));
     assert!(!stderr.contains("created_at_ms"));
     let _ = server.finish();
 }
@@ -901,14 +916,24 @@ fn manifest_input_is_missing_or_oversized_before_network_use() {
 
     let missing_output = run(
         &server,
-        &["plan", "--file", missing.to_str().expect("manifest path")],
+        &[
+            "app",
+            "plan",
+            "--file",
+            missing.to_str().expect("manifest path"),
+        ],
     );
     assert_eq!(missing_output.status.code(), Some(2));
     assert!(missing_output.stdout.is_empty());
 
     let oversized_output = run(
         &server,
-        &["plan", "--file", oversized.to_str().expect("manifest path")],
+        &[
+            "app",
+            "plan",
+            "--file",
+            oversized.to_str().expect("manifest path"),
+        ],
     );
     assert_eq!(oversized_output.status.code(), Some(2));
     assert!(oversized_output.stdout.is_empty());
@@ -943,7 +968,7 @@ fn delete_reports_named_volume_retention_and_operation_completion() {
             }
             path => panic!("unexpected path {path}"),
         });
-        let output = run(&server, &["delete", "notes", "--yes"]);
+        let output = run(&server, &["app", "delete", "notes", "--yes"]);
         let value = assert_json_success(&output);
         assert_eq!(value["volumes_retained"], true);
         assert!(String::from_utf8_lossy(&output.stderr).contains("named volumes are retained"));
@@ -965,7 +990,7 @@ fn delete_stops_on_failed_or_cancelled_operation() {
             "/api/v1/operations/operation-01" => Reply::json(operation(state)),
             path => panic!("unexpected path {path}"),
         });
-        let output = run(&server, &["delete", "notes", "--yes"]);
+        let output = run(&server, &["app", "delete", "notes", "--yes"]);
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -1072,7 +1097,7 @@ fn unknown_names_exit_with_input_error_and_no_mutation() {
         "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
         path => panic!("unexpected path {path}"),
     });
-    let output = run(&server, &["show", "missing"]);
+    let output = run(&server, &["app", "show", "missing"]);
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1092,7 +1117,7 @@ fn ambiguous_names_report_the_match_count() {
         )),
         path => panic!("unexpected path {path}"),
     });
-    let output = run(&server, &["show", "notes"]);
+    let output = run(&server, &["app", "show", "notes"]);
     assert_eq!(output.status.code(), Some(3));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1125,7 +1150,7 @@ fn fifo_manifest_is_rejected_before_opening() {
             .success()
     );
     let output = Command::new(env!("CARGO_BIN_EXE_piquelctl"))
-        .args(["--timeout", "100ms", "plan", "--file"])
+        .args(["--timeout", "100ms", "app", "plan", "--file"])
         .arg(path)
         .output()
         .expect("CLI rejects FIFO");
@@ -1180,7 +1205,10 @@ fn reconcile_and_deploy_retry_transport() {
                 Reply::accepted(accepted("app-notes-01"))
             }
         });
-        let output = run(&server, &[action, "app-notes-01", "--yes", "--no-wait"]);
+        let output = run(
+            &server,
+            &["app", action, "app-notes-01", "--yes", "--no-wait"],
+        );
         assert!(
             output.status.success(),
             "{}",
@@ -1248,7 +1276,13 @@ fn apply_defaults_to_saving_without_preview_or_operation_polling() {
     });
     let output = run(
         &server,
-        &["apply", "--file", manifest.to_str().unwrap(), "--yes"],
+        &[
+            "app",
+            "apply",
+            "--file",
+            manifest.to_str().unwrap(),
+            "--yes",
+        ],
     );
     let saved = assert_json_success(&output);
     assert_eq!(saved["generation"], 2);
@@ -1288,6 +1322,7 @@ fn apply_protects_the_inspected_identity_and_revision_with_confirmation_skipped(
     let output = run(
         &server,
         &[
+            "app",
             "apply",
             "--deploy",
             "--file",
@@ -1315,18 +1350,25 @@ fn rename_uses_the_inspected_revision_and_preserves_identity() {
         if request.method == "GET" {
             return Reply::json(app_view("app-notes-01", "notes"));
         }
-        assert_eq!(request.path, "/api/v1/applications/app-notes-01/rename");
+        assert_eq!(request.method, "PUT");
+        assert_eq!(
+            request.path,
+            "/api/v1/applications/app-notes-01/name?deploy=false&expected_generation=1&force=false"
+        );
         let body: Value = serde_json::from_slice(&request.body).unwrap();
-        assert_eq!(body, json!({"name":"renamed","expected_generation":1}));
+        assert_eq!(body, json!({"value":"renamed"}));
         assert!(request.headers.contains_key("idempotency-key"));
-        Reply::json(json!({"application_id":"app-notes-01","name":"renamed","generation":2}))
+        Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
     });
-    let output = run(&server, &["rename", "app-notes-01", "renamed", "--yes"]);
+    let output = run(
+        &server,
+        &["app", "rename", "app-notes-01", "renamed", "--yes"],
+    );
     assert_eq!(
         assert_json_success(&output)["application_id"],
         "app-notes-01"
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("metadata.name"));
+    assert!(output.stderr.is_empty());
     assert_eq!(server.finish().len(), 2);
 }
 
@@ -1354,6 +1396,7 @@ fn force_does_not_skip_confirmation_and_explicit_force_is_sent_to_the_endpoint()
             }
         });
         let mut args = vec![
+            "app",
             "apply",
             "--deploy",
             "--file",
@@ -1394,6 +1437,7 @@ fn apply_returns_superseded_success_without_following_the_replacement() {
     let output = run(
         &server,
         &[
+            "app",
             "apply",
             "--deploy",
             "--file",
@@ -1415,7 +1459,10 @@ fn preview_is_an_explicit_read_only_command() {
         assert_eq!(request.path, "/api/v1/applications/plan");
         Reply::json(plan("preview-00000001"))
     });
-    let output = run(&server, &["plan", "--file", manifest.to_str().unwrap()]);
+    let output = run(
+        &server,
+        &["app", "plan", "--file", manifest.to_str().unwrap()],
+    );
     assert_json_success(&output);
     assert_eq!(server.finish().len(), 1);
 }
@@ -1532,4 +1579,162 @@ fn build_logs_render_structured_output_and_page_backwards() {
         );
         server.finish();
     }
+}
+
+#[test]
+fn field_edit_sends_only_the_selected_value_and_defaults_to_save_only() {
+    for (arguments, suffix, expected) in [
+        (
+            vec![
+                "app",
+                "service",
+                "replicas",
+                "app-notes-01",
+                "web",
+                "3",
+                "--yes",
+            ],
+            "replicas",
+            json!({"value":3}),
+        ),
+        (
+            vec![
+                "app",
+                "service",
+                "env",
+                "set",
+                "app-notes-01",
+                "web",
+                "GREETING",
+                "hello world",
+                "--yes",
+            ],
+            "environment/GREETING",
+            json!({"value":"hello world"}),
+        ),
+        (
+            vec![
+                "app",
+                "service",
+                "arguments",
+                "app-notes-01",
+                "web",
+                "--yes",
+                "--",
+                "--flag",
+                "arg with spaces",
+            ],
+            "arguments",
+            json!({"value":["--flag","arg with spaces"]}),
+        ),
+        (
+            vec![
+                "app",
+                "service",
+                "cpu",
+                "app-notes-01",
+                "web",
+                "--clear",
+                "--yes",
+            ],
+            "resources/cpu",
+            json!({"value":null}),
+        ),
+    ] {
+        let server = start_server(false, 2, move |request| {
+            if request.method == "GET" {
+                return Reply::json(app_view("app-notes-01", "notes"));
+            }
+            assert_eq!(request.method, "PUT");
+            assert_eq!(
+                request.path,
+                format!(
+                    "/api/v1/applications/app-notes-01/services/web/{suffix}?deploy=false&expected_generation=1&force=false"
+                )
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&request.body).unwrap(),
+                expected
+            );
+            assert!(request.headers.contains_key("idempotency-key"));
+            Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+        });
+        let output = run(&server, &arguments);
+        assert_eq!(assert_json_success(&output)["generation"], 2);
+        assert_eq!(server.finish().len(), 2);
+    }
+}
+
+#[test]
+fn field_edit_deploy_is_explicit_and_no_wait_returns_the_saved_receipt() {
+    let server = start_server(false, 2, |request| {
+        if request.method == "GET" {
+            return Reply::json(app_view("app-notes-01", "notes"));
+        }
+        assert_eq!(
+            request.path,
+            "/api/v1/applications/app-notes-01/services/web/replicas?deploy=true&expected_generation=1&force=false"
+        );
+        Reply::accepted(
+            json!({"application_id":"app-notes-01","generation":2,"operation_id":"operation-01"}),
+        )
+    });
+    let output = run(
+        &server,
+        &[
+            "app",
+            "service",
+            "replicas",
+            "app-notes-01",
+            "web",
+            "3",
+            "--deploy",
+            "--no-wait",
+            "--yes",
+        ],
+    );
+    assert_eq!(assert_json_success(&output)["operation_id"], "operation-01");
+    assert_eq!(server.finish().len(), 2);
+}
+
+#[test]
+fn git_service_creation_does_not_require_a_placeholder_image() {
+    let server = start_server(false, 2, |request| {
+        if request.method == "GET" {
+            return Reply::json(app_view("app-notes-01", "notes"));
+        }
+        assert_eq!(request.method, "POST");
+        assert_eq!(
+            request.path,
+            "/api/v1/applications/app-notes-01/services?deploy=false&expected_generation=1&force=false"
+        );
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body["name"], "worker");
+        assert_eq!(
+            body["source"],
+            json!({"type":"git","repository":{"url":"https://example.com/app.git","branch":"release"},"build":{"type":"docker","dockerfile":"build/Dockerfile","context":"build"}})
+        );
+        Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+    });
+    let output = run(
+        &server,
+        &[
+            "app",
+            "service",
+            "add",
+            "app-notes-01",
+            "worker",
+            "--git",
+            "https://example.com/app.git",
+            "--branch",
+            "release",
+            "--dockerfile",
+            "build/Dockerfile",
+            "--context",
+            "build",
+            "--yes",
+        ],
+    );
+    assert_eq!(assert_json_success(&output)["generation"], 2);
+    assert_eq!(server.finish().len(), 2);
 }

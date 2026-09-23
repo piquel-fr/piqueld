@@ -293,7 +293,7 @@ fn connection_failures_identify_the_effective_endpoint_source() {
             "/tmp/profile-missing.sock",
         ),
         (
-            vec!["--profile", "testing", "list"],
+            vec!["--profile", "testing", "app", "list"],
             vec![("PIQUELD_SOCKET", "/tmp/env-missing.sock")],
             "environment variable PIQUELD_SOCKET",
             "/tmp/env-missing.sock",

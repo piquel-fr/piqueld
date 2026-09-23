@@ -119,3 +119,7 @@ pub enum ClientError {
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
+
+/// Typed saved-configuration editing contracts.
+pub use piqueld_core::edit;
+mod editing;
