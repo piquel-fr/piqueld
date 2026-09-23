@@ -3,6 +3,20 @@ use super::{ApplicationId, Store, StoreError, page_limit};
 use piqueld_core::{Event, api::Page};
 use sqlx::{Sqlite, Transaction};
 
+struct EventRow {
+    id: i64,
+    application_id: Option<String>,
+    operation_id: Option<String>,
+    generation: Option<i64>,
+    attempt: Option<i64>,
+    kind: String,
+    message: Option<String>,
+    error_code: Option<String>,
+    phase: Option<String>,
+    resource: Option<String>,
+    created_at_ms: i64,
+}
+
 impl Store {
     pub(super) async fn operation_event(
         tx: &mut Transaction<'_, Sqlite>,
@@ -36,7 +50,7 @@ impl Store {
         Ok(())
     }
 
-    /// Reads events oldest first, optionally filtered by application, including deleted applications.
+    /// Reads retained events oldest first, optionally filtered by application.
     /// # Errors
     /// Returns storage errors or invalid pagination errors.
     pub async fn events(
@@ -58,8 +72,32 @@ impl Store {
         if after < 0 {
             return Err(StoreError::InvalidInput);
         }
-        let application = application.map(ApplicationId::as_str);
-        let mut rows=sqlx::query!("SELECT id,application_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms FROM events WHERE id>?1 AND (?2 IS NULL OR application_id=?2) ORDER BY id LIMIT ?3",after,application,fetch_limit).fetch_all(&self.pool).await.map_err(StoreError::database)?;
+        let mut rows = if let Some(application) = application {
+            let app = application.as_str();
+            sqlx::query_as!(
+                EventRow,
+                "SELECT id AS \"id!\",application_id,operation_id,generation,attempt,kind,
+                 message,error_code,phase,resource,created_at_ms FROM events
+                 WHERE application_id=?1 AND id>?2 ORDER BY id LIMIT ?3",
+                app,
+                after,
+                fetch_limit
+            )
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            sqlx::query_as!(
+                EventRow,
+                "SELECT id AS \"id!\",application_id,operation_id,generation,attempt,kind,
+                 message,error_code,phase,resource,created_at_ms FROM events
+                 WHERE id>?1 ORDER BY id LIMIT ?2",
+                after,
+                fetch_limit
+            )
+            .fetch_all(&self.pool)
+            .await
+        }
+        .map_err(StoreError::database)?;
         let more = rows.len() > limit;
         rows.truncate(limit);
         let next_cursor = more

@@ -325,3 +325,81 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
     assert!(store.get(app.id()).await.is_ok());
     assert!(store.operation(&second.id).await.is_ok());
 }
+
+#[tokio::test]
+async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("history.db");
+    let store = Store::open(&database).await.unwrap();
+    let app = application();
+    let other = application_named("app-other", "other");
+    let initial = store.save_application(&app, None, Some(0)).await.unwrap();
+    store.save_application(&other, None, Some(0)).await.unwrap();
+    let mut expected_deployments = vec![initial.id];
+    for _ in 0..3 {
+        expected_deployments.push(store.request_deploy(app.id(), Some(1)).await.unwrap().id);
+        store.request_deploy(other.id(), Some(1)).await.unwrap();
+    }
+    expected_deployments.sort_unstable_by(|left, right| right.cmp(left));
+
+    // Equal creation times must not change the API's ID-based order or cursor.
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{}", database.display()))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE deployments SET created_at_ms=1")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let mut cursor = None;
+    let mut deployments = Vec::new();
+    loop {
+        let page = store
+            .deployments(app.id(), cursor.as_deref(), 2)
+            .await
+            .unwrap();
+        for deployment in page.items {
+            assert_eq!(&deployment.operation.application_id, app.id());
+            deployments.push(deployment.operation.id);
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(deployments, expected_deployments);
+
+    let expected_events = store
+        .events(None, None, 100)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .filter(|event| event.application_id.as_ref() == Some(app.id()))
+        .map(|event| event.id)
+        .collect::<Vec<_>>();
+    let mut events = Vec::new();
+    loop {
+        let page = store
+            .events(Some(app.id()), cursor.as_deref(), 2)
+            .await
+            .unwrap();
+        for event in page.items {
+            assert_eq!(event.application_id.as_ref(), Some(app.id()));
+            events.push(event.id);
+        }
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(events, expected_events);
+    let absent = ApplicationId::parse("app-absent").unwrap();
+    assert!(
+        store
+            .events(Some(&absent), None, 2)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+}

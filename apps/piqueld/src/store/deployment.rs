@@ -3,6 +3,12 @@ use super::{ApplicationId, NormalizedApplication, Operation, Store, StoreError, 
 use piqueld_core::api::{DeploymentView, Page, SavedApplication};
 use sqlx::{Sqlite, Transaction};
 
+struct DeploymentRow {
+    id: String,
+    manifest_json: String,
+    succeeded_at_ms: Option<i64>,
+}
+
 impl Store {
     pub(super) async fn save_configuration_on(
         tx: &mut Transaction<'_, Sqlite>,
@@ -96,7 +102,29 @@ impl Store {
             .transpose()?;
         let app_id = app.as_str();
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
-        let mut rows = sqlx::query!("SELECT d.id AS \"id!\",d.manifest_json,d.succeeded_at_ms FROM deployments d WHERE d.application_id=?1 AND (?2 IS NULL OR d.id<?2) ORDER BY d.id DESC LIMIT ?3",app_id,before,limit_sql).fetch_all(&mut *tx).await.map_err(StoreError::database)?;
+        let mut rows = if let Some(before) = before {
+            sqlx::query_as!(
+                DeploymentRow,
+                "SELECT id AS \"id!\",manifest_json,succeeded_at_ms FROM deployments
+                 WHERE application_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+                app_id,
+                before,
+                limit_sql
+            )
+            .fetch_all(&mut *tx)
+            .await
+        } else {
+            sqlx::query_as!(
+                DeploymentRow,
+                "SELECT id AS \"id!\",manifest_json,succeeded_at_ms FROM deployments
+                 WHERE application_id=?1 ORDER BY id DESC LIMIT ?2",
+                app_id,
+                limit_sql
+            )
+            .fetch_all(&mut *tx)
+            .await
+        }
+        .map_err(StoreError::database)?;
         let more = rows.len() > limit;
         rows.truncate(limit);
         let next_cursor = more
