@@ -89,20 +89,7 @@ impl From<StoreError> for ApiError {
         }
         match value {
             StoreError::Validation(errors) => errors.into(),
-            StoreError::Edit(error) => {
-                use piqueld_core::edit::EditError;
-                let (status, code) = match &error {
-                    EditError::NotFound { .. } => {
-                        (StatusCode::NOT_FOUND, "field_resource_not_found")
-                    }
-                    EditError::AlreadyExists { .. } => {
-                        (StatusCode::CONFLICT, "field_resource_exists")
-                    }
-                    EditError::Incompatible(_) => (StatusCode::CONFLICT, "field_incompatible"),
-                };
-                Self::new(status, code, "The field edit could not be applied")
-                    .details(json!({"reason": error.to_string()}))
-            }
+            StoreError::Edit(error) => error.into(),
             StoreError::SecretVersionConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "secret_generation_conflict",
@@ -186,6 +173,19 @@ impl From<StoreError> for ApiError {
                 )
             }
         }
+    }
+}
+
+impl From<piqueld_core::edit::EditError> for ApiError {
+    fn from(error: piqueld_core::edit::EditError) -> Self {
+        use piqueld_core::edit::EditError;
+        let (status, code) = match &error {
+            EditError::NotFound { .. } => (StatusCode::NOT_FOUND, "field_resource_not_found"),
+            EditError::AlreadyExists { .. } => (StatusCode::CONFLICT, "field_resource_exists"),
+            EditError::Incompatible(_) => (StatusCode::CONFLICT, "field_incompatible"),
+        };
+        Self::new(status, code, "The field edit could not be applied")
+            .details(json!({"reason": error.to_string()}))
     }
 }
 

@@ -156,6 +156,16 @@
       "rustType": "piqueld_core::edit::MountsValue"
     },
     {
+      "schema": "SecretMount",
+      "name": "SecretMount",
+      "rustType": "piqueld_core::manifest::SecretMount"
+    },
+    {
+      "schema": "SecretsValue",
+      "name": "SecretsValue",
+      "rustType": "piqueld_core::edit::SecretsValue"
+    },
+    {
       "schema": "OptionalStringValue",
       "name": "OptionalStringValue",
       "rustType": "piqueld_core::edit::OptionalStringValue"

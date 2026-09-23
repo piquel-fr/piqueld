@@ -4,8 +4,8 @@ use piqueld_core::{
     edit::{
         ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, MemoryValue,
         MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue, ResourcesValue,
-        SecondsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue,
-        StringsValue, VolumesValue,
+        SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue,
+        StringValue, StringsValue, VolumesValue,
     },
     manifest::{Mount, Service, Volume},
 };
@@ -49,6 +49,7 @@ edit_method!(set_service_environment, (id, service), request: EnvironmentValue);
 edit_method!(set_service_command, (id, service), request: StringsValue);
 edit_method!(set_service_arguments, (id, service), request: StringsValue);
 edit_method!(set_service_mounts, (id, service), request: MountsValue);
+edit_method!(set_service_secrets, (id, service), request: SecretsValue);
 edit_method!(set_service_healthcheck, (id, service), request: HealthValue);
 edit_method!(set_service_health_port, (id, service), request: ReplicasValue);
 edit_method!(set_service_health_path, (id, service), request: StringValue);
@@ -175,6 +176,7 @@ impl Client {
                 send!(set_service_arguments, StringsValue, value.clone())
             }
             ServiceEdit::Mounts(value) => send!(set_service_mounts, MountsValue, value.clone()),
+            ServiceEdit::Secrets(value) => send!(set_service_secrets, SecretsValue, value.clone()),
             ServiceEdit::Healthcheck(value) => {
                 send!(set_service_healthcheck, HealthValue, value.clone())
             }

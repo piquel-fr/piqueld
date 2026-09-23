@@ -1,7 +1,7 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
     ApplicationManifest, Build, GitRepository, HealthCheck, Mount, RepositoryManifest,
-    ResourceLimits, Service, Source, Volume,
+    ResourceLimits, SecretMount, Service, Source, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -33,6 +33,7 @@ value_request! {
     ResourcesValue: Option<ResourceLimits>;
     EnvironmentValue: BTreeMap<String, String>;
     MountsValue: Vec<Mount>;
+    SecretsValue: Vec<SecretMount>;
     VolumesValue: Vec<Volume>;
     RepositoryValue: Option<RepositoryManifest>;
 }
@@ -123,6 +124,8 @@ pub enum ServiceEdit {
     Arguments(Vec<String>),
     /// Replace mount declarations.
     Mounts(Vec<Mount>),
+    /// Replace secret file references.
+    Secrets(Vec<SecretMount>),
     /// Add or replace a mount at its target.
     Mount(Mount),
     /// Remove a mount by container target.
@@ -311,6 +314,7 @@ impl ServiceEdit {
             Self::Command(value) => service.command = value,
             Self::Arguments(value) => service.arguments = value,
             Self::Mounts(value) => service.mounts = value,
+            Self::Secrets(value) => service.secrets = value,
             Self::Mount(value) => Self::set_mount(service, value),
             Self::RemoveMount(target) => Self::remove_mount(service, target)?,
             Self::Healthcheck(value) => service.healthcheck = value,

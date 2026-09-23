@@ -3341,6 +3341,7 @@ async fn field_edit_requires_an_explicit_value_and_revision() {
 
 #[tokio::test]
 async fn secret_api_is_application_scoped_write_only_and_versioned() {
+    use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -3370,6 +3371,52 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
     let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["data"]["generation"], 1);
     assert_eq!(client.secrets(&app.application_id).await.unwrap().len(), 1);
+    let reference = |secrets| ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::Secrets(secrets),
+    };
+    let mount = piqueld_client::SecretMount {
+        name: "token".into(),
+        target: "/run/secrets/token".into(),
+    };
+    let saved = client
+        .edit_application(
+            &app.application_id,
+            &reference(vec![mount.clone()]),
+            &EditOptions {
+                expected_generation: Some(app.generation),
+                ..EditOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .application(&app.application_id)
+            .await
+            .unwrap()
+            .application
+            .to_manifest()
+            .spec
+            .services[0]
+            .secrets,
+        vec![mount]
+    );
+    assert!(matches!(
+        client.delete_secret(&app.application_id, "token", 1).await,
+        Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 409
+    ));
+    client
+        .edit_application(
+            &app.application_id,
+            &reference(Vec::new()),
+            &EditOptions {
+                expected_generation: Some(saved.generation),
+                ..EditOptions::default()
+            },
+        )
+        .await
+        .unwrap();
     assert!(
         matches!(client.put_secret(&app.application_id,"token",0,b"stale".to_vec()).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==409)
     );
