@@ -66,7 +66,15 @@ async fn main() -> Result<()> {
 
     let tcp_apis: Vec<_> = tcp_listeners
         .into_iter()
-        .map(|listener| spawn_tcp_api(listener, state.clone(), ui_assets, cancellation.clone()))
+        .map(|listener| {
+            spawn_tcp_api(
+                listener,
+                state.clone(),
+                ui_assets,
+                config.server.allowed_hosts.clone(),
+                cancellation.clone(),
+            )
+        })
         .collect();
     let unix_api = spawn_unix_api(unix_listener, state, cancellation.clone());
 
@@ -137,14 +145,18 @@ fn spawn_tcp_api(
     listener: TcpListener,
     state: ApiState,
     ui_assets: UiAssets,
+    allowed_hosts: Vec<String>,
     cancellation: CancellationToken,
 ) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
     info!(address = ?listener.local_addr(), "HTTP API listening");
     tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(listener, piqueld::api::http::web_router(state, ui_assets))
-                .with_graceful_shutdown(async move { shutdown.cancelled().await }),
+            axum::serve(
+                listener,
+                piqueld::api::http::web_router_with_hosts(state, ui_assets, allowed_hosts),
+            )
+            .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);
         // The grace period starts only once shutdown has been requested; a

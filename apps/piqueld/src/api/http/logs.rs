@@ -1,6 +1,6 @@
-use super::{ApiError, ApiState, ok, openapi::ApiErrorResponse};
+use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
 use axum::{
-    extract::{Path, Query, State, rejection::QueryRejection},
+    extract::{Query, State, rejection::QueryRejection},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -34,7 +34,7 @@ impl Default for LogQuery {
  (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=502,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn get(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
     query: Result<Query<LogQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let Query(query) = query.map_err(|_| {

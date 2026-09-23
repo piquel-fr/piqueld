@@ -1,10 +1,12 @@
 //! Individual typed editing endpoints. Persistence applies changes inside its writer transaction.
-use super::{ApiError, ApiState, applications::accept_mutation, openapi::ApiErrorResponse};
+use super::{
+    ApiError, ApiPath, ApiState, applications::accept_mutation, openapi::ApiErrorResponse,
+};
 use crate::api::Mutation;
 use axum::{
     body::Bytes,
     extract::{
-        Path, Query, State,
+        Query, State,
         rejection::{BytesRejection, QueryRejection},
     },
     http::{HeaderMap, StatusCode},
@@ -58,7 +60,7 @@ macro_rules! edit_endpoint {
                 (status = 409, response = inline(ApiErrorResponse)), (status = 413, response = inline(ApiErrorResponse)),
                 (status = 415, response = inline(ApiErrorResponse)), (status = 422, response = inline(ApiErrorResponse)),
                 (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
-        async fn $name(State(state): State<ApiState>, Path(($($part,)+)): Path<($($part_ty,)+)>, query: Result<Query<EditOptions>, QueryRejection>, headers: HeaderMap, bytes: Result<Bytes, BytesRejection>) -> Result<Response, ApiError> {
+        async fn $name(State(state): State<ApiState>, ApiPath(($($part,)+)): ApiPath<($($part_ty,)+)>, query: Result<Query<EditOptions>, QueryRejection>, headers: HeaderMap, bytes: Result<Bytes, BytesRejection>) -> Result<Response, ApiError> {
             let options = options(query)?;
             let body: $body = $decode(&headers, bytes)?;
             let edit = ($edit)(($($part.clone()),+), body);
@@ -79,7 +81,7 @@ edit_endpoint!(set_manifest_repository, put, "/api/v1/applications/{id}/reposito
         (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
 async fn disconnect_manifest_repository(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
     query: Result<Query<EditOptions>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -112,7 +114,7 @@ edit_endpoint!(add_application_volume, post, "/api/v1/applications/{id}/volumes"
         (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
 async fn remove_application_service(
     State(state): State<ApiState>,
-    Path((id, service)): Path<(String, String)>,
+    ApiPath((id, service)): ApiPath<(String, String)>,
     query: Result<Query<EditOptions>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -139,7 +141,7 @@ async fn remove_application_service(
         (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
 async fn remove_application_volume(
     State(state): State<ApiState>,
-    Path((id, volume)): Path<(String, String)>,
+    ApiPath((id, volume)): ApiPath<(String, String)>,
     query: Result<Query<EditOptions>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
@@ -191,7 +193,7 @@ edit_endpoint!(set_service_environment_entry, put, "/api/v1/applications/{id}/se
         (status = 500, response = inline(ApiErrorResponse)), (status = 503, response = inline(ApiErrorResponse))))]
 async fn remove_service_environment_entry(
     State(state): State<ApiState>,
-    Path((id, service, key)): Path<(String, String, String)>,
+    ApiPath((id, service, key)): ApiPath<(String, String, String)>,
     query: Result<Query<EditOptions>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {

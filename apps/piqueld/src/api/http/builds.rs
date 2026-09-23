@@ -1,6 +1,6 @@
-use super::{ApiError, ApiState, ok, openapi::ApiErrorResponse};
+use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
 use axum::{
-    extract::{Path, Query, State, rejection::QueryRejection},
+    extract::{Query, State, rejection::QueryRejection},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -54,7 +54,7 @@ pub(super) struct OutputQuery {
 #[utoipa::path(get,path="/api/v1/builds/{id}/logs",operation_id="buildLogs",params(("id"=i64,Path),OutputQuery), responses((status=200,description="Bounded build output",body=Envelope<BuildLogPage>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn logs(
     State(state): State<ApiState>,
-    Path(id): Path<i64>,
+    ApiPath(id): ApiPath<i64>,
     query: Result<Query<OutputQuery>, QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let Query(query) = query.map_err(|_| {

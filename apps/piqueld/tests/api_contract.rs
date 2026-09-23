@@ -529,6 +529,7 @@ async fn assert_api_only_and_ui_modes(temp: &TempDir) {
 
 fn request(uri: &str) -> Request<Body> {
     Request::builder()
+        .header("host", "localhost")
         .uri(uri)
         .body(Body::empty())
         .expect("request is valid")
@@ -559,6 +560,7 @@ async fn dashboard_responses_carry_security_headers() {
         .clone()
         .oneshot(
             Request::builder()
+                .header("host", "localhost")
                 .method(Method::HEAD)
                 .uri("/dashboard/")
                 .body(Body::empty())
@@ -580,6 +582,7 @@ async fn dashboard_responses_carry_security_headers() {
         .clone()
         .oneshot(
             Request::builder()
+                .header("host", "localhost")
                 .method(Method::POST)
                 .uri("/dashboard/")
                 .body(Body::empty())
@@ -601,6 +604,7 @@ async fn dashboard_responses_carry_security_headers() {
             .clone()
             .oneshot(
                 Request::builder()
+                    .header("host", "localhost")
                     .method(method)
                     .uri(path)
                     .body(Body::empty())
@@ -809,6 +813,12 @@ async fn send_raw(
         .method(method)
         .uri(uri)
         .header(http::header::CONTENT_LENGTH, body.len());
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+    {
+        builder = builder.header("host", "localhost");
+    }
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
@@ -1150,90 +1160,195 @@ image = "ghcr.io/example/notes:1"
 }
 
 #[tokio::test]
-async fn accepts_foreign_authorities() {
+async fn tcp_rejects_untrusted_authorities() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
     let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
-
-    let rebinding = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/system/status",
-        &[("host", "attacker.example")],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(rebinding.status, StatusCode::OK);
-    let header_id = rebinding
-        .headers
-        .get("x-request-id")
-        .and_then(|value| value.to_str().ok());
-    assert!(header_id.is_some());
-
-    let loopback = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/system/status",
-        &[("host", &format!("127.0.0.1:{port}", port = address.port()))],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(loopback.status, StatusCode::OK);
-
-    let loopback_alias = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/system/status",
-        &[("host", "127.0.0.2:7845")],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(loopback_alias.status, StatusCode::OK);
-
-    let ipv6 = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/system/status",
-        &[("host", "[::1]:9999")],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(ipv6.status, StatusCode::OK);
-
-    let malformed_ipv6 = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/system/status",
-        &[("host", "[::1]attacker.example")],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(malformed_ipv6.status, StatusCode::OK);
-
-    // A bare unbracketed IPv6 literal has no port to split off; its colons
-    // must not be mistaken for a host:port separator.
-    let bare_ipv6 = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/system/status",
-        &[("host", "::1")],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(bare_ipv6.status, StatusCode::OK);
-
-    let foreign_ipv6 = send_raw(
-        Target::Tcp(address),
-        Method::GET,
-        "/api/v1/system/status",
-        &[("host", "fe80::1")],
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(foreign_ipv6.status, StatusCode::OK);
-
+    let application = piqueld::api::http::web_router_with_hosts(
+        state(&temp).await,
+        UiAssets::Disabled,
+        vec!["daemon.example.ts.net".into()],
+    );
+    let server = tokio::spawn(serve(listener, application).into_future());
+    for (host, expected) in [
+        ("attacker.example", StatusCode::FORBIDDEN),
+        ("127.0.0.1:7845", StatusCode::OK),
+        ("localhost:7845", StatusCode::OK),
+        ("[::1]:7845", StatusCode::OK),
+        ("[::1]attacker.example", StatusCode::FORBIDDEN),
+        ("daemon.example.ts.net:7845", StatusCode::OK),
+        (
+            "daemon.example.ts.net.attacker.example",
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        let response = send_raw(
+            Target::Tcp(address),
+            Method::GET,
+            "/api/v1/system/status",
+            &[("host", host)],
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(response.status, expected, "host {host}");
+        assert!(response.headers.contains_key("x-request-id"));
+    }
     server.abort();
+}
+
+#[tokio::test]
+async fn tcp_rejects_cross_origin_mutations_without_creating_deployments() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    // Apply is a real POST handler, so successful controls prove the
+    // middleware allows same-origin and non-browser clients through.
+    for (headers, expected) in [
+        (
+            vec![("origin", "https://attacker.example")],
+            StatusCode::FORBIDDEN,
+        ),
+        (vec![("origin", "null")], StatusCode::FORBIDDEN),
+        (
+            vec![("origin", "http://localhost:invalid")],
+            StatusCode::FORBIDDEN,
+        ),
+        (vec![("origin", "https://localhost")], StatusCode::FORBIDDEN),
+        (
+            vec![("origin", "http://localhost:9999")],
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            vec![("sec-fetch-site", "cross-site")],
+            StatusCode::FORBIDDEN,
+        ),
+        (vec![("sec-fetch-site", "same-site")], StatusCode::FORBIDDEN),
+        (
+            vec![
+                ("origin", "http://localhost"),
+                ("sec-fetch-site", "same-origin"),
+            ],
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (
+            vec![("host", "localhost:80"), ("origin", "http://localhost")],
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        ),
+        (vec![], StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    ] {
+        let response = send_raw(
+            Target::Tcp(address),
+            Method::POST,
+            "/api/v1/applications/apply",
+            &headers,
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(response.status, expected, "headers {headers:?}");
+    }
+    let client = Client::tcp(&format!("http://{address}")).unwrap();
+    let saved = client
+        .apply_application(&ApplyApplicationRequest {
+            manifest: manifest(),
+            expected_generation: Some(0),
+            expected_application_id: None,
+        })
+        .await
+        .unwrap();
+    for action in ["deploy", "reconcile"] {
+        let response = send_raw(
+            Target::Tcp(address),
+            Method::POST,
+            &format!(
+                "/api/v1/applications/{}/{action}?force=true",
+                saved.application_id
+            ),
+            &[
+                ("origin", "https://attacker.example"),
+                ("content-type", "application/x-www-form-urlencoded"),
+            ],
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN);
+        assert_eq!(response.body["code"], "browser_access_denied");
+    }
+    assert!(
+        client
+            .deployments(&saved.application_id, None)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn typed_edits_enforce_the_tcp_browser_policy() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let address = api.address;
+    let client = &api.client;
+    let saved = client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    for (method, field, body) in [
+        (
+            Method::PUT,
+            "services/web/replicas",
+            br#"{"value":3}"#.to_vec(),
+        ),
+        (Method::DELETE, "services/web", Vec::new()),
+    ] {
+        let response = send_raw(
+            Target::Tcp(address),
+            method,
+            &format!(
+                "/api/v1/applications/{}/{field}?force=true&deploy=true",
+                saved.application_id
+            ),
+            &[
+                ("origin", "https://attacker.example"),
+                ("content-type", "application/json"),
+            ],
+            body,
+        )
+        .await;
+        response.assert_error(StatusCode::FORBIDDEN, "browser_access_denied");
+    }
+    let unchanged = client.application(&saved.application_id).await.unwrap();
+    assert_eq!(unchanged.generation, saved.generation);
+    assert_eq!(unchanged.application.spec().services.len(), 1);
+    assert!(
+        client
+            .deployments(&saved.application_id, None)
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let edit = send_raw(
+        Target::Tcp(address),
+        Method::PUT,
+        &format!(
+            "/api/v1/applications/{}/services/web/replicas?expected_generation=1",
+            saved.application_id
+        ),
+        &[
+            ("origin", "http://localhost"),
+            ("sec-fetch-site", "same-origin"),
+            ("content-type", "application/json"),
+        ],
+        br#"{"value":3}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(edit.status, StatusCode::OK);
+    let edited = client.application(&saved.application_id).await.unwrap();
+    assert_eq!(edited.generation, saved.generation + 1);
+    assert_eq!(edited.application.spec().services[0].replicas, 3);
 }
 
 #[tokio::test]
@@ -1446,6 +1561,7 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
 
 struct AcceptanceApi {
     client: Client,
+    address: std::net::SocketAddr,
     runtime: Arc<FakeRuntime>,
     store: Arc<Store>,
     task: tokio::task::JoinHandle<std::io::Result<()>>,
@@ -1461,10 +1577,12 @@ impl AcceptanceApi {
         });
         let state = ApiState::new(Arc::clone(&store), runtime.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let client = Client::tcp(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = Client::tcp(&format!("http://{address}")).unwrap();
         let task = tokio::spawn(serve(listener, router(state)).into_future());
         Self {
             client,
+            address,
             runtime,
             store,
             task,
@@ -2268,6 +2386,7 @@ async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
     let response = router(ApiState::new(api.store.clone(), api.runtime.clone()))
         .oneshot(
             Request::builder()
+                .header("host", "localhost")
                 .uri(format!(
                     "/api/v1/applications/{}/manifest",
                     saved.application_id
@@ -2435,6 +2554,7 @@ async fn readiness_distinguishes_engine_reachability_and_does_not_gate_saves() {
     let response = router(ApiState::new(api.store.clone(), api.runtime.clone()))
         .oneshot(
             Request::builder()
+                .header("host", "localhost")
                 .uri("/api/v1/system/readiness")
                 .body(Body::empty())
                 .unwrap(),
@@ -2482,6 +2602,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     let response = api_router(service.clone())
         .oneshot(
             Request::builder()
+                .header("host", "localhost")
                 .uri(format!("/api/v1/applications/{id}/detail"))
                 .body(Body::empty())
                 .unwrap(),
@@ -3318,6 +3439,7 @@ async fn field_edit_requires_an_explicit_value_and_revision() {
                         "/api/v1/applications/{}/services/web/resources/cpu{query}",
                         saved.application_id
                     ))
+                    .header("host", "localhost")
                     .header("content-type", "application/json")
                     .body(Body::from(body))
                     .unwrap(),
@@ -3325,5 +3447,44 @@ async fn field_edit_requires_an_explicit_value_and_revision() {
             .await
             .unwrap();
         assert_eq!(response.status(), status, "body {body}");
+    }
+}
+
+#[tokio::test]
+async fn invalid_path_parameters_return_correlated_json_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let application = api_router(state(&temp).await);
+    for (method, path) in [
+        (Method::GET, "/api/v1/builds/not-a-number/logs"),
+        (Method::GET, "/api/v1/applications/%FF"),
+        (
+            Method::PUT,
+            "/api/v1/applications/app-test/services/%FF/replicas",
+        ),
+        (
+            Method::PUT,
+            "/api/v1/applications/app-test/services/web/environment/%FF",
+        ),
+        (Method::DELETE, "/api/v1/applications/%FF/repository"),
+        (Method::DELETE, "/api/v1/applications/app-test/services/%FF"),
+        (Method::DELETE, "/api/v1/applications/app-test/volumes/%FF"),
+        (
+            Method::DELETE,
+            "/api/v1/applications/app-test/services/web/environment/%FF",
+        ),
+    ] {
+        let mut request = request(path);
+        *request.method_mut() = method;
+        let response = application.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()["content-type"], "application/json");
+        let request_id = response.headers()["x-request-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error.code, "path_invalid");
+        assert_eq!(error.request_id, request_id);
     }
 }
