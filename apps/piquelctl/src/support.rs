@@ -58,45 +58,39 @@ pub(crate) async fn confirm(
         ));
     }
     console.prompt(prompt)?;
-    set_interaction(true);
-    let reader = tokio::task::spawn_blocking(move || -> io::Result<String> {
+    let answer = read_input("confirmation", || {
         let mut answer = String::new();
         io::stdin().read_line(&mut answer)?;
         Ok(answer)
-    });
-    tokio::select! {
-        answer = reader => {
-            set_interaction(false);
-            let answer = answer
-                .map_err(|error| {
-                    CliError::new(
-                        ErrorKind::General,
-                        format!("could not read confirmation: {error}"),
-                    )
-                })?
-                .map_err(|error| {
-                    CliError::new(
-                        ErrorKind::General,
-                        format!("could not read confirmation: {error}"),
-                    )
-                })?;
-            if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-                Ok(())
-            } else {
-                Err(CliError::new(ErrorKind::Input, "operation was not confirmed"))
-            }
-        }
-        result = tokio::signal::ctrl_c() => {
-            // The blocking reader cannot be cancelled; exiting here keeps the
-            // conventional SIGINT exit code and avoids waiting on stdin.
-            if let Err(error) = result {
-                console.error_message(format_args!("could not install Ctrl-C handler: {error}"));
-            } else {
-                console.error_message("aborted by user");
-            }
-            std::process::exit(130);
-        }
+    })
+    .await?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Ok(())
+    } else {
+        Err(CliError::new(
+            ErrorKind::Input,
+            "operation was not confirmed",
+        ))
     }
+}
+
+/// Runs a blocking read of operator input off the async runtime, so the
+/// command supervisor in `main` keeps handling Ctrl-C. The command timeout is
+/// suspended while the read is open; `main` exits the process directly if the
+/// command fails mid-read, because the blocking reader cannot be cancelled.
+pub(crate) async fn read_input<T: Send + 'static>(
+    what: &str,
+    read: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> Result<T> {
+    set_interaction(true);
+    let result = tokio::task::spawn_blocking(read).await;
+    set_interaction(false);
+    result.map_err(io::Error::other).flatten().map_err(|error| {
+        CliError::new(
+            ErrorKind::General,
+            format!("could not read {what}: {error}"),
+        )
+    })
 }
 
 pub(crate) async fn read_manifest(path: &Path) -> Result<String> {

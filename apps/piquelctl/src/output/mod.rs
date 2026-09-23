@@ -133,11 +133,6 @@ impl Console {
         let _ = self.diagnostic(report);
     }
 
-    /// Fatal interaction messages use the same best-effort error boundary.
-    pub(crate) fn error_message(&mut self, message: impl fmt::Display) {
-        let _ = self.message("Error", message);
-    }
-
     fn diagnostic(&mut self, report: &impl DiagnosticReport) -> Result<()> {
         self.write_stderr(|out| report.render(out))
     }

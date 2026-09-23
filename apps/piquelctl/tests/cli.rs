@@ -1,5 +1,7 @@
 //! Black-box command, transport, pagination, safety, and output tests.
 
+mod support;
+
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -303,7 +305,7 @@ fn run_human(server: &TestServer, arguments: &[&str]) -> Output {
 }
 
 fn run_with_format(server: &TestServer, arguments: &[&str], timeout: &str, json: bool) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_piquelctl"));
+    let mut command = support::command();
     match &server.endpoint {
         Endpoint::Tcp(url) => {
             command.args(["--url", url]);
@@ -662,39 +664,53 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
 }
 
 #[test]
-fn human_plan_has_scannable_sections() {
+fn human_plan_keeps_actions_and_diagnostics_when_configuration_matches_the_deployment() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
-    let server = start_server(true, 1, move |_| {
-        let mut preview = plan("preview-00000001");
-        preview["changes"] = json!([{
-            "field": "services.web.replicas",
-            "before": null,
-            "after": "1"
-        }]);
-        preview["plan"]["actions"] = json!([{
-            "kind": {"action": "resolve_image", "service": "web", "reference": "nginx:alpine"},
-            "reason": {"reason": "resolution_required"}
-        }]);
-        Reply::json(preview)
-    });
+    for identical in [false, true] {
+        let server = start_server(true, 1, move |_| {
+            let mut preview = plan("app-notes-01");
+            preview["identical"] = json!(identical);
+            if !identical {
+                preview["changes"] = json!([{
+                    "field": "services.web.replicas",
+                    "before": null,
+                    "after": "1"
+                }]);
+            }
+            preview["plan"]["actions"] = json!([{
+                "kind": {"action": "resolve_image", "service": "web", "reference": "nginx:alpine"},
+                "reason": {"reason": "resolution_required"}
+            }]);
+            preview["plan"]["diagnostics"] = json!([{
+                "code": "runtime_unavailable", "severity": "warning", "resource": "web",
+                "message": "runtime inspection is unavailable", "blocking": false
+            }]);
+            Reply::json(preview)
+        });
 
-    let output = run_human(
-        &server,
-        &[
-            "app",
-            "plan",
-            "--file",
-            manifest.to_str().expect("manifest path"),
-        ],
-    );
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Application: preview-00000001\n\nChanges:"));
-    assert!(stdout.contains("+ services.web.replicas"));
-    assert!(stdout.contains("Actions: 1 total"));
-    assert!(stdout.contains("1. Resolve image web\n      no risk · resolution required"));
-    let _ = server.finish();
+        let output = run_human(
+            &server,
+            &[
+                "app",
+                "plan",
+                "--file",
+                manifest.to_str().expect("manifest path"),
+            ],
+        );
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if identical {
+            assert!(stdout.contains("Configuration matches the latest deployment snapshot."));
+        } else {
+            assert!(stdout.contains("Application: app-notes-01\n\nChanges:"));
+            assert!(stdout.contains("+ services.web.replicas"));
+        }
+        assert!(stdout.contains("Actions: 1 total"));
+        assert!(stdout.contains("1. Resolve image web\n      no risk · resolution required"));
+        assert!(stdout.contains("runtime inspection is unavailable"));
+        let _ = server.finish();
+    }
 }
 
 #[test]
@@ -766,7 +782,7 @@ fn progress_is_visible_before_the_server_completes_the_command() {
     let Endpoint::Tcp(url) = &server.endpoint else {
         unreachable!()
     };
-    let mut child = Command::new(env!("CARGO_BIN_EXE_piquelctl"))
+    let mut child = support::command()
         .args([
             "--url",
             url,
@@ -1058,7 +1074,7 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     for _ in 0..3 {
         // Rebuild the command each attempt; `Command::args` accumulates, so
         // reusing one command would append duplicate arguments.
-        let mut command = Command::new(env!("CARGO_BIN_EXE_piquelctl"));
+        let mut command = support::command();
         if let Endpoint::Tcp(url) = &interrupt_server.endpoint {
             command.args(["--url", url]);
         } else {
@@ -1089,6 +1105,53 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("was not cancelled"));
     let _ = interrupt_server.stop();
+}
+
+#[test]
+fn ctrl_c_ends_a_pending_secret_read_from_stdin() {
+    let (listed, secrets_listed) = mpsc::channel();
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+        "/api/v1/applications/app-notes-01/secrets" => {
+            listed.send(()).expect("test is waiting");
+            Reply::json(json!([]))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let Endpoint::Tcp(url) = &server.endpoint else {
+        unreachable!()
+    };
+    let mut child = support::command()
+        .args(["--url", url, "app", "secret", "app-notes-01"])
+        .args(["set", "database-password", "--stdin", "--yes"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("piquelctl child");
+    // Keep stdin open without data, so the secret read stays pending.
+    let stdin = child.stdin.take().expect("child stdin");
+    secrets_listed
+        .recv_timeout(Duration::from_secs(10))
+        .expect("secret metadata requested");
+    thread::sleep(Duration::from_millis(200));
+    Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("send SIGINT");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while child.try_wait().expect("child status").is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Ctrl-C did not end the stdin read"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    drop(stdin);
+    let output = child.wait_with_output().expect("interrupted child");
+    assert_eq!(output.status.code(), Some(130));
+    assert!(output.stdout.is_empty());
+    assert_eq!(server.finish().len(), 2, "no secret value was sent");
 }
 
 #[test]
@@ -1149,7 +1212,7 @@ fn fifo_manifest_is_rejected_before_opening() {
             .expect("mkfifo")
             .success()
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_piquelctl"))
+    let output = support::command()
         .args(["--timeout", "100ms", "app", "plan", "--file"])
         .arg(path)
         .output()
@@ -1166,7 +1229,7 @@ fn human_output_reports_a_closed_pipe_without_panicking() {
     };
     let (reader, writer) = std::os::unix::net::UnixStream::pair().expect("output pipe");
     drop(reader);
-    let output = Command::new(env!("CARGO_BIN_EXE_piquelctl"))
+    let output = support::command()
         .args(["--url", url, "operation", "operation-01", "--no-wait"])
         .stdout(Stdio::from(std::os::fd::OwnedFd::from(writer)))
         .output()
@@ -1511,7 +1574,7 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
     assert!(!stderr.contains("--before"));
     server.finish();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_piquelctl"))
+    let output = support::command()
         .args(["--quiet", "--socket", "/nonexistent/piqueld.sock", "status"])
         .output()
         .expect("CLI");
