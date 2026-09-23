@@ -236,6 +236,7 @@ impl<D: DockerApi> Controller<D> {
             };
             let plan = Plan::from_request(&runtime_request, &observed);
             self.check_plan(operation, &plan).await?;
+            self.docker.ensure_swarm(false).await?;
             if operation.kind != OperationKind::Delete {
                 {
                     let _guard = self.mutations.lock().await;
@@ -319,7 +320,7 @@ impl<D: DockerApi> Controller<D> {
             PlanRequest::Reconcile {
                 desired: tokio::select! {
                     ()=cancellation.cancelled()=>return Err(OperationError::Cancelled),
-                    result=tokio::time::timeout(self.prepare_timeout, self.prepare_target(operation,&application))=>result.map_err(|_| OperationError::ValidationFailed("preparation timed out"))??,
+                    result=tokio::time::timeout(self.prepare_timeout, self.prepare_target(operation,&application))=>result.map_err(|source| super::DockerError::unavailable("prepare application", source))??,
                 },
             }
         })
@@ -391,6 +392,7 @@ impl<D: DockerApi> Controller<D> {
         application: &super::StoredApplication,
     ) -> Result<piqueld_core::ResolvedApplication, OperationError> {
         self.check_current(operation).await?;
+        self.docker.ensure_swarm(false).await?;
         if let Some(target) = self
             .store
             .prepared_target(&operation.id)

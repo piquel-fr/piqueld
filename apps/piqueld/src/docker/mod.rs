@@ -24,8 +24,7 @@ use piqueld_core::manifest::{HealthCheck, ResourceLimits};
 use piqueld_core::resource::{
     APPLICATION_LABEL, Convergence, DesiredNetwork, DesiredService, DesiredVolume, INSTANCE_LABEL,
     MANAGED_LABEL, ObservedMount, ObservedNetwork, ObservedService, ObservedTask, ObservedVolume,
-    SERVICE_LABEL, SPEC_HASH_LABEL, TaskDiagnostic, TaskState, image_repository,
-    valid_logical_name,
+    SERVICE_LABEL, TaskDiagnostic, TaskState, image_repository,
 };
 use piqueld_core::{
     ApplicationId, InstanceId, ObservedApplication, ResourceKind, docker_resource_name,
