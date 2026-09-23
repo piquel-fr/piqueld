@@ -13,18 +13,18 @@ refreshes image resolution, including when configuration has not changed.
 Completed deployments retain their terminal state in history.
 Retries use the captured deployment, not subsequent configuration edits.
 
-The piqueld logo links to the home page. The sidebar links to Applications and
-Host settings. The home page and
+The piqueld logo links to the home page. The sidebar links to Applications,
+Builds, and Host settings. The home page and
 Applications show the three most recent deployments across applications; each
 row opens that deployment in its application history. Applications also has a
 compact, clickable directory.
 
 Applications have one main tab row: Overview (the default), Source, Services,
-Volumes, Deployments, and Diagnostics. Services contains the compact service list
+Volumes, Deployments, Diagnostics, Builds, and Logs. Services contains the compact service list
 and observed runtime services. Reconciliation diagnostics appear in Diagnostics.
 Each service row opens a service page
 headed by application / service, with tabs for source and scaling, environment,
-command and arguments, volume mounts, health checks, and resource limits.
+command and arguments, volume mounts, health checks, resource limits, and logs.
 Service form drafts are retained when switching tabs. Selecting None for a
 health check hides its remaining fields.
 The pencil beside the application name opens its rename form. The Overview
@@ -47,8 +47,8 @@ read-only. There is no raw manifest editor or deployment restoration workflow.
 The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
 configured localhost or Tailscale TCP listeners. The Unix socket is API-only,
-and the daemon does not add CORS, authentication, cookies, browser persistence, telemetry, or a public
-binding.
+and the daemon does not add CORS, authentication, cookies, telemetry, or a public
+binding. Log display preferences persist in browser local storage.
 
 ## Development
 

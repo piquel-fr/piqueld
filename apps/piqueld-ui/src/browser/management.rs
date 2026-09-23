@@ -124,10 +124,19 @@ fn transport_failure(error: &ClientError) -> bool {
     matches!(error, ClientError::Transport { .. })
 }
 fn mutation_client() -> Result<Client, String> {
-    let id = window()
+    // Unlike randomUUID, getRandomValues is available on the supported plain
+    // HTTP origins. Keep 128 bits of cryptographic entropy for replay identities.
+    let error = "Browser could not create a request identity.";
+    let mut bytes = [0; 16];
+    window()
         .crypto()
-        .map_err(|_| "Browser could not create a request identity.")?
-        .random_uuid();
+        .map_err(|_| error)?
+        .get_random_values_with_u8_array(&mut bytes)
+        .map_err(|_| error)?;
+    let id = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     Ok(Client::browser().with_request_id(id))
 }
 fn dirty_group<T: Clone + PartialEq + 'static>(
