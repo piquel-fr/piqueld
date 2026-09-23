@@ -101,6 +101,7 @@ impl BollardDocker {
     /// Converts one Docker service specification and its tasks into an observation.
     pub(super) fn observe_service(
         spec: &ServiceSpec,
+        node_id: &str,
         tasks: Vec<ObservedTask>,
         update: Option<bollard::models::ServiceUpdateStatusStateEnum>,
     ) -> Result<ObservedService, DockerError> {
@@ -120,7 +121,7 @@ impl BollardDocker {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let runtime_configuration_matches = ServiceRuntimePolicy::matches(spec);
+        let runtime_configuration_matches = ServiceRuntimePolicy::matches(spec, node_id);
         let healthcheck_configured = container
             .health_check
             .as_ref()
@@ -296,7 +297,7 @@ impl BollardDocker {
         }
     }
 
-    /// Recognizes Docker's reserved canonical HTTP `wget` health-check vector.
+    /// Recognizes Docker's canonical HTTP `wget` health-check vector.
     pub(super) fn observed_wget_health(
         test: &[String],
         interval_seconds: u32,

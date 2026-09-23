@@ -660,3 +660,26 @@ fn normalized_deserialization_revalidates_and_canonicalizes_configuration() {
     let error = serde_json::from_value::<piqueld_core::NormalizedApplication>(wire).unwrap_err();
     assert!(error.to_string().contains("mount"), "{error}");
 }
+
+#[test]
+fn image_repository_rejects_invalid_internal_bytes() {
+    for image in ["a!a", "aAa", "aéa", "a💥a", "example/a+a", "example/a___a"] {
+        assert!(
+            piqueld_core::ImageReference::parse(image).is_err(),
+            "{image}"
+        );
+    }
+    for image in ["a.a", "a_a", "a__a", "a---a", "example/a-b:latest"] {
+        assert!(
+            piqueld_core::ImageReference::parse(image).is_ok(),
+            "{image}"
+        );
+    }
+}
+
+proptest! {
+    #[test]
+    fn image_parser_terminates_for_arbitrary_repository_contents(input in "\\PC{0,128}") {
+        let _ = piqueld_core::ImageReference::parse(format!("a{input}a"));
+    }
+}

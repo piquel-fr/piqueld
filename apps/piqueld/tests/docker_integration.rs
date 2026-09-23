@@ -319,6 +319,23 @@ impl SwarmScenario {
             .inspect_service(self.service.name.as_str(), None::<InspectServiceOptions>)
             .await
             .unwrap();
+        let node_id = raw.info().await.unwrap().swarm.unwrap().node_id.unwrap();
+        let expected_constraint = vec![format!("node.id == {node_id}")];
+        assert_eq!(
+            matching
+                .spec
+                .as_ref()
+                .unwrap()
+                .task_template
+                .as_ref()
+                .unwrap()
+                .placement
+                .as_ref()
+                .unwrap()
+                .constraints
+                .as_ref(),
+            Some(&expected_constraint)
+        );
         let matching_version = matching.version.as_ref().and_then(|version| version.index);
         self.engine.ensure_service_eventually(&self.service).await;
         let unchanged = raw
@@ -333,6 +350,7 @@ impl SwarmScenario {
 
         // Make an owned service drift through the raw API, then verify the adapter repairs it.
         let mut drifted_spec = matching.spec.unwrap();
+        drifted_spec.task_template.as_mut().unwrap().placement = None;
         drifted_spec
             .mode
             .as_mut()
@@ -365,6 +383,21 @@ impl SwarmScenario {
                 .version
                 .and_then(|version| version.index)
                 .is_some_and(|version| matching_version.is_some_and(|previous| version > previous))
+        );
+        assert_eq!(
+            repaired
+                .spec
+                .as_ref()
+                .unwrap()
+                .task_template
+                .as_ref()
+                .unwrap()
+                .placement
+                .as_ref()
+                .unwrap()
+                .constraints
+                .as_ref(),
+            Some(&expected_constraint)
         );
         assert_eq!(
             repaired

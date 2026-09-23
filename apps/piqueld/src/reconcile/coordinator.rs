@@ -166,6 +166,8 @@ impl<D: DockerApi> Controller<D> {
                 | "docker_request_failed"
                 | "convergence_timeout"
                 | "journal_unavailable"
+                | "swarm_manager_unavailable"
+                | "swarm_topology_unsupported"
         ) {
             return false;
         }

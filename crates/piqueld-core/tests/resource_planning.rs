@@ -661,3 +661,101 @@ fn desired_names_are_checked_while_engine_observations_remain_permissive() {
     );
     assert!(!observation.services[0].is_owned_by(&desired.instance_id, &desired.id));
 }
+
+#[test]
+fn command_and_http_health_checks_have_the_same_runtime_meaning() {
+    let mut desired = compile_application(&application(), instance(), &resolutions()).unwrap();
+    let http = piqueld_core::HealthCheck::Http {
+        port: 8080,
+        path: "/health".into(),
+        interval_seconds: 10,
+        timeout_seconds: 3,
+    };
+    desired.services[0].healthcheck = Some(http.clone());
+    let mut snapshot = observed(&desired);
+    let (command, interval_seconds, timeout_seconds) = http.execution();
+    desired.services[0].healthcheck = Some(piqueld_core::HealthCheck::Command {
+        command,
+        interval_seconds,
+        timeout_seconds,
+    });
+    assert!(snapshot.services[0].matches(&desired.services[0]));
+    let request = PlanRequest::Reconcile {
+        desired: desired.clone(),
+    };
+    assert!(Plan::from_request(&request, &snapshot).actions.is_empty());
+    snapshot.services[0].healthcheck = Some(piqueld_core::HealthCheck::Http {
+        port: 8081,
+        path: "/health".into(),
+        interval_seconds,
+        timeout_seconds,
+    });
+    assert!(!snapshot.services[0].matches(&desired.services[0]));
+    assert!(!Plan::from_request(&request, &snapshot).actions.is_empty());
+}
+
+#[test]
+fn planner_rejects_wrong_resource_roles_before_use_or_deletion() {
+    use piqueld_core::resource::SERVICE_LABEL;
+    use piqueld_core::{ResourceKind, docker_resource_name};
+    let desired = compile_application(&application(), instance(), &resolutions()).unwrap();
+    for role in [
+        ResourceKind::Network,
+        ResourceKind::Volume,
+        ResourceKind::Service,
+    ] {
+        let mut snapshot = observed(&desired);
+        match role {
+            ResourceKind::Network => {
+                snapshot.networks[0]
+                    .labels
+                    .insert(SERVICE_LABEL.into(), "web".into());
+            }
+            ResourceKind::Volume => {
+                snapshot.volumes[0]
+                    .labels
+                    .insert(SERVICE_LABEL.into(), "web".into());
+            }
+            ResourceKind::Service => {
+                let service = &mut snapshot.services[0];
+                service
+                    .labels
+                    .insert(SERVICE_LABEL.into(), "INVALID".into());
+                service.name = docker_resource_name(&desired.id, role, Some("INVALID"));
+            }
+        }
+        let deletion = Plan::from_request(
+            &PlanRequest::Delete {
+                application_id: desired.id.clone(),
+                instance_id: instance(),
+            },
+            &snapshot,
+        );
+        assert!(deletion.is_blocked(), "{role:?}");
+        if role != ResourceKind::Service {
+            let plan = Plan::from_request(
+                &PlanRequest::Reconcile {
+                    desired: desired.clone(),
+                },
+                &snapshot,
+            );
+            assert!(plan.is_blocked(), "{role:?}");
+            assert!(
+                !plan
+                    .actions
+                    .iter()
+                    .any(|action| matches!(action.kind, ActionKind::EnsureService { .. }))
+            );
+        }
+    }
+    let mut snapshot = observed(&desired);
+    snapshot.networks[0].name.push_str("-other");
+    let deletion = Plan::from_request(
+        &PlanRequest::Delete {
+            application_id: desired.id.clone(),
+            instance_id: instance(),
+        },
+        &snapshot,
+    );
+    assert!(deletion.is_blocked());
+}

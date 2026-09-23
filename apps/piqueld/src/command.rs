@@ -6,6 +6,23 @@ use tokio::{
     process::Command,
 };
 
+/// Each command owns a process group, so cancellation also stops helpers such
+/// as Git transports and Docker build plugins before the caller releases its slot.
+struct ProcessGroup(Option<rustix::process::Pid>);
+
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        let Some(id) = self.0 else {
+            return;
+        };
+        if let Err(error) = rustix::process::kill_process_group(id, rustix::process::Signal::KILL)
+            && error != rustix::io::Errno::SRCH
+        {
+            tracing::warn!(?error, "failed to stop command process group");
+        }
+    }
+}
+
 pub(crate) struct LoggedCommand;
 impl LoggedCommand {
     const TAIL_BYTES: usize = 8192;
@@ -26,16 +43,28 @@ impl LoggedCommand {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
+            .process_group(0)
             .spawn()
             .with_context(|| operation)?;
+        let mut group = ProcessGroup(Some(
+            child
+                .id()
+                .and_then(|id| i32::try_from(id).ok())
+                .and_then(rustix::process::Pid::from_raw)
+                .context("capture command process group")?,
+        ));
         let stdout = child.stdout.take().context("capture command stdout")?;
         let stderr = child.stderr.take().context("capture command stderr")?;
-        let (status, stdout, stderr) = tokio::try_join!(
-            async { child.wait().await.map_err(anyhow::Error::from) },
+        // Keep the leader unreaped while draining pipes. Its reserved PID prevents
+        // the process-group ID from being reused while cancellation can signal it.
+        let (stdout, stderr) = tokio::try_join!(
             Self::tail_recorded(stdout, log, piqueld_core::api::LogStream::Stdout),
             Self::tail_recorded(stderr, log, piqueld_core::api::LogStream::Stderr),
         )
         .with_context(|| operation)?;
+        let status = child.wait().await.with_context(|| operation)?;
+        // No await may intervene between reaping the leader and disarming.
+        group.0 = None;
         if !status.success() {
             bail!(
                 "{operation} failed ({status}):\nstdout: {}\nstderr: {}",
@@ -101,5 +130,55 @@ mod tests {
         assert!(error.contains("�stdout tail"));
         assert!(error.contains("�stderr tail"));
         assert!(error.len() < LoggedCommand::TAIL_BYTES * 2 + 200);
+    }
+
+    #[tokio::test]
+    async fn cancellation_kills_descendants_in_the_command_group() {
+        // Exercise cancellation with both a live leader and an exited leader
+        // whose descendant still owns its output streams.
+        for ending in ["wait", "exit 0"] {
+            let directory = tempfile::tempdir().unwrap();
+            let pidfile = directory.path().join("descendant.pid");
+            let path = pidfile.clone();
+            let script = format!(r#"sh -c 'echo $$ > "$1"; exec sleep 60' child "$1" & {ending}"#);
+            let command = tokio::spawn(async move {
+                LoggedCommand::run(
+                    Command::new("sh").args(["-c", &script, "parent", path.to_str().unwrap()]),
+                    "cancellation fixture",
+                )
+                .await
+            });
+            let pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if let Ok(contents) = tokio::fs::read_to_string(&pidfile).await
+                        && let Ok(pid) = contents.trim().parse::<u32>()
+                    {
+                        break pid;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            command.abort();
+            assert!(command.await.unwrap_err().is_cancelled());
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    // Orphaned descendants can briefly be zombies until PID 1 reaps
+                    // them. They cannot continue work or retain build pipes/slots.
+                    let status = tokio::fs::read_to_string(format!("/proc/{pid}/stat")).await;
+                    if status
+                        .as_ref()
+                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                        || status.as_ref().is_ok_and(|status| status.contains(") Z "))
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("cancelled command descendant stopped");
+        }
     }
 }

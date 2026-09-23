@@ -1,8 +1,7 @@
 use super::{
     APPLICATION_LABEL, ApplicationId, BTreeMap, BollardDocker, CreateImageOptionsBuilder, Docker,
     DockerError, HashMap, INSTANCE_LABEL, ImageSource, MANAGED_LABEL, ResourceKind, SERVICE_LABEL,
-    SPEC_HASH_LABEL, TryStreamExt, docker_resource_name, docker_resource_readable_prefix,
-    valid_logical_name,
+    TryStreamExt, docker_resource_name, docker_resource_readable_prefix,
 };
 
 impl BollardDocker {
@@ -98,52 +97,28 @@ impl BollardDocker {
             })
     }
 
-    /// Checks the ownership labels shared by an observed and desired resource.
-    pub(super) fn owns(
-        observed: &BTreeMap<String, String>,
-        expected: &BTreeMap<String, String>,
-    ) -> bool {
-        expected.get(MANAGED_LABEL).map(String::as_str) == Some("true")
-            && observed.get(MANAGED_LABEL).map(String::as_str) == Some("true")
-            && expected.get(INSTANCE_LABEL).is_some()
-            && observed.get(INSTANCE_LABEL) == expected.get(INSTANCE_LABEL)
-            && expected
-                .get(APPLICATION_LABEL)
-                .is_none_or(|value| observed.get(APPLICATION_LABEL) == Some(value))
-            && expected.get(APPLICATION_LABEL).is_none_or(|_| {
-                observed
-                    .get(SPEC_HASH_LABEL)
-                    .is_some_and(|hash| Self::valid_spec_hash(hash))
-            })
-            && expected
-                .get(SERVICE_LABEL)
-                .is_none_or(|value| observed.get(SERVICE_LABEL) == Some(value))
-    }
-
-    /// Rechecks ownership and the canonical name before deleting a service.
+    /// Rechecks ownership and the canonical name before mutating a service.
     pub(super) fn owns_named_service(
         observed: &BTreeMap<String, String>,
         expected: &BTreeMap<String, String>,
         name: &str,
     ) -> bool {
-        let Some(application) = expected
-            .get(APPLICATION_LABEL)
-            .and_then(|value| ApplicationId::parse(value.clone()).ok())
-        else {
-            return false;
-        };
-        let Some(service) = observed.get(SERVICE_LABEL) else {
-            return false;
-        };
-        valid_logical_name(service)
-            && Self::owns(observed, expected)
-            && docker_resource_name(&application, ResourceKind::Service, Some(service)) == name
+        Self::owns_resource(observed, expected, ResourceKind::Service, name)
     }
 
-    /// Rechecks ownership and the canonical name before deleting a network.
+    /// Rechecks ownership and the canonical name before mutating a network.
     pub(super) fn owns_private_network(
         observed: &BTreeMap<String, String>,
         expected: &BTreeMap<String, String>,
+        name: &str,
+    ) -> bool {
+        Self::owns_resource(observed, expected, ResourceKind::Network, name)
+    }
+
+    pub(super) fn owns_resource(
+        observed: &BTreeMap<String, String>,
+        expected: &BTreeMap<String, String>,
+        kind: ResourceKind,
         name: &str,
     ) -> bool {
         let Some(application) = expected
@@ -152,14 +127,23 @@ impl BollardDocker {
         else {
             return false;
         };
-        Self::owns(observed, expected)
-            && !observed.contains_key(SERVICE_LABEL)
-            && docker_resource_name(&application, ResourceKind::Network, None) == name
-    }
-
-    /// Returns whether a managed spec label is a valid SHA-256 digest.
-    pub(super) fn valid_spec_hash(value: &str) -> bool {
-        piqueld_core::Sha256Digest::parse(value).is_ok()
+        let Some(instance) = expected
+            .get(INSTANCE_LABEL)
+            .and_then(|value| piqueld_core::InstanceId::parse(value.clone()).ok())
+        else {
+            return false;
+        };
+        expected.get(MANAGED_LABEL).map(String::as_str) == Some("true")
+            && expected
+                .get(SERVICE_LABEL)
+                .is_none_or(|service| observed.get(SERVICE_LABEL) == Some(service))
+            && piqueld_core::OwnershipState::for_resource(
+                observed,
+                &instance,
+                &application,
+                kind,
+                name,
+            ) == piqueld_core::OwnershipState::Owned
     }
 
     /// Returns whether an image reference contains a complete SHA-256 digest.
@@ -194,9 +178,8 @@ impl ImageSource for Docker {
             None,
             None,
         )
-        .try_collect::<Vec<_>>()
+        .try_for_each(|_| std::future::ready(Ok(())))
         .await
-        .map(|_| ())
         .map_err(|error| DockerError::image_resolution("pull image", error))
     }
 }
