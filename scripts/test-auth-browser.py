@@ -101,6 +101,7 @@ try:
     browser.visit(ORIGIN+'/dashboard/')
     browser.wait("return document.body.innerText.includes('Set up piqueld')")
     assert browser.api('me')['status']==401
+    assert browser.async_js("const done=arguments[arguments.length-1];fetch('/api/v1/applications').then(r=>done(r.status)).catch(e=>done(String(e)))")==401
     setup=pathlib.Path(os.environ['AUTH_TEST_SETUP']).read_text().strip()
     browser.visit(setup)
     browser.wait("return document.body.innerText.includes('Create your account')")
@@ -119,6 +120,14 @@ try:
     browser.click('Sign in with a passkey')
     browser.wait("return document.body.innerText.includes('Applications')")
     assert browser.api('me')['body']['id']==alice['id']
+    # The newly merged application editor uses the same authenticated boundary.
+    browser.click('+ Create application')
+    browser.fill('Application name','auth-integration')
+    browser.click('Create application')
+    browser.wait("return location.pathname.includes('/dashboard/applications/') && document.body.innerText.includes('auth-integration')")
+    print('PASS: passkey session can create an application through the new editor', flush=True)
+    browser.visit(ORIGIN+'/dashboard/')
+    browser.wait("return document.body.innerText.includes('Applications')")
     print('PASS: browser setup and username-less passkey login', flush=True)
     # A real signed assertion succeeds exactly once. Browser-supplied identity is
     # untrusted; changing its user handle must not authenticate another account.
