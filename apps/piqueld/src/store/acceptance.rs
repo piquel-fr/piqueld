@@ -29,11 +29,7 @@ impl Store {
         // Replay the original acceptance before applying an override to current intent.
         if force {
             expected_generation = None;
-            if let Mutation::Apply {
-                expected_application_id,
-                ..
-            }
-            | Mutation::Save {
+            if let Mutation::Save {
                 expected_application_id,
                 ..
             } = &mut mutation
@@ -42,7 +38,7 @@ impl Store {
             }
         }
         let (current, latest) = Self::mutation_snapshot(&mut tx, &mutation).await?;
-        if let Mutation::Apply { application, .. } | Mutation::Save { application, .. } = &mutation
+        if let Mutation::Save { application, .. } = &mutation
             && let Some(current) = &current
             && current.application.spec().manifest.is_some()
             && current.application.spec_hash() != application.spec_hash()
@@ -112,26 +108,12 @@ impl Store {
             expected_generation,
         )?;
         Ok(match mutation {
-            Mutation::Apply {
-                application,
-                expected_application_id,
-            } => {
-                Self::accept_apply(
-                    tx,
-                    application,
-                    expected_application_id,
-                    current,
-                    latest,
-                    expected_generation,
-                )
-                .await?
-            }
             Mutation::Save {
-                mut application,
+                application,
                 expected_application_id,
                 deploy,
             } => {
-                application = application.with_id(Self::application_identity(
+                let application = application.with_id(Self::application_identity(
                     current.as_ref(),
                     expected_application_id.as_deref(),
                 )?);
@@ -286,39 +268,12 @@ impl Store {
         ))
     }
 
-    async fn accept_apply(
-        tx: &mut Transaction<'_, Sqlite>,
-        mut application: piqueld_core::NormalizedApplication,
-        expected_application_id: Option<String>,
-        current: Option<StoredApplication>,
-        latest: Option<Operation>,
-        expected_generation: Option<u64>,
-    ) -> Result<(MutationResponse, bool), StoreError> {
-        application = application.with_id(Self::application_identity(
-            current.as_ref(),
-            expected_application_id.as_deref(),
-        )?);
-        let identical = current
-            .as_ref()
-            .is_some_and(|app| !app.delete_intent && app.application == application);
-        let operation = if identical {
-            latest.ok_or(StoreError::Corrupt)?
-        } else {
-            Self::save_application_on(tx, &application, None, expected_generation).await?
-        };
-        let mut accepted = AcceptedOperation::from(&operation);
-        if identical {
-            accepted.generation = current.as_ref().map_or(0, |app| app.generation);
-        }
-        Ok((MutationResponse::Operation(accepted), !identical))
-    }
-
     async fn mutation_snapshot(
         tx: &mut Transaction<'_, Sqlite>,
         mutation: &Mutation,
     ) -> Result<(Option<StoredApplication>, Option<Operation>), StoreError> {
         let (id, name) = match mutation {
-            Mutation::Apply { application, .. } | Mutation::Save { application, .. } => {
+            Mutation::Save { application, .. } => {
                 (None, Some(application.metadata().name.as_str()))
             }
             Mutation::Edit { id, .. }

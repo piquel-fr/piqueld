@@ -54,7 +54,7 @@ impl Store {
     /// Stores changed intent, preserving the previous resolved deployment during preparation.
     /// Optional resolved state supports importing an already prepared target.
     /// # Errors
-    /// Returns storage, revision, or name collision errors.
+    /// Returns storage, revision, name collision, or pending-deletion errors.
     pub async fn save_application(
         &self,
         app: &NormalizedApplication,
@@ -86,8 +86,28 @@ impl Store {
         let resolved_generation = resolved.as_ref().map(|_| generation);
         let name = app.metadata().name.as_str();
         let now = now_ms();
-        sqlx::query!("INSERT INTO applications(id,name,desired_json,resolved_json,generation,resolved_generation,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?7) ON CONFLICT(id) DO UPDATE SET desired_json=excluded.desired_json,generation=excluded.generation,resolved_json=COALESCE(excluded.resolved_json,applications.resolved_json),resolved_generation=COALESCE(excluded.resolved_generation,applications.resolved_generation),delete_intent=0,updated_at_ms=excluded.updated_at_ms",id,name,desired,resolved,generation,resolved_generation,now)
-            .execute(&mut **tx).await.map_err(|error| if error.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) { StoreError::AlreadyExists } else { StoreError::database(error) })?;
+        let changed = sqlx::query!(
+            "INSERT INTO applications(id,name,desired_json,resolved_json,generation,resolved_generation,created_at_ms,updated_at_ms)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?7)
+             ON CONFLICT(id) DO UPDATE SET desired_json=excluded.desired_json,generation=excluded.generation,
+             resolved_json=COALESCE(excluded.resolved_json,applications.resolved_json),
+             resolved_generation=COALESCE(excluded.resolved_generation,applications.resolved_generation),
+             updated_at_ms=excluded.updated_at_ms WHERE applications.delete_intent=0",
+            id,name,desired,resolved,generation,resolved_generation,now
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(|error| {
+            if error.as_database_error().is_some_and(sqlx::error::DatabaseError::is_unique_violation) {
+                StoreError::AlreadyExists
+            } else {
+                StoreError::database(error)
+            }
+        })?
+        .rows_affected();
+        if changed != 1 {
+            return Err(StoreError::IllegalTransition);
+        }
         let operation = Self::insert_operation(tx, app.id(), OperationKind::Apply, now).await?;
         sqlx::query!(
             "UPDATE operations SET target_json=?1 WHERE id=?2",

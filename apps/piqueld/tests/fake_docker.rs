@@ -1021,7 +1021,7 @@ impl ControllerHarness {
 }
 
 #[tokio::test]
-async fn apply_is_durable_before_resolution_and_deploy_is_explicit() {
+async fn save_and_deploy_are_durable_before_resolution_and_reconcile_reuses_images() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let manifest = manifest();
@@ -1036,19 +1036,20 @@ async fn apply_is_durable_before_resolution_and_deploy_is_explicit() {
     harness.finish(&accepted).await;
     let pulls = harness.pulls().await;
     let repeated = applications
-        .apply(manifest.clone().validate().unwrap(), Some(1))
+        .save(manifest.clone().validate().unwrap(), Some(1))
         .await
         .unwrap();
-    assert_eq!(repeated.id, accepted.id);
+    assert!(repeated.operation_id.is_none());
+    assert_eq!(repeated.generation, 2);
     assert_eq!(harness.pulls().await, pulls);
     let reconcile = applications
-        .reconcile(&accepted.application_id, Some(1))
+        .reconcile(&accepted.application_id, Some(2))
         .await
         .unwrap();
     harness.finish(&reconcile).await;
     assert_eq!(harness.pulls().await, pulls);
     let refresh = applications
-        .deploy(&accepted.application_id, Some(1))
+        .deploy(&accepted.application_id, Some(2))
         .await
         .unwrap();
     assert_ne!(refresh.id, accepted.id);
@@ -1061,7 +1062,7 @@ async fn apply_is_durable_before_resolution_and_deploy_is_explicit() {
             .await
             .unwrap()
             .generation,
-        1
+        2
     );
     let events = harness
         .store
@@ -1152,11 +1153,21 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
             .await
             .is_err()
     );
-    let restored = applications
-        .apply(manifest.validate().unwrap(), Some(4))
-        .await
-        .unwrap();
-    assert_eq!(restored.generation, 5);
+    assert!(matches!(
+        applications
+            .apply(manifest.validate().unwrap(), Some(4))
+            .await,
+        Err(piqueld::api::ApplicationError::Store(
+            piqueld::store::StoreError::IllegalTransition
+        ))
+    ));
+    let deleting = harness.store.get(&first.application_id).await.unwrap();
+    assert_eq!(deleting.generation, 4);
+    assert!(deleting.delete_intent);
+    assert_eq!(
+        harness.store.operation(&deletion.id).await.unwrap().state,
+        OperationState::Requested
+    );
 }
 
 #[tokio::test]
@@ -1379,7 +1390,7 @@ fn manifest() -> piqueld_core::manifest::ApplicationManifest {
 }
 
 #[tokio::test]
-async fn configuration_changes_reuse_active_images_and_rename_preserves_resources() {
+async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resources() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let mut input = manifest();
@@ -1404,10 +1415,10 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
         .environment
         .insert("TOKEN".into(), "private-value".into());
     let changed = applications
-        .apply(input.clone().validate().unwrap(), Some(1))
+        .save(input.clone().validate().unwrap(), Some(1))
         .await
         .unwrap();
-    harness.finish(&changed).await;
+    assert!(changed.operation_id.is_none());
     assert_eq!(harness.pulls().await, pulls);
     let app = harness.store.get(&first.application_id).await.unwrap();
     assert!(
@@ -1477,7 +1488,7 @@ async fn configuration_changes_reuse_active_images_and_rename_preserves_resource
 }
 
 #[tokio::test]
-async fn failed_preparation_preserves_active_repair_and_identical_apply_does_not_retry() {
+async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
     let mut input = manifest();
@@ -1504,12 +1515,24 @@ async fn failed_preparation_preserves_active_repair_and_identical_apply_does_not
     assert_eq!(failure.phase.as_deref(), Some("resolving_image"));
     assert_eq!(failure.resource.as_deref(), Some("web"));
     let pulls = harness.pulls().await;
-    let duplicate = applications
-        .apply(input.validate().unwrap(), None)
+    let response = applications
+        .accept(
+            piqueld::api::Mutation::save(
+                input.validate().unwrap(),
+                Some(first.application_id.to_string()),
+                false,
+            ),
+            Some(failed.generation),
+            false,
+            None,
+        )
         .await
         .unwrap();
-    assert_eq!(duplicate.state, OperationState::Failed);
-    assert_eq!(duplicate.attempt, failure.attempt);
+    let piqueld::api::MutationResponse::Saved(saved) = response else {
+        panic!("saved configuration")
+    };
+    assert!(saved.operation_id.is_none());
+    assert_eq!(harness.store.operation(&failed.id).await.unwrap(), failure);
     assert_eq!(harness.pulls().await, pulls);
     {
         let mut observed = harness.docker.observed.lock().await;
@@ -1777,6 +1800,8 @@ mod repository_deployments {
         let repository = RepositoryFixture::new();
         let harness = ControllerHarness::new().await;
         let initial = repository.manifest("app.json");
+        repository.write("app.json", &initial);
+        repository.commit();
         let first = harness
             .applications()
             .apply(initial.clone().validate().unwrap(), Some(0))
@@ -1846,6 +1871,8 @@ mod repository_deployments {
         repository.commit();
         let harness = ControllerHarness::new().await;
         let initial = repository.manifest("app.json");
+        repository.write("app.json", &initial);
+        repository.commit();
         let first = harness
             .applications()
             .apply(initial.clone().validate().unwrap(), Some(0))
@@ -1853,6 +1880,8 @@ mod repository_deployments {
             .unwrap();
         harness.finish(&first).await;
         let before = harness.store.get(&first.application_id).await.unwrap();
+        std::fs::remove_file(repository.directory.path().join("app.json")).unwrap();
+        repository.commit();
         let missing = RepositoryFixture::deploy(&harness, &first.application_id).await;
         assert_eq!(missing.error_code.as_deref(), Some("manifest_not_found"));
         let mut invalid = initial.clone();
@@ -1890,6 +1919,8 @@ mod repository_deployments {
         let repository = RepositoryFixture::new();
         let harness = ControllerHarness::new().await;
         let initial = repository.manifest("app.json");
+        repository.write("app.json", &initial);
+        repository.commit();
         let first = harness
             .applications()
             .apply(initial.clone().validate().unwrap(), Some(0))
@@ -1960,17 +1991,17 @@ mod repository_deployments {
         fetched.metadata.name = "wrong-later-name".into();
         repository.write("app.json", &fetched);
         repository.commit();
-        let first = harness
+        let saved = harness
             .applications()
-            .apply(bootstrap.validate().unwrap(), Some(0))
+            .save(bootstrap.validate().unwrap(), Some(0))
             .await
             .unwrap();
-        harness.finish(&first).await;
-        let deployment = RepositoryFixture::deploy(&harness, &first.application_id).await;
+        let application_id = ApplicationId::parse(saved.application_id).unwrap();
+        let deployment = RepositoryFixture::deploy(&harness, &application_id).await;
         assert_eq!(deployment.state, OperationState::Succeeded);
         let resolved = harness
             .store
-            .get(&first.application_id)
+            .get(&application_id)
             .await
             .unwrap()
             .resolved

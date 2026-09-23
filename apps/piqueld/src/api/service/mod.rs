@@ -47,17 +47,10 @@ pub enum ApplicationError {
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Mutation {
-    /// Replace intent by name, optionally requiring the previously inspected identity.
-    Apply {
-        /// Normalized manifest; acceptance assigns its stable ID.
-        application: NormalizedApplication,
-        /// Previously inspected stable ID.
-        expected_application_id: Option<String>,
-    },
     /// Save configuration, optionally deploying its snapshot atomically.
     Save {
         /// Normalized configuration.
-        application: NormalizedApplication,
+        application: Box<NormalizedApplication>,
         /// Inspected application identity.
         expected_application_id: Option<String>,
         /// Whether to create a deployment after saving.
@@ -118,20 +111,9 @@ impl Mutation {
         deploy: bool,
     ) -> Self {
         Self::Save {
-            application: Self::pending_application(manifest),
+            application: Box::new(Self::pending_application(manifest)),
             expected_application_id,
             deploy,
-        }
-    }
-
-    /// Creates normalized apply intent before the store assigns application identity.
-    /// # Panics
-    /// Panics if the built-in placeholder ID is invalid.
-    #[must_use]
-    pub fn apply(manifest: ValidatedApplication, expected_application_id: Option<String>) -> Self {
-        Self::Apply {
-            application: Self::pending_application(manifest),
-            expected_application_id,
         }
     }
 
@@ -181,7 +163,7 @@ impl ApplicationService {
 
     /// Accepts a mutation and records its receipt in the same transaction.
     /// `expected_generation` is the last inspected intent revision: zero requires
-    /// absence. Mutations other than reconcile require a revision; apply and save
+    /// absence. Mutations other than reconcile require a revision; saves
     /// also require the inspected identity when the revision is nonzero. An
     /// explicit force override bypasses revision and name-based identity checks.
     /// `request_id` is the caller's idempotency key, not an operation ID: replay
@@ -197,11 +179,7 @@ impl ApplicationService {
     ) -> Result<MutationResponse, ApplicationError> {
         if !force {
             let missing = match &mutation {
-                Mutation::Apply {
-                    expected_application_id,
-                    ..
-                }
-                | Mutation::Save {
+                Mutation::Save {
                     expected_application_id,
                     ..
                 } => {
