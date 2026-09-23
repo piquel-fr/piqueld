@@ -2,9 +2,9 @@
 use super::{dirty_group, editor};
 use leptos::{
     Callback, CollectView, For, IntoView, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate,
-    SignalWith, component, create_rw_signal, event_target_value, view,
+    SignalWith, component, create_effect, create_rw_signal, event_target_value, view,
 };
-use piqueld_client::Route;
+use piqueld_client::{Route, edit::ApplicationEdit};
 
 #[component]
 pub(super) fn RouteSettings() -> impl IntoView {
@@ -19,8 +19,23 @@ pub(super) fn RouteSettings() -> impl IntoView {
     let draft = create_rw_signal(initial);
     let baseline = create_rw_signal(draft.get_untracked());
     dirty_group("routes".into(), draft, baseline);
+    create_effect(move |_| {
+        let saved_routes = context.saved.with(|saved| {
+            saved
+                .application
+                .to_manifest()
+                .spec
+                .routes
+                .into_iter()
+                .map(|route| (route.hostname, route.service, route.port.to_string()))
+                .collect::<Vec<_>>()
+        });
+        if draft.get_untracked() == baseline.get_untracked() {
+            draft.set(saved_routes.clone());
+            baseline.set(saved_routes);
+        }
+    });
     let save = move |_| {
-        let mut manifest = context.manifest();
         let mut routes = Vec::new();
         for (hostname, service, port) in draft.get_untracked() {
             let Ok(port) = port.parse::<u16>() else {
@@ -35,9 +50,8 @@ pub(super) fn RouteSettings() -> impl IntoView {
                 port,
             });
         }
-        manifest.spec.routes = routes;
         context.save(
-            manifest,
+            ApplicationEdit::Routes(routes),
             Callback::new(move |saved: piqueld_client::ApplicationView| {
                 let normalized = saved
                     .application

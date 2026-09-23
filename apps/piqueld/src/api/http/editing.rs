@@ -16,8 +16,8 @@ use piqueld_core::{
     edit::{
         ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, MemoryValue,
         MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue, ResourcesValue,
-        SecondsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue,
-        StringsValue, VolumesValue,
+        RoutesValue, SecondsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue,
+        StringValue, StringsValue, VolumesValue,
     },
     manifest::{Mount, Service, Volume},
 };
@@ -68,6 +68,7 @@ macro_rules! edit_endpoint {
     (@id $first:ident $(,$rest:ident)*) => { $first };
 }
 edit_endpoint!(set_application_volumes, put, "/api/v1/applications/{id}/volumes", (id: String = "id"), VolumesValue, body::<VolumesValue>, |_, body: VolumesValue| ApplicationEdit::Volumes(body.value));
+edit_endpoint!(set_application_routes, put, "/api/v1/applications/{id}/routes", (id: String = "id"), RoutesValue, body::<RoutesValue>, |_, body: RoutesValue| ApplicationEdit::Routes(body.value));
 edit_endpoint!(set_application_name, put, "/api/v1/applications/{id}/name", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::Name(body.value));
 edit_endpoint!(set_manifest_repository, put, "/api/v1/applications/{id}/repository", (id: String = "id"), RepositoryValue, body::<RepositoryValue>, |_, body: RepositoryValue| ApplicationEdit::Repository(body.value));
 #[utoipa::path(delete, path = "/api/v1/applications/{id}/repository", operation_id = "disconnect_manifest_repository",
@@ -263,6 +264,7 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::new()
         .routes(routes!(create_application))
         .routes(routes!(set_application_volumes))
+        .routes(routes!(set_application_routes))
         .routes(routes!(set_application_name))
         .routes(routes!(set_manifest_repository))
         .routes(routes!(disconnect_manifest_repository))

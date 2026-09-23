@@ -1632,6 +1632,95 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/routes`
+
+    Arguments:
+    - `id`
+    - `deploy`: Deploy the changed configuration; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_application_routes<'a>(
+        &'a self,
+        id: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::RoutesValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/routes",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_application_routes",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Sends a `POST` request to `/api/v1/applications/{id}/services`
 
     Arguments:

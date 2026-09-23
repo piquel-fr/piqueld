@@ -2,14 +2,14 @@
 use crate::{
     cli::{Cli, CreateArgs, DeploymentArgs},
     commands::{resolve_application, wait_for_operation},
-    error::Result,
+    error::{CliError, ErrorKind, Result},
     output::{Console, reports::SavedDeploymentReport},
     support::{confirm, retry_transport},
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
-    Build, Client, GitRepository, HealthCheck, Mount, RepositoryManifest, SavedApplication,
-    Service, Source, Volume,
+    ApplicationView, Build, Client, GitRepository, HealthCheck, Mount, RepositoryManifest, Route,
+    SavedApplication, Service, Source, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit},
 };
 
@@ -265,6 +265,31 @@ pub(crate) enum VolumeCommand {
     Remove(VolumeArgs),
 }
 #[derive(Debug, Args)]
+pub(crate) struct RouteTarget {
+    /// Application name or stable ID.
+    app: String,
+    /// Exact public DNS hostname.
+    hostname: String,
+    #[command(flatten)]
+    flags: EditFlags,
+}
+#[derive(Debug, Args)]
+pub(crate) struct AddRouteArgs {
+    #[command(flatten)]
+    target: RouteTarget,
+    /// Backend service name.
+    service: String,
+    /// Internal HTTP port.
+    port: u16,
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum RouteCommand {
+    /// Add an HTTPS route to an application.
+    Add(AddRouteArgs),
+    /// Remove an HTTPS route by hostname.
+    Remove(RouteTarget),
+}
+#[derive(Debug, Args)]
 pub(crate) struct RepositoryTarget {
     app: String,
     #[command(flatten)]
@@ -489,6 +514,48 @@ impl VolumeCommand {
         save(cli, client, console, &args.app, &args.flags, &edit).await
     }
 }
+impl RouteCommand {
+    pub(crate) async fn run(
+        &self,
+        cli: &Cli,
+        client: &Client,
+        console: &mut Console,
+    ) -> Result<()> {
+        let target = match self {
+            Self::Add(args) => &args.target,
+            Self::Remove(target) => target,
+        };
+        let current = resolve_application(client, &target.app).await?;
+        let mut routes = current.application.to_manifest().spec.routes;
+        match self {
+            Self::Add(args) => routes.push(Route {
+                hostname: target.hostname.clone(),
+                service: args.service.clone(),
+                port: args.port,
+            }),
+            Self::Remove(_) => {
+                let count = routes.len();
+                let hostname = target.hostname.trim_end_matches('.').to_ascii_lowercase();
+                routes.retain(|route| route.hostname != hostname);
+                if routes.len() == count {
+                    return Err(CliError::new(
+                        ErrorKind::Input,
+                        format!("route {:?} was not found", target.hostname),
+                    ));
+                }
+            }
+        }
+        save_loaded(
+            cli,
+            client,
+            console,
+            current,
+            &target.flags,
+            &ApplicationEdit::Routes(routes),
+        )
+        .await
+    }
+}
 impl RepositoryCommand {
     pub(crate) async fn run(
         &self,
@@ -544,6 +611,17 @@ pub(crate) async fn save(
     edit: &ApplicationEdit,
 ) -> Result<()> {
     let current = resolve_application(client, app).await?;
+    save_loaded(cli, client, console, current, flags, edit).await
+}
+
+async fn save_loaded(
+    cli: &Cli,
+    client: &Client,
+    console: &mut Console,
+    current: ApplicationView,
+    flags: &EditFlags,
+    edit: &ApplicationEdit,
+) -> Result<()> {
     let action = if flags.deployment.deploy {
         "Save and deploy changes to"
     } else {

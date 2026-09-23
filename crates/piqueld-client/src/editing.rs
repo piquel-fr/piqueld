@@ -4,8 +4,8 @@ use piqueld_core::{
     edit::{
         ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, MemoryValue,
         MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue, ResourcesValue,
-        SecondsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue,
-        StringsValue, VolumesValue,
+        RoutesValue, SecondsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue,
+        StringValue, StringsValue, VolumesValue,
     },
     manifest::{Mount, Service, Volume},
 };
@@ -25,6 +25,7 @@ macro_rules! edit_method {
     };
 }
 edit_method!(set_application_volumes, (id), request: VolumesValue);
+edit_method!(set_application_routes, (id), request: RoutesValue);
 edit_method!(set_application_name, (id), request: StringValue);
 edit_method!(set_manifest_repository, (id), request: RepositoryValue);
 edit_method!(disconnect_manifest_repository, (id));
@@ -99,6 +100,9 @@ impl Client {
         match edit {
             ApplicationEdit::Volumes(value) => {
                 send!(set_application_volumes, VolumesValue, value.clone())
+            }
+            ApplicationEdit::Routes(value) => {
+                send!(set_application_routes, RoutesValue, value.clone())
             }
             ApplicationEdit::Name(value) => send!(set_application_name, StringValue, value.clone()),
             ApplicationEdit::Repository(None) => {

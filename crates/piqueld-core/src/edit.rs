@@ -1,7 +1,7 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
     ApplicationManifest, Build, GitRepository, HealthCheck, Mount, RepositoryManifest,
-    ResourceLimits, Service, Source, Volume,
+    ResourceLimits, Route, Service, Source, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -34,6 +34,7 @@ value_request! {
     EnvironmentValue: BTreeMap<String, String>;
     MountsValue: Vec<Mount>;
     VolumesValue: Vec<Volume>;
+    RoutesValue: Vec<Route>;
     RepositoryValue: Option<RepositoryManifest>;
 }
 
@@ -87,6 +88,8 @@ pub enum ApplicationEdit {
     AddVolume(Volume),
     /// Replace the named volume declarations.
     Volumes(Vec<Volume>),
+    /// Replace public routes owned by this application.
+    Routes(Vec<Route>),
     /// Remove a volume declaration; validation rejects remaining mounts.
     RemoveVolume(String),
 }
@@ -222,11 +225,16 @@ impl ApplicationEdit {
                     .position(|s| s.name == name)
                     .ok_or(EditError::NotFound {
                         kind: "service",
-                        name,
+                        name: name.clone(),
                     })?;
                 manifest.spec.services.remove(index);
+                manifest.spec.routes.retain(|route| route.service != name);
             }
             Self::Service { name, edit } => {
+                let renamed_to = match &edit {
+                    ServiceEdit::Name(value) => Some(value.clone()),
+                    _ => None,
+                };
                 let service = manifest
                     .spec
                     .services
@@ -234,11 +242,19 @@ impl ApplicationEdit {
                     .find(|s| s.name == name)
                     .ok_or(EditError::NotFound {
                         kind: "service",
-                        name,
+                        name: name.clone(),
                     })?;
                 edit.apply(service)?;
+                if let Some(new_name) = renamed_to {
+                    for route in &mut manifest.spec.routes {
+                        if route.service == name {
+                            route.service.clone_from(&new_name);
+                        }
+                    }
+                }
             }
             Self::Volumes(volumes) => manifest.spec.volumes = volumes,
+            Self::Routes(routes) => manifest.spec.routes = routes,
             Self::AddVolume(volume) => {
                 if manifest.spec.volumes.iter().any(|v| v.name == volume.name) {
                     return Err(EditError::AlreadyExists {
@@ -442,4 +458,54 @@ pub struct EditOptions {
     pub force: bool,
     /// Deploy the changed configuration; omitted/false saves only.
     pub deploy: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApplicationEdit, ServiceEdit};
+    use crate::manifest::{ApplicationManifest, ApplicationSpec, Metadata, Route, Service, Source};
+
+    #[test]
+    fn service_edits_keep_public_routes_attached_to_existing_services() {
+        let mut manifest = ApplicationManifest {
+            api_version: crate::manifest::APPLICATION_API_VERSION.into(),
+            kind: crate::manifest::APPLICATION_KIND.into(),
+            metadata: Metadata { name: "app".into() },
+            spec: ApplicationSpec {
+                services: vec![Service {
+                    name: "web".into(),
+                    source: Source::Image {
+                        image: "nginx:alpine".into(),
+                    },
+                    replicas: 1,
+                    environment: std::collections::BTreeMap::default(),
+                    command: vec![],
+                    arguments: vec![],
+                    mounts: vec![],
+                    healthcheck: None,
+                    resources: None,
+                }],
+                ..ApplicationSpec::default()
+            },
+        };
+        ApplicationEdit::Routes(vec![Route {
+            hostname: "app.example.com".into(),
+            service: "web".into(),
+            port: 3000,
+        }])
+        .apply(&mut manifest)
+        .unwrap();
+        ApplicationEdit::Service {
+            name: "web".into(),
+            edit: ServiceEdit::Name("frontend".into()),
+        }
+        .apply(&mut manifest)
+        .unwrap();
+        assert_eq!(manifest.spec.routes[0].service, "frontend");
+        manifest.clone().validate().unwrap();
+        ApplicationEdit::RemoveService("frontend".into())
+            .apply(&mut manifest)
+            .unwrap();
+        assert!(manifest.spec.routes.is_empty());
+    }
 }

@@ -155,6 +155,8 @@ piquelctl app volume add notes data --yes
 piquelctl app service mount set notes web data /var/lib/data --yes
 piquelctl app service mount remove notes web /var/lib/data --yes
 piquelctl app volume remove notes data --yes
+piquelctl app route add notes notes.example.com web 3000 --yes
+piquelctl app route remove notes notes.example.com --yes
 piquelctl app service health http notes web 8080 --path /live --check-timeout 3 --yes
 piquelctl app service health interval notes web 20 --yes
 piquelctl app service health clear notes web --yes
@@ -167,6 +169,8 @@ and captures a deployment atomically, then waits for it; add `--no-wait` to retu
 its receipt immediately. No local manifest file is read or rewritten. The server
 validates the complete result, so removing a mounted volume is rejected until its
 mounts are removed. Removing declarations retains Docker volume data.
+Route edits preserve other routes and use the inspected generation to reject
+concurrent changes. Deploy after saving to activate or remove public routing.
 
 Command and argument arrays preserve individual shell arguments; place command
 options before `--`. An empty array clears the setting. Optional limits and pinned
