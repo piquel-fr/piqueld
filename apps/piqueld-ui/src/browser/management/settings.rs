@@ -3,7 +3,7 @@ use super::{Modal, dirty_group, editor, text_input};
 use crate::editor::{Section, ServiceForm};
 use leptos::{
     Callback, For, IntoView, RwSignal, Show, SignalGet, SignalGetUntracked, SignalSet,
-    SignalUpdate, SignalWith, SignalWithUntracked, View, component, create_rw_signal,
+    SignalUpdate, SignalWith, SignalWithUntracked, View, component, create_memo, create_rw_signal,
     event_target_checked, event_target_value, view,
 };
 use piqueld_client::{
@@ -346,65 +346,68 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
 
 pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> View {
     match section {
-        Section::General => view! {
-            <div class="form-grid">
-                <label class="field">
-                    <span>"Source"</span>
-                    <select
-                        prop:value={move || form.get().source_kind}
-                        on:change={move |ev| {
-                            form.update(|v| v.source_kind = event_target_value(&ev));
-                        }}
-                    >
-                        <option value="image">"Container image"</option>
-                        <option value="git">"Git / Dockerfile"</option>
-                    </select>
-                </label>
-                {move || {
-                    if form.get().source_kind == "git" {
-                        view! {
-                            <>
-                                {text_input(
-                                    "Repository",
-                                    form,
-                                    |v| v.repository.clone(),
-                                    |v, s| v.repository = s,
-                                )}
-                                {text_input(
-                                    "Branch",
-                                    form,
-                                    |v| v.branch.clone(),
-                                    |v, s| v.branch = s,
-                                )}
-                                {text_input(
-                                    "Commit (optional)",
-                                    form,
-                                    |v| v.commit.clone(),
-                                    |v, s| v.commit = s,
-                                )}
-                                {text_input(
-                                    "Dockerfile path",
-                                    form,
-                                    |v| v.dockerfile.clone(),
-                                    |v, s| v.dockerfile = s,
-                                )}
-                                {text_input(
-                                    "Build context",
-                                    form,
-                                    |v| v.context.clone(),
-                                    |v, s| v.context = s,
-                                )}
-                            </>
-                        }
+        Section::General => {
+            let git_source = create_memo(move |_| form.with(|form| form.source_kind == "git"));
+            view! {
+                <div class="form-grid">
+                    <label class="field">
+                        <span>"Source"</span>
+                        <select
+                            prop:value={move || form.get().source_kind}
+                            on:change={move |ev| {
+                                form.update(|v| v.source_kind = event_target_value(&ev));
+                            }}
+                        >
+                            <option value="image">"Container image"</option>
+                            <option value="git">"Git / Dockerfile"</option>
+                        </select>
+                    </label>
+                    {move || {
+                        if git_source.get() {
+                            view! {
+                                <>
+                                    {text_input(
+                                        "Repository",
+                                        form,
+                                        |v| v.repository.clone(),
+                                        |v, s| v.repository = s,
+                                    )}
+                                    {text_input(
+                                        "Branch",
+                                        form,
+                                        |v| v.branch.clone(),
+                                        |v, s| v.branch = s,
+                                    )}
+                                    {text_input(
+                                        "Commit (optional)",
+                                        form,
+                                        |v| v.commit.clone(),
+                                        |v, s| v.commit = s,
+                                    )}
+                                    {text_input(
+                                        "Dockerfile path",
+                                        form,
+                                        |v| v.dockerfile.clone(),
+                                        |v, s| v.dockerfile = s,
+                                    )}
+                                    {text_input(
+                                        "Build context",
+                                        form,
+                                        |v| v.context.clone(),
+                                        |v, s| v.context = s,
+                                    )}
+                                </>
+                            }
                             .into_view()
-                    } else {
-                        text_input("Container image", form, |v| v.image.clone(), |v, s| v.image = s)
-                    }
-                }}
-                {text_input("Replicas", form, |v| v.replicas.clone(), |v, s| v.replicas = s)}
-            </div>
+                        } else {
+                            text_input("Container image", form, |v| v.image.clone(), |v, s| v.image = s)
+                        }
+                    }}
+                    {text_input("Replicas", form, |v| v.replicas.clone(), |v, s| v.replicas = s)}
+                </div>
+            }
+            .into_view()
         }
-        .into_view(),
         Section::Environment => environment_fields(form),
         Section::Process => view! {
             <p class="help">

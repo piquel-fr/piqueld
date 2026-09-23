@@ -42,10 +42,14 @@ impl LogLine {
                 text.push_str(&chunk.text);
             }
             let mut position = 0;
+            let mut chunk_index = 0;
             for line in text.split_inclusive('\n') {
-                let Some((_, offset, timestamp)) =
-                    starts.iter().rev().find(|(start, _, _)| *start <= position)
-                else {
+                // Both line and chunk positions only advance; visit each
+                // chunk boundary once, including partial and interleaved lines.
+                while chunk_index + 1 < starts.len() && starts[chunk_index + 1].0 <= position {
+                    chunk_index += 1;
+                }
+                let Some((_, offset, timestamp)) = starts.get(chunk_index) else {
                     continue;
                 };
                 lines.push((
@@ -107,5 +111,38 @@ mod tests {
         );
         assert_eq!(lines[1].severity(), "stderr");
         assert_eq!(lines[2].severity(), "error");
+    }
+
+    #[test]
+    fn build_lines_keep_the_timestamp_of_their_first_chunk() {
+        let chunks = [
+            (0, LogStream::Stdout, "first\nse"),
+            (8, LogStream::Stderr, "warn"),
+            (12, LogStream::Stdout, "co"),
+            (14, LogStream::Stdout, "nd\nthird\nfour"),
+            (27, LogStream::Stderr, "ing\n"),
+            (31, LogStream::Stdout, "th\nfifth"),
+        ]
+        .map(|(offset, stream, text)| BuildLogChunk {
+            offset,
+            stream,
+            timestamp_ms: offset,
+            text: text.into(),
+        });
+        let lines = LogLine::build(&chunks, "web");
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| (line.message.as_str(), line.timestamp.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("first", "0"),
+                ("second", "0"),
+                ("warning", "8"),
+                ("third", "14"),
+                ("fourth", "14"),
+                ("fifth", "31")
+            ],
+        );
     }
 }

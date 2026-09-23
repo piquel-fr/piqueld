@@ -65,7 +65,7 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
             elapsed += 1;
         }
     });
-    let lines = Signal::derive(move || {
+    let lines = create_memo(move |_| {
         logs.get()
             .map(|logs| LogLine::runtime(logs.items))
             .unwrap_or_default()

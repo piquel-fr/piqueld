@@ -213,7 +213,7 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
         }
     });
     let service = record.get_untracked().service;
-    let lines = Signal::derive(move || LogLine::build(&chunks.get(), &service));
+    let lines = create_memo(move |_| chunks.with(|chunks| LogLine::build(chunks, &service)));
     view! {
         <div class="build-output-heading"><h4>"Build output"</h4></div>
         <div class="log-toolbar">

@@ -1,4 +1,4 @@
-//! Small, transport-independent state helpers for the read-only dashboard.
+//! Small, transport-independent state helpers for the dashboard.
 
 use piqueld_client::{ApplicationState, Convergence};
 use std::{collections::BTreeSet, time::Duration};

@@ -115,7 +115,7 @@ pub(super) fn LogViewer(
     let height = store_value(0);
     let updating = store_value(false);
     create_effect(move |_| {
-        let _ = lines.get();
+        lines.with(|_| ());
         // A prepended chunk can complete an existing partial line, so rendered
         // line equality cannot reliably identify an older page insertion.
         let revision = prepend_revision.get();
