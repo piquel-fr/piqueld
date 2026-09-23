@@ -64,38 +64,28 @@ pub(crate) async fn confirm(
         io::stdin().read_line(&mut answer)?;
         Ok(answer)
     });
-    tokio::select! {
-        answer = reader => {
-            set_interaction(false);
-            let answer = answer
-                .map_err(|error| {
-                    CliError::new(
-                        ErrorKind::General,
-                        format!("could not read confirmation: {error}"),
-                    )
-                })?
-                .map_err(|error| {
-                    CliError::new(
-                        ErrorKind::General,
-                        format!("could not read confirmation: {error}"),
-                    )
-                })?;
-            if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-                Ok(())
-            } else {
-                Err(CliError::new(ErrorKind::Input, "operation was not confirmed"))
-            }
-        }
-        result = tokio::signal::ctrl_c() => {
-            // The blocking reader cannot be cancelled; exiting here keeps the
-            // conventional SIGINT exit code and avoids waiting on stdin.
-            if let Err(error) = result {
-                console.error_message(format_args!("could not install Ctrl-C handler: {error}"));
-            } else {
-                console.error_message("aborted by user");
-            }
-            std::process::exit(130);
-        }
+    let answer = reader.await;
+    set_interaction(false);
+    let answer = answer
+        .map_err(|error| {
+            CliError::new(
+                ErrorKind::General,
+                format!("could not read confirmation: {error}"),
+            )
+        })?
+        .map_err(|error| {
+            CliError::new(
+                ErrorKind::General,
+                format!("could not read confirmation: {error}"),
+            )
+        })?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Ok(())
+    } else {
+        Err(CliError::new(
+            ErrorKind::Input,
+            "operation was not confirmed",
+        ))
     }
 }
 

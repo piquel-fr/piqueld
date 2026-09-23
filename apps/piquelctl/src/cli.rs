@@ -73,7 +73,7 @@ pub(crate) enum Command {
     Builds(BuildArgs),
     /// Preview creation or replacement from a TOML manifest.
     Plan(ManifestArgs),
-    /// Plan, confirm, and apply a TOML manifest.
+    /// Inspect, confirm, and save a TOML manifest; optionally deploy it.
     Apply(ApplyArgs),
     /// Confirm and delete an application by name or ID.
     Delete(DeleteArgs),

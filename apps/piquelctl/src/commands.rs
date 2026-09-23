@@ -20,7 +20,7 @@ use piqueld_client::{
 };
 use serde_json::json;
 use std::{collections::BTreeSet, path::PathBuf};
-use tokio::{signal, time};
+use tokio::time;
 
 use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
 
@@ -390,33 +390,18 @@ async fn wait_for_operation(
     client: &Client,
     operation_id: &str,
 ) -> Result<Operation> {
-    let wait = async {
-        let progress = console.start_task(operation_id);
-        loop {
-            let operation = client.operation(operation_id).await?;
-            if operation.state.terminal() {
-                progress.finish(
-                    OperationProgress::outcome(&operation),
-                    &OperationProgress::message(&operation),
-                );
-                return finish_operation(operation);
-            }
-            progress.update(&OperationProgress::message(&operation));
-            time::sleep(POLL_INTERVAL).await;
+    let progress = console.start_task(operation_id);
+    loop {
+        let operation = client.operation(operation_id).await?;
+        if operation.state.terminal() {
+            progress.finish(
+                OperationProgress::outcome(&operation),
+                &OperationProgress::message(&operation),
+            );
+            return finish_operation(operation);
         }
-    };
-    tokio::select! {
-        result = wait => result,
-        result = signal::ctrl_c() => {
-            result.map_err(|error| CliError::new(
-                ErrorKind::General,
-                format!("could not install Ctrl-C handler: {error}"),
-            ))?;
-            Err(CliError::new(
-                ErrorKind::Interrupted,
-                "wait interrupted; the server-side operation was not cancelled",
-            ))
-        }
+        progress.update(&OperationProgress::message(&operation));
+        time::sleep(POLL_INTERVAL).await;
     }
 }
 
@@ -531,43 +516,35 @@ async fn wait_for_deletion(
     id: &str,
     operation_id: &str,
 ) -> Result<()> {
-    let wait = async {
-        let progress = console.start_task(operation_id);
-        loop {
-            match client.application(id).await {
-                Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {
-                    progress.finish(TaskOutcome::Succeeded, "deleted");
-                    return Ok(());
-                }
-                Err(error) => return Err(error.into()),
-                Ok(_) => {}
+    let progress = console.start_task(operation_id);
+    loop {
+        match client.application(id).await {
+            Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {
+                progress.finish(TaskOutcome::Succeeded, "deleted");
+                return Ok(());
             }
-            match client.operation(operation_id).await {
-                Ok(operation) => {
-                    progress.update(&OperationProgress::message(&operation));
-                    if operation.state.terminal() {
-                        if !matches!(
-                            operation.state,
-                            OperationState::Succeeded | OperationState::Superseded
-                        ) {
-                            progress.finish(
-                                TaskOutcome::Failed,
-                                &OperationProgress::message(&operation),
-                            );
-                        }
-                        finish_operation(operation)?;
-                    }
-                }
-                Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {}
-                Err(error) => return Err(error.into()),
-            }
-            time::sleep(POLL_INTERVAL).await;
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
         }
-    };
-    tokio::select! {result=wait=>result,result=signal::ctrl_c()=>{
-        result.map_err(|error|CliError::new(ErrorKind::General,error.to_string()))?;
-        Err(CliError::new(ErrorKind::Interrupted,"wait interrupted; deletion continues on the server"))
-    }}
+        match client.operation(operation_id).await {
+            Ok(operation) => {
+                progress.update(&OperationProgress::message(&operation));
+                if operation.state.terminal() {
+                    if !matches!(
+                        operation.state,
+                        OperationState::Succeeded | OperationState::Superseded
+                    ) {
+                        progress
+                            .finish(TaskOutcome::Failed, &OperationProgress::message(&operation));
+                    }
+                    finish_operation(operation)?;
+                }
+            }
+            Err(ClientError::Api { status, .. }) if status.as_u16() == 404 => {}
+            Err(error) => return Err(error.into()),
+        }
+        time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 struct OperationProgress;

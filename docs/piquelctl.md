@@ -177,8 +177,9 @@ operation record). It does not wait for the replacement to deploy. An observed
 failed attempt returns failure even if the controller will retry automatically.
 `--no-wait` returns immediately. For long image pulls,
 use a longer `--timeout` or return immediately and inspect the operation later.
-Pressing Ctrl-C ends only the local wait; it does not cancel the server-side
-operation, which can still be inspected with `piquelctl operation <id>`.
+Pressing Ctrl-C ends the local command, including confirmation and network
+requests. It does not cancel an accepted server-side operation, which can still
+be inspected with `piquelctl operation <id>`.
 
 The commonly useful exit codes are 0 for success or supersession, 1 for a general error, 2 for
 usage or input errors, 3 for conflicts, 4 for unavailable or timed

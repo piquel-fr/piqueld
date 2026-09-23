@@ -1,4 +1,6 @@
 //! Profiles exercise precedence through the real command without changing process globals.
+mod support;
+
 use std::process::{Command, Output};
 struct ProfilesFixture {
     directory: tempfile::TempDir,
@@ -18,16 +20,7 @@ timeout = "2s"
         Self { directory }
     }
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_piquelctl"));
-        for name in [
-            "PIQUELD_PROFILE",
-            "PIQUELD_PROFILES_FILE",
-            "PIQUELD_SOCKET",
-            "PIQUELD_URL",
-            "PIQUELD_TIMEOUT",
-        ] {
-            command.env_remove(name);
-        }
+        let mut command = support::command();
         command.env(
             "PIQUELD_PROFILES_FILE",
             self.directory.path().join("profiles.toml"),
