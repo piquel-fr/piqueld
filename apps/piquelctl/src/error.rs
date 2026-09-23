@@ -4,7 +4,7 @@ use crate::{
 };
 use piqueld_client::{ClientError, PlanView, TransportFailure};
 use serde_json::Value;
-use std::{fmt, io, process::ExitCode};
+use std::{fmt, io};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ErrorKind {
@@ -85,8 +85,8 @@ impl CliError {
         .invalid_response()
     }
 
-    pub(crate) fn exit_code(&self) -> ExitCode {
-        ExitCode::from(self.kind.exit_code())
+    pub(crate) fn exit_code(&self) -> u8 {
+        self.kind.exit_code()
     }
 
     pub(crate) fn api(mut self, code: String, request_id: String, details: Value) -> Self {

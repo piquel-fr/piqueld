@@ -35,7 +35,13 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             console.error(&ErrorReport::new(&error, &cli));
-            error.exit_code()
+            let code = error.exit_code();
+            // A blocking stdin reader cannot be cancelled. Do not let runtime
+            // shutdown wait for it after the command has been interrupted.
+            if support::interaction_active() {
+                std::process::exit(i32::from(code));
+            }
+            ExitCode::from(code)
         }
     }
 }
@@ -49,7 +55,8 @@ async fn run_with_timeout(cli: &Cli, console: &mut Console) -> Result<(), CliErr
     // timeout diagnostics can never echo rejected URL input.
     let client = commands::build_client(cli)?;
     let command = commands::run(cli, &client, console);
-    tokio::pin!(command);
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(command, interrupt);
     let mut deadline = checked_deadline(Instant::now(), cli.timeout)
         .map_err(|error| error.configuration(cli.connection_sources.timeout.to_string()))?;
     // Set while an interactive prompt is open; think time is excluded by
@@ -66,6 +73,16 @@ async fn run_with_timeout(cli: &Cli, console: &mut Console) -> Result<(), CliErr
         }
         tokio::select! {
             result = &mut command => return result,
+            result = &mut interrupt => {
+                result.map_err(|error| CliError::new(
+                    ErrorKind::General,
+                    format!("could not install Ctrl-C handler: {error}"),
+                ))?;
+                return Err(CliError::new(
+                    ErrorKind::Interrupted,
+                    "command interrupted; any server-side operation was not cancelled",
+                ));
+            }
             // An interaction started or finished; re-evaluate from the top.
             () = support::interaction_changed() => {}
             // The deadline is suspended while an interactive prompt is open.

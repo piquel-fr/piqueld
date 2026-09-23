@@ -295,7 +295,7 @@ report!(PlanView, self, out, {
     out.label("Application", &self.application_id)?;
     if self.identical {
         out.blank()?;
-        return out.line("No changes. The manifest is already current.");
+        out.line("Configuration matches the latest deployment snapshot.")?;
     }
     if !self.changes.is_empty() {
         out.blank()?;
