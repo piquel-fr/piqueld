@@ -267,34 +267,8 @@ impl Store {
         }
 
         let migration_start = usize::try_from(version).map_err(StoreError::schema_mismatch)?;
-        let now = now_ms();
-        let generated = format!("instance-{}", Uuid::now_v7().simple());
-        let schema_version = i64::try_from(SCHEMA_VERSION).map_err(StoreError::schema_mismatch)?;
-        let final_version = MIGRATIONS.len();
         for (index, migration) in MIGRATIONS.iter().enumerate().skip(migration_start) {
-            let mut tx = pool
-                .begin_with("BEGIN IMMEDIATE")
-                .await
-                .map_err(StoreError::database)?;
-            sqlx::raw_sql(migration)
-                .execute(&mut *tx)
-                .await
-                .map_err(StoreError::database)?;
-            Self::set_user_version(&mut tx, index + 1).await?;
-            if index + 1 == final_version {
-                // Commit the instance metadata row atomically with the last
-                // version bump so a crash can never migrate without identity.
-                sqlx::query!(
-                    "INSERT INTO instance_metadata(singleton,instance_id,schema_version,created_at_ms) VALUES(1,?1,?2,?3) ON CONFLICT(singleton) DO UPDATE SET schema_version=excluded.schema_version",
-                    generated,
-                    schema_version,
-                    now
-                )
-                .execute(&mut *tx)
-                .await
-                .map_err(StoreError::database)?;
-            }
-            tx.commit().await.map_err(StoreError::database)?;
+            Self::apply_migration(&pool, index + 1, migration).await?;
         }
 
         let row = sqlx::query!(
@@ -316,6 +290,39 @@ impl Store {
             build_history: crate::config::BuildHistoryConfig::default(),
             writers: std::sync::Arc::default(),
         })
+    }
+
+    async fn apply_migration(
+        pool: &SqlitePool,
+        version: usize,
+        migration: &str,
+    ) -> Result<(), StoreError> {
+        let mut tx = pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(StoreError::database)?;
+        sqlx::raw_sql(migration)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        Self::set_user_version(&mut tx, version).await?;
+        let generated = format!("instance-{}", Uuid::now_v7().simple());
+        let schema_version = i64::try_from(version).map_err(StoreError::schema_mismatch)?;
+        let now = now_ms();
+        // Every committed boundary is independently reopenable. The first
+        // migration creates identity; later migrations preserve it.
+        sqlx::query!(
+            "INSERT INTO instance_metadata(singleton,instance_id,schema_version,created_at_ms)
+             VALUES(1,?1,?2,?3)
+             ON CONFLICT(singleton) DO UPDATE SET schema_version=excluded.schema_version",
+            generated,
+            schema_version,
+            now
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)
     }
 
     async fn set_user_version(
@@ -470,5 +477,72 @@ impl ApplicationRow {
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn every_committed_migration_reopens_after_a_later_migration_fails() {
+        for committed in 0..=MIGRATIONS.len() {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("migration.db");
+            let options = SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true)
+                .foreign_keys(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await
+                .unwrap();
+            for (index, migration) in MIGRATIONS.iter().take(committed).enumerate() {
+                Store::apply_migration(&pool, index + 1, migration)
+                    .await
+                    .unwrap();
+            }
+            assert!(
+                Store::apply_migration(
+                    &pool,
+                    committed + 1,
+                    "CREATE TABLE incomplete_migration(id INTEGER); INSERT INTO missing_table VALUES(1);",
+                )
+                .await
+                .is_err()
+            );
+            let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(usize::try_from(version).unwrap(), committed);
+            let incomplete: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='incomplete_migration'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(incomplete, 0);
+            let identity = if committed == 0 {
+                None
+            } else {
+                let row = sqlx::query!(
+                    "SELECT instance_id,schema_version FROM instance_metadata WHERE singleton=1"
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                assert_eq!(row.schema_version, version);
+                Some(row.instance_id)
+            };
+            pool.close().await;
+
+            let reopened = Store::open(&path).await.unwrap();
+            if let Some(identity) = identity {
+                assert_eq!(reopened.instance_id(), identity);
+            }
+            reopened.pool.close().await;
+        }
     }
 }

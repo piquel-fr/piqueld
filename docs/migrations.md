@@ -11,8 +11,10 @@ tables: instance metadata, applications, application status, operations,
 informational events, and request receipts. Accepted manifests may have no resolved
 target yet; operation preparation publishes the target after planning checks.
 Operation promotion is durable, so restart recovery knows whether to maintain the
-old target during preparation or continue the new rollout. SQLite writers queue
-asynchronously to avoid contention between concurrent application futures.
+old target during preparation or continue the new rollout. All runtime SQLite
+writers, including build output, commit metadata, completion, and recovery,
+share an asynchronous queue. Read-then-write transactions acquire SQLite's write
+lock before reading, preventing stale WAL snapshots during concurrent builds.
 Request receipts are committed with acceptance and expire after 24 hours,
 independently of operation and event retention. Earlier prototype schemas, including those without the distinct `superseded`
 operation state, require a fresh database.
@@ -23,7 +25,10 @@ until source preparation succeeds, and are removed with their operation history.
 Existing version-1 databases are upgraded while retaining instance identity.
 
 Startup reads `PRAGMA user_version`, rejects an unsupported newer schema, and
-applies missing embedded migrations transactionally.
+applies missing embedded migrations transactionally. Each migration commits its
+schema changes, `user_version`, and matching instance metadata together. A
+restart or later migration failure can resume from any committed version without
+changing the instance identity.
 
 `0002_deployments.sql` separates editable configuration from deployment inputs.
 Each deployment references its execution operation and captures a manifest and
@@ -53,3 +58,13 @@ Migration 0004 adds executor-independent build attempts and bounded output chunk
 Build metadata is owned by the application rather than an operation, so pruning
 operation history cannot erase build history. Interrupted running records are
 recovered at coordinator startup; output retention leaves metadata intact.
+
+`0005_structured_build_logs.sql` adds capture timestamps and stdout/stderr
+identity to output chunks. Old unstructured output is marked expired because
+its missing provenance cannot be reconstructed; build metadata remains intact.
+The stream index supports filtering before backward pagination.
+
+`0006_history_pagination.sql` aligns the deployment application index with its
+ID-based cursor and ordering. Filtered event/build queries use direct application
+equality, and filtered output uses direct stream equality, so their existing
+compound indexes bound each page without scanning unrelated history.

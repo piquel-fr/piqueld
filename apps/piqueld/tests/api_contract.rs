@@ -2535,7 +2535,6 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     let manifest = manifest().validate().unwrap();
     let id = piqueld_core::ApplicationId::parse("absent-application").unwrap();
     for mutation in [
-        Mutation::apply(manifest.clone(), None),
         Mutation::save(manifest.clone(), None, false),
         Mutation::Deploy { id: id.clone() },
         Mutation::Delete { id: id.clone() },

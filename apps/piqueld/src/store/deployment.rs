@@ -3,6 +3,12 @@ use super::{ApplicationId, NormalizedApplication, Operation, Store, StoreError, 
 use piqueld_core::api::{DeploymentView, Page, SavedApplication};
 use sqlx::{Sqlite, Transaction};
 
+struct DeploymentRow {
+    id: String,
+    manifest_json: String,
+    succeeded_at_ms: Option<i64>,
+}
+
 impl Store {
     pub(super) async fn save_configuration_on(
         tx: &mut Transaction<'_, Sqlite>,
@@ -96,7 +102,29 @@ impl Store {
             .transpose()?;
         let app_id = app.as_str();
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
-        let mut rows = sqlx::query!("SELECT d.id AS \"id!\",d.manifest_json,d.succeeded_at_ms FROM deployments d WHERE d.application_id=?1 AND (?2 IS NULL OR d.id<?2) ORDER BY d.id DESC LIMIT ?3",app_id,before,limit_sql).fetch_all(&mut *tx).await.map_err(StoreError::database)?;
+        let mut rows = if let Some(before) = before {
+            sqlx::query_as!(
+                DeploymentRow,
+                "SELECT id AS \"id!\",manifest_json,succeeded_at_ms FROM deployments
+                 WHERE application_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+                app_id,
+                before,
+                limit_sql
+            )
+            .fetch_all(&mut *tx)
+            .await
+        } else {
+            sqlx::query_as!(
+                DeploymentRow,
+                "SELECT id AS \"id!\",manifest_json,succeeded_at_ms FROM deployments
+                 WHERE application_id=?1 ORDER BY id DESC LIMIT ?2",
+                app_id,
+                limit_sql
+            )
+            .fetch_all(&mut *tx)
+            .await
+        }
+        .map_err(StoreError::database)?;
         let more = rows.len() > limit;
         rows.truncate(limit);
         let next_cursor = more
@@ -166,7 +194,7 @@ mod tests {
         let (MutationResponse::Saved(saved), wake) = store
             .accept(
                 Mutation::Save {
-                    application: app,
+                    application: Box::new(app),
                     expected_application_id: None,
                     deploy: false,
                 },
@@ -181,6 +209,76 @@ mod tests {
         };
         assert!(!wake);
         saved
+    }
+
+    #[tokio::test]
+    async fn save_and_deploy_accepts_saved_only_configuration_but_cannot_reverse_deletion() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let saved = save(&store, empty(), 0).await;
+        let id = ApplicationId::parse(&saved.application_id).unwrap();
+        let application = store.get(&id).await.unwrap().application;
+        let (MutationResponse::Saved(deployed), wake) = store
+            .accept(
+                Mutation::Save {
+                    application: Box::new(application.clone()),
+                    expected_application_id: Some(saved.application_id),
+                    deploy: true,
+                },
+                Some(saved.generation),
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("saved deployment")
+        };
+        assert!(wake);
+        let operation_id = deployed.operation_id.unwrap();
+        assert_eq!(
+            store.deployment_manifest(&operation_id).await.unwrap(),
+            application
+        );
+        let deletion = store
+            .request_delete(&id, Some(deployed.generation))
+            .await
+            .unwrap();
+        for deploy in [false, true] {
+            assert!(matches!(
+                store
+                    .accept(
+                        Mutation::Save {
+                            application: Box::new(application.clone()),
+                            expected_application_id: Some(id.to_string()),
+                            deploy,
+                        },
+                        Some(deletion.generation),
+                        false,
+                        None,
+                    )
+                    .await,
+                Err(StoreError::IllegalTransition)
+            ));
+        }
+        assert!(matches!(
+            store
+                .save_application(&application, None, Some(deletion.generation))
+                .await,
+            Err(StoreError::IllegalTransition)
+        ));
+        let current = store.get(&id).await.unwrap();
+        assert!(current.delete_intent);
+        assert_eq!(current.generation, deletion.generation);
+        assert_eq!(
+            store
+                .latest_operation_for_application(&id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            deletion.id
+        );
     }
 
     #[tokio::test]
