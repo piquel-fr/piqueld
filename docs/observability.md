@@ -7,6 +7,9 @@ collector management, or external daemon-outage monitoring in this implementatio
 
 ## History and diagnostics
 
+Saved typed edits record their field and resource in application history without
+copying configuration values.
+
 An operation groups execution attempts; an attempt groups actions. Action events
 carry an action ID, operation ID, application ID, generation, attempt, phase,
 resource, request/retry number, and completed duration where applicable. Source

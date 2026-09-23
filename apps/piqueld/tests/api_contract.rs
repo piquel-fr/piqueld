@@ -3329,6 +3329,51 @@ async fn field_edit_requires_an_explicit_value_and_revision() {
 }
 
 #[tokio::test]
+async fn typed_edits_record_safe_field_history() {
+    use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let edit = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::EnvironmentEntry(("SECRET".into(), Some("private-value".into()))),
+    };
+    api.client
+        .edit_application(
+            &saved.application_id,
+            &edit,
+            &EditOptions {
+                expected_generation: Some(saved.generation),
+                ..EditOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    let events = api
+        .client
+        .events(Some(&saved.application_id), None, 100)
+        .await
+        .unwrap();
+    let recorded = events
+        .items
+        .iter()
+        .find(|e| e.kind == "application_edited")
+        .unwrap();
+    assert_eq!(recorded.phase.as_deref(), Some("service"));
+    assert_eq!(recorded.resource.as_deref(), Some("web"));
+    assert_eq!(recorded.generation, Some(2));
+    assert!(
+        !serde_json::to_string(recorded)
+            .unwrap()
+            .contains("private-value")
+    );
+}
+
+#[tokio::test]
 async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
