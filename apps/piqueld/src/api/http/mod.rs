@@ -25,6 +25,7 @@ use crate::store::StoreError;
 mod applications;
 mod auth;
 pub use auth::Authenticator;
+mod browser;
 mod builds;
 mod deployments;
 mod editing;
@@ -358,11 +359,22 @@ pub fn router(state: ApiState, auth: impl Authenticator) -> Router {
 /// Builds the API-only router used by the Unix-socket client transport.
 pub fn api_router(state: ApiState, auth: impl Authenticator) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
-    finish_router(router.fallback(api_fallback), state, &openapi, auth)
+    finish_router(router.fallback(api_fallback), state, &openapi, auth, None)
 }
 
 /// Builds the TCP router from the API, liveness, and optional UI boundaries.
 pub fn web_router(state: ApiState, ui_assets: UiAssets, auth: impl Authenticator) -> Router {
+    web_router_with_hosts(state, ui_assets, auth, Vec::new())
+}
+
+/// Builds a TCP router allowing additional explicitly trusted DNS hostnames.
+/// Literal IP addresses and localhost are always allowed.
+pub fn web_router_with_hosts(
+    state: ApiState,
+    ui_assets: UiAssets,
+    auth: impl Authenticator,
+    allowed_hosts: Vec<String>,
+) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
     let router = router.merge(health_router());
     let router = match ui_assets {
@@ -372,7 +384,13 @@ pub fn web_router(state: ApiState, ui_assets: UiAssets, auth: impl Authenticator
             .route("/dashboard", get(ui::redirect))
             .fallback(move |request: Request| ui_fallback(bundle, request)),
     };
-    let router = finish_router(router, state, &openapi, auth);
+    let router = finish_router(
+        router,
+        state,
+        &openapi,
+        auth,
+        Some(browser::BrowserPolicy::new(allowed_hosts)),
+    );
     match ui_assets {
         UiAssets::Disabled => router,
         UiAssets::Embedded(_) => router.layer(middleware::from_fn(ui::security_headers)),
@@ -389,6 +407,7 @@ fn finish_router(
     state: ApiState,
     openapi: &utoipa::openapi::OpenApi,
     auth: impl Authenticator,
+    browser_policy: Option<browser::BrowserPolicy>,
 ) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     // 405 responses must advertise exactly the methods each matched endpoint
@@ -399,6 +418,13 @@ fn finish_router(
         let allow_routes = Arc::clone(&allow_routes);
         async move { method_not_allowed(&allow_routes, matched.as_ref()) }
     });
+    let router = if let Some(policy) = browser_policy {
+        router.layer(middleware::from_fn(move |request, next| {
+            policy.clone().enforce(request, next)
+        }))
+    } else {
+        router
+    };
     // Authentication may reject requests without reaching a handler. Keep it
     // inside the shared request tracing and error/diagnostic response layers.
     auth.guard(router)
@@ -828,4 +854,31 @@ pub fn metrics_router(state: ApiState) -> Router {
             ),
         )
         .with_state(state)
+}
+
+/// Keeps Axum path decoding failures inside the API's structured error contract.
+struct ApiPath<T>(T);
+
+impl<S, T> axum::extract::FromRequestParts<S> for ApiPath<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned + Send,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        axum::extract::Path::<T>::from_request_parts(parts, state)
+            .await
+            .map(|axum::extract::Path(value)| Self(value))
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "path_invalid",
+                    "invalid URL path parameter",
+                )
+            })
+    }
 }

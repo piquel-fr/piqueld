@@ -1,8 +1,5 @@
-use super::{ApiError, ApiState, ok, openapi::ApiErrorResponse};
-use axum::{
-    extract::{Path, State},
-    response::IntoResponse,
-};
+use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
+use axum::{extract::State, response::IntoResponse};
 use piqueld_core::Operation;
 use piqueld_core::api::Envelope;
 
@@ -21,7 +18,7 @@ use piqueld_core::api::Envelope;
 )]
 pub(super) async fn get(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(ok(state.operation(&id).await?))
 }

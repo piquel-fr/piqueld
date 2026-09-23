@@ -101,6 +101,23 @@ impl DaemonConfig {
         crate::auth::Auth::validate_origin(&self.auth.public_url)
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
         absolute_file("docker.socket", &self.docker.socket)?;
+        for host in &self.server.allowed_hosts {
+            if host.len() > 253
+                || host.split('.').any(|label| {
+                    label.is_empty()
+                        || label.len() > 63
+                        || label.starts_with('-')
+                        || label.ends_with('-')
+                        || !label
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                })
+            {
+                return Err(ConfigError::Invalid(
+                    "server.allowed_hosts must contain DNS hostnames without schemes, ports, or wildcards".into(),
+                ));
+            }
+        }
         if self.server.port == 0 {
             return Err(ConfigError::Invalid(
                 "server.port must be greater than zero".into(),
@@ -202,6 +219,9 @@ pub struct ServerConfig {
     /// Interfaces exposing the authenticated API over HTTP. Defaults to no TCP.
     #[serde(default)]
     pub listen_mode: ListenMode,
+    /// Trusted DNS hostnames for TCP requests, in addition to localhost and IP literals.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
     /// Shared port for all selected TCP addresses.
     #[serde(default = "default_port")]
     pub port: u16,
@@ -266,6 +286,7 @@ impl Default for ServerConfig {
             runtime_dir: default_runtime_dir(),
             listen_mode: ListenMode::default(),
             port: default_port(),
+            allowed_hosts: Vec::new(),
         }
     }
 }

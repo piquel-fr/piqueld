@@ -108,6 +108,7 @@ pub(super) fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value 
         }
     }
     remove_nullable_parameters(&mut document);
+    complete_http_contract(&mut document);
     document
 }
 
@@ -180,7 +181,26 @@ fn convert_to_openapi_30(value: &mut Value) {
     }
 }
 
-/// Optional HTTP parameters are absent rather than represented as JSON null.
+/// Adds the TCP middleware error to every documented endpoint.
+fn complete_http_contract(document: &mut Value) {
+    let Some(paths) = document.get_mut("paths").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for item in paths.values_mut().filter_map(Value::as_object_mut) {
+        for operation in item.values_mut().filter_map(Value::as_object_mut) {
+            if let Some(responses) = operation
+                .get_mut("responses")
+                .and_then(Value::as_object_mut)
+            {
+                responses.insert("403".into(), serde_json::json!({
+                    "description": "TCP authority or browser origin is not trusted",
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}
+                }));
+            }
+        }
+    }
+}
+
 fn remove_nullable_parameters(document: &mut Value) {
     let Some(paths) = document.get_mut("paths").and_then(Value::as_object_mut) else {
         return;

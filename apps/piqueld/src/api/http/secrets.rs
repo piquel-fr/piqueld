@@ -1,8 +1,8 @@
 //! Write-only values and metadata-only secret lifecycle endpoints.
-use super::{ApiError, ApiState, ok, openapi::ApiErrorResponse};
+use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
 use axum::{
     body::Bytes,
-    extract::{Path, State, rejection::BytesRejection},
+    extract::{State, rejection::BytesRejection},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
@@ -28,7 +28,7 @@ impl utoipa::PartialSchema for SecretValue {
 #[utoipa::path(get,path="/api/v1/applications/{id}/secrets",operation_id="applicationSecrets",params(("id"=String,Path)),responses((status=200,description="Secret metadata",body=Envelope<Vec<SecretMetadata>>),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn list(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(ok(state.secrets(&ApplicationId::parse(id)?).await?))
 }
@@ -50,7 +50,7 @@ fn expected(headers: &HeaderMap) -> Result<i64, ApiError> {
 #[utoipa::path(put,path="/api/v1/applications/{id}/secrets/{name}",operation_id="putApplicationSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header)),request_body(content=inline(SecretValue),content_type="application/octet-stream"),responses((status=200,description="Updated metadata; no secret value",body=Envelope<SecretMetadata>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn put(
     State(state): State<ApiState>,
-    Path((id, name)): Path<(String, String)>,
+    ApiPath((id, name)): ApiPath<(String, String)>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -88,7 +88,7 @@ pub(super) async fn put(
 #[utoipa::path(delete,path="/api/v1/applications/{id}/secrets/{name}",operation_id="deleteApplicationSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header)),responses((status=200,description="Secret deleted",body=Envelope<bool>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn delete(
     State(state): State<ApiState>,
-    Path((id, name)): Path<(String, String)>,
+    ApiPath((id, name)): ApiPath<(String, String)>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     let generation = expected(&headers)?;
