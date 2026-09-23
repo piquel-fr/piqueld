@@ -2,7 +2,7 @@
 
 The Rust `generate_openapi` binary produces the OpenAPI 3.0 document at
 `docs/openapi-v1.json`, then passes a client-specific copy directly to
-Progenitor 0.15.0. It writes the resulting operations to
+Progenitor 0.11. It writes the resulting operations to
 `crates/piqueld-client/src/generated.rs`. Both artifacts are prepared before
 either checked-in file is updated.
 

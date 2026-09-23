@@ -9,7 +9,7 @@
     },
     {
       "name": "Run Control Plane",
-      "command": "just run",
+      "command": "just dev",
       "icon": "play"
     },
     {

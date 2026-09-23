@@ -213,8 +213,8 @@ passes preparation; initial acceptance returns the currently stored generation.
 Failures use `manifest_not_found`, `manifest_fetch_failed`, or `manifest_invalid`.
 Direct apply may repair manifest connection settings but rejects changes to
 repository-managed runtime fields with `409 repository_managed`.
-The legacy refresh endpoint resolves stored service sources without fetching a
-new manifest; reconcile retries the latest operation with its saved inputs.
+Reconcile retries the latest operation with its saved inputs; deploy refreshes
+sources and fetches repository-backed configuration when configured.
 
 `GET /api/v1/applications/{id}/manifest` downloads saved configuration as `application/toml`, with an attachment filename and `Cache-Control: no-store`. It does not observe Docker or resolve sources.
 

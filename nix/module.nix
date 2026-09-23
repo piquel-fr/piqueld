@@ -82,6 +82,16 @@ in
             default = 10;
             description = "Days to retain finished operations; zero disables pruning.";
           };
+          build_history.log_max_bytes = lib.mkOption {
+            type = lib.types.ints.between 1 67108864;
+            default = 4194304;
+            description = "Maximum persisted output bytes per build.";
+          };
+          build_history.log_retention_days = lib.mkOption {
+            type = lib.types.ints.between 1 3650;
+            default = 30;
+            description = "Days to retain output after a build completes.";
+          };
           retention.event_days = lib.mkOption {
             type = lib.types.ints.unsigned;
             default = 30;
