@@ -135,6 +135,7 @@ impl<D: DockerApi> Controller<D> {
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
+        let _secret_versions = self.store.protect_secret_versions().await;
         self.execute_operation(operation, cancellation).await?;
         if operation.kind == OperationKind::Delete {
             let names = self.store.secret_names(&operation.application_id).await?;
@@ -176,6 +177,9 @@ impl<D: DockerApi> Controller<D> {
                 },
             }
         };
+        if let PlanRequest::Reconcile { desired } = &request {
+            self.store.check_target_secrets(desired).await?;
+        }
         let ownership = self.ownership_labels(application.application.id());
         if operation.kind != OperationKind::Delete
             && !self

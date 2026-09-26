@@ -18,7 +18,7 @@ impl Store {
     ) -> Result<Vec<SecretMetadata>, StoreError> {
         self.get(application).await?;
         let id = application.as_str();
-        let rows=sqlx::query!("SELECT name,generation,updated_at_ms,deletion_id FROM application_secrets WHERE application_id=?1 ORDER BY name",id).fetch_all(&self.pool).await.map_err(StoreError::database)?;
+        let rows=sqlx::query!("SELECT s.name,s.generation,s.updated_at_ms,s.deletion_id,v.available FROM application_secrets s JOIN secret_versions v USING(application_id,name,generation) WHERE s.application_id=?1 ORDER BY s.name",id).fetch_all(&self.pool).await.map_err(StoreError::database)?;
         Ok(rows
             .into_iter()
             .map(|r| SecretMetadata {
@@ -26,6 +26,7 @@ impl Store {
                 generation: r.generation,
                 updated_at_ms: r.updated_at_ms,
                 deleting: r.deletion_id.is_some(),
+                unavailable: r.available == 0,
             })
             .collect())
     }
@@ -90,6 +91,7 @@ impl Store {
             generation,
             updated_at_ms: now,
             deleting: false,
+            unavailable: false,
         })
     }
     fn secret_version_matches(expected: i64, actual: i64) -> Result<(), StoreError> {
@@ -132,6 +134,19 @@ impl Store {
                 .iter()
                 .flat_map(|s| s.secrets.iter().map(|s| s.name.as_str()))
                 .collect::<BTreeSet<_>>();
+            let mut unavailable = Vec::new();
+            for name in &names {
+                let available = sqlx::query_scalar!("SELECT v.available FROM application_secrets s JOIN secret_versions v USING(application_id,name,generation) WHERE s.application_id=?1 AND s.name=?2",id,name)
+                    .fetch_optional(&mut **tx).await.map_err(StoreError::database)?;
+                if available != Some(1) {
+                    unavailable.push(*name);
+                }
+            }
+            if !unavailable.is_empty() {
+                return Err(StoreError::SecretUnavailable {
+                    names: unavailable.join(", "),
+                });
+            }
             for name in names {
                 let changed=sqlx::query!("INSERT INTO deployment_secret_pins(operation_id,application_id,name,generation) SELECT ?1,application_id,name,generation FROM application_secrets WHERE application_id=?2 AND name=?3",operation,id,name).execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
                 if changed != 1 {
@@ -146,7 +161,17 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         }
-        let rows=sqlx::query!("SELECT p.name,v.swarm_name FROM deployment_secret_pins p JOIN secret_versions v USING(application_id,name,generation) WHERE p.operation_id=?1",operation).fetch_all(&mut **tx).await.map_err(StoreError::database)?;
+        let rows=sqlx::query!("SELECT p.name,v.swarm_name,v.available FROM deployment_secret_pins p JOIN secret_versions v USING(application_id,name,generation) WHERE p.operation_id=?1",operation).fetch_all(&mut **tx).await.map_err(StoreError::database)?;
+        let unavailable = rows
+            .iter()
+            .filter(|r| r.available == 0)
+            .map(|r| r.name.as_str())
+            .collect::<Vec<_>>();
+        if !unavailable.is_empty() {
+            return Err(StoreError::SecretUnavailable {
+                names: unavailable.join(", "),
+            });
+        }
         Ok(rows.into_iter().map(|r| (r.name, r.swarm_name)).collect())
     }
     pub(crate) async fn secret_plaintext(
@@ -155,10 +180,13 @@ impl Store {
         swarm_name: &str,
     ) -> Result<Zeroizing<Vec<u8>>, StoreError> {
         let id = application.as_str();
-        let row=sqlx::query!("SELECT name,generation,nonce,ciphertext FROM secret_versions WHERE application_id=?1 AND swarm_name=?2",id,swarm_name).fetch_optional(&self.pool).await.map_err(StoreError::database)?.ok_or(StoreError::NotFound)?;
-        let cipher =
-            SecretCipher::load(&self.secret_key_path, true).map_err(StoreError::SecretSource)?;
-        cipher
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let row=sqlx::query!("SELECT name,generation,nonce,ciphertext,available FROM secret_versions WHERE application_id=?1 AND swarm_name=?2",id,swarm_name).fetch_optional(&mut *tx).await.map_err(StoreError::database)?.ok_or(StoreError::NotFound)?;
+        if row.available == 0 {
+            return Err(StoreError::SecretUnavailable { names: row.name });
+        }
+        let cipher = self.verified_secret_cipher(&mut tx).await?;
+        let plaintext = cipher
             .decrypt(
                 id,
                 &row.name,
@@ -168,8 +196,22 @@ impl Store {
                     ciphertext: row.ciphertext,
                 },
             )
-            .map_err(StoreError::SecretSource)
+            .map_err(StoreError::SecretSource)?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(plaintext)
     }
+
+    /// Authenticate all target values before publishing it or mutating Docker.
+    pub(crate) async fn check_target_secrets(
+        &self,
+        target: &piqueld_core::ResolvedApplication,
+    ) -> Result<(), StoreError> {
+        for swarm_name in target.secret_names.values() {
+            self.secret_plaintext(&target.id, swarm_name).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn secret_names(
         &self,
         application: &ApplicationId,
@@ -188,7 +230,7 @@ impl Store {
         id: &str,
         incoming: usize,
     ) -> Result<(), StoreError> {
-        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COALESCE(SUM(length(ciphertext)),0) AS bytes FROM secret_versions WHERE application_id=?1",id)
+        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COALESCE(SUM(length(ciphertext)),0) AS bytes FROM secret_versions WHERE application_id=?1 AND available=1",id)
             .fetch_one(&mut **tx).await.map_err(StoreError::database)?;
         // Include the 16-byte authentication tag in the persisted-byte limit.
         if usage.versions >= 1000

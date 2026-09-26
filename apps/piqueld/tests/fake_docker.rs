@@ -2229,3 +2229,87 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn secret_key_recovery_leaves_running_services_and_blocks_unavailable_rollouts() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let initial = applications
+        .apply(manifest().validate().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness.finish(&initial).await;
+    let id = &initial.application_id;
+    harness
+        .store
+        .put_secret(id, "token", 0, b"original".to_vec())
+        .await
+        .unwrap();
+    let mut input = manifest();
+    input.spec.services[0]
+        .secrets
+        .push(piqueld_core::manifest::SecretMount {
+            name: "token".into(),
+            target: "/run/secrets/token".into(),
+        });
+    let deployed = applications
+        .apply(input.validate().unwrap(), Some(1))
+        .await
+        .unwrap();
+    harness.finish(&deployed).await;
+    let target = harness.target(id).await;
+    let original = harness.docker.observe(id).await.unwrap();
+    let values = harness.docker.secret_values.lock().await.clone();
+
+    harness.store.replace_secret_key(false, None).await.unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(harness.target(id).await, target);
+    assert_eq!(harness.docker.observe(id).await.unwrap(), original);
+
+    harness.store.replace_secret_key(true, None).await.unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(harness.target(id).await, target);
+    assert_eq!(harness.docker.observe(id).await.unwrap(), original);
+    assert_eq!(*harness.docker.secret_values.lock().await, values);
+
+    // Neither active-target repair nor a new deployment may change runtime
+    // resources when the target still depends on discarded values.
+    harness.docker.observed.lock().await.networks.clear();
+    let before_failed = harness.docker.observe(id).await.unwrap();
+    let failed = applications.deploy(id, None).await.unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let result = harness.store.operation(&failed.id).await.unwrap();
+    assert_eq!(result.error_code.as_deref(), Some("secret_unavailable"));
+    assert!(result.error_message.as_deref().unwrap().contains("token"));
+    assert_eq!(harness.docker.observe(id).await.unwrap(), before_failed);
+
+    harness
+        .store
+        .put_secret(id, "token", 1, b"replacement".to_vec())
+        .await
+        .unwrap();
+    let replacement = applications.deploy(id, None).await.unwrap();
+    harness.finish(&replacement).await;
+    let new_target = harness.target(id).await;
+    assert_ne!(new_target.secret_names, target.secret_names);
+    assert_eq!(
+        harness.docker.secret_values.lock().await[&new_target.secret_names["token"]],
+        b"replacement"
+    );
+    assert_eq!(
+        harness.docker.secret_values.lock().await[&target.secret_names["token"]],
+        b"original"
+    );
+}

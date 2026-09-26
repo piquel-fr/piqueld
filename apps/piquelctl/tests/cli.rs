@@ -1738,3 +1738,64 @@ fn git_service_creation_does_not_require_a_placeholder_image() {
     assert_eq!(assert_json_success(&output)["generation"], 2);
     assert_eq!(server.finish().len(), 2);
 }
+
+#[test]
+fn secret_key_replacement_requires_confirmation_and_sends_explicit_mode() {
+    let server = start_server(false, 2, |request| {
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/api/v1/system/secrets/replace-key");
+        assert!(request.headers.contains_key("idempotency-key"));
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        Reply::json(json!({
+            "discarded_values": body["discard_values"],
+            "affected_applications": 2,
+            "affected_secrets": 3,
+            "affected_versions": 4,
+        }))
+    });
+    let rejected = run(
+        &server,
+        &[
+            "--noninteractive",
+            "secrets",
+            "replace-key",
+            "--discard-values",
+        ],
+    );
+    assert!(!rejected.status.success());
+    let normal = run(&server, &["secrets", "replace-key", "--yes"]);
+    assert!(
+        normal.status.success(),
+        "{}",
+        String::from_utf8_lossy(&normal.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&normal.stdout).unwrap()["discarded_values"],
+        false
+    );
+    let recovery = run_human(
+        &server,
+        &["secrets", "replace-key", "--discard-values", "--yes"],
+    );
+    assert!(
+        recovery.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovery.stderr)
+    );
+    assert!(String::from_utf8_lossy(&recovery.stdout).contains("4 values discarded"));
+    assert!(String::from_utf8_lossy(&recovery.stderr).contains("ALL applications"));
+    let requests = server.finish();
+    assert_eq!(
+        requests.len(),
+        2,
+        "unconfirmed recovery must not reach the server"
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&requests[0].body).unwrap()["discard_values"],
+        false
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&requests[1].body).unwrap()["discard_values"],
+        true
+    );
+}

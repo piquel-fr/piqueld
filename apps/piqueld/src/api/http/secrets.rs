@@ -97,3 +97,30 @@ pub(super) async fn delete(
         .await?;
     Ok(ok(true))
 }
+
+/// Replaces the daemon-wide key; destructive recovery always requires an explicit body flag.
+#[utoipa::path(post,path="/api/v1/system/secrets/replace-key",operation_id="replaceSecretKey",
+    params(("Idempotency-Key"=Option<String>,Header)),
+    request_body=piqueld_core::api::ReplaceSecretKeyRequest,
+    responses((status=200,description="Storage key replaced; back up the key and database together",body=Envelope<piqueld_core::api::SecretKeyReplacement>),
+    (status=400,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=413,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),(status=422,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn replace_key(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    body: Result<
+        axum::Json<piqueld_core::api::ReplaceSecretKeyRequest>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<impl IntoResponse, ApiError> {
+    let axum::Json(request) = body.map_err(|e| {
+        ApiError::new(
+            e.status(),
+            "invalid_request",
+            "Supply a JSON key replacement request",
+        )
+    })?;
+    let request_id = super::optional_header(&headers, "idempotency-key")?;
+    Ok(ok(state
+        .replace_secret_key(&request, request_id.as_deref())
+        .await?))
+}

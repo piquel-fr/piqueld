@@ -63,3 +63,10 @@ Migration 0007 adds resumable secret-deletion reservations and a persistent
 master-key verifier. Existing ciphertext is authenticated on the first value
 write before binding the key. Failed cleanup remains reserved across restarts;
 retry deletion to finish it.
+
+Migration 0008 retains secret-version identities after destructive key recovery,
+marking discarded values unavailable without changing pins. A pending-key marker
+in the verifier journals key replacement: a durable staged key precedes the
+ciphertext commit, then an atomic rename installs it. Startup recovers committed
+installations, while metadata and explicit recovery remain accessible if key
+material is missing. Unavailable values are excluded from retained-value quotas.

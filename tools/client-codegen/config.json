@@ -229,6 +229,16 @@
       "schema": "VolumesValue",
       "name": "VolumesValue",
       "rustType": "piqueld_core::edit::VolumesValue"
+    },
+    {
+      "schema": "ReplaceSecretKeyRequest",
+      "name": "ReplaceSecretKeyRequest",
+      "rustType": "piqueld_core::api::ReplaceSecretKeyRequest"
+    },
+    {
+      "schema": "Envelope_SecretKeyReplacement",
+      "name": "EnvelopeSecretKeyReplacement",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SecretKeyReplacement>"
     }
   ]
 }

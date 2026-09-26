@@ -24,24 +24,7 @@ impl SecretCipher {
             if encrypted_data_exists {
                 bail!("secret master key is missing; restore secrets.key from backup");
             }
-            let parent = path.parent().context("locate secret key directory")?;
-            let mut temporary = tempfile::NamedTempFile::new_in(parent)
-                .context("create private secret key file")?;
-            let mut key = XChaCha20Poly1305::generate_key(&mut OsRng);
-            let result = temporary.write_all(key.as_slice());
-            key.zeroize();
-            result.context("write secret master key")?;
-            temporary
-                .as_file()
-                .sync_all()
-                .context("sync secret master key")?;
-            temporary
-                .persist_noclobber(path)
-                .map_err(|e| e.error)
-                .context("install secret master key")?;
-            File::open(parent)?
-                .sync_all()
-                .context("sync secret key directory")?;
+            Self::create(path)?;
         }
         let descriptor = rustix::fs::open(
             path,
@@ -68,6 +51,78 @@ impl SecretCipher {
             |_| anyhow::anyhow!("invalid secret key length"),
         )?))
     }
+
+    /// Durably creates a fresh private key, without replacing any existing file.
+    pub(crate) fn create(path: &Path) -> anyhow::Result<()> {
+        use anyhow::Context;
+        let parent = Self::directory(path);
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(parent).context("create private secret key file")?;
+        let mut key = XChaCha20Poly1305::generate_key(&mut OsRng);
+        let result = temporary.write_all(key.as_slice());
+        key.zeroize();
+        result.context("write secret master key")?;
+        temporary
+            .as_file()
+            .sync_all()
+            .context("sync secret master key")?;
+        temporary
+            .persist_noclobber(path)
+            .map_err(|e| e.error)
+            .context("install secret master key")?;
+        Self::sync_directory(path)
+    }
+
+    fn directory(path: &Path) -> &Path {
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+    }
+
+    pub(crate) fn replacement_path(path: &Path, id: uuid::Uuid) -> std::path::PathBuf {
+        path.with_file_name(format!("secrets.key.{}.pending", id.simple()))
+    }
+
+    /// Rename only after the staged key has authenticated the committed verifier.
+    pub(crate) fn install(staged: &Path, path: &Path) -> anyhow::Result<()> {
+        use anyhow::Context;
+        std::fs::rename(staged, path).context("install replacement secret key")?;
+        Self::sync_directory(path)
+    }
+
+    pub(crate) fn sync_directory(path: &Path) -> anyhow::Result<()> {
+        use anyhow::Context;
+        File::open(Self::directory(path))?
+            .sync_all()
+            .context("sync secret key directory")
+    }
+    /// After the journal is cleared, any staged files are unused keys left by
+    /// aborted attempts. Never remove the installed key or unrelated files.
+    pub(crate) fn cleanup_staged_keys(path: &Path) -> anyhow::Result<()> {
+        use anyhow::Context;
+        let parent = Self::directory(path);
+        let mut removed = false;
+        for entry in std::fs::read_dir(parent).context("list staged secret keys")? {
+            let entry = entry.context("inspect staged secret key")?;
+            let name = entry.file_name();
+            let Some(id) = name
+                .to_str()
+                .and_then(|n| n.strip_prefix("secrets.key."))
+                .and_then(|n| n.strip_suffix(".pending"))
+            else {
+                continue;
+            };
+            if uuid::Uuid::parse_str(id).is_ok() {
+                std::fs::remove_file(entry.path()).context("remove unused staged secret key")?;
+                removed = true;
+            }
+        }
+        if removed {
+            Self::sync_directory(path)?;
+        }
+        Ok(())
+    }
+
     fn context(application: &str, name: &str, generation: i64) -> Vec<u8> {
         format!("piqueld-secret-v1\0{application}\0{name}\0{generation}").into_bytes()
     }

@@ -122,7 +122,7 @@ restart the daemon. Independently configured proxies can still expose localhost.
 The first secret write creates `secrets.key` in `server.data_dir`, atomically and
 with mode 0600. It holds a 32-byte master key. Back up this key together with the
 database; losing it makes encrypted values unrecoverable. Once the database has
-accepted a secret, a missing key is never regenerated, even after all secrets are
+accepted a secret, a missing key is never automatically regenerated, even after all secrets are
 deleted. New writes authenticate a persistent key
 verifier; replacing the key with a different valid 32-byte file fails closed.
 On upgrade, all existing ciphertext is authenticated before creating the verifier.
@@ -134,3 +134,37 @@ to application, logical name and version. The implementation uses
 [RustCrypto's existing AEAD implementation](https://docs.rs/chacha20poly1305/0.10.1/chacha20poly1305/).
 Docker receives values only when provisioning a service's immutable secret file
 versions. File mounts use Docker's read-only 0444 permissions inside the container.
+
+### Replacing the storage encryption key
+
+`piquelctl secrets replace-key --yes` generates a new key and re-encrypts every
+available retained version, including historical deployment pins. Values, names,
+generations and running services stay unchanged; no Deploy is needed. The old
+key must authenticate every retained value. A missing/wrong key or damaged
+ciphertext fails the operation without discarding values.
+
+If the original key cannot be recovered, use
+`piquelctl secrets replace-key --discard-values --yes`. This deliberately discards
+**all stored values for every application on the daemon**. Names, generations,
+file references and deployment history remain; discarded versions are marked
+unavailable. Docker secrets and running services are left in place. Supply new
+values under the existing names, then explicitly Deploy. Old deployment pins
+never switch to replacement values, and attempts to provision unavailable values
+fail before changing running services. This replaces the storage key, not the
+passwords or API tokens themselves.
+
+Replacement waits for active deployments to finish before changing their secret
+storage. For long builds or rollouts, increase the CLI timeout (for example
+`--timeout 10m`). Writes serialize with replacement. New ciphertext and a durable
+staged key are committed before `secrets.key` is atomically replaced; restart or
+the next value operation completes an interrupted installation. Never delete
+`secrets.key.<id>.pending` files during recovery; the daemon removes unused staged
+keys after recovery. If a committed staged key is also lost, metadata remains
+accessible and explicit `--discard-values` recovery remains available.
+
+After success, take a new consistent backup of the database and `secrets.key`.
+Stop the daemon while copying these files, or use a backup mechanism that captures
+them consistently. During interrupted replacement, preserve the entire data
+directory, including pending key files. An old database backup still needs its
+matching old key. Discarding values is not credential revocation or a guarantee
+of secure erasure from existing backups or filesystem history.

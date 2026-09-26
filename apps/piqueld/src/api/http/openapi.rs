@@ -16,6 +16,7 @@ use utoipa::{OpenApi, ToResponse};
     components(schemas(
         ErrorBody,
         SecretMetadata,
+        piqueld_core::api::SecretKeyReplacement,
         Envelope<Vec<SecretMetadata>>,
         Envelope<SecretMetadata>,
         Envelope<bool>

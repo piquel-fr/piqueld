@@ -1,5 +1,18 @@
 use crate::{Client, ClientError, SecretMetadata, client::generated_result};
 impl Client {
+    /// Replaces the daemon-wide storage key, preserving values unless explicitly discarded.
+    /// # Errors
+    /// Returns key/authentication, replay-conflict, transport, or persistence errors.
+    /// A failed response can follow a durable commit; use a stable idempotency key to retry.
+    pub async fn replace_secret_key(
+        &self,
+        request: &crate::ReplaceSecretKeyRequest,
+    ) -> Result<crate::SecretKeyReplacement, ClientError> {
+        generated_result(self.generated.replace_secret_key(None, request).await)
+            .await
+            .map(|response| response.data)
+    }
+
     /// Lists metadata without retrieving secret values.
     /// # Errors
     /// Returns transport, decoding or API errors.
