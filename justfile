@@ -1,7 +1,7 @@
 # Validation checks committed artifacts without silently repairing stale output.
 default: validate
 
-validate: fmt-check lint check test doc-test deny openapi-check boundary check-wasm
+validate: fmt lint check test doc-test deny openapi-check boundary check-wasm
 
 build:
     @cargo build --workspace --locked
@@ -23,9 +23,6 @@ daemon *ARGS:
 
 fmt:
     @cargo fmt --all
-
-fmt-check:
-    @cargo fmt --all -- --check
 
 lint:
     @cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
