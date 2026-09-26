@@ -167,6 +167,16 @@ impl Console {
         self.write_stderr(|out| out.value(message))
     }
 
+    /// Multi-line interactive instructions; values remain terminal-escaped.
+    pub(crate) fn prompt_lines(&mut self, lines: &[String]) -> Result<()> {
+        self.write_stderr(|out| {
+            for line in lines {
+                out.line(line)?;
+            }
+            Ok(())
+        })
+    }
+
     /// Transient task state on stderr; hidden in quiet mode. Updates are best effort.
     pub(crate) fn start_task(&mut self, label: &str) -> ProgressTask {
         self.progress.start(label)

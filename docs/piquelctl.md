@@ -18,11 +18,12 @@ The daemon runs on Linux. With its listen mode set to `tailscale` or `both`,
 connect from a tailnet peer using its IP address or MagicDNS name:
 
 ```console
-piquelctl --url http://linux-host:7845 status
+piquelctl --allow-insecure-http --url http://linux-host:7845 login
+piquelctl --allow-insecure-http --url http://linux-host:7845 status
 ```
 
 For persistent configuration, set a named profile's `url` to
-`http://linux-host:7845` and select it with `--profile`. See
+`http://linux-host:7845` and select it with `--profile` and `--allow-insecure-http`. See
 [daemon configuration](configuration.md#tcp-listen-modes-and-tailscale).
 
 Both platforms discover system and user profiles at runtime, including binaries
@@ -48,15 +49,17 @@ piquelctl events --application <application-id> --limit 50
 ```
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
-HTTP origin such as `http://127.0.0.1:7845/`; the two transport options are
+HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are
 mutually exclusive. The default socket is
 `/run/piqueld/piqueld.sock`.
 
-Remote IP addresses and DNS names are accepted. HTTPS, credentials, non-root
-paths, queries, and fragments are rejected. DNS resolution and connection setup
-share the request timeout; redirects are not followed. The client does not
-verify that a destination belongs to Tailscale: HTTP outside a protected network
-is unencrypted.
+Remote IP addresses and DNS names are accepted. HTTPS is supported; embedded URL
+credentials, non-root paths, queries, and fragments are rejected. DNS resolution
+and connection setup share the request timeout; redirects are not followed.
+Remote HTTP authentication, including `login`, requires `--allow-insecure-http`
+when using separate transport encryption such as Tailscale. The client does not
+verify tailnet membership or add encryption with this flag. Prefer HTTPS otherwise;
+loopback HTTP and Unix sockets need no opt-in.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
@@ -246,7 +249,12 @@ out requests, 5 for a failed operation, and 130 when local operation waiting is
 interrupted.
 
 The dashboard provides application management forms and recent application logs. Remote
-authentication, registry management, and advanced interactive CLI flows remain future work.
+registry management and advanced interactive CLI flows remain future work.
+
+Use `piquelctl login` for passkey login through the browser, `whoami` to inspect
+the current account, and `logout` to revoke it. Saved credentials are separate
+from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
+a saved account. See [authentication](authentication.md) for details.
 
 `app deploy` fetches repository-backed configuration when configured, then explicitly
 resolves image or Git build sources. It supersedes pending work for the selected

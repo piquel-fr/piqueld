@@ -42,6 +42,8 @@ pub(super) fn dashboard_header() -> View {
                     "Host settings"
                 </A>
                 <A href="/dashboard/builds" class={move || if location.pathname.get().ends_with("/builds") { "nav-link active" } else { "nav-link" }}>"Builds"</A>
+                <A href="/dashboard/accounts" class="nav-link">"Accounts"</A>
+                <super::auth::Logout />
             </nav>
         </aside>
     }

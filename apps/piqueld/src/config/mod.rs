@@ -13,6 +13,8 @@ use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::Subscribe
 pub struct DaemonConfig {
     /// API listeners and state directory.
     pub server: ServerConfig,
+    /// Canonical browser origin for passkeys and invitation links.
+    pub auth: AuthConfig,
     /// Docker Engine connection and bootstrap policy.
     pub docker: DockerConfig,
     /// Reconciliation scheduling limits.
@@ -77,6 +79,8 @@ impl DaemonConfig {
                 "server.data_dir and server.runtime_dir must be different directories".into(),
             ));
         }
+        crate::auth::Auth::validate_origin(&self.auth.public_url)
+            .map_err(|error| ConfigError::Invalid(error.to_string()))?;
         absolute_file("docker.socket", &self.docker.socket)?;
         if self.server.port == 0 {
             return Err(ConfigError::Invalid(
@@ -103,6 +107,21 @@ impl DaemonConfig {
             ));
         }
         Ok(())
+    }
+}
+
+/// Canonical website origin. TLS is terminated by an external proxy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthConfig {
+    /// HTTPS origin, or HTTP localhost for development.
+    pub public_url: String,
+}
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            public_url: "http://localhost:7845".into(),
+        }
     }
 }
 
@@ -153,7 +172,7 @@ pub struct ServerConfig {
     /// Existing directory holding the group-accessible Unix API socket.
     #[serde(default = "default_runtime_dir")]
     pub runtime_dir: PathBuf,
-    /// Interfaces exposed over unauthenticated HTTP. Defaults to no TCP.
+    /// Interfaces exposing the authenticated API over HTTP. Defaults to no TCP.
     #[serde(default)]
     pub listen_mode: ListenMode,
     /// Shared port for all selected TCP addresses.

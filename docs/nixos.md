@@ -54,9 +54,11 @@ and must not contain credentials.
 `dataDir` defaults to `/var/lib/piqueld`, with mode `0700`, holding `piqueld.db`.
 `runtimeDir` defaults to `/run/piqueld`, prepared by systemd with mode `0750`.
 The socket is `/run/piqueld/piqueld.sock`, owned by `piqueld:piqueld` with mode
-`0660`. After logging in again to refresh group membership, operators can run
-`piquelctl status` without sudo. Membership grants full deployment/operator
-access, but no direct access to private state or permission to replace the socket.
+`0660`. After logging in again to refresh group membership, users can connect
+to the socket without sudo. Membership permits only a socket connection; run
+`piquelctl login` to authenticate an account before `piquelctl status` or other
+API operations. It grants no direct access to private state or permission to
+replace the socket.
 Only the existing `piqueld.service` is needed; no proxy or socket unit is required.
 
 Custom `runtimeDir` values must be dedicated directories below `/run`. Configure
@@ -79,16 +81,17 @@ and orders piqueld after `tailscaled` for these modes; it does not enable or
 configure Tailscale itself. Ordering does not guarantee connectivity: if
 Tailscale is unavailable at startup, piqueld warns and requires a restart to
 activate remote listening. Ensure your firewall and tailnet policy permit the
-selected port on the Tailscale interface. Every reachable caller is trusted:
-the HTTP API has no authentication.
+selected port on the Tailscale interface. All callers must authenticate. Configure
+`settings.auth.public_url` with a stable HTTPS hostname and terminate TLS externally;
+see [authentication](authentication.md).
 
-`settings` declares typed options for `server.listen_mode`, `server.port`, `docker.socket`,
+`settings` declares typed options for `server.listen_mode`, `server.port`, `auth.public_url`, `docker.socket`,
 `docker.auto_initialize_swarm`, all three `reconciliation` intervals/timeouts,
 and both `retention` periods, with the daemon's defaults. Reconciliation values must be 1–86400 seconds; retention values are
 nonnegative days, with zero disabling pruning. Unknown settings are rejected.
 The module always supplies
 `server.data_dir` from `dataDir` and `server.runtime_dir` from `runtimeDir`. It does not configure a registry, Traefik,
-authentication, or an external UI directory. Git, SSH, and Docker executables
+TLS termination or an external UI directory. Git, SSH, and Docker executables
 are present on the service PATH. Configure SSH credentials and known hosts for
 the service user, not the interactive operator; host home directories are protected.
 Never put credential values into Nix settings, which are stored in the Nix store.

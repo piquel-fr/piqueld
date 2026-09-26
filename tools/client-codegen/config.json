@@ -204,6 +204,81 @@
       "schema": "VolumesValue",
       "name": "VolumesValue",
       "rustType": "piqueld_core::edit::VolumesValue"
+    },
+    {
+      "schema": "User",
+      "name": "User",
+      "rustType": "piqueld_core::auth::User"
+    },
+    {
+      "schema": "AuthStatus",
+      "name": "AuthStatus",
+      "rustType": "piqueld_core::auth::AuthStatus"
+    },
+    {
+      "schema": "RegistrationStart",
+      "name": "RegistrationStart",
+      "rustType": "piqueld_core::auth::RegistrationStart"
+    },
+    {
+      "schema": "Ceremony",
+      "name": "Ceremony",
+      "rustType": "piqueld_core::auth::Ceremony"
+    },
+    {
+      "schema": "CeremonyFinish",
+      "name": "CeremonyFinish",
+      "rustType": "piqueld_core::auth::CeremonyFinish"
+    },
+    {
+      "schema": "PasskeyView",
+      "name": "PasskeyView",
+      "rustType": "piqueld_core::auth::PasskeyView"
+    },
+    {
+      "schema": "CredentialView",
+      "name": "CredentialView",
+      "rustType": "piqueld_core::auth::CredentialView"
+    },
+    {
+      "schema": "InvitationView",
+      "name": "InvitationView",
+      "rustType": "piqueld_core::auth::InvitationView"
+    },
+    {
+      "schema": "Directory",
+      "name": "Directory",
+      "rustType": "piqueld_core::auth::Directory"
+    },
+    {
+      "schema": "Manage",
+      "name": "Manage",
+      "rustType": "piqueld_core::auth::Manage"
+    },
+    {
+      "schema": "Managed",
+      "name": "Managed",
+      "rustType": "piqueld_core::auth::Managed"
+    },
+    {
+      "schema": "DeviceStart",
+      "name": "DeviceStart",
+      "rustType": "piqueld_core::auth::DeviceStart"
+    },
+    {
+      "schema": "DevicePoll",
+      "name": "DevicePoll",
+      "rustType": "piqueld_core::auth::DevicePoll"
+    },
+    {
+      "schema": "DeviceApprove",
+      "name": "DeviceApprove",
+      "rustType": "piqueld_core::auth::DeviceApprove"
+    },
+    {
+      "schema": "DeviceToken",
+      "name": "DeviceToken",
+      "rustType": "piqueld_core::auth::DeviceToken"
     }
   ]
 }

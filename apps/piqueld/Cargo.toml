@@ -20,6 +20,10 @@ required-features = ["openapi-codegen"]
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+url.workspace = true
+webauthn-rs-core.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 bollard.workspace = true

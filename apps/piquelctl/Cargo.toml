@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 anstream.workspace = true
+tempfile.workspace = true
 indicatif.workspace = true
 clap.workspace = true
 futures-util.workspace = true

@@ -32,7 +32,7 @@ in
     runtimeDir = lib.mkOption {
       type = lib.types.str;
       default = "/run/piqueld";
-      description = "Runtime directory below /run containing piqueld.sock. Group members have full operator access.";
+      description = "Runtime directory below /run containing piqueld.sock. Group members can connect; account authentication is still required.";
     };
     settings = lib.mkOption {
       type = lib.types.submodule {
@@ -45,12 +45,17 @@ in
               "both"
             ];
             default = "off";
-            description = "HTTP listen interfaces. Every caller able to reach the listener has full operator access.";
+            description = "HTTP listen interfaces. Account authentication is required on every listener.";
           };
           server.port = lib.mkOption {
             type = lib.types.ints.between 1 65535;
             default = 7845;
             description = "Shared HTTP port for all selected IPv4 and IPv6 addresses.";
+          };
+          auth.public_url = lib.mkOption {
+            type = lib.types.str;
+            default = "http://localhost:7845";
+            description = "Canonical HTTPS website origin for passkeys; HTTP localhost is allowed for development. TLS is terminated externally.";
           };
           docker.socket = lib.mkOption {
             type = lib.types.strMatching "/.+";

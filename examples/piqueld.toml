@@ -12,6 +12,10 @@ runtime_dir = "/tmp/piqueld-dev-run"
 listen_mode = "both"
 port = 7845
 
+[auth]
+# Remote browsers require an HTTPS hostname and external TLS termination.
+public_url = "http://localhost:7845"
+
 [docker]
 socket = "/var/run/docker.sock"
 auto_initialize_swarm = true

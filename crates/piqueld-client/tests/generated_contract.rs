@@ -103,7 +103,13 @@ async fn toml_adapter_preserves_headers_and_unsigned_revisions() {
         r#"{"data":{"application_id":"app","generation":1,"operation_id":null}}"#,
     )
     .await;
-    let client = server.client.clone().with_request_id("fallback-key");
+    let client = server
+        .client
+        .clone()
+        .with_request_id("fallback-key")
+        .with_bearer("fixture-token")
+        .unwrap();
+    assert!(!format!("{client:?}").contains("fixture-token"));
     let manifest = "name = 'café'\n";
     let saved = client
         .apply_application_toml_with_preconditions(
@@ -119,6 +125,7 @@ async fn toml_adapter_preserves_headers_and_unsigned_revisions() {
     let request = server.requests.recv().await.unwrap();
     assert_eq!(request.uri, "/api/v1/applications/apply?deploy=true");
     assert_eq!(request.headers["content-type"], "application/toml");
+    assert_eq!(request.headers["authorization"], "Bearer fixture-token");
     assert_eq!(
         request.headers["x-expected-generation"],
         u64::MAX.to_string()
@@ -143,6 +150,8 @@ async fn generated_json_mutation_encodes_paths_and_decodes_api_errors() {
         .client
         .clone()
         .with_request_id("command-key")
+        .with_bearer("fixture-token")
+        .unwrap()
         .rename_application("a/b ?é", &body)
         .await
         .unwrap_err();
@@ -156,6 +165,7 @@ async fn generated_json_mutation_encodes_paths_and_decodes_api_errors() {
     let request = server.requests.recv().await.unwrap();
     assert_eq!(request.uri, "/api/v1/applications/a%2Fb%20%3F%C3%A9/rename");
     assert_eq!(request.headers["content-type"], "application/json");
+    assert_eq!(request.headers["authorization"], "Bearer fixture-token");
     assert_eq!(request.headers["idempotency-key"], "command-key");
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&request.body).unwrap(),

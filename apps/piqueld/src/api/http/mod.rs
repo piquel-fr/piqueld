@@ -23,6 +23,8 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::store::StoreError;
 
 mod applications;
+mod auth;
+pub use auth::protect;
 mod builds;
 mod deployments;
 mod editing;
@@ -338,6 +340,18 @@ fn finish_router(
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .merge(editing::router())
+        .routes(routes!(auth::status))
+        .routes(routes!(auth::me))
+        .routes(routes!(auth::register_start))
+        .routes(routes!(auth::register_finish))
+        .routes(routes!(auth::login_start))
+        .routes(routes!(auth::login_finish))
+        .routes(routes!(auth::logout))
+        .routes(routes!(auth::directory))
+        .routes(routes!(auth::manage))
+        .routes(routes!(auth::device_start))
+        .routes(routes!(auth::device_poll))
+        .routes(routes!(auth::device_approve))
         .routes(routes!(system::status))
         .routes(routes!(system::readiness))
         .routes(routes!(system::configuration))

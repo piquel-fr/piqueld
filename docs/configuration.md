@@ -20,8 +20,8 @@ database (`piqueld.db`) and future user data. Missing data-directory components
 are created with mode `0700`; existing components are never chmodded.
 
 The Unix API socket is separate, at `<runtime_dir>/piqueld.sock`. It is always
-`0660`, owned by the daemon's user and effective group. Group membership grants
-full deployment/operator access; authentication is not yet implemented.
+`0660`, owned by the daemon's user and effective group. Group membership allows
+connections; account authentication is also required.
 
 The service manager or installer must create the runtime directory before
 startup. Use daemon ownership and mode `0750` for group access, or `0700` for
@@ -112,9 +112,16 @@ up or changing its addresses. Any actual bind failure aborts startup, including
 a failure on just one address. Direct binding requires Tailscale's normal network
 interface; userspace-only networking is not supported.
 
-The tailnet is trusted like localhost: anyone who can reach the API has full
-operator access. Use tailnet policy to control who can connect. HTTP traffic
+Every API caller must authenticate, including over Tailscale. Use tailnet policy
+to control who can connect. HTTP traffic
 between tailnet nodes is encrypted by Tailscale; piqueld does not manage HTTPS,
 Tailscale Serve, enrollment, or certificates. Set `listen_mode = "localhost"`
 to remove the Tailscale listener, or `"off"` for Unix-socket-only access, and
 restart the daemon. Independently configured proxies can still expose localhost.
+
+## Authentication origin
+
+`auth.public_url` is the canonical HTTPS website origin (default
+`http://localhost:7845` for development). Remote passkey login requires HTTPS
+even over Tailscale. See [authentication](authentication.md) for reverse-proxy
+setup, the private first-account link, invitations, and credential lifetimes.
