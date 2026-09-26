@@ -58,3 +58,6 @@ Migration 0006 adds accounts, passkeys, hashed session/API credentials, invitati
 and a durable initial-setup marker. Existing installations require first-account
 setup after upgrading; application data and running reconciliation are preserved.
 There is no anonymous API compatibility mode. See [authentication](authentication.md).
+Follow the [upgrade and rollback checklist](authentication.md#upgrading-an-existing-installation)
+before deployment. An older daemon rejects the migrated schema; rollback requires
+restoring the pre-upgrade data directory together with the old binary/configuration.
