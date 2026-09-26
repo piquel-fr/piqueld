@@ -65,6 +65,14 @@ async fn register(input: RegistrationStart) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+async fn sign_in() -> Result<User, String> {
+    let client = Client::browser();
+    let ceremony = client.auth_login_start().await.map_err(|e| e.to_string())?;
+    client
+        .auth_login_finish(&complete(ceremony, false).await?)
+        .await
+        .map_err(|e| e.to_string())
+}
 fn navigate(path: &str) {
     if let Some(window) = web_sys::window() {
         let _ = window.location().set_href(path);
@@ -102,12 +110,14 @@ impl Feedback {
         spawn_local(async move {
             match task.await {
                 Ok(message) => {
-                    self.message.set(message);
-                    self.revision.update(|n| *n += 1);
+                    self.message.try_set(message);
+                    self.revision.try_update(|n| *n += 1);
                 }
-                Err(error) => self.error.set(error),
+                Err(error) => {
+                    self.error.try_set(error);
+                }
             }
-            self.busy.set(false);
+            self.busy.try_set(false);
         });
     }
     fn manage(self, command: Manage) {
@@ -138,6 +148,7 @@ struct AuthState {
     initialized: RwSignal<bool>,
     current: RwSignal<Option<User>>,
     error: RwSignal<String>,
+    expired: RwSignal<bool>,
 }
 impl AuthState {
     fn pending(self) -> View {
@@ -161,8 +172,18 @@ pub(super) fn Gate() -> impl IntoView {
         initialized: create_rw_signal(false),
         current: create_rw_signal(None::<User>),
         error: create_rw_signal(String::new()),
+        expired: create_rw_signal(false),
     };
     provide_context(state);
+    let listener = window_event_listener(
+        ev::Custom::<web_sys::Event>::new(Client::AUTHENTICATION_REQUIRED_EVENT),
+        move |_| {
+            if state.current.get_untracked().is_some() {
+                state.expired.set(true);
+            }
+        },
+    );
+    on_cleanup(move || listener.remove());
     spawn_local(async move {
         let client = Client::browser();
         match client.auth_status().await {
@@ -179,7 +200,34 @@ pub(super) fn Gate() -> impl IntoView {
         }
         state.loaded.set(true);
     });
-    view! { <super::App/> }
+    // Keep the editor mounted while reauthenticating so its unsaved drafts survive.
+    view! {
+        <div inert=move || state.expired.get().then_some("")><super::App/></div>
+        <Show when=move || state.expired.get()>
+            <SessionExpired state=state/>
+        </Show>
+    }
+}
+
+#[component]
+fn SessionExpired(state: AuthState) -> impl IntoView {
+    let feedback = Feedback::new();
+    view! {
+        <div class="auth-overlay" role="dialog" aria-modal="true" aria-labelledby="session-expired-title">
+            <section class="settings-card">
+                <h2 id="session-expired-title">"Your session has expired or been revoked"</h2>
+                <p>"Sign in to continue. Your unsaved edits are still here. Retry any action that failed after signing in."</p>
+                {feedback.view()}
+                <button class="primary" autofocus disabled=move || feedback.busy.get() on:click=move |_| feedback.run(async move {
+                    let user = sign_in().await?;
+                    state.current.set(Some(user));
+                    state.expired.set(false);
+                    Ok(String::new())
+                })>"Sign in with a passkey"</button>
+                <Logout/>
+            </section>
+        </div>
+    }
 }
 
 #[component]
@@ -236,9 +284,7 @@ fn SignIn(initialized: bool, current: Option<User>) -> impl IntoView {
                 view! { <h2>"Set up piqueld"</h2><p>"Open the setup link saved in the daemon’s data directory, in the setup-link file, to create the first account."</p><button on:click=move |_|reload()>"Check again"</button> }.into_view()
             } else if !signed_in {
                 view! { <h2>"Sign in"</h2><button class="primary" on:click=move |_| feedback.run(async move {
-                    let client=Client::browser();
-                    let ceremony=client.auth_login_start().await.map_err(|e|e.to_string())?;
-                    client.auth_login_finish(&complete(ceremony,false).await?).await.map_err(|e|e.to_string())?;
+                    sign_in().await?;
                     reload(); Ok(String::new())
                 })>"Sign in with a passkey"</button> }.into_view()
             } else if device {
@@ -259,7 +305,11 @@ fn SignIn(initialized: bool, current: Option<User>) -> impl IntoView {
 pub(super) fn Logout() -> impl IntoView {
     let feedback = Feedback::new();
     view! { <button disabled=move ||feedback.busy.get() on:click=move |_|feedback.run(async move {
-        Client::browser().auth_logout().await.map_err(|e|e.to_string())?;
+        match Client::browser().auth_logout().await {
+            Ok(_) => {},
+            Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 401 => {},
+            Err(error) => return Err(error.to_string()),
+        }
         navigate("/dashboard/");Ok(String::new())
     })>"Sign out"</button><span role="alert">{move ||feedback.error.get()}</span> }
 }

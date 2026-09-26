@@ -71,7 +71,7 @@ class Browser:
             time.sleep(.1)
         raise AssertionError('Browser condition timed out: '+condition+'\n'+self.js('return document.body.innerText'))
     def click(self, text):
-        self.js("const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===arguments[0]); if(!b) throw new Error('missing button '+arguments[0]); b.click();", text)
+        self.js("const b=[...document.querySelectorAll('button')].find(b=>!b.closest('[inert]') && b.textContent.trim()===arguments[0]); if(!b) throw new Error('missing button '+arguments[0]); b.click();", text)
     def screenshot(self, name):
         if directory := os.environ.get('AUTH_TEST_SCREENSHOTS'):
             import base64
@@ -126,6 +126,18 @@ try:
     browser.click('Create application')
     browser.wait("return location.pathname.includes('/dashboard/applications/') && document.body.innerText.includes('auth-integration')")
     print('PASS: passkey session can create an application through the new editor', flush=True)
+    # Revocation while editing must offer login without unloading the draft.
+    browser.js("document.querySelector('[aria-label=\"Rename application\"]').click()")
+    browser.fill('Application name','preserved-auth-draft')
+    assert browser.api('manage',{'action':'revoke_all','user_id':alice['id']})['status']==200
+    browser.click('Save')
+    browser.wait("return document.body.innerText.includes('Your session has expired or been revoked')")
+    browser.click('Sign in with a passkey')
+    browser.wait("return !document.querySelector('.auth-overlay')")
+    assert browser.js("return [...document.querySelectorAll('label')].find(l=>l.textContent.trim()==='Application name').querySelector('input').value")=='preserved-auth-draft'
+    browser.click('Save')
+    browser.wait("return document.querySelector('.application-name h1').textContent==='preserved-auth-draft'")
+    print('PASS: revoked session reauthenticates in place and preserves an unsaved editor draft', flush=True)
     browser.visit(ORIGIN+'/dashboard/')
     browser.wait("return document.body.innerText.includes('Applications')")
     print('PASS: browser setup and username-less passkey login', flush=True)
@@ -242,6 +254,10 @@ try:
     assert browser.api('manage',{'action':'revoke_all','user_id':bob['id']})['status']==200
     assert subprocess.run(command+['whoami'],env=env,capture_output=True).returncode!=0
     assert browser.api('me')['status']==401
+    browser.click('Create invitation')
+    browser.wait("return document.body.innerText.includes('Your session has expired or been revoked')")
+    browser.click('Sign out')
+    browser.wait("return document.body.innerText.includes('Sign in with a passkey') && !document.querySelector('.auth-overlay')")
     print('PASS: real browser setup, discoverable passkeys, invitations, unrestricted account editing, device CLI login over Unix, private credential storage, API tokens, revocation and last-account safeguard')
 finally:
     browser.close()
