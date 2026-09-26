@@ -2,6 +2,8 @@
 mod controls;
 mod logs;
 use logs::ApplicationLogs;
+mod secrets;
+use secrets::ApplicationSecrets;
 mod deployments;
 mod navigation;
 mod services;
@@ -351,13 +353,14 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         <EditorFeedback />
         <Tabs
             label="Application sections"
-            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics", "Builds", "Logs"]}
+            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics", "Builds", "Logs", "Secrets"]}
             selected={context.tab}
             class="tabs"
         />
         <ApplicationSettings />
         <leptos::Show when=move ||context.tab.get()=="Logs"><ApplicationLogs/></leptos::Show>
         <leptos::Show when=move ||context.tab.get()=="Builds"><super::builds::BuildHistory application=context.saved.with_untracked(|a|a.application.id().to_string())/></leptos::Show>
+        <div hidden=move ||context.tab.get()!="Secrets"><ApplicationSecrets/></div>
         <div hidden={move || context.tab.get() != "Deployments"}>
             <DeploymentHistory />
         </div>

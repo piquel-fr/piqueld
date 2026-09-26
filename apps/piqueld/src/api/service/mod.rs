@@ -11,7 +11,9 @@ use crate::{
     store::{Store, StoreError},
 };
 pub use history::ManifestExport;
-use piqueld_core::{ApplicationId, NormalizedApplication, ValidatedApplication};
+use piqueld_core::{
+    ApplicationId, NormalizedApplication, ValidatedApplication, api::SecretMetadata,
+};
 use std::sync::Arc;
 
 /// Errors returned by transport-independent daemon operations.
@@ -177,6 +179,57 @@ impl ApplicationService {
     ) -> Self {
         self.configuration = Some(Arc::new(configuration));
         self
+    }
+
+    /// Lists secret metadata without exposing stored values.
+    ///
+    /// # Errors
+    /// Returns a storage error when the application or its metadata cannot be read.
+    pub async fn secrets(
+        &self,
+        application: &ApplicationId,
+    ) -> Result<Vec<SecretMetadata>, ApplicationError> {
+        Ok(self.store.secrets(application).await?)
+    }
+
+    /// Stores a new secret version after checking the inspected generation.
+    ///
+    /// # Errors
+    /// Returns a validation, generation conflict, or storage error.
+    pub async fn put_secret(
+        &self,
+        application: &ApplicationId,
+        name: &str,
+        expected_generation: i64,
+        value: Vec<u8>,
+    ) -> Result<SecretMetadata, ApplicationError> {
+        Ok(self
+            .store
+            .put_secret(application, name, expected_generation, value)
+            .await?)
+    }
+
+    /// Removes an unreferenced secret and all of its runtime versions.
+    ///
+    /// # Errors
+    /// Returns when the secret is referenced or storage or runtime cleanup fails.
+    pub async fn delete_secret(
+        &self,
+        application: &ApplicationId,
+        name: &str,
+        expected_generation: i64,
+    ) -> Result<(), ApplicationError> {
+        let deletion = self
+            .store
+            .begin_secret_deletion(application, name, expected_generation)
+            .await?;
+        self.runtime
+            .remove_secrets(application, &deletion.versions)
+            .await?;
+        self.store
+            .finish_secret_deletion(application, name, &deletion.id)
+            .await?;
+        Ok(())
     }
 
     /// Accepts a mutation and records its receipt in the same transaction.

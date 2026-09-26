@@ -19,6 +19,9 @@ path = "src/bin/generate_openapi.rs"
 required-features = ["openapi-codegen"]
 
 [dependencies]
+base64.workspace = true
+chacha20poly1305.workspace = true
+zeroize.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
@@ -53,7 +56,6 @@ utoipa-axum.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-base64.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 piqueld-client.workspace = true
 http.workspace = true

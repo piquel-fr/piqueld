@@ -36,6 +36,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Default)]
 struct FakeDocker {
     observed: Arc<Mutex<ObservedApplication>>,
+    secret_values: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     registry: Arc<Mutex<RegistryState>>,
     deny_network_removal: Arc<AtomicBool>,
     resolution_gate: Option<Arc<ResolutionGate>>,
@@ -180,6 +181,7 @@ impl ImageSource for RegistryView {
 
 fn observed_service(desired: &DesiredService) -> ObservedService {
     ObservedService {
+        secrets: desired.secrets.clone(),
         name: desired.name.to_string(),
         image: desired.image.to_string(),
         replicas: desired.replicas,
@@ -209,6 +211,32 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
 
 #[async_trait]
 impl DockerApi for FakeDocker {
+    async fn ensure_secret(
+        &self,
+        name: &str,
+        value: &[u8],
+        _ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        self.secret_values
+            .lock()
+            .await
+            .entry(name.to_owned())
+            .or_insert_with(|| value.to_vec());
+        Ok(())
+    }
+
+    async fn remove_secrets(
+        &self,
+        names: &[String],
+        _ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        let mut values = self.secret_values.lock().await;
+        for name in names {
+            values.remove(name);
+        }
+        Ok(())
+    }
+
     async fn application_logs(
         &self,
         _instance: &InstanceId,
@@ -421,6 +449,7 @@ async fn fixture_store(
     );
     let application = application();
     let resolutions = ResolutionSet {
+        secret_names: std::collections::BTreeMap::default(),
         sources: [(
             piqueld_core::ServiceName::parse("web").unwrap(),
             ResolvedSource::parse_image(
@@ -472,6 +501,7 @@ impl ControllerHarness {
         );
         let application = application();
         let resolutions = ResolutionSet {
+            secret_names: std::collections::BTreeMap::default(),
             sources: [(
                 piqueld_core::ServiceName::parse("web").unwrap(),
                 ResolvedSource::parse_image(
@@ -1013,6 +1043,10 @@ impl ControllerHarness {
             self.store.operation(&operation.id).await.unwrap().state,
             OperationState::Succeeded
         );
+    }
+
+    async fn target(&self, id: &ApplicationId) -> ResolvedApplication {
+        self.store.get(id).await.unwrap().resolved.unwrap()
     }
 
     async fn pulls(&self) -> u64 {
@@ -2089,4 +2123,109 @@ impl ControllerHarness {
                 .any(|chunk| chunk.text.contains("Build failed"))
         );
     }
+}
+
+#[tokio::test]
+async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_versions() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let first = applications
+        .apply(manifest().validate().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    harness
+        .store
+        .put_secret(&first.application_id, "token", 0, b"version-one".to_vec())
+        .await
+        .unwrap();
+    let mut input = manifest();
+    input.spec.services[0]
+        .secrets
+        .push(piqueld_core::manifest::SecretMount {
+            name: "token".into(),
+            target: "/run/secrets/token".into(),
+        });
+    let deployment = applications
+        .apply(input.validate().unwrap(), Some(1))
+        .await
+        .unwrap();
+    harness.finish(&deployment).await;
+    let target = harness.target(&first.application_id).await;
+    let old = target.secret_names["token"].clone();
+    assert_eq!(
+        harness.docker.secret_values.lock().await[&old],
+        b"version-one"
+    );
+    harness
+        .store
+        .put_secret(&first.application_id, "token", 1, b"version-two".to_vec())
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.target(&first.application_id).await,
+        target,
+        "rotation alone must not update services"
+    );
+    let next = applications
+        .deploy(&first.application_id, None)
+        .await
+        .unwrap();
+    harness.finish(&next).await;
+    let target = harness.target(&first.application_id).await;
+    let new = &target.secret_names["token"];
+    assert_ne!(&old, new);
+    assert_eq!(
+        harness.docker.secret_values.lock().await[new],
+        b"version-two"
+    );
+    assert_eq!(
+        harness
+            .docker
+            .observe(&first.application_id)
+            .await
+            .unwrap()
+            .services[0]
+            .secrets,
+        target.services[0].secrets
+    );
+
+    // Historical completed deployments must not block deletion forever.
+    let clean = applications
+        .apply(manifest().validate().unwrap(), Some(2))
+        .await
+        .unwrap();
+    harness.finish(&clean).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let service = piqueld::api::ApplicationService::new(
+        Arc::clone(&harness.store),
+        harness
+            .controller
+            .runtime(Arc::new(tokio::sync::Notify::new())),
+    );
+    let server = tokio::spawn({
+        use std::future::IntoFuture;
+        axum::serve(listener, piqueld::api::http::router(service)).into_future()
+    });
+    let client = piqueld_client::Client::tcp(&format!("http://{address}")).unwrap();
+    client
+        .delete_secret(first.application_id.as_str(), "token", 2)
+        .await
+        .unwrap();
+    assert!(harness.docker.secret_values.lock().await.is_empty());
+    assert!(
+        harness
+            .store
+            .secrets(&first.application_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    server.abort();
 }

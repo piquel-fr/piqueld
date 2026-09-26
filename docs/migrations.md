@@ -53,3 +53,13 @@ Migration 0004 adds executor-independent build attempts and bounded output chunk
 Build metadata is owned by the application rather than an operation, so pruning
 operation history cannot erase build history. Interrupted running records are
 recovered at coordinator startup; output retention leaves metadata intact.
+
+Migration 0006 adds application-secret metadata, encrypted versions and
+per-deployment pins. Empty pin sets are recorded too, so retries cannot silently
+pick up subsequently added values. Secret value changes do not update application
+configuration or request deployments.
+
+Migration 0007 adds resumable secret-deletion reservations and a persistent
+master-key verifier. Existing ciphertext is authenticated on the first value
+write before binding the key. Failed cleanup remains reserved across restarts;
+retry deletion to finish it.

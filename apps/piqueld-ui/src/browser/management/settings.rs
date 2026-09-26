@@ -648,6 +648,7 @@ pub(super) fn NewService() -> impl IntoView {
     let save = move |()| {
         let (name, image) = fields.get_untracked();
         let service = Service {
+            secrets: Vec::new(),
             name,
             source: Source::Image { image },
             replicas: 1,

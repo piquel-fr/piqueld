@@ -9,6 +9,7 @@ impl Store {
         app: &NormalizedApplication,
         expected: Option<u64>,
     ) -> Result<SavedApplication, StoreError> {
+        Self::check_secret_references(tx, app).await?;
         let id = app.id().as_str();
         let previous = Self::generation_on(tx, id, expected).await?;
         let generation = previous.checked_add(1).ok_or(StoreError::InvalidInput)?;

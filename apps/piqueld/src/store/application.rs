@@ -73,6 +73,7 @@ impl Store {
         resolved: Option<&ResolvedApplication>,
         expected: Option<u64>,
     ) -> Result<Operation, StoreError> {
+        Self::check_secret_references(tx, app).await?;
         let id = app.id().as_str();
         let generation = Self::generation_on(tx, id, expected)
             .await?

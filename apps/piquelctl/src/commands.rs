@@ -75,6 +75,10 @@ async fn app(
             )
             .await
         }
+        AppCommand::Secret {
+            application,
+            action,
+        } => action.run(cli, client, console, application).await,
         AppCommand::Plan(args) => plan_command(console, client, args).await,
         AppCommand::Apply(args) => apply(cli, client, console, args).await,
         AppCommand::Delete(args) => delete(cli, client, console, args).await,

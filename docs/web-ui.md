@@ -50,6 +50,16 @@ configured localhost or Tailscale TCP listeners. The Unix socket is API-only,
 and the daemon does not add CORS, authentication, cookies, telemetry, or a public
 binding. Log display preferences persist in browser local storage.
 
+The **Secrets** tab lists names and versions, creates or replaces write-only text
+values, and deletes unreferenced secrets. Submitted values are cleared and cannot
+be read back; use the CLI for binary secret files. If a write or deletion fails,
+further secret changes are disabled until metadata refresh succeeds. Metadata
+refresh and secret writes cannot overlap. Pending deletion is shown explicitly;
+retry Delete to complete cleanup. Each service has a separate
+secret-file reference editor. Save references, then deploy explicitly to mount
+those versions. Repository-backed applications keep references in their Git
+manifest. Secret values and unsaved references participate in navigation warnings.
+
 ## Development
 
 Use `nix develop` for the Rust/WASM toolchain, Nextest, Cargo Watch, Trunk,

@@ -3,7 +3,7 @@
 use crate::resource::{
     Convergence, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
     ObservedService, OwnershipState, ResolutionRequirement, ResolvedApplication,
-    owned_label_subset,
+    owned_label_subset, unordered_eq,
 };
 use crate::{ApplicationId, InstanceId};
 use serde::{Deserialize, Serialize};
@@ -818,6 +818,9 @@ fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<Strin
     }
     if found.arguments != desired.arguments {
         fields.push("arguments".into());
+    }
+    if !unordered_eq(&found.secrets, &desired.secrets) {
+        fields.push("secrets".into());
     }
     if !found.mounts_match(desired) {
         fields.push("mounts".into());

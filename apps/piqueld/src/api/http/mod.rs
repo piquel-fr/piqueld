@@ -30,6 +30,7 @@ mod events;
 mod logs;
 mod openapi;
 mod operations;
+mod secrets;
 mod system;
 mod ui;
 
@@ -70,13 +71,12 @@ impl ApiError {
         self.details = details;
         self
     }
-}
 
-impl From<StoreError> for ApiError {
-    fn from(value: StoreError) -> Self {
+    fn log_storage_error(error: &StoreError) {
         if matches!(
-            &value,
-            StoreError::Database
+            error,
+            StoreError::SecretSource(_)
+                | StoreError::Database
                 | StoreError::DatabaseSource(_)
                 | StoreError::SchemaMismatch
                 | StoreError::SchemaMismatchSource(_)
@@ -84,24 +84,43 @@ impl From<StoreError> for ApiError {
                 | StoreError::Corrupt
                 | StoreError::CorruptSource(_)
         ) {
-            tracing::error!(error = ?value, "storage request failed");
+            tracing::error!(?error, "storage request failed");
         }
+    }
+}
+
+impl From<StoreError> for ApiError {
+    fn from(value: StoreError) -> Self {
+        Self::log_storage_error(&value);
         match value {
             StoreError::Validation(errors) => errors.into(),
-            StoreError::Edit(error) => {
-                use piqueld_core::edit::EditError;
-                let (status, code) = match &error {
-                    EditError::NotFound { .. } => {
-                        (StatusCode::NOT_FOUND, "field_resource_not_found")
-                    }
-                    EditError::AlreadyExists { .. } => {
-                        (StatusCode::CONFLICT, "field_resource_exists")
-                    }
-                    EditError::Incompatible(_) => (StatusCode::CONFLICT, "field_incompatible"),
-                };
-                Self::new(status, code, "The field edit could not be applied")
-                    .details(json!({"reason": error.to_string()}))
-            }
+            StoreError::Edit(error) => error.into(),
+            StoreError::SecretVersionConflict { expected, actual } => Self::new(
+                StatusCode::CONFLICT,
+                "secret_generation_conflict",
+                "Secret changed since inspection; read its metadata and retry",
+            )
+            .details(json!({"expected_generation": expected, "actual_generation": actual})),
+            StoreError::SecretSource(_) => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "secret_storage_unavailable",
+                "Secret storage is unavailable",
+            ),
+            StoreError::SecretDeleting => Self::new(
+                StatusCode::CONFLICT,
+                "secret_deleting",
+                "Secret deletion is in progress; retry deletion to finish cleanup",
+            ),
+            StoreError::SecretQuota => Self::new(
+                StatusCode::CONFLICT,
+                "secret_quota_exceeded",
+                "Secret storage quota exceeded (1000 versions or 100 MiB per application); delete unused secrets to free space",
+            ),
+            StoreError::SecretReferenced => Self::new(
+                StatusCode::CONFLICT,
+                "secret_referenced",
+                "Secret is still referenced by application configuration or a deployment",
+            ),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",
@@ -166,6 +185,19 @@ impl From<StoreError> for ApiError {
                 )
             }
         }
+    }
+}
+
+impl From<piqueld_core::edit::EditError> for ApiError {
+    fn from(error: piqueld_core::edit::EditError) -> Self {
+        use piqueld_core::edit::EditError;
+        let (status, code) = match &error {
+            EditError::NotFound { .. } => (StatusCode::NOT_FOUND, "field_resource_not_found"),
+            EditError::AlreadyExists { .. } => (StatusCode::CONFLICT, "field_resource_exists"),
+            EditError::Incompatible(_) => (StatusCode::CONFLICT, "field_incompatible"),
+        };
+        Self::new(status, code, "The field edit could not be applied")
+            .details(json!({"reason": error.to_string()}))
     }
 }
 
@@ -359,6 +391,8 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(builds::list))
         .routes(routes!(builds::logs))
         .routes(routes!(operations::get))
+        .routes(routes!(secrets::list))
+        .routes(routes!(secrets::put, secrets::delete))
 }
 
 async fn bind_error_request_id(request: Request, next: Next) -> Response {

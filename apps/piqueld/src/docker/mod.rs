@@ -71,6 +71,7 @@ mod identity;
 mod observation;
 mod policy;
 mod resources;
+mod secrets;
 mod spec;
 pub use errors::DockerError;
 
@@ -112,6 +113,27 @@ pub trait DockerApi: Send + Sync + 'static {
         _log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         self.build_image(dockerfile, context).await
+    }
+    /// Provisions an immutable secret with the expected application ownership.
+    async fn ensure_secret(
+        &self,
+        _name: &str,
+        _value: &[u8],
+        _ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        Err(DockerError::Unavailable("secret creation"))
+    }
+    /// Removes only secrets matching the expected application ownership.
+    async fn remove_secrets(
+        &self,
+        names: &[String],
+        _ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        if names.is_empty() {
+            Ok(())
+        } else {
+            Err(DockerError::Unavailable("secret removal"))
+        }
     }
     /// Builds a local image without persisting output.
     async fn build_image(

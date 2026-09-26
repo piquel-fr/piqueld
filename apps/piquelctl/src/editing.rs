@@ -330,6 +330,7 @@ impl ServiceCommand {
                     command: Vec::new(),
                     arguments: Vec::new(),
                     mounts: Vec::new(),
+                    secrets: Vec::new(),
                     healthcheck: None,
                     resources: None,
                 };
