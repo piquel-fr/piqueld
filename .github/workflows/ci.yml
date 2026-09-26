@@ -3,7 +3,7 @@
 # Every `just` validation recipe runs as its own parallel job so the wall
 # clock tracks the slowest check instead of their sum:
 #
-#   fmt-check         -> fmt
+#   fmt               -> fmt
 #   lint              -> clippy
 #   test / doc-test   -> test
 #   test-embedded     -> embedded-test
@@ -54,7 +54,7 @@ jobs:
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
         with:
           tool: just
-      - run: just fmt-check
+      - run: just fmt
 
   clippy:
     name: lint

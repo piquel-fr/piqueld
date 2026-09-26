@@ -1,4 +1,4 @@
-# Validation checks committed artifacts without silently repairing stale output.
+# Validation formats Rust sources and checks generated artifacts for freshness.
 default: validate
 
 validate: fmt lint check test doc-test deny openapi-check boundary check-wasm
