@@ -444,3 +444,78 @@ fn webauthn_origins_and_cookie_flags_are_explicit() {
         assert!(Auth::validate_origin(origin).is_err());
     }
 }
+
+#[tokio::test]
+async fn login_start_limits_share_listeners_ignore_forwarded_ips_and_leave_sessions_usable() {
+    use axum::{
+        Router,
+        body::Body,
+        extract::ConnectInfo,
+        http::{Request, StatusCode},
+        routing::{get, post},
+    };
+    use tower::ServiceExt;
+    let f = Fixture::new().await;
+    let (_, token) = f.account("alice", "token", None).await;
+    let router = crate::api::http::protect(
+        Router::new()
+            .route("/api/v1/auth/login/start", post(|| async { "ok" }))
+            .route("/api/v1/auth/device/start", post(|| async { "ok" }))
+            .route("/api/v1/private", get(|| async { "ok" })),
+        f.auth.clone(),
+    );
+    for attempt in 0..31 {
+        let request = Request::builder()
+            .method("POST")
+            .uri(if attempt % 2 == 0 {
+                "/api/v1/auth/login/start"
+            } else {
+                "/api/v1/auth/device/start"
+            })
+            .header("origin", f.auth.origin())
+            .header("x-forwarded-for", format!("192.0.2.{attempt}"))
+            .extension(ConnectInfo(
+                "192.0.2.1:1234".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            if attempt == 30 {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::OK
+            }
+        );
+        if attempt == 30 {
+            assert_eq!(response.headers()["retry-after"], "60");
+        }
+    }
+    // Another router/listener must use the same budget.
+    let other = crate::api::http::protect(
+        Router::new().route("/api/v1/auth/device/start", post(|| async { "ok" })),
+        f.auth,
+    );
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/device/start")
+        .extension(ConnectInfo(
+            "192.0.2.1:5678".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        other.oneshot(request).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let request = Request::builder()
+        .uri("/api/v1/private")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        router.oneshot(request).await.unwrap().status(),
+        StatusCode::OK
+    );
+}

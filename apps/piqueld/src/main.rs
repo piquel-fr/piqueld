@@ -155,7 +155,8 @@ fn spawn_tcp_api(
         let serve = std::future::IntoFuture::into_future(
             axum::serve(
                 listener,
-                piqueld::api::http::protect(piqueld::api::http::web_router(state, ui_assets), auth),
+                piqueld::api::http::protect(piqueld::api::http::web_router(state, ui_assets), auth)
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
             .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );

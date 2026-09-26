@@ -92,6 +92,30 @@ async fn authenticate(
         return next.run(request).await;
     }
     let public = is_public(request.uri().path());
+    if request.method() == Method::POST
+        && matches!(
+            request.uri().path(),
+            "/api/v1/auth/login/start"
+                | "/api/v1/auth/register/start"
+                | "/api/v1/auth/device/start"
+        )
+    {
+        let peer = request
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|peer| peer.0.ip());
+        if let Err(error) = auth.admit_start(peer).await {
+            let mut response = ApiError::from(error).into_response();
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, header::HeaderValue::from_static("60"));
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-store"),
+            );
+            return response;
+        }
+    }
     let bearer = request
         .headers()
         .get(header::AUTHORIZATION)
