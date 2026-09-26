@@ -2236,6 +2236,10 @@
           "data": {
             "description": "Metadata only: secret values are never returned.",
             "properties": {
+              "deleting": {
+                "description": "Cleanup has started; retry deletion to finish it. Replacement is disabled.",
+                "type": "boolean"
+              },
               "generation": {
                 "description": "Current version, used for optimistic writes.",
                 "format": "int64",
@@ -2308,6 +2312,10 @@
             "items": {
               "description": "Metadata only: secret values are never returned.",
               "properties": {
+                "deleting": {
+                  "description": "Cleanup has started; retry deletion to finish it. Replacement is disabled.",
+                  "type": "boolean"
+                },
                 "generation": {
                   "description": "Current version, used for optimistic writes.",
                   "format": "int64",
@@ -3457,6 +3465,10 @@
       "SecretMetadata": {
         "description": "Metadata only: secret values are never returned.",
         "properties": {
+          "deleting": {
+            "description": "Cleanup has started; retry deletion to finish it. Replacement is disabled.",
+            "type": "boolean"
+          },
           "generation": {
             "description": "Current version, used for optimistic writes.",
             "format": "int64",

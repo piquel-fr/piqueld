@@ -121,9 +121,13 @@ restart the daemon. Independently configured proxies can still expose localhost.
 
 The first secret write creates `secrets.key` in `server.data_dir`, atomically and
 with mode 0600. It holds a 32-byte master key. Back up this key together with the
-database; losing it makes encrypted values unrecoverable. If encrypted records
-exist, a missing key is never regenerated. Restore the original key, owned by the
-daemon user with private permissions. Secret metadata remains readable without it.
+database; losing it makes encrypted values unrecoverable. Once the database has
+accepted a secret, a missing key is never regenerated, even after all secrets are
+deleted. New writes authenticate a persistent key
+verifier; replacing the key with a different valid 32-byte file fails closed.
+On upgrade, all existing ciphertext is authenticated before creating the verifier.
+Restore the original key, owned by the daemon user with private permissions.
+Secret metadata remains readable without it.
 
 Secret values use authenticated XChaCha20-Poly1305 encryption, binding ciphertext
 to application, logical name and version. The implementation uses

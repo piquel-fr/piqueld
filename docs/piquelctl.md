@@ -361,10 +361,10 @@ for loading older output when available. Both support `--json`.
 Application secrets are write-only:
 
 ```sh
-piquelctl secret notes list
-piquelctl secret notes set database-password --file ./password --yes
-printf '%s' 'new-value' | piquelctl secret notes set database-password --stdin --yes
-piquelctl secret notes delete database-password --yes
+piquelctl app secret notes list
+piquelctl app secret notes set database-password --file ./password --yes
+printf '%s' 'new-value' | piquelctl app secret notes set database-password --stdin --yes
+piquelctl app secret notes delete database-password --yes
 ```
 
 Prefer protected files or a secure stdin producer over literal shell values in

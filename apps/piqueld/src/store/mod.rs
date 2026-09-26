@@ -51,6 +51,14 @@ pub enum StoreError {
     /// Saved configuration or a retained deployment still refers to the secret.
     #[error("secret is still referenced by application configuration or deployment")]
     SecretReferenced,
+    /// Runtime cleanup is pending and may already have removed some versions.
+    #[error("secret deletion is in progress; retry deletion to finish cleanup")]
+    SecretDeleting,
+    /// Retained ciphertext is bounded without evicting deployment pins.
+    #[error(
+        "secret storage quota exceeded (1000 versions or 100 MiB per application); delete unused secrets to free space"
+    )]
+    SecretQuota,
     /// A secret changed after the caller inspected its metadata.
     #[error("secret generation changed: expected {expected}, actual {actual}")]
     SecretVersionConflict {

@@ -14,6 +14,8 @@ use piqueld_client::{
 pub(super) fn ApplicationSecrets() -> impl IntoView {
     let context = editor();
     let metadata = create_rw_signal(Vec::<piqueld_client::SecretMetadata>::new());
+    let ready = create_rw_signal(false);
+    let loading = create_rw_signal(false);
     let error = create_rw_signal(None::<String>);
     let notice = create_rw_signal(String::new());
     let name = create_rw_signal(String::new());
@@ -26,19 +28,29 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
             .with_untracked(|a| a.application.id().to_string()),
     );
     let reload = Callback::new(move |()| {
+        if context.blocked() || loading.get_untracked() {
+            return;
+        }
+        loading.set(true);
+        ready.set(false);
         let id = id.get_value();
         spawn_local(async move {
             match Client::browser().secrets(&id).await {
                 Ok(items) => {
                     metadata.set(items);
+                    ready.set(true);
                     error.set(None);
                 }
                 Err(e) => error.set(Some(client_error_message(&e))),
             }
+            loading.set(false);
         });
     });
     reload.call(());
     let write = move |_| {
+        if context.blocked() || !ready.get_untracked() {
+            return;
+        }
         let name = name.get_untracked();
         let generation = metadata.with_untracked(|items| {
             items
@@ -51,6 +63,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
         value.set(String::new());
         let id = id.get_value();
         context.busy.set(true);
+        notice.set(String::new());
         error.set(None);
         spawn_local(async move {
             match Client::browser()
@@ -66,15 +79,18 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                     notice
                         .set("Secret saved. Deploy the application to use its new version.".into());
                 }
-                Err(e) => error.set(Some(format!(
-                    "{} Refresh metadata before retrying if the request outcome is uncertain.",
-                    client_error_message(&e)
-                ))),
+                Err(e) => {
+                    ready.set(false);
+                    error.set(Some(format!("{} Refresh metadata before another secret change. The submitted value has been cleared.", client_error_message(&e))));
+                }
             }
             context.busy.set(false);
         });
     };
     let remove = Callback::new(move |secret: piqueld_client::SecretMetadata| {
+        if context.blocked() || !ready.get_untracked() {
+            return;
+        }
         if !window()
             .confirm_with_message(&format!(
                 "Delete {} and its retained versions? Referenced secrets cannot be deleted.",
@@ -86,6 +102,8 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
         }
         let id = id.get_value();
         context.busy.set(true);
+        notice.set(String::new());
+        error.set(None);
         spawn_local(async move {
             match Client::browser()
                 .delete_secret(&id, &secret.name, secret.generation)
@@ -96,26 +114,32 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                     notice.set("Secret deleted.".into());
                     error.set(None);
                 }
-                Err(e) => error.set(Some(client_error_message(&e))),
+                Err(e) => {
+                    ready.set(false);
+                    error.set(Some(format!(
+                        "{} Refresh metadata, then retry deletion if cleanup is pending.",
+                        client_error_message(&e)
+                    )));
+                }
             }
             context.busy.set(false);
         });
     });
     view! {<section class="settings-card"><h3>"Application secrets"</h3>
         <p class="help">"Values are write-only. File references below are saved configuration; deploy after saving to use them."</p>
-        <button disabled=move ||context.blocked() on:click=move |_|reload.call(())>"Refresh metadata"</button>
+        <button disabled=move ||context.blocked() || loading.get() on:click=move |_|reload.call(())>"Refresh metadata"</button>
         {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}<p role="status">{move ||notice.get()}</p>
         {move ||metadata.get().into_iter().map(|secret|{let selected=secret.name.clone();view!{
-            <div class="form-actions"><strong>{secret.name.clone()}</strong><span>{format!("Version {}",secret.generation)}</span>
-                <button disabled=move ||context.blocked() on:click=move |_|name.set(selected.clone())>"Replace value"</button>
-                <button disabled=move ||context.blocked() on:click=move |_|remove.call(secret.clone())>"Delete"</button>
+            <div class="form-actions"><strong>{secret.name.clone()}</strong><span>{format!("Version {}{}",secret.generation,if secret.deleting { " · deletion pending" } else { "" })}</span>
+                <button disabled=move ||context.blocked() || !ready.get() || secret.deleting on:click=move |_|name.set(selected.clone())>"Replace value"</button>
+                <button disabled=move ||context.blocked() || !ready.get() on:click=move |_|remove.call(secret.clone())>"Delete"</button>
             </div>
         }}).collect_view()}
-        <fieldset disabled=move ||context.blocked()>
+        <fieldset disabled=move ||context.blocked() || !ready.get()>
             {text_input("Secret name",name,String::clone,|v,s|*v=s)}
             <label>"New value"<textarea autocomplete="off" spellcheck="false" rows="3" prop:value=move ||value.get() on:input=move |e|value.set(event_target_value(&e))></textarea></label>
             <p class="help">"The value is cleared when submitted and cannot be read back. Use the CLI for binary files."</p>
-            <button class="primary" disabled=move ||name.get().is_empty() || value.get().is_empty() on:click=write>"Save secret"</button>
+            <button class="primary" disabled=move ||name.get().is_empty() || value.get().is_empty() || metadata.get().iter().any(|s|s.name==name.get() && s.deleting) on:click=write>"Save secret"</button>
         </fieldset>
     </section>
     <Show when=move ||context.saved.get().application.spec().manifest.is_some()><p class="help">"Edit secret file references in the repository manifest."</p></Show>

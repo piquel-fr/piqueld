@@ -219,13 +219,16 @@ impl ApplicationService {
         name: &str,
         expected_generation: i64,
     ) -> Result<(), ApplicationError> {
-        let _guard = self.store.secret_deletion_guard().await;
-        let versions = self
+        let deletion = self
             .store
-            .secret_deletion_versions(application, name, expected_generation)
+            .begin_secret_deletion(application, name, expected_generation)
             .await?;
-        self.runtime.remove_secrets(application, &versions).await?;
-        self.store.delete_secret_rows(application, name).await?;
+        self.runtime
+            .remove_secrets(application, &deletion.versions)
+            .await?;
+        self.store
+            .finish_secret_deletion(application, name, &deletion.id)
+            .await?;
         Ok(())
     }
 

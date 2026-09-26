@@ -1,4 +1,7 @@
 //! Application-scoped encrypted values and durable deployment version pins.
+mod deletion;
+mod key;
+
 use super::{ApplicationId, NormalizedApplication, Store, StoreError, now_ms};
 use crate::secrets::{Envelope, SecretCipher};
 use piqueld_core::api::SecretMetadata;
@@ -15,13 +18,14 @@ impl Store {
     ) -> Result<Vec<SecretMetadata>, StoreError> {
         self.get(application).await?;
         let id = application.as_str();
-        let rows=sqlx::query!("SELECT name,generation,updated_at_ms FROM application_secrets WHERE application_id=?1 ORDER BY name",id).fetch_all(&self.pool).await.map_err(StoreError::database)?;
+        let rows=sqlx::query!("SELECT name,generation,updated_at_ms,deletion_id FROM application_secrets WHERE application_id=?1 ORDER BY name",id).fetch_all(&self.pool).await.map_err(StoreError::database)?;
         Ok(rows
             .into_iter()
             .map(|r| SecretMetadata {
                 name: r.name,
                 generation: r.generation,
                 updated_at_ms: r.updated_at_ms,
+                deleting: r.deletion_id.is_some(),
             })
             .collect())
     }
@@ -50,15 +54,13 @@ impl Store {
         }
         let id = application.as_str();
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
-        let current = sqlx::query_scalar!(
-            "SELECT generation FROM application_secrets WHERE application_id=?1 AND name=?2",
-            id,
-            name
-        )
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(StoreError::database)?
-        .unwrap_or(0);
+        let existing = sqlx::query!(
+            "SELECT generation,deletion_id FROM application_secrets WHERE application_id=?1 AND name=?2", id, name
+        ).fetch_optional(&mut *tx).await.map_err(StoreError::database)?;
+        let current = existing.as_ref().map_or(0, |row| row.generation);
+        if existing.is_some_and(|row| row.deletion_id.is_some()) {
+            return Err(StoreError::SecretDeleting);
+        }
         Self::secret_version_matches(expected, current)?;
         if current == 0 {
             let count = sqlx::query_scalar!(
@@ -73,12 +75,8 @@ impl Store {
             }
         }
         let generation = current.checked_add(1).ok_or(StoreError::InvalidInput)?;
-        let exists = sqlx::query_scalar!("SELECT COUNT(*) FROM secret_versions")
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(StoreError::database)?;
-        let cipher = SecretCipher::load(&self.secret_key_path, exists > 0)
-            .map_err(StoreError::SecretSource)?;
+        Self::check_secret_quota(&mut tx, id, value.len()).await?;
+        let cipher = self.verified_secret_cipher(&mut tx).await?;
         let envelope = cipher
             .encrypt(id, name, generation, &value)
             .map_err(StoreError::SecretSource)?;
@@ -91,6 +89,7 @@ impl Store {
             name: name.into(),
             generation,
             updated_at_ms: now,
+            deleting: false,
         })
     }
     fn secret_version_matches(expected: i64, actual: i64) -> Result<(), StoreError> {
@@ -116,6 +115,7 @@ impl Store {
         operation: &str,
         app: &NormalizedApplication,
     ) -> Result<BTreeMap<String, String>, StoreError> {
+        Self::check_secret_references(tx, app).await?;
         let prepared = sqlx::query_scalar!(
             "SELECT operation_id FROM deployment_secrets_prepared WHERE operation_id=?1",
             operation
@@ -183,173 +183,23 @@ impl Store {
         .await
         .map_err(StoreError::database)
     }
-    pub(crate) async fn secret_deletion_guard(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        self.writers.clone().lock_owned().await
-    }
-    // The lifecycle service holds the writer guard across inspection, Docker removal and deletion.
-    pub(crate) async fn secret_deletion_versions(
-        &self,
-        application: &ApplicationId,
-        name: &str,
-        expected: i64,
-    ) -> Result<Vec<String>, StoreError> {
-        let app = self.get(application).await?;
-        let id = application.as_str();
-        let generation = sqlx::query_scalar!(
-            "SELECT generation FROM application_secrets WHERE application_id=?1 AND name=?2",
-            id,
-            name
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(StoreError::database)?
-        .ok_or(StoreError::NotFound)?;
-        Self::secret_version_matches(expected, generation)?;
-        let in_saved = app
-            .application
-            .spec()
-            .services
-            .iter()
-            .any(|s| s.secrets.iter().any(|s| s.name == name));
-        let pins=sqlx::query_scalar!("SELECT COUNT(*) FROM deployment_secret_pins p JOIN operations o ON o.id=p.operation_id WHERE p.application_id=?1 AND p.name=?2 AND o.state!='superseded' AND o.id=(SELECT id FROM operations WHERE application_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1)",id,name).fetch_one(&self.pool).await.map_err(StoreError::database)?;
-        let versions = sqlx::query_scalar!(
-            "SELECT swarm_name FROM secret_versions WHERE application_id=?1 AND name=?2",
-            id,
-            name
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(StoreError::database)?;
-        let active = app
-            .resolved
-            .as_ref()
-            .is_some_and(|r| r.secret_names.values().any(|n| versions.contains(n)));
-        if in_saved || pins > 0 || active {
-            return Err(StoreError::SecretReferenced);
-        }
-        Ok(versions)
-    }
-    pub(crate) async fn delete_secret_rows(
-        &self,
-        application: &ApplicationId,
-        name: &str,
+    async fn check_secret_quota(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        id: &str,
+        incoming: usize,
     ) -> Result<(), StoreError> {
-        let id = application.as_str();
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
-        // Superseded deployments cannot be retried; remove only their obsolete pins.
-        sqlx::query!(
-            "DELETE FROM deployment_secret_pins WHERE application_id=?1 AND name=?2",
-            id,
-            name
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        sqlx::query!(
-            "DELETE FROM application_secrets WHERE application_id=?1 AND name=?2",
-            id,
-            name
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        tx.commit().await.map_err(StoreError::database)
+        let usage = sqlx::query!("SELECT COUNT(*) AS versions, COALESCE(SUM(length(ciphertext)),0) AS bytes FROM secret_versions WHERE application_id=?1",id)
+            .fetch_one(&mut **tx).await.map_err(StoreError::database)?;
+        // Include the 16-byte authentication tag in the persisted-byte limit.
+        if usage.versions >= 1000
+            || usage.bytes + i64::try_from(incoming + 16).map_err(StoreError::invalid_input)?
+                > 100 * 1024 * 1024
+        {
+            return Err(StoreError::SecretQuota);
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("state.db");
-        let store = Store::open(&path).await.unwrap();
-        let mut app = piqueld_core::parse_toml(include_str!(
-            "../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-        ))
-        .unwrap()
-        .normalize(ApplicationId::parse("app-secret-test").unwrap());
-        let op = store.save_application(&app, None, None).await.unwrap();
-        store
-            .put_secret(app.id(), "token", 0, b"first-value".to_vec())
-            .await
-            .unwrap();
-        let mut input = app.to_manifest();
-        input.spec.services[0]
-            .secrets
-            .push(piqueld_core::manifest::SecretMount {
-                name: "token".into(),
-                target: "/run/secrets/token".into(),
-            });
-        app = input.validate().unwrap().normalize(app.id().clone());
-        let pins = store.pin_secrets(&op.id, &app).await.unwrap();
-        store
-            .put_secret(app.id(), "token", 1, b"second-value".to_vec())
-            .await
-            .unwrap();
-        assert!(
-            store
-                .put_secret(app.id(), "token", 1, b"stale".to_vec())
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            store
-                .secret_plaintext(app.id(), &pins["token"])
-                .await
-                .unwrap()
-                .as_slice(),
-            b"first-value"
-        );
-        assert!(matches!(
-            store.secret_deletion_versions(app.id(), "token", 2).await,
-            Err(StoreError::SecretReferenced)
-        ));
-        assert!(
-            store
-                .secret_plaintext(
-                    &ApplicationId::parse("app-another").unwrap(),
-                    &pins["token"]
-                )
-                .await
-                .is_err()
-        );
-        drop(store);
-        let store = Store::open(&path).await.unwrap();
-        assert_eq!(
-            store.pin_secrets(&op.id, &app).await.unwrap(),
-            pins,
-            "retry must use the pre-rotation pin after restart"
-        );
-        assert!(
-            !serde_json::to_string(&store.deployment_manifest(&op.id).await.unwrap())
-                .unwrap()
-                .contains("first-value")
-        );
-        let next = store.request_deploy(app.id(), None).await.unwrap();
-        let new_pins = store.pin_secrets(&next.id, &app).await.unwrap();
-        assert_ne!(pins, new_pins);
-        assert_eq!(
-            store
-                .secret_plaintext(app.id(), &new_pins["token"])
-                .await
-                .unwrap()
-                .as_slice(),
-            b"second-value"
-        );
-        std::fs::remove_file(directory.path().join("secrets.key")).unwrap();
-        assert_eq!(
-            store.secrets(app.id()).await.unwrap()[0].generation,
-            2,
-            "metadata reads do not require the key"
-        );
-        assert!(
-            store
-                .put_secret(app.id(), "token", 2, b"replacement".to_vec())
-                .await
-                .is_err()
-        );
-        assert!(!directory.path().join("secrets.key").exists());
-    }
-}
+mod tests;

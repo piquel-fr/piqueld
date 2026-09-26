@@ -493,4 +493,7 @@ pub struct SecretMetadata {
     pub generation: i64,
     /// Last update time in Unix milliseconds.
     pub updated_at_ms: i64,
+    /// Cleanup has started; retry deletion to finish it. Replacement is disabled.
+    #[serde(default)]
+    pub deleting: bool,
 }

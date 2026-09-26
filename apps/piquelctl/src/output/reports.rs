@@ -175,8 +175,14 @@ impl Report for Vec<SecretMetadata> {
     fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
         for secret in self {
             out.line(format_args!(
-                "{}  generation {}",
-                secret.name, secret.generation
+                "{}  generation {}{}",
+                secret.name,
+                secret.generation,
+                if secret.deleting {
+                    "  deletion pending; retry delete"
+                } else {
+                    ""
+                }
             ))?;
         }
         Ok(())
