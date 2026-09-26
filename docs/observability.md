@@ -35,6 +35,11 @@ API errors, not persisted incidents. Daemon logs include occurrence IDs. If
 storage itself fails, the response/log ID remains useful but the diagnostic may
 not be retrievable from the database.
 
+API failure occurrences are not sampled or deduplicated: repeated failed requests,
+including dashboard polling during an outage, each retain their request ID and
+diagnostic. Use nonzero retention settings to bound historical growth; webhook
+incident deduplication does not reduce the diagnostic journal's write volume.
+
 Safe causal facts include Docker request stages and HTTP statuses, I/O error
 kinds and OS codes, command stages and exit codes, database failure kinds/codes,
 and validated compilation diagnostics. Preparation and execution use the same
@@ -139,6 +144,10 @@ Recovery notifications apply to observed dependencies/services and successful
 operations that clear an alerted condition. Internal error groups without a
 positive recovery observation stay deduplicated; they do not generate speculative
 recovery messages or periodic reminders.
+
+Those internal daemon groups retain one original event per failure code while
+open, even with age pruning enabled. A quiet period or restart is not treated as
+proof of recovery and does not re-arm their notifications.
 
 Recovery is paired with failure deliveries at each destination, including its
 configured URL identity. A new or changed destination never receives recovery for
