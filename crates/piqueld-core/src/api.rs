@@ -496,4 +496,29 @@ pub struct SecretMetadata {
     /// Cleanup has started; retry deletion to finish it. Replacement is disabled.
     #[serde(default)]
     pub deleting: bool,
+    /// The current value was discarded during key recovery; supply a new version.
+    #[serde(default)]
+    pub unavailable: bool,
+}
+
+/// Replace the daemon-wide storage encryption key. Never rotates credentials.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceSecretKeyRequest {
+    /// Explicitly discard all stored values instead of decrypting and preserving them.
+    #[serde(default)]
+    pub discard_values: bool,
+}
+
+/// Metadata-only result of a daemon-wide key replacement.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SecretKeyReplacement {
+    /// Whether stored values were deliberately discarded.
+    pub discarded_values: bool,
+    /// Applications with retained values affected by this operation.
+    pub affected_applications: i64,
+    /// Logical secrets with retained values affected by this operation.
+    pub affected_secrets: i64,
+    /// Retained values re-encrypted or discarded; unavailable versions are excluded.
+    pub affected_versions: i64,
 }

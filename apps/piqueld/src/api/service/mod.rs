@@ -181,6 +181,21 @@ impl ApplicationService {
         self
     }
 
+    /// Replaces the encryption key for every application on this daemon.
+    /// # Errors
+    /// Returns authentication, replay-conflict, or storage errors.
+    pub async fn replace_secret_key(
+        &self,
+        request: &piqueld_core::api::ReplaceSecretKeyRequest,
+        request_id: Option<&str>,
+    ) -> Result<piqueld_core::api::SecretKeyReplacement, ApplicationError> {
+        Self::validate_request_id(request_id)?;
+        Ok(self
+            .store
+            .replace_secret_key(request.discard_values, request_id)
+            .await?)
+    }
+
     /// Lists secret metadata without exposing stored values.
     ///
     /// # Errors
@@ -271,15 +286,7 @@ impl ApplicationService {
                 return Err(ApplicationError::PreconditionRequired);
             }
         }
-        if request_id.is_some_and(|id| {
-            id.is_empty()
-                || id.len() > 128
-                || !id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
-        }) {
-            return Err(StoreError::InvalidInput.into());
-        }
+        Self::validate_request_id(request_id)?;
         if let Mutation::Rename { name, .. } = &mutation
             && !piqueld_core::valid_logical_name(name)
         {
@@ -293,5 +300,17 @@ impl ApplicationService {
             self.runtime.trigger_reconciliation();
         }
         Ok(response)
+    }
+    fn validate_request_id(request_id: Option<&str>) -> Result<(), ApplicationError> {
+        if request_id.is_some_and(|id| {
+            id.is_empty()
+                || id.len() > 128
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+        }) {
+            return Err(StoreError::InvalidInput.into());
+        }
+        Ok(())
     }
 }

@@ -9,6 +9,14 @@ pub enum OperationError {
     /// Durable operation failure with its storage cause.
     #[error("operation journal is unavailable")]
     Journal(#[source] crate::store::StoreError),
+    /// Logical names whose values must be replaced before a new deployment.
+    #[error(
+        "secret values unavailable: {names}; supply replacement values and start a new deployment"
+    )]
+    SecretUnavailable {
+        /// Logical names only, never values.
+        names: String,
+    },
     /// Repository input could not be located or decoded.
     #[error("{}", if *.not_found { "manifest not found" } else { "repository manifest is invalid or its application name does not match" })]
     ManifestInput {
@@ -81,6 +89,7 @@ impl OperationError {
         match self {
             Self::Docker(error) => error.operation_classification().code(),
             Self::Journal(_) => "journal_unavailable",
+            Self::SecretUnavailable { .. } => "secret_unavailable",
             Self::ManifestInput {
                 not_found: true, ..
             }
@@ -161,7 +170,12 @@ impl crate::docker::DockerError {
 
 impl From<crate::store::StoreError> for OperationError {
     fn from(error: crate::store::StoreError) -> Self {
-        Self::Journal(error)
+        match error {
+            crate::store::StoreError::SecretUnavailable { names } => {
+                Self::SecretUnavailable { names }
+            }
+            other => Self::Journal(other),
+        }
     }
 }
 

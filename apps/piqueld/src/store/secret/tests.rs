@@ -1,6 +1,6 @@
 use super::*;
 
-fn application() -> NormalizedApplication {
+pub(super) fn application() -> NormalizedApplication {
     piqueld_core::parse_toml(include_str!(
         "../../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
     ))
@@ -8,7 +8,7 @@ fn application() -> NormalizedApplication {
     .normalize(ApplicationId::parse("app-secret-test").unwrap())
 }
 
-fn with_secret(app: &NormalizedApplication) -> NormalizedApplication {
+pub(super) fn with_secret(app: &NormalizedApplication) -> NormalizedApplication {
     let mut manifest = app.to_manifest();
     manifest.spec.services[0]
         .secrets

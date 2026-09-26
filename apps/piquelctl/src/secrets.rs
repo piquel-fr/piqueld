@@ -115,3 +115,45 @@ impl SecretAction {
         Ok(bytes)
     }
 }
+
+/// Daemon-wide operations, distinct from application-scoped secret values.
+#[derive(Debug, Subcommand)]
+pub(crate) enum KeyAction {
+    /// Generate a new storage key and preserve every decryptable secret version.
+    ReplaceKey {
+        /// Irreversibly discard ALL stored secret values, including other applications.
+        #[arg(long)]
+        discard_values: bool,
+        /// Confirm replacement without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+impl KeyAction {
+    pub(crate) async fn run(
+        &self,
+        cli: &Cli,
+        client: &Client,
+        console: &mut Console,
+    ) -> Result<()> {
+        let Self::ReplaceKey {
+            discard_values,
+            yes,
+        } = self;
+        let message = if *discard_values {
+            "Replace this daemon's master key and IRREVERSIBLY DISCARD stored values for ALL applications? Running services keep their Docker secrets; replacement values and a new Deploy are required. [y/N] "
+        } else {
+            "Replace this daemon's master key for ALL applications, preserving values and deployments? [y/N] "
+        };
+        // Print scope even with --yes; the confirmation helper skips its prompt then.
+        console.warning(message.trim_end_matches(" [y/N] "))?;
+        confirm(console, cli.noninteractive, *yes, message).await?;
+        let request = piqueld_client::ReplaceSecretKeyRequest {
+            discard_values: *discard_values,
+        };
+        let result =
+            crate::support::retry_transport(|| client.replace_secret_key(&request)).await?;
+        console.emit(&result)
+    }
+}

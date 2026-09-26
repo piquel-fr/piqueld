@@ -2230,6 +2230,46 @@
         ],
         "type": "object"
       },
+      "Envelope_SecretKeyReplacement": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Metadata-only result of a daemon-wide key replacement.",
+            "properties": {
+              "affected_applications": {
+                "description": "Applications with retained values affected by this operation.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "affected_secrets": {
+                "description": "Logical secrets with retained values affected by this operation.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "affected_versions": {
+                "description": "Retained values re-encrypted or discarded; unavailable versions are excluded.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "discarded_values": {
+                "description": "Whether stored values were deliberately discarded.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "discarded_values",
+              "affected_applications",
+              "affected_secrets",
+              "affected_versions"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_SecretMetadata": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -2248,6 +2288,10 @@
               "name": {
                 "description": "Application-scoped logical name.",
                 "type": "string"
+              },
+              "unavailable": {
+                "description": "The current value was discarded during key recovery; supply a new version.",
+                "type": "boolean"
               },
               "updated_at_ms": {
                 "description": "Last update time in Unix milliseconds.",
@@ -2324,6 +2368,10 @@
                 "name": {
                   "description": "Application-scoped logical name.",
                   "type": "string"
+                },
+                "unavailable": {
+                  "description": "The current value was discarded during key recovery; supply a new version.",
+                  "type": "boolean"
                 },
                 "updated_at_ms": {
                   "description": "Last update time in Unix milliseconds.",
@@ -3226,6 +3274,17 @@
         ],
         "type": "object"
       },
+      "ReplaceSecretKeyRequest": {
+        "additionalProperties": false,
+        "description": "Replace the daemon-wide storage encryption key. Never rotates credentials.",
+        "properties": {
+          "discard_values": {
+            "description": "Explicitly discard all stored values instead of decrypting and preserving them.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ReplicasValue": {
         "additionalProperties": false,
         "properties": {
@@ -3462,6 +3521,37 @@
         ],
         "type": "object"
       },
+      "SecretKeyReplacement": {
+        "description": "Metadata-only result of a daemon-wide key replacement.",
+        "properties": {
+          "affected_applications": {
+            "description": "Applications with retained values affected by this operation.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "affected_secrets": {
+            "description": "Logical secrets with retained values affected by this operation.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "affected_versions": {
+            "description": "Retained values re-encrypted or discarded; unavailable versions are excluded.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "discarded_values": {
+            "description": "Whether stored values were deliberately discarded.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "discarded_values",
+          "affected_applications",
+          "affected_secrets",
+          "affected_versions"
+        ],
+        "type": "object"
+      },
       "SecretMetadata": {
         "description": "Metadata only: secret values are never returned.",
         "properties": {
@@ -3477,6 +3567,10 @@
           "name": {
             "description": "Application-scoped logical name.",
             "type": "string"
+          },
+          "unavailable": {
+            "description": "The current value was discarded during key recovery; supply a new version.",
+            "type": "boolean"
           },
           "updated_at_ms": {
             "description": "Last update time in Unix milliseconds.",
@@ -12933,6 +13027,104 @@
             "description": "Deployment dependencies unavailable"
           }
         }
+      }
+    },
+    "/api/v1/system/secrets/replace-key": {
+      "post": {
+        "operationId": "replaceSecretKey",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceSecretKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SecretKeyReplacement"
+                }
+              }
+            },
+            "description": "Storage key replaced; back up the key and database together"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Replaces the daemon-wide key; destructive recovery always requires an explicit body flag."
       }
     },
     "/api/v1/system/status": {

@@ -48,7 +48,8 @@ use thiserror::Error;
 
 pub use piqueld_core::api::{
     API_PREFIX, ApplicationLogs, BuildLogChunk, BuildLogPage, BuildRecord, BuildState, Envelope,
-    ErrorBody, LogRecord, LogStream, Page, SecretMetadata,
+    ErrorBody, LogRecord, LogStream, Page, ReplaceSecretKeyRequest, SecretKeyReplacement,
+    SecretMetadata,
 };
 
 /// Validates a TOML application manifest and returns its editable name.

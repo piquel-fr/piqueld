@@ -258,12 +258,13 @@ Metadata survives operation pruning and is deleted with its application.
 
 Application secret endpoints expose metadata only:
 
-- `GET /api/v1/applications/{id}/secrets` lists names, current generations, update times and `deleting` status.
+- `GET /api/v1/applications/{id}/secrets` lists names, current generations, update times, `deleting` and `unavailable` status.
   Its unpaginated metadata array is returned directly in `data`, without `items` or `next_cursor`.
 - `PUT /api/v1/applications/{id}/secrets/{name}` accepts an `application/octet-stream`
   value of 1–512000 bytes. `X-Expected-Generation: 0` creates; a current generation
   replaces. Each application supports at most 100 logical secrets, 1,000 retained
-  versions and 100 MiB of ciphertext. Exceeding the retained-version or byte quota
+  values and 100 MiB of ciphertext. Discarded unavailable versions do not consume
+  this value quota. Exceeding the retained-version or byte quota
   returns 409 `secret_quota_exceeded`; delete unused secrets to free space.
 - `DELETE` at the same path requires `X-Expected-Generation` and refuses references
   in saved configuration, the current runnable deployment, or the active target.
@@ -281,3 +282,27 @@ pins. Earlier ciphertext versions remain until logical-secret or application del
 Quota enforcement never evicts pinned versions. To retire a secret, save and deploy
 configuration without its references, then delete it. An existing database above
 the quota remains readable and deployable; new writes require freeing space.
+
+`POST /api/v1/system/secrets/replace-key` replaces the daemon-wide encryption key.
+The JSON body `{ "discard_values": false }` (or `{}`) re-encrypts every available
+retained value with a new key, preserving generations and deployment pins.
+`{ "discard_values": true }` explicitly discards values for **all applications**
+and marks their immutable versions unavailable. It preserves metadata, running
+Docker services and their secrets. Supplying replacement values creates new
+versions; an explicit new deployment is required to adopt them. Missing values
+fail preparation with `secret_unavailable` and their logical names before runtime
+changes. Existing prepared targets cannot silently adopt replacements.
+
+The response contains `discarded_values`, `affected_applications`,
+`affected_secrets` and `affected_versions`; counts describe available values
+re-encrypted or discarded, excluding already unavailable versions. No key or
+secret value is returned. Replacement waits for active deployments and uses the
+same operator trust boundary as other API mutations.
+
+Send a stable `Idempotency-Key` when retrying an uncertain response. The receipt
+commits with the data change and is retained for 24 hours, matching application
+mutations. Reusing it with another mode returns 409 `request_id_conflict`.
+A 503 can follow the durable commit if key installation fails; restart or a
+subsequent value operation resumes installation, and replay returns the original
+result after installation completes. Default replacement never automatically
+switches to destructive recovery. Back up the new database/key pair after success.

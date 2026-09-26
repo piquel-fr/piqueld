@@ -3529,3 +3529,93 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
     service.delete_secret(app.id(), "token", 1).await.unwrap();
     assert_eq!(service.secrets(app.id()).await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn secret_key_api_requires_explicit_discard_and_replays_recovery_safely() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+    let application = manifest()
+        .validate()
+        .unwrap()
+        .normalize(piqueld_core::ApplicationId::parse("app-key-api").unwrap());
+    store
+        .save_application(&application, None, None)
+        .await
+        .unwrap();
+    store
+        .put_secret(
+            application.id(),
+            "token",
+            0,
+            b"original-private-value".to_vec(),
+        )
+        .await
+        .unwrap();
+    let api = router(ApiState::new(
+        store.clone(),
+        Arc::new(FakeRuntime {
+            cleanup_gate: None,
+            instance: InstanceId::parse(store.instance_id()).unwrap(),
+            unavailable: std::sync::atomic::AtomicBool::new(false),
+        }),
+    ));
+    std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
+    for (body, status) in [
+        ("{}", 503),
+        (r#"{"discard_values":"true"}"#, 422),
+        (r#"{"discard_value":true}"#, 422),
+        (r#"{"discard_values":true}"#, 200),
+    ] {
+        let response = api
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/system/secrets/replace-key")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", "reset-once")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{body}");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(
+            !std::str::from_utf8(&bytes)
+                .unwrap()
+                .contains("original-private-value")
+        );
+        if status != 200 {
+            assert!(!temp.path().join("secrets.key").exists());
+        }
+    }
+    assert!(store.secrets(application.id()).await.unwrap()[0].unavailable);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, api).into_future());
+    let client = Client::tcp(&format!("http://{address}"))
+        .unwrap()
+        .with_request_id("reset-once");
+    client
+        .put_secret(
+            application.id().as_str(),
+            "token",
+            1,
+            b"new-private-value".to_vec(),
+        )
+        .await
+        .unwrap();
+    let outcome = client
+        .replace_secret_key(&piqueld_client::ReplaceSecretKeyRequest {
+            discard_values: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome.affected_versions, 1);
+    assert!(!client.secrets(application.id().as_str()).await.unwrap()[0].unavailable);
+    assert!(
+        matches!(client.replace_secret_key(&piqueld_client::ReplaceSecretKeyRequest::default()).await, Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 409)
+    );
+    server.abort();
+}

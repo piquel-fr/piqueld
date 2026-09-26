@@ -175,9 +175,14 @@ impl Report for Vec<SecretMetadata> {
     fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
         for secret in self {
             out.line(format_args!(
-                "{}  generation {}{}",
+                "{}  generation {}{}{}",
                 secret.name,
                 secret.generation,
+                if secret.unavailable {
+                    "  value unavailable; replace value and deploy"
+                } else {
+                    ""
+                },
                 if secret.deleting {
                     "  deletion pending; retry delete"
                 } else {
@@ -444,3 +449,23 @@ impl Configuration {
         }
     }
 }
+
+report!(piqueld_client::SecretKeyReplacement, self, out, {
+    out.line(format_args!(
+        "Storage encryption key replaced: {} values {} across {} secrets in {} applications.",
+        self.affected_versions,
+        if self.discarded_values {
+            "discarded"
+        } else {
+            "preserved"
+        },
+        self.affected_secrets,
+        self.affected_applications,
+    ))?;
+    if self.discarded_values {
+        out.line("Running services retain their Docker secrets. Supply replacement values, then deploy; old versions remain unavailable.")?;
+    }
+    out.line(
+        "Back up secrets.key and the database together. Application credentials were not rotated.",
+    )
+});

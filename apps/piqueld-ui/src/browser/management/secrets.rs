@@ -131,6 +131,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
         {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}<p role="status">{move ||notice.get()}</p>
         {move ||metadata.get().into_iter().map(|secret|{let selected=secret.name.clone();view!{
             <div class="form-actions"><strong>{secret.name.clone()}</strong><span>{format!("Version {}{}",secret.generation,if secret.deleting { " · deletion pending" } else { "" })}</span>
+                <Show when=move ||secret.unavailable><span class="form-error">"Value unavailable — master key replaced. Supply a replacement value, then deploy."</span></Show>
                 <button disabled=move ||context.blocked() || !ready.get() || secret.deleting on:click=move |_|name.set(selected.clone())>"Replace value"</button>
                 <button disabled=move ||context.blocked() || !ready.get() on:click=move |_|remove.call(secret.clone())>"Delete"</button>
             </div>

@@ -289,6 +289,7 @@ impl<D: DockerApi> Controller<D> {
         id: &piqueld_core::ApplicationId,
         operation_id: &str,
     ) -> Result<(), super::OperationError> {
+        let _secret_versions = self.store.protect_secret_versions().await;
         let operation = self.store.operation(operation_id).await?;
         if operation.kind == super::OperationKind::Delete
             || self.store.is_promoted(operation_id).await?
@@ -316,6 +317,7 @@ impl<D: DockerApi> Controller<D> {
         else {
             return Ok(());
         };
+        self.store.check_target_secrets(&target).await?;
         let _guard = self.mutations.lock().await;
         if self
             .store

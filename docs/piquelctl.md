@@ -372,3 +372,27 @@ real use. `--expected-generation` pins a write to inspected metadata; otherwise
 the CLI reads the current generation before confirming. `--json` returns only
 metadata. Replacement creates a new version for a later Deploy and does not
 change running deployments. Deletion refuses saved or runnable references.
+
+Daemon-wide storage key replacement is separate from application secret rotation:
+
+```sh
+# Preserve all values and versions; no redeployment required.
+piquelctl secrets replace-key --yes
+
+# Lost-key recovery: discard stored values across ALL applications.
+piquelctl secrets replace-key --discard-values --yes
+```
+
+Both commands require confirmation (`--yes` for automation) and report affected
+application, secret and version counts. Default replacement fails if the old key
+or any retained ciphertext cannot be authenticated; it never falls back to
+recovery. Recovery leaves running Docker services alone. `app secret APP list`
+marks discarded current values as unavailable. Set replacement values using the
+same names, then Deploy explicitly. Existing deployment pins remain unavailable.
+Back up the new key together with the database after replacement.
+
+The CLI retries transport failures with the same idempotency key. An error or
+interrupted command can still follow a committed replacement: inspect metadata
+before starting another destructive recovery command, especially if someone has
+already entered replacement values. Increase `--timeout` for long active rollouts
+or large secret stores; key replacement waits for deployments to finish.

@@ -48,6 +48,14 @@ pub enum StoreError {
     /// Secret ciphertext or its master key could not be used.
     #[error("secret storage is unavailable")]
     SecretSource(#[source] anyhow::Error),
+    /// Required values are absent or were deliberately discarded during recovery.
+    #[error(
+        "secret values unavailable: {names}; supply replacement values and start a new deployment"
+    )]
+    SecretUnavailable {
+        /// Logical names only, never values.
+        names: String,
+    },
     /// Saved configuration or a retained deployment still refers to the secret.
     #[error("secret is still referenced by application configuration or deployment")]
     SecretReferenced,
@@ -231,6 +239,7 @@ pub struct Store {
     build_history: crate::config::BuildHistoryConfig,
 
     secret_key_path: std::path::PathBuf,
+    secret_deployments: std::sync::Arc<tokio::sync::RwLock<()>>,
     writers: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -335,14 +344,17 @@ impl Store {
         if metadata_version != SCHEMA_VERSION {
             return Err(StoreError::SchemaMismatch);
         }
-        Ok(Self {
+        let store = Self {
             pool,
             instance_id,
             build_history: crate::config::BuildHistoryConfig::default(),
 
             secret_key_path: path.with_file_name("secrets.key"),
+            secret_deployments: std::sync::Arc::default(),
             writers: std::sync::Arc::default(),
-        })
+        };
+        store.recover_secret_key().await?;
+        Ok(store)
     }
 
     async fn set_user_version(

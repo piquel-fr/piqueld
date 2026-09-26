@@ -52,14 +52,25 @@ impl Store {
         let (response, wake) =
             Self::execute_mutation(&mut tx, mutation, current, latest, expected_generation, now)
                 .await?;
-        if let Some(request_id) = request_id {
-            let response_json = serde_json::to_string(&response).map_err(StoreError::corrupt)?;
-            let expires = now.saturating_add(86_400_000);
-            sqlx::query!("INSERT INTO request_receipts(request_id,fingerprint,response_json,expires_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(request_id) DO UPDATE SET fingerprint=excluded.fingerprint,response_json=excluded.response_json,expires_at_ms=excluded.expires_at_ms",request_id,fingerprint,response_json,expires)
-                .execute(&mut *tx).await.map_err(StoreError::database)?;
-        }
+        Self::record_receipt_on(&mut tx, request_id, &fingerprint, &response, now).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok((response, wake))
+    }
+
+    pub(super) async fn record_receipt_on<T: serde::Serialize>(
+        tx: &mut Transaction<'_, Sqlite>,
+        request_id: Option<&str>,
+        fingerprint: &str,
+        response: &T,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        if let Some(request_id) = request_id {
+            let response_json = serde_json::to_string(response).map_err(StoreError::corrupt)?;
+            let expires = now.saturating_add(86_400_000);
+            sqlx::query!("INSERT INTO request_receipts(request_id,fingerprint,response_json,expires_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(request_id) DO UPDATE SET fingerprint=excluded.fingerprint,response_json=excluded.response_json,expires_at_ms=excluded.expires_at_ms",request_id,fingerprint,response_json,expires)
+                .execute(&mut **tx).await.map_err(StoreError::database)?;
+        }
+        Ok(())
     }
 
     fn mutation_fingerprint(
@@ -76,12 +87,12 @@ impl Store {
         ))
     }
 
-    async fn replay_on(
+    pub(super) async fn replay_on<T: serde::de::DeserializeOwned>(
         connection: &mut SqliteConnection,
         request_id: Option<&str>,
         fingerprint: &str,
         now: i64,
-    ) -> Result<Option<MutationResponse>, StoreError> {
+    ) -> Result<Option<T>, StoreError> {
         let Some(request_id) = request_id else {
             return Ok(None);
         };
