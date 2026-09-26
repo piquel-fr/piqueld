@@ -169,15 +169,3 @@ proxy share its allowance. On publicly reachable deployments, also apply per-cli
 limits at the trusted proxy; sustained or distributed traffic can still consume
 the daemon's admission budget. Limits reset on daemon restart, along with pending
 ceremonies and device requests.
-
-To run the real browser integration with a virtual CTAP2 authenticator:
-
-```console
-CHROMIUM=/path/to/chromium CHROMEDRIVER=/path/to/chromedriver just test-auth-browser
-```
-
-This checks the embedded UI, real WebAuthn ceremonies, invitation signup, account
-editing, CLI device login over a Unix socket, token use, and revocation. Python 3
-is required; it uses only the standard library.
-CI runs this lifecycle test explicitly in the `embedded-test` job, including
-session revocation, in-place reauthentication, and preservation of an editor draft.

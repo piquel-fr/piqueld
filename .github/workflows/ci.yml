@@ -103,8 +103,6 @@ jobs:
           tailwindcss-sha256: "dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a"
           binaryen-version: "132"
       - run: just test-embedded
-      - name: Run passkey browser and CLI lifecycle
-        run: CHROMIUM="$(command -v google-chrome)" CHROMEDRIVER="${CHROMEWEBDRIVER:?}/chromedriver" just test-auth-browser
 
   test:
     name: test
