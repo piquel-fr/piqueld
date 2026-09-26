@@ -3,6 +3,7 @@
 mod ceremonies;
 mod management;
 mod sessions;
+mod throttle;
 pub(crate) use sessions::Identity;
 #[cfg(test)]
 mod tests;
@@ -64,6 +65,7 @@ struct Inner {
     secure: bool,
     ceremonies: Mutex<HashMap<String, ceremonies::Pending>>,
     devices: Mutex<HashMap<String, sessions::Device>>,
+    throttle: Mutex<throttle::Throttle>,
 }
 
 impl Auth {
@@ -106,6 +108,7 @@ impl Auth {
             secure: origin.scheme() == "https",
             ceremonies: Mutex::new(HashMap::new()),
             devices: Mutex::new(HashMap::new()),
+            throttle: Mutex::new(throttle::Throttle::default()),
         })))
     }
 
@@ -177,6 +180,14 @@ impl Auth {
                 .as_secs(),
         )
         .unwrap_or(i64::MAX)
+    }
+
+    pub(crate) async fn admit_start(&self, peer: Option<std::net::IpAddr>) -> Result<()> {
+        self.0
+            .throttle
+            .lock()
+            .await
+            .admit(peer, std::time::Instant::now())
     }
     pub(crate) fn secret() -> Result<String> {
         let mut bytes = [0_u8; 32];

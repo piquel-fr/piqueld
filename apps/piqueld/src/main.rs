@@ -170,8 +170,11 @@ fn spawn_tcp_api(
     tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async move { shutdown.cancelled().await }),
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);
         // The grace period starts only once shutdown has been requested; a

@@ -55,7 +55,12 @@ async fn passkey_browser_and_cli_lifecycle() {
         auth.clone(),
     );
     let server = tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
     let socket = dir.path().join("api.sock");
     let unix = tokio::net::UnixListener::bind(&socket).unwrap();
