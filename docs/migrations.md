@@ -75,6 +75,11 @@ per-deployment pins. Empty pin sets are recorded too, so retries cannot silently
 pick up subsequently added values. Secret value changes do not update application
 configuration or request deployments.
 
+Migration 0008 adds resumable secret-deletion reservations and a persistent
+master-key verifier. Existing ciphertext is authenticated on the first value
+write before binding the key. Failed cleanup remains reserved across restarts;
+retry deletion to finish it.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer
