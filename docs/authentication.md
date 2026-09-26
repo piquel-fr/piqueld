@@ -6,6 +6,30 @@ its passkeys, create its API tokens, and revoke its sessions. There are no roles
 ownership restrictions, or extra authentication prompts for these changes.
 The first account has no special privileges. There is no account recovery flow.
 
+## Upgrading an existing installation
+
+1. Choose the stable HTTPS hostname and configure `auth.public_url` before creating
+   any passkeys. Arrange TLS termination and verify that the browser can reach it.
+   Tailscale users still need HTTPS for the browser; see the transport notes below.
+2. Stop the daemon and back up its entire data directory, including `piqueld.db`
+   and any SQLite `-wal`/`-shm` files. Keep the previous binary and configuration.
+   The new daemon migrates the database on startup; an older binary rejects the
+   newer schema. Replacing the binary alone is not a supported rollback.
+3. Start the upgraded daemon, open its private `setup-link`, and create the first
+   account. Existing applications continue reconciling, but all API clients now
+   need credentials, including clients connecting over a Unix socket.
+4. Run `piquelctl login` for interactive clients. Create automation tokens and
+   update scripts, deployment jobs, and API health checks that previously used
+   anonymous access. TCP `/health` remains public. Verify a browser edit and an
+   authenticated CLI command before declaring the upgrade complete.
+
+To roll back, stop the new daemon and restore the complete pre-upgrade data
+directory, previous binary, and configuration together. This discards database
+changes made since the backup, including accounts and application edits. Running
+Docker resources may have changed in the meantime; check them against the restored
+desired state before restarting reconciliation. Never restore a live database or
+combine a restored database with WAL files from the newer installation.
+
 ## Website and initial setup
 
 Build with the embedded dashboard (`just daemon-embedded` or the combined Nix
@@ -90,6 +114,8 @@ Use `--account USERNAME_OR_ID` to select another saved login. TCP and Unix endpo
 have separate entries. Login again after renaming an account to update its saved
 username, or select it by immutable ID. `logout` revokes the credential remotely
 and removes its local copy.
+Credential updates use a persistent sibling `.lock` file to serialize concurrent
+CLI processes. Do not delete that lock file while CLI commands are running.
 
 Create named automation tokens on the Accounts page. The raw token appears only
 once; the daemon stores only its hash. Supply it using `PIQUELD_TOKEN`, which takes
@@ -108,6 +134,11 @@ HTTPS origins. Cookie-authenticated mutations require the configured Origin.
 API/CLI credentials use `Authorization: Bearer …`. No tokens are automatically
 renewed. All API listeners require account authentication, regardless of socket
 group membership or Tailscale connectivity.
+
+If a browser request reports an expired or revoked session, the dashboard offers
+passkey login in place. Unsaved editor changes stay mounted. After signing in,
+retry the failed action; mutations are never replayed automatically. Signing out
+still works when the server has already invalidated the session.
 
 ## API and implementation
 
@@ -128,6 +159,17 @@ the exact configured origin, RP ID, credential, and immutable user handle.
 The pinned `webauthn-rs-core` integration requires OpenSSL and pkg-config for native
 builds; the Nix packages and development shell provide them.
 
+Public registration, login, and device-start requests share limits of 30 starts
+per TCP peer per minute and 60 per daemon per minute, across all listeners. Unix
+socket callers share one peer bucket. Excess requests receive HTTP 429 and
+`Retry-After: 60`; ongoing ceremonies and authenticated API work are unaffected.
+The global budget keeps admitted pending requests below the in-memory capacity.
+Forwarded IP headers are deliberately ignored: callers behind the same reverse
+proxy share its allowance. On publicly reachable deployments, also apply per-client
+limits at the trusted proxy; sustained or distributed traffic can still consume
+the daemon's admission budget. Limits reset on daemon restart, along with pending
+ceremonies and device requests.
+
 To run the real browser integration with a virtual CTAP2 authenticator:
 
 ```console
@@ -137,3 +179,5 @@ CHROMIUM=/path/to/chromium CHROMEDRIVER=/path/to/chromedriver just test-auth-bro
 This checks the embedded UI, real WebAuthn ceremonies, invitation signup, account
 editing, CLI device login over a Unix socket, token use, and revocation. Python 3
 is required; it uses only the standard library.
+CI runs this lifecycle test explicitly in the `embedded-test` job, including
+session revocation, in-place reauthentication, and preservation of an editor draft.
