@@ -1011,10 +1011,10 @@
       "DeliveryState": {
         "description": "Lifecycle of a durable webhook delivery.",
         "enum": [
-          "Pending",
-          "Delivered",
-          "Failed",
-          "Cancelled"
+          "pending",
+          "delivered",
+          "failed",
+          "cancelled"
         ],
         "type": "string"
       },
@@ -3591,11 +3591,11 @@
       "NotificationCategory": {
         "description": "Global notification categories supported by daemon configuration.",
         "enum": [
-          "BuildFailures",
-          "DeploymentFailures",
-          "ServiceDegradation",
-          "DaemonFailures",
-          "Recovery"
+          "build_failures",
+          "deployment_failures",
+          "service_degradation",
+          "daemon_failures",
+          "recovery"
         ],
         "type": "string"
       },
@@ -13536,7 +13536,8 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "minimum": 0,
+              "maximum": 100,
+              "minimum": 1,
               "type": "integer"
             }
           }

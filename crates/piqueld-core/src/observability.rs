@@ -109,6 +109,7 @@ macro_rules! notification_values {
     ($(#[$meta:meta])* $name:ident { $($(#[$variant_meta:meta])* $variant:ident => $value:literal),+ $(,)? }) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, ToSchema)]
+        #[serde(rename_all = "snake_case")]
         pub enum $name {
             $($(#[$variant_meta])* #[serde(rename = $value)] $variant),+
         }
@@ -280,6 +281,41 @@ impl Diagnostic {
             retryable,
             next_action,
             scope,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeliveryState, NotificationCategory};
+    use utoipa::PartialSchema;
+
+    #[test]
+    fn notification_schemas_match_wire_values() {
+        for (schema, values) in [
+            (
+                DeliveryState::schema(),
+                serde_json::to_value([
+                    DeliveryState::Pending,
+                    DeliveryState::Delivered,
+                    DeliveryState::Failed,
+                    DeliveryState::Cancelled,
+                ])
+                .unwrap(),
+            ),
+            (
+                NotificationCategory::schema(),
+                serde_json::to_value([
+                    NotificationCategory::BuildFailures,
+                    NotificationCategory::DeploymentFailures,
+                    NotificationCategory::ServiceDegradation,
+                    NotificationCategory::DaemonFailures,
+                    NotificationCategory::Recovery,
+                ])
+                .unwrap(),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(schema).unwrap()["enum"], values);
         }
     }
 }

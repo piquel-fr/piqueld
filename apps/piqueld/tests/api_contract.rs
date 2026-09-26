@@ -3479,13 +3479,21 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["content-type"], "text/event-stream");
     let mut body = response.into_body();
-    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), body.frame())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap()
-        .into_data()
-        .unwrap();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut bytes = Vec::new();
+        loop {
+            let frame = body.frame().await.unwrap().unwrap();
+            if let Ok(data) = frame.into_data() {
+                bytes.extend_from_slice(&data);
+                if let Some(end) = bytes.windows(2).position(|window| window == b"\n\n") {
+                    bytes.truncate(end);
+                    return bytes;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
     let text = std::str::from_utf8(&frame).unwrap();
     assert!(text.contains("operation_failed"));
     assert!(text.contains(&format!("id: v1:{}", events.last().unwrap().id)));

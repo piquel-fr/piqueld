@@ -52,6 +52,7 @@ pub(super) async fn analytics(
 #[into_params(parameter_in=Query)]
 pub(super) struct DeliveryQuery {
     cursor: Option<String>,
+    #[param(minimum = 1, maximum = 100)]
     limit: Option<usize>,
 }
 #[utoipa::path(get,path="/api/v1/notifications/deliveries",operation_id="notificationDeliveries",params(DeliveryQuery),responses((status=200,body=Envelope<Page<NotificationDelivery>>),(status=400,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
