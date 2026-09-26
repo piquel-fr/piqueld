@@ -23,11 +23,11 @@ pub(super) fn dashboard_header() -> View {
                     "Host settings"
                 </A>
                 <A href="/dashboard/builds" class="nav-link" active_class="active">"Builds"</A>
-                <A href="/dashboard/events" class="nav-link">"Events"</A>
-                <A href="/dashboard/errors" class="nav-link">"Errors"</A>
-                <A href="/dashboard/system" class="nav-link">"Daemon status"</A>
-                <A href="/dashboard/analytics" class="nav-link">"Analytics"</A>
-                <A href="/dashboard/notifications" class="nav-link">"Notifications"</A>
+                <A href="/dashboard/events" class="nav-link" active_class="active">"Events"</A>
+                <A href="/dashboard/errors" class="nav-link" active_class="active">"Errors"</A>
+                <A href="/dashboard/system" class="nav-link" active_class="active">"Daemon status"</A>
+                <A href="/dashboard/analytics" class="nav-link" active_class="active">"Analytics"</A>
+                <A href="/dashboard/notifications" class="nav-link" active_class="active">"Notifications"</A>
             </nav>
         </aside>
     }

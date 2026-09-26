@@ -53,6 +53,13 @@ pub(super) fn EventHistory(
     let application = store_value(application);
     let query = use_query_map();
     let cursor = create_rw_signal(None::<String>);
+    create_effect(move |previous| {
+        let operation = query.with(|query| query.get("operation").cloned());
+        if previous.as_ref() != Some(&operation) {
+            cursor.set(None);
+        }
+        operation
+    });
     let kind = create_rw_signal(String::new());
     let code = create_rw_signal(String::new());
     let scope = create_rw_signal(String::new());
