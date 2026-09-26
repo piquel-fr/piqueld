@@ -20,7 +20,12 @@ impl<D: DockerApi> Controller<D> {
         let started = std::time::Instant::now();
         tracing::info!("operation started");
         let result = self.run_operation_inner(operation, cancellation).await;
-        self.store.interrupt_actions(Some(&operation.id)).await?;
+        {
+            // Repair uses this operation's context too. Let any in-flight repair
+            // commit its result before recovering abandoned execution actions.
+            let _guard = self.mutations.lock().await;
+            self.store.interrupt_actions(Some(&operation.id)).await?;
+        }
         let duration_ms = started.elapsed().as_secs_f64() * 1_000.0;
         match &result {
             Ok(outcome) => tracing::info!(outcome, duration_ms, "operation execution completed"),
@@ -340,5 +345,99 @@ impl<D: DockerApi> Controller<D> {
             )
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        api::{Mutation, MutationResponse},
+        docker::BollardDocker,
+        store::Store,
+    };
+
+    #[tokio::test]
+    async fn execution_cleanup_waits_for_live_repair_to_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+        let manifest = piqueld_core::parse_toml(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='repair'\n[spec]",
+        ).unwrap();
+        let (MutationResponse::Operation(receipt), _) = store
+            .accept(Mutation::apply(manifest, None), Some(0), false, None)
+            .await
+            .unwrap()
+        else {
+            panic!("operation")
+        };
+        let operation = store.operation(&receipt.operation_id).await.unwrap();
+        // A stale execution takes its normal early-exit path without calling Docker.
+        store
+            .transition_operation(
+                &operation.id,
+                OperationState::Requested,
+                OperationState::Running,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .transition_operation(
+                &operation.id,
+                OperationState::Running,
+                OperationState::Succeeded,
+                None,
+            )
+            .await
+            .unwrap();
+        let socket_path = temp.path().join("unused.sock");
+        let _socket = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let controller = Controller::new(
+            Arc::new(BollardDocker::connect(&socket_path).unwrap()),
+            Arc::clone(&store),
+        );
+        let abandoned = store
+            .begin_action(Some(&operation.id), "resolving_image", Some("web"))
+            .await
+            .unwrap();
+        let guard = controller.mutations.lock().await;
+        let repair = store
+            .begin_action(Some(&operation.id), "ensure_service", Some("web"))
+            .await
+            .unwrap();
+        store.action_request(&repair, 1).await.unwrap();
+        let cancellation = CancellationToken::new();
+        let cleanup = controller.run_operation(&operation, &cancellation);
+        tokio::pin!(cleanup);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut cleanup)
+                .await
+                .is_err()
+        );
+        store.finish_action(&repair, None).await.unwrap();
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(1), cleanup)
+            .await
+            .unwrap()
+            .unwrap();
+        let events = store
+            .events(Some(&operation.application_id), None, 100)
+            .await
+            .unwrap()
+            .items;
+        assert!(events.iter().any(|e| e.action_id.as_deref() == Some(&repair.id) && e.kind == "action_succeeded"));
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.action_id.as_deref() == Some(&repair.id)
+                    && e.kind == "action_outcome_unknown")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.action_id.as_deref() == Some(&abandoned.id)
+                    && e.kind == "action_outcome_unknown")
+        );
     }
 }
