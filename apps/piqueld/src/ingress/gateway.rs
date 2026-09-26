@@ -9,7 +9,10 @@ use piqueld_core::{
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 const GATEWAY_LABEL: &str = "io.piqueld.ingress";
 const CONFIGURATION_LABEL: &str = "io.piqueld.ingress-configuration";
@@ -30,9 +33,13 @@ impl Ingress {
     }
 
     pub(super) async fn container(&self) -> Result<Option<Value>> {
+        self.named_container(&self.name).await
+    }
+
+    async fn named_container(&self, name: &str) -> Result<Option<Value>> {
         let container = self
             .docker
-            .inspect(&format!("/containers/{}/json", self.name))
+            .inspect(&format!("/containers/{name}/json"))
             .await?;
         if let Some(container) = &container {
             self.check_owner(&container["Config"]["Labels"])?;
@@ -41,7 +48,18 @@ impl Ingress {
     }
 
     pub(super) async fn stop_gateway(&self) -> Result<()> {
-        if let Some(container) = self.container().await? {
+        for name in [
+            &self.name,
+            &format!("{}-previous", self.name),
+            &format!("{}-next", self.name),
+        ] {
+            self.remove_container(name).await?;
+        }
+        Ok(())
+    }
+
+    async fn remove_container(&self, name: &str) -> Result<()> {
+        if let Some(container) = self.named_container(name).await? {
             // Removing the container also removes its restart policy. Persistent
             // data and config are host directories retained across disablement.
             self.docker
@@ -54,7 +72,7 @@ impl Ingress {
                     None,
                 )
                 .await?;
-            tracing::info!(gateway=%self.name,"stopped managed ingress");
+            tracing::info!(container=%name,"removed managed ingress container");
         }
         Ok(())
     }
@@ -102,36 +120,66 @@ impl Ingress {
         Ok(())
     }
 
-    async fn ingress_networks(&self, table: &RoutingTable) -> Result<BTreeSet<String>> {
-        // Validate the complete table: dropping an invalid app here would withdraw
-        // its live routes instead of preserving the last accepted configuration.
+    /// Keep unavailable apps on their accepted destinations, but always honor
+    /// withdrawals. Never attach an unverified network or acknowledge a new route
+    /// for an app whose network failed validation.
+    pub(super) async fn prepare_routes(
+        &self,
+        desired: &RoutingTable,
+    ) -> Result<(
+        RoutingTable,
+        BTreeSet<String>,
+        BTreeMap<piqueld_core::ApplicationId, String>,
+    )> {
+        let mut table = desired.clone();
         let mut networks = BTreeSet::new();
-        for (id, routes) in table {
+        let mut failures = BTreeMap::new();
+        for (id, routes) in &mut table {
             if routes.is_empty() {
                 continue;
             }
             let name = DockerNetworkName::for_ingress(id).to_string();
-            let network = self
-                .docker
-                .inspect(&format!("/networks/{name}"))
-                .await?
-                .context("application ingress network is not ready")?;
-            ensure!(
-                network["Labels"][MANAGED_LABEL] == "true"
-                    && network["Labels"][INSTANCE_LABEL] == self.instance_id
-                    && network["Labels"][APPLICATION_LABEL] == id.as_str(),
-                "application ingress network has conflicting ownership"
-            );
-            ensure!(
-                network["Driver"] == "overlay" && network["Attachable"] == true,
-                "application ingress network must be an attachable overlay"
-            );
-            networks.insert(name);
+            match self.check_ingress_network(id, &name).await {
+                Ok(()) => {
+                    networks.insert(name);
+                }
+                Err(error) => {
+                    tracing::error!(application_id=%id, network=%name, error=?error,
+                        "preserving accepted destinations; other applications can still update");
+                    let mut accepted = self.store.applied_routes(id).await?;
+                    accepted.retain(|old| routes.iter().any(|new| new.hostname == old.hostname));
+                    *routes = accepted;
+                    failures.insert(id.clone(), format!("{error:#}"));
+                }
+            }
         }
-        Ok(networks)
+        Ok((table, networks, failures))
     }
 
-    fn container_spec(&self) -> Value {
+    async fn check_ingress_network(
+        &self,
+        id: &piqueld_core::ApplicationId,
+        name: &str,
+    ) -> Result<()> {
+        let network = self
+            .docker
+            .inspect(&format!("/networks/{name}"))
+            .await?
+            .context("application ingress network is not ready")?;
+        ensure!(
+            network["Labels"][MANAGED_LABEL] == "true"
+                && network["Labels"][INSTANCE_LABEL] == self.instance_id
+                && network["Labels"][APPLICATION_LABEL] == id.as_str(),
+            "application ingress network has conflicting ownership"
+        );
+        ensure!(
+            network["Driver"] == "overlay" && network["Attachable"] == true,
+            "application ingress network must be an attachable overlay"
+        );
+        Ok(())
+    }
+
+    pub(super) fn container_spec(&self) -> Value {
         let uid = rustix::process::geteuid().as_raw();
         let gid = rustix::process::getegid().as_raw();
         let binds: Vec<_> = ["data", "config", "control"]
@@ -155,6 +203,10 @@ impl Ingress {
             },
             "NetworkingConfig":{"EndpointsConfig":{&self.name:{"GwPriority":1}}}
         });
+        #[cfg(test)]
+        if !self.extra_hosts.is_empty() {
+            spec["HostConfig"]["ExtraHosts"] = json!(self.extra_hosts);
+        }
         let hash = format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&spec).expect("JSON serializes"))
@@ -163,20 +215,22 @@ impl Ingress {
         spec
     }
 
-    pub(super) async fn ensure_gateway(&self, table: &RoutingTable) -> Result<()> {
+    pub(super) async fn ensure_gateway(
+        &self,
+        table: &RoutingTable,
+        networks: &BTreeSet<String>,
+    ) -> Result<()> {
         self.check_version().await?;
+        self.recover_gateway().await?;
         let spec = self.container_spec();
         let current = self.container().await?;
-        if let Some(current) = &current {
-            if current["Config"]["Labels"][CONFIGURATION_LABEL]
+        if let Some(current) = &current
+            && current["Config"]["Labels"][CONFIGURATION_LABEL]
                 == spec["Labels"][CONFIGURATION_LABEL]
-            {
-                Self::check_container_configuration(current, &spec)?;
-                if current["State"]["Running"] == true {
-                    return Ok(());
-                }
-            } else {
-                self.stop_gateway().await?;
+        {
+            Self::check_container_configuration(current, &spec)?;
+            if current["State"]["Running"] == true {
+                return Ok(());
             }
         }
         for directory in [
@@ -189,7 +243,6 @@ impl Ingress {
             crate::prepare_data_dir(directory).await?;
         }
         self.ensure_edge_network().await?;
-        let networks = self.ingress_networks(table).await?;
         if self
             .docker
             .inspect(&format!("/images/{CADDY_IMAGE}/json"))
@@ -217,26 +270,181 @@ impl Ingress {
             .await
             .context("pull Caddy image timed out")??;
         }
-        if self.container().await?.is_none() {
+        if current.as_ref().is_some_and(|container| {
+            container["Config"]["Labels"][CONFIGURATION_LABEL]
+                != spec["Labels"][CONFIGURATION_LABEL]
+        }) {
+            return self.replace_gateway(table, networks, &spec).await;
+        }
+        if current.is_none() {
+            self.create_container(&self.name, &spec).await?;
+        }
+        self.attach_networks(&self.name, networks).await?;
+        self.start_gateway(table).await
+    }
+
+    async fn create_container(&self, name: &str, spec: &Value) -> Result<()> {
+        self.docker
+            .json(
+                Method::POST,
+                &format!("/containers/create?name={name}"),
+                Some(spec),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Both containers and the rollback configuration survive cancellation or a
+    /// daemon crash. Reconciliation restores the old gateway if cutover did not
+    /// finish; disablement removes all three managed container names.
+    pub(super) async fn replace_gateway(
+        &self,
+        table: &RoutingTable,
+        networks: &BTreeSet<String>,
+        spec: &Value,
+    ) -> Result<()> {
+        let next = format!("{}-next", self.name);
+        let previous = format!("{}-previous", self.name);
+        self.validate_replacement(&next, spec, table).await?;
+        self.create_container(&next, spec).await?;
+        self.attach_networks(&next, networks).await?;
+        let configuration = if self
+            .container()
+            .await?
+            .is_some_and(|container| container["State"]["Running"] == true)
+        {
+            self.caddy.json(Method::GET, "/config/", None).await?
+        } else {
+            let bytes = tokio::fs::read(self.directory.join("config/caddy/autosave.json")).await?;
+            serde_json::from_slice(&bytes)?
+        };
+        self.write_configuration("rollback.json", &configuration)
+            .await?;
+        // All preparation above leaves the current listener untouched.
+        let result = async {
             self.docker
                 .json(
                     Method::POST,
-                    &format!("/containers/create?name={}", self.name),
-                    Some(&spec),
+                    &format!("/containers/{}/stop?t=10", self.name),
+                    None,
                 )
                 .await?;
+            // Docker cannot reliably rename a running overlay endpoint.
+            self.rename_container(&self.name, &previous).await?;
+            self.rename_container(&next, &self.name).await?;
+            self.start_gateway(table).await?;
+            self.remove_container(&previous).await
         }
-        self.attach_networks(&networks).await?;
-        self.start_gateway(table).await
+        .await;
+        if let Err(error) = result {
+            self.recover_gateway().await.with_context(|| {
+                format!("gateway replacement failed ({error:#}); rollback also failed")
+            })?;
+            return Err(error.context("gateway replacement failed; previous gateway restored"));
+        }
+        Ok(())
+    }
+
+    async fn validate_replacement(
+        &self,
+        name: &str,
+        spec: &Value,
+        table: &RoutingTable,
+    ) -> Result<()> {
+        self.write_configuration("candidate.json", &self.configuration(table))
+            .await?;
+        let mut validation = spec.clone();
+        validation["Cmd"] = json!([
+            "caddy",
+            "validate",
+            "--config",
+            "/config/caddy/candidate.json"
+        ]);
+        validation["HostConfig"]["PortBindings"] = json!({});
+        validation["HostConfig"]["RestartPolicy"] = json!({"Name":"no"});
+        self.remove_container(name).await?;
+        self.create_container(name, &validation).await?;
+        self.docker
+            .json(Method::POST, &format!("/containers/{name}/start"), None)
+            .await?;
+        let exited = self
+            .docker
+            .json(
+                Method::POST,
+                &format!("/containers/{name}/wait?condition=not-running"),
+                None,
+            )
+            .await?;
+        if exited["StatusCode"] != 0 {
+            let diagnostics = self.container_logs(name, "tail=20").await.context(
+                "replacement Caddy configuration validation failed; could not read diagnostics",
+            )?;
+            anyhow::bail!(
+                "replacement Caddy configuration validation failed: {}",
+                diagnostics.join("\n")
+            );
+        }
+        self.remove_container(name).await
+    }
+
+    async fn rename_container(&self, from: &str, to: &str) -> Result<()> {
+        self.docker
+            .json(
+                Method::POST,
+                &format!("/containers/{from}/rename?name={to}"),
+                None,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub(super) async fn recover_gateway(&self) -> Result<()> {
+        let previous = format!("{}-previous", self.name);
+        let next = format!("{}-next", self.name);
+        if self.named_container(&previous).await?.is_some() {
+            self.remove_container(&self.name).await?;
+            self.restore_configuration().await?;
+            self.rename_container(&previous, &self.name).await?;
+            self.start_container().await?;
+            self.remove_container(&next).await?;
+            tracing::warn!(gateway=%self.name, "restored gateway after interrupted replacement");
+        } else if self.named_container(&next).await?.is_some() {
+            // Cancellation may land between stopping the old container and
+            // renaming it. Keep the candidate until the old listener is restored.
+            if let Some(container) = self.container().await?
+                && container["State"]["Running"] != true
+            {
+                // Before the first rename the old autosave is still untouched.
+                self.start_container().await?;
+            }
+            self.remove_container(&next).await?;
+        }
+        Ok(())
+    }
+
+    async fn restore_configuration(&self) -> Result<()> {
+        let bytes = tokio::fs::read(self.directory.join("config/caddy/rollback.json")).await?;
+        self.write_configuration("autosave.json", &serde_json::from_slice(&bytes)?)
+            .await
+    }
+
+    async fn write_configuration(&self, file: &str, configuration: &Value) -> Result<()> {
+        let path = self.directory.join("config/caddy").join(file);
+        let temporary = path.with_extension("tmp");
+        tokio::fs::write(&temporary, serde_json::to_vec(configuration)?).await?;
+        tokio::fs::rename(&temporary, &path).await?;
+        Ok(())
     }
 
     async fn start_gateway(&self, table: &RoutingTable) -> Result<()> {
         // A restarted gateway must never briefly resume routes that were removed
         // by deployments while ingress was disabled.
-        let path = self.directory.join("config/caddy/autosave.json");
-        let temporary = path.with_extension("tmp");
-        tokio::fs::write(&temporary, serde_json::to_vec(&self.configuration(table))?).await?;
-        tokio::fs::rename(&temporary, &path).await?;
+        self.write_configuration("autosave.json", &self.configuration(table))
+            .await?;
+        self.start_container().await
+    }
+
+    async fn start_container(&self) -> Result<()> {
         self.docker
             .json(
                 Method::POST,
@@ -315,9 +523,9 @@ impl Ingress {
         Ok(())
     }
 
-    async fn attach_networks(&self, desired: &BTreeSet<String>) -> Result<()> {
+    async fn attach_networks(&self, name: &str, desired: &BTreeSet<String>) -> Result<()> {
         let container = self
-            .container()
+            .named_container(name)
             .await?
             .context("gateway container disappeared")?;
         for network in desired {
@@ -329,7 +537,7 @@ impl Ingress {
                     .json(
                         Method::POST,
                         &format!("/networks/{network}/connect"),
-                        Some(&json!({"Container":self.name,"EndpointConfig":{"GwPriority":0}})),
+                        Some(&json!({"Container":name,"EndpointConfig":{"GwPriority":0}})),
                     )
                     .await?;
             }
@@ -337,9 +545,12 @@ impl Ingress {
         Ok(())
     }
 
-    pub(super) async fn configure_gateway(&self, table: &RoutingTable) -> Result<()> {
-        let networks = self.ingress_networks(table).await?;
-        self.attach_networks(&networks).await?;
+    pub(super) async fn configure_gateway(
+        &self,
+        table: &RoutingTable,
+        networks: &BTreeSet<String>,
+    ) -> Result<()> {
+        self.attach_networks(&self.name, networks).await?;
         let desired = self.configuration(table);
         let current = self.caddy.json(Method::GET, "/config/", None).await?;
         if current != desired {
@@ -355,10 +566,16 @@ impl Ingress {
             .container()
             .await?
             .context("gateway container disappeared")?;
+        // Keep existing attachments for unavailable apps whose routes were retained.
+        let retained: BTreeSet<_> = table
+            .iter()
+            .filter(|(_, routes)| !routes.is_empty())
+            .map(|(id, _)| DockerNetworkName::for_ingress(id).to_string())
+            .collect();
         if let Some(attached) = container["NetworkSettings"]["Networks"].as_object() {
             for network in attached
                 .keys()
-                .filter(|name| *name != &self.name && !networks.contains(*name))
+                .filter(|name| *name != &self.name && !retained.contains(*name))
             {
                 self.docker
                     .json(
@@ -380,22 +597,33 @@ impl Ingress {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        let path = format!(
-            "/containers/{}/logs?stdout=1&stderr=1&tail=100&since={}&until={now}",
-            self.name, *since
-        );
+        for line in self
+            .container_logs(
+                &self.name,
+                &format!("tail=100&since={}&until={now}", *since),
+            )
+            .await?
+        {
+            tracing::info!(gateway=%self.name,caddy=%line,"Caddy diagnostic");
+        }
+        *since = now;
+        Ok(())
+    }
+
+    async fn container_logs(&self, name: &str, query: &str) -> Result<Vec<String>> {
+        let path = format!("/containers/{name}/logs?stdout=1&stderr=1&{query}");
         let (status, bytes) = self.docker.request(Method::GET, &path, None).await?;
         ensure!(status.is_success(), "Caddy diagnostics returned {status}");
+        let mut lines = Vec::new();
         let mut remaining = bytes.as_slice();
         while remaining.len() >= 8 {
             let length = u32::from_be_bytes(remaining[4..8].try_into()?) as usize;
             ensure!(length <= remaining.len() - 8, "truncated Caddy log frame");
             for line in String::from_utf8_lossy(&remaining[8..8 + length]).lines() {
-                tracing::info!(gateway=%self.name,caddy=%line.chars().take(4096).collect::<String>(),"Caddy diagnostic");
+                lines.push(line.chars().take(4096).collect());
             }
             remaining = &remaining[8 + length..];
         }
-        *since = now;
-        Ok(())
+        Ok(lines)
     }
 }

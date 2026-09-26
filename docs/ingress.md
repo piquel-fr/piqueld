@@ -44,13 +44,23 @@ networks. The gateway is trusted across all exposed applications.
 
 Caddy runs as the daemon's UID/GID in a standalone Docker container, with only the
 `NET_BIND_SERVICE` capability (required by the official binary), a read-only root filesystem, and a private Unix administration socket.
-The gateway does not receive Docker API access. Its pinned image version follows
-piqueld releases. The stable bridge network provides outbound DNS/ACME connectivity;
+The gateway does not receive Docker API access. Its image version and multi-platform
+manifest digest are pinned together and follow piqueld releases. The stable bridge network provides outbound DNS/ACME connectivity;
 application overlay attachment does not replace the gateway container.
 
-Ordinary configuration changes preserve listener availability. WebSocket connections
-may reconnect after a five-minute close delay. Gateway replacement or host failure
-can briefly interrupt traffic. This does not add blue-green application deployment.
+Ordinary configuration changes preserve listener availability. HTTP clients must
+handle idle connections closing during reload; active HTTP/2 streams and WebSockets
+are covered by integration tests. WebSocket connections may reconnect after a
+five-minute close delay. Gateway replacement or host failure can interrupt traffic.
+This does not add blue-green application deployment.
+
+Before replacement, piqueld downloads the pinned image, validates the Caddy
+configuration with that image, and prepares the new container and its network
+attachments while the old gateway still serves. The old container
+and its configuration remain available until the replacement starts successfully.
+Failed startup restores the old gateway; interrupted replacements are recovered on
+the next reconciliation. Replacement still requires a brief stop/start on the shared
+ports. Docker outages can delay recovery; inspect ingress health and daemon logs.
 
 ## Status and recovery
 
@@ -77,8 +87,13 @@ public exposure as deployment execution starts, before obsolete service/network
 cleanup. Hostname reservations survive pending deployments and incomplete withdrawals.
 
 Gateway updates apply as one installation-wide configuration. A missing or conflicting
-application network blocks updates for all applications until repaired, preserving the
-last accepted configuration rather than silently withdrawing the affected app's routes.
+application network retains that application's accepted destinations and prevents its
+new destinations from being applied. Explicit withdrawals still proceed, and healthy
+applications can update independently. The gateway never attaches an unverified
+network. Global health reports the degraded state, and logs identify the application
+and network to repair. Each route's public HTTPS readiness is checked independently.
+Gateway requests do not hold the controller's global Docker mutation lock, so private
+application deployments can proceed while routing is waiting.
 
 Disabling ingress in TOML and restarting stops public routing, retains certificate
 and route state, and continues accepting route-bearing manifests. Re-enabling exposes
@@ -88,8 +103,24 @@ certificates independently. Back up the private daemon data directory, including
 
 ## Validation
 
-`just docker-test` runs Caddy in the isolated Docker-in-Docker harness, with a private
-test CA and randomly allocated loopback host ports. It checks trusted TLS, routing,
-redirects, unknown-host rejection, network separation, live network attachment and route cutover,
-independent restart, and disable/re-enable behavior. Production Caddy uses public ACME;
-the isolated test does not request public certificates or require a real domain.
+`just docker-test` runs Caddy in the isolated Docker-in-Docker harness, with private
+test certificates and randomly allocated loopback host ports. It covers routing,
+redirects, unknown-host rejection, network separation, gateway replacement failure
+and recovery, unrelated deployments during a stalled gateway update, withdrawals
+with a broken app network, and a backend cutover held behind a failing health check.
+Distinct backend responses establish that requests actually switch destinations.
+
+Persistent HTTP/1, HTTP/2, WebSocket and SSE connections are exercised across reloads.
+Caddy's bundled ACME server issues short-lived certificates in the harness: separate
+orders require HTTP-01 and TLS-ALPN-01, and fresh trusted TLS handshakes must observe
+renewed certificates without daemon intervention. The CA is private and test DNS is
+local to the disposable gateway container. This tests the ACME protocol and renewal,
+not a public CA's policies or internet reachability.
+
+Before a production rollout, deploy a disposable app on a domain whose A/AAAA records
+point at the installation. From a separate internet connection, verify the HTTP
+redirect and trusted HTTPS response, inspect the issuer/expiry, and confirm the
+reserved `/.well-known/piqueld-ingress` endpoint returns this installation's ID.
+Check both IPv4 and IPv6 when publishing both records. Keep certificate issuance and
+renewal diagnostics under observation. Public CA validation requires a real domain
+and reachable ports; the isolated suite cannot establish those deployment conditions.

@@ -54,6 +54,7 @@ utoipa-axum.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+reqwest = { workspace = true, features = ["http2"] }
 base64.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 piqueld-client.workspace = true

@@ -187,12 +187,13 @@ impl<D: DockerApi> Controller<D> {
             let plan = Plan::from_request(&runtime_request, &observed);
             self.check_plan(operation, &plan).await?;
             if operation.kind != OperationKind::Delete {
-                let _guard = self.mutations.lock().await;
-                self.check_current(operation).await?;
-                self.store
-                    .publish_prepared(operation)
-                    .await
-                    .map_err(OperationError::from)?;
+                {
+                    let _guard = self.mutations.lock().await;
+                    self.check_current(operation).await?;
+                    self.store.publish_prepared(operation).await?;
+                }
+                // Gateway I/O has its own writer lock. Never hold the global
+                // Docker mutation lock while waiting for another app's routing.
                 if let PlanRequest::Reconcile { desired } = &request {
                     tokio::time::timeout_at(
                         deadline,
@@ -241,7 +242,6 @@ impl<D: DockerApi> Controller<D> {
         deadline: tokio::time::Instant,
     ) -> Result<(), OperationError> {
         tokio::time::timeout_at(deadline, async {
-            let _guard = self.mutations.lock().await;
             self.check_current(operation).await?;
             self.sync_routes(operation, &[], true).await
         })
