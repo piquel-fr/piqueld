@@ -55,7 +55,9 @@ bounded log and may contain text emitted by the build itself.
 
 `retention.event_days = 0` and `retention.daemon_event_days = 0` both default to no
 age-based pruning. Nonzero values independently enable pruning for the two
-scopes. Executing actions and pending deliveries protect their source events.
+scopes. Executing actions, open notification incidents, and pending deliveries
+protect their source events. An open incident retains its failure delivery history
+until recovery, even when the failure was already acknowledged.
 Build output retains its existing byte and age limits. Operation pruning does
 not make event details unreadable. SQLite file size need not immediately shrink
 when rows are deleted; free pages can be reused.

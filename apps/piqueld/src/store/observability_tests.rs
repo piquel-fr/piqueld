@@ -281,6 +281,82 @@ async fn sustained_observation_requires_continuity_and_emits_one_recovery() {
     assert_eq!(store.deliveries(None, 100).await.unwrap().items.len(), 2);
 }
 #[tokio::test]
+async fn open_incidents_survive_retention_until_recovery_is_delivered() {
+    for daemon in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("db");
+        let mut config = notifications();
+        config.retention.daemon_event_days = 1;
+        let store = Store::open(&path)
+            .await
+            .unwrap()
+            .with_observability(&config);
+        store.configure_deliveries().await.unwrap();
+        let op = application(&store).await;
+        let application = (!daemon).then_some(op.application_id.as_str());
+        let key = application.unwrap_or("docker_unavailable");
+        let started = now_ms() - 2 * 86_400_000;
+        let cutoff = now_ms() - 86_400_000;
+        store
+            .observe_condition(key, application, true, started, 45_000)
+            .await
+            .unwrap();
+        // Retention must also preserve an incident still waiting for its threshold.
+        store.prune_events(cutoff).await.unwrap();
+        store.prune_daemon_events().await.unwrap();
+        for elapsed in [30_000, 60_000, 90_000, 120_000] {
+            store
+                .observe_condition(key, application, true, started + elapsed, 45_000)
+                .await
+                .unwrap();
+        }
+        let (failure, _) = store.claim_delivery().await.unwrap().unwrap();
+        store
+            .complete_delivery(&failure.id, DeliveryState::Delivered, None, 0)
+            .await
+            .unwrap();
+        store.prune_events(cutoff).await.unwrap();
+        store.prune_daemon_events().await.unwrap();
+        assert!(store.event(failure.event_id).await.is_ok());
+        drop(store);
+
+        let store = Store::open(&path)
+            .await
+            .unwrap()
+            .with_observability(&config);
+        store.configure_deliveries().await.unwrap();
+        store
+            .observe_condition(key, application, false, started + 150_000, 45_000)
+            .await
+            .unwrap();
+        store.prune_events(cutoff).await.unwrap();
+        store.prune_daemon_events().await.unwrap();
+        let (recovery, _) = store.claim_delivery().await.unwrap().unwrap();
+        assert_eq!(recovery.category, NotificationCategory::Recovery);
+        assert_eq!(recovery.destination, failure.destination);
+        assert!(store.event(failure.event_id).await.is_ok());
+        store
+            .complete_delivery(&recovery.id, DeliveryState::Delivered, None, 0)
+            .await
+            .unwrap();
+        assert!(store.claim_delivery().await.unwrap().is_none());
+
+        // Closing and acknowledging the incident releases its old history.
+        store.prune_events(cutoff).await.unwrap();
+        store.prune_daemon_events().await.unwrap();
+        assert!(matches!(
+            store.event(failure.event_id).await,
+            Err(StoreError::NotFound)
+        ));
+        assert!(matches!(
+            store.event(recovery.event_id).await,
+            Err(StoreError::NotFound)
+        ));
+        assert!(store.deliveries(None, 100).await.unwrap().items.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn pruning_marks_stream_gaps_and_analytics_coverage() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("db")).await.unwrap();

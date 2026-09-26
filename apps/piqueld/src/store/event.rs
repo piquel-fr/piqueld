@@ -254,10 +254,14 @@ impl Store {
     async fn prune_scope(&self, cutoff: i64, scope: EventScope) -> Result<u64, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let scope = scope.as_str();
+        // Open incidents need their source and delivery history until recovery,
+        // even after every failure delivery has been acknowledged.
         let removed = sqlx::query!(
             "DELETE
             FROM events
             WHERE scope=?1 AND created_at_ms<?2 AND NOT EXISTS(SELECT 1
+            FROM notification_conditions c
+            WHERE c.event_id=events.id) AND NOT EXISTS(SELECT 1
             FROM notification_deliveries d
             WHERE d.event_id=events.id AND d.state='pending') AND NOT EXISTS(SELECT 1
             FROM notification_deliveries failure JOIN notification_recovery_sources s ON s.failure_id=failure.id JOIN notification_deliveries recovery ON recovery.id=s.recovery_id
