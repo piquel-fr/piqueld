@@ -3,7 +3,7 @@ mod configuration;
 mod gateway;
 mod wire;
 
-use crate::store::{Store, ingress::RoutingTable};
+use crate::store::Store;
 use anyhow::{Context, Result};
 use futures_util::{StreamExt, stream};
 use piqueld_core::{
@@ -20,7 +20,8 @@ use tokio_util::sync::CancellationToken;
 use wire::UnixApi;
 
 /// Version released with piqueld; upgrades deliberately replace the gateway.
-pub const CADDY_IMAGE: &str = "caddy:2.11.4-alpine";
+pub const CADDY_IMAGE: &str =
+    "caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b";
 
 /// Serializes gateway configuration, lifecycle, and durable route projection.
 pub struct Ingress {
@@ -38,6 +39,8 @@ pub struct Ingress {
     logs_since: Mutex<u64>,
     #[cfg(test)]
     issuer: Option<serde_json::Value>,
+    #[cfg(test)]
+    extra_hosts: Vec<String>,
 }
 
 impl Ingress {
@@ -79,6 +82,8 @@ impl Ingress {
             logs_since: Mutex::new(0),
             #[cfg(test)]
             issuer: None,
+            #[cfg(test)]
+            extra_hosts: Vec::new(),
         })
     }
 
@@ -96,12 +101,7 @@ impl Ingress {
     ) -> Result<()> {
         let _guard = self.update.lock().await;
         let id = &operation.application_id;
-        let previous = self
-            .store
-            .routing_table()
-            .await?
-            .remove(id)
-            .unwrap_or_default();
+        let previous = self.store.applied_routes(id).await?;
         self.store
             .stage_routes(id, routes, ready, Some(&operation.id))
             .await?;
@@ -114,7 +114,7 @@ impl Ingress {
         {
             return Ok(());
         }
-        self.synchronize().await
+        self.synchronize_for(Some(id)).await
     }
 
     /// Repairs lifecycle/configuration and probes public HTTPS independently of deployments.
@@ -155,18 +155,46 @@ impl Ingress {
     }
 
     async fn synchronize(&self) -> Result<()> {
-        let result = async {
+        self.synchronize_for(None).await
+    }
+
+    async fn synchronize_for(
+        &self,
+        application: Option<&piqueld_core::ApplicationId>,
+    ) -> Result<()> {
+        let mut failures = std::collections::BTreeMap::new();
+        let result: Result<()> = async {
             let table = self
                 .store
                 .routing_table()
                 .await
                 .context("read deployed routing configuration")?;
-            self.synchronize_table(&table).await
+            if self.enabled {
+                let (accepted, networks, rejected) = self.prepare_routes(&table).await?;
+                failures = rejected;
+                self.ensure_gateway(&accepted, &networks).await.context(
+                    "prepare the Caddy gateway (requires free ports 80/443 and Docker 28+)",
+                )?;
+                self.configure_gateway(&accepted, &networks)
+                    .await
+                    .context("apply Caddy routes and network attachments")?;
+                self.store.acknowledge_routes(&accepted).await?;
+            } else {
+                self.stop_gateway()
+                    .await
+                    .context("stop the disabled Caddy gateway")?;
+                self.store.acknowledge_routes(&table).await?;
+            }
+            Ok(())
         }
         .await;
         let mut health = self.health.write().await;
-        health.healthy = result.is_ok();
+        health.healthy = result.is_ok() && failures.is_empty();
         health.message = match &result {
+            Ok(()) if !failures.is_empty() => format!(
+                "Ingress degraded: {} application network(s) unavailable. See daemon logs for details.",
+                failures.len()
+            ),
             Ok(()) if self.enabled => {
                 "Caddy is running and routing configuration is applied".into()
             }
@@ -181,26 +209,13 @@ impl Ingress {
                 )
             }
         };
-        result
-    }
-
-    async fn synchronize_table(&self, table: &RoutingTable) -> Result<()> {
-        if self.enabled {
-            self.ensure_gateway(table)
-                .await
-                .context("prepare the Caddy gateway (requires free ports 80/443 and Docker 28+)")?;
-            self.configure_gateway(table)
-                .await
-                .context("apply Caddy routes and network attachments")?;
-        } else {
-            self.stop_gateway()
-                .await
-                .context("stop the disabled Caddy gateway")?;
+        result?;
+        for (id, error) in failures {
+            if application.is_none_or(|target| target == &id) {
+                anyhow::bail!("application {id} ingress network: {error}");
+            }
         }
-        self.store
-            .acknowledge_routes(table)
-            .await
-            .context("record accepted gateway configuration")
+        Ok(())
     }
 
     async fn probe_routes(&self) {
@@ -224,7 +239,9 @@ impl Ingress {
             if self.enabled {
                 status.state = "pending".into();
                 status.message = "Waiting for the gateway configuration to be applied".into();
-                if healthy {
+                // A broken app must not hide verified readiness for unrelated
+                // routes. Only probe destinations acknowledged by the gateway.
+                if self.store.applied_routes(&id).await.is_ok_and(|applied| applied.contains(&route)) {
                     match self.probe_https(route.hostname.as_str()).await {
                         Ok(()) => { status.state="ready".into(); status.message="DNS and trusted HTTPS verified from this daemon; backend health is reported separately".into(); }
                         Err(error) => {
