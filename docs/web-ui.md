@@ -177,3 +177,10 @@ final completed output loads. Opening shows the newest output; Load older output
 prepends preceding pages. Refresh replaces the output with the latest page.
 New captures retain timestamps and stdout/stderr identity, allowing daemon-side
 stream filtering. Expiration and truncation remain explicit.
+
+## Browser tests
+
+The [Playwright suite](../e2e/README.md) exercises the embedded dashboard against
+an isolated API fixture. Run `just setup-e2e` once, then `just test-e2e`. Chromium
+is provided by a pinned Docker image; the tests need no system browser, Python,
+or ChromeDriver. The `browser-e2e` CI job retains failure traces and screenshots.

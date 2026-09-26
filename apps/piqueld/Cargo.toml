@@ -72,3 +72,7 @@ sha2.workspace = true
 
 [lints]
 workspace = true
+
+[[example]]
+name = "browser_fixture"
+required-features = ["embedded-ui"]

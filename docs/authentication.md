@@ -169,3 +169,6 @@ proxy share its allowance. On publicly reachable deployments, also apply per-cli
 limits at the trusted proxy; sustained or distributed traffic can still consume
 the daemon's admission budget. Limits reset on daemon restart, along with pending
 ceremonies and device requests.
+Browser authentication and CLI device-login coverage lives in the
+[Playwright end-to-end suite](../e2e/README.md), including session revocation and
+preservation of unsaved editor drafts during reauthentication.

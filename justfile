@@ -89,3 +89,14 @@ generate:
 
 docker-test:
     @bash ./scripts/run-docker-integration-test.sh
+# Explicit development-only setup: pinned JS packages and a containerized browser.
+setup-e2e:
+    @pnpm --dir e2e install --frozen-lockfile --ignore-scripts
+    @docker pull "mcr.microsoft.com/playwright:v$(node -p 'require("./e2e/package.json").devDependencies["@playwright/test"]')-noble"
+
+# The Rust fixture serves the embedded UI/API with isolated state and no Docker backend.
+test-e2e *ARGS:
+    @cargo build --locked --package piquelctl
+    @cargo build --locked --package piqueld --features embedded-ui --example browser_fixture
+    @pnpm --dir e2e check
+    @bash scripts/test-e2e.sh {{ARGS}}
