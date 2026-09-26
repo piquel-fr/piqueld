@@ -30,17 +30,39 @@ impl ApplicationService {
             Store::open(config.server.database_path())
                 .await
                 .context("failed to open control-plane state")?
-                .with_build_history(config.build_history.clone()),
+                .with_build_history(config.build_history.clone())
+                .with_observability(config),
         );
         info!(path = %config.server.database_path().display(), "opened control-plane state");
         let docker = Arc::new(
             BollardDocker::connect(&config.docker.socket)
                 .context("failed to connect to Docker Engine")?,
         );
-        docker
+        store.interrupt_actions(None).await?;
+        let bootstrap = store.begin_action(None, "ensure_swarm", None).await?;
+        store.action_request(&bootstrap, 1).await?;
+        let result = docker
             .ensure_swarm(config.docker.auto_initialize_swarm)
-            .await
-            .context("Docker Engine is not an active single-node Swarm manager")?;
+            .await;
+        store
+            .finish_action(
+                &bootstrap,
+                result.as_ref().err().map(|error| {
+                    piqueld_core::observability::Diagnostic::new(
+                        format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
+                        "swarm_manager_unavailable",
+                        error.to_string(),
+                    )
+                }),
+            )
+            .await?;
+        result.context("Docker Engine is not an active single-node Swarm manager")?;
+        store.configure_deliveries().await?;
+        let webhook_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("failed to initialize webhook client")?;
         info!(
             socket = %config.docker.socket.display(),
             auto_initialize_swarm = config.docker.auto_initialize_swarm,
@@ -62,18 +84,30 @@ impl ApplicationService {
         let scan_interval = Duration::from_secs(config.reconciliation.scan_interval_seconds);
         let finished_operation_days = config.retention.finished_operation_days;
         let event_days = config.retention.event_days;
+        let background = service.clone();
+        let scan_seconds = config.reconciliation.scan_interval_seconds;
         let controller = tokio::spawn(async move {
             // Also cancel on panic so callers cannot wait forever on a failed worker.
             let _cancel_on_drop = cancellation.clone().drop_guard();
-            reconciler
-                .run(
-                    wake,
-                    scan_interval,
-                    finished_operation_days,
-                    event_days,
-                    cancellation.child_token(),
-                )
-                .await
+            let reconcile = async {
+                let result = reconciler
+                    .run(
+                        wake,
+                        scan_interval,
+                        finished_operation_days,
+                        event_days,
+                        cancellation.child_token(),
+                    )
+                    .await;
+                cancellation.cancel();
+                result
+            };
+            let (result, (), ()) = tokio::join!(
+                reconcile,
+                background.observe_notifications(scan_seconds, cancellation.child_token()),
+                background.deliver_notifications(webhook_client, cancellation.child_token())
+            );
+            result
         });
         Ok((service, controller))
     }

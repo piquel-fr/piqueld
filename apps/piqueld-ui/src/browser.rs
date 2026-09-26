@@ -4,6 +4,7 @@ mod builds;
 mod dashboard;
 mod logs;
 mod management;
+mod observability;
 mod runtime;
 
 use dashboard::{ApplicationsPage, OverviewPage, dashboard_header};
@@ -119,6 +120,12 @@ fn App() -> impl IntoView {
                     <Route path="/applications" view={ApplicationsPage} />
                     <Route path="/settings" view={management::HostPage} />
                     <Route path="/builds" view={builds::BuildsPage} />
+                    <Route path="/events" view={observability::HistoryPage} />
+                    <Route path="/errors" view={observability::ErrorsPage} />
+                    <Route path="/errors/:id" view={observability::DiagnosticPage} />
+                    <Route path="/system" view={observability::SystemPage} />
+                    <Route path="/analytics" view={observability::AnalyticsPage} />
+                    <Route path="/notifications" view={observability::NotificationsPage} />
                     <Route path="/applications/:id" view={ApplicationDetailPage} />
                     <Route
                         path="/applications/:id/services/:service"
@@ -130,6 +137,12 @@ fn App() -> impl IntoView {
                     <Route path="/applications" view={ApplicationsPage} />
                     <Route path="/settings" view={management::HostPage} />
                     <Route path="/builds" view={builds::BuildsPage} />
+                    <Route path="/events" view={observability::HistoryPage} />
+                    <Route path="/errors" view={observability::ErrorsPage} />
+                    <Route path="/errors/:id" view={observability::DiagnosticPage} />
+                    <Route path="/system" view={observability::SystemPage} />
+                    <Route path="/analytics" view={observability::AnalyticsPage} />
+                    <Route path="/notifications" view={observability::NotificationsPage} />
                     <Route path="/applications/:id" view={ApplicationDetailPage} />
                     <Route
                         path="/applications/:id/services/:service"

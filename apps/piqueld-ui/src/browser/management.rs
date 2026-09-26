@@ -37,6 +37,7 @@ struct EditorContext {
     busy: RwSignal<bool>,
     uncertain: RwSignal<bool>,
     error: RwSignal<Option<String>>,
+    diagnostic_id: RwSignal<Option<String>>,
     notice: RwSignal<String>,
     tab: RwSignal<&'static str>,
 }
@@ -51,26 +52,39 @@ impl EditorContext {
     fn action_blocked(self) -> bool {
         self.blocked() || !self.dirty.get().is_empty() || self.saved.get().delete_intent
     }
+    fn set_error(self, error: Option<String>) {
+        self.diagnostic_id.set(None);
+        self.error.set(error);
+    }
     fn failure(self, error: &ClientError) {
-        self.error.set(Some(client_error_message(error)));
+        self.set_error(Some(client_error_message(error)));
+        self.diagnostic_id.set(match error {
+            ClientError::Api { error, .. } => error
+                .details
+                .get("diagnostic_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            _ => None,
+        });
         if matches!(error, ClientError::Transport { .. }) {
             self.uncertain.set(true);
-            self.error.set(Some("The request outcome is unknown. Reload saved configuration and deployment history before another action.".into()));
+            self.set_error(Some("The request outcome is unknown. Reload saved configuration and deployment history before another action.".into()));
         }
     }
     fn save(self, edit: ApplicationEdit, on_saved: Callback<ApplicationView>) {
         if self.blocked() {
             return;
         }
+        self.set_error(None);
         let mut manifest = self.manifest();
         if let Err(error) = edit.clone().apply(&mut manifest) {
-            self.error.set(Some(error.to_string()));
+            self.set_error(Some(error.to_string()));
             return;
         }
         let validated = match manifest.validate() {
             Ok(v) => v,
             Err(error) => {
-                self.error.set(Some(error.to_string()));
+                self.set_error(Some(error.to_string()));
                 return;
             }
         };
@@ -82,12 +96,11 @@ impl EditorContext {
         let client = match mutation_client() {
             Ok(client) => client,
             Err(error) => {
-                self.error.set(Some(error));
+                self.set_error(Some(error));
                 return;
             }
         };
         self.busy.set(true);
-        self.error.set(None);
         spawn_local(async move {
             let mut result = client
                 .edit_application(saved.application.id().as_str(), &edit, &options)
@@ -311,6 +324,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         busy: create_rw_signal(false),
         uncertain: create_rw_signal(false),
         error: create_rw_signal(None),
+        diagnostic_id: create_rw_signal(None),
         notice: create_rw_signal(String::new()),
         tab: create_rw_signal(
             if leptos_router::use_query_map().with(|q| q.get("deployment").is_some()) {
@@ -351,11 +365,12 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         <EditorFeedback />
         <Tabs
             label="Application sections"
-            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics", "Builds", "Logs"]}
+            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics", "Events", "Builds", "Logs"]}
             selected={context.tab}
             class="tabs"
         />
         <ApplicationSettings />
+        <leptos::Show when=move ||context.tab.get()=="Events"><super::observability::EventHistory application=context.saved.with_untracked(|a|a.application.id().to_string())/></leptos::Show>
         <leptos::Show when=move ||context.tab.get()=="Logs"><ApplicationLogs/></leptos::Show>
         <leptos::Show when=move ||context.tab.get()=="Builds"><super::builds::BuildHistory application=context.saved.with_untracked(|a|a.application.id().to_string())/></leptos::Show>
         <div hidden={move || context.tab.get() != "Deployments"}>
@@ -367,6 +382,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         </div>
         <div hidden={move || context.tab.get() != "Diagnostics"}>
             <RuntimeDetails section={RuntimeSection::Diagnostics} />
+            <leptos::Show when=move ||context.tab.get()=="Diagnostics"><super::observability::EventHistory application=context.saved.with_untracked(|a|a.application.id().to_string()) errors_only=true/></leptos::Show>
         </div>
     }
     .into_view()
@@ -379,8 +395,13 @@ fn DeleteApplication() -> impl IntoView {
     let refresh = dashboard_context().refresh;
     let delete = move |_| {
         if !window().confirm_with_message("Delete this application, its services, and all deployment history? Docker volume data will be retained.").unwrap_or(false){return;}
-        let Ok(client) = mutation_client() else {
-            return;
+        context.set_error(None);
+        let client = match mutation_client() {
+            Ok(client) => client,
+            Err(error) => {
+                context.set_error(Some(error));
+                return;
+            }
         };
         let saved = context.saved.get_untracked();
         let navigate = navigate.clone();
@@ -493,6 +514,7 @@ fn EditorFeedback() -> impl IntoView {
                     view! {
                         <div class="form-error" role="alert">
                             <p>{e}</p>
+                            {context.diagnostic_id.get().map(|id|view!{<A href=format!("/dashboard/errors/{id}")>"Diagnostic details"</A>})}
                             <p>
                                 "Your form edits have been kept. Reload to review the latest saved configuration."
                             </p>

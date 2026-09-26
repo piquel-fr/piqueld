@@ -1,7 +1,7 @@
-# Validation checks committed artifacts without silently repairing stale output.
+# Validation formats Rust sources and checks generated artifacts for freshness.
 default: validate
 
-validate: fmt-check lint check test doc-test deny openapi-check boundary check-wasm
+validate: fmt lint check test doc-test deny openapi-check boundary check-wasm
 
 build:
     @cargo build --workspace --locked
@@ -24,6 +24,7 @@ daemon *ARGS:
 fmt:
     @cargo fmt --all
 
+# CI checks formatting without modifying sources; local validation uses fmt.
 fmt-check:
     @cargo fmt --all -- --check
 

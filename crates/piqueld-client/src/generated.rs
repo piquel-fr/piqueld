@@ -101,6 +101,60 @@ impl ClientInfo<crate::client::ClientState> for Client {
 impl ClientHooks<crate::client::ClientState> for &Client {}
 #[allow(clippy::all)]
 impl Client {
+    /*Sends a `GET` request to `/api/v1/analytics/deployments`
+
+    */
+    pub async fn deployment_analytics<'a>(
+        &'a self,
+        application_id: Option<&'a str>,
+        since_ms: Option<i64>,
+        until_ms: Option<i64>,
+    ) -> Result<
+        ResponseValue<
+            piqueld_core::api::Envelope<piqueld_core::observability::DeploymentAnalytics>,
+        >,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!("{}/api/v1/analytics/deployments", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new(
+                "application_id",
+                &application_id,
+            ))
+            .query(&progenitor_client::QueryParam::new("since_ms", &since_ms))
+            .query(&progenitor_client::QueryParam::new("until_ms", &until_ms))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "deployment_analytics",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*List applications
 
     Sends a `GET` request to `/api/v1/applications`
@@ -4803,14 +4857,72 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Sends a `GET` request to `/api/v1/diagnostics/{id}`
+
+    */
+    pub async fn get_diagnostic<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::Event>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/diagnostics/{}",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "get_diagnostic",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Sends a `GET` request to `/api/v1/events`
 
     */
     pub async fn list_events<'a>(
         &'a self,
+        action_id: Option<&'a str>,
         application_id: Option<&'a str>,
+        attempt: Option<u64>,
         cursor: Option<&'a str>,
+        descending: Option<bool>,
+        error_code: Option<&'a str>,
+        errors_only: Option<bool>,
+        kind: Option<&'a str>,
         limit: Option<i64>,
+        operation_id: Option<&'a str>,
+        scope: Option<&'a piqueld_core::observability::EventScope>,
+        since_ms: Option<i64>,
+        until_ms: Option<i64>,
     ) -> Result<
         ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::Event>>>,
         Error<piqueld_core::api::ErrorBody>,
@@ -4829,12 +4941,34 @@ impl Client {
                 ::reqwest::header::ACCEPT,
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
+            .query(&progenitor_client::QueryParam::new("action_id", &action_id))
             .query(&progenitor_client::QueryParam::new(
                 "application_id",
                 &application_id,
             ))
+            .query(&progenitor_client::QueryParam::new("attempt", &attempt))
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new(
+                "descending",
+                &descending,
+            ))
+            .query(&progenitor_client::QueryParam::new(
+                "error_code",
+                &error_code,
+            ))
+            .query(&progenitor_client::QueryParam::new(
+                "errors_only",
+                &errors_only,
+            ))
+            .query(&progenitor_client::QueryParam::new("kind", &kind))
             .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .query(&progenitor_client::QueryParam::new(
+                "operation_id",
+                &operation_id,
+            ))
+            .query(&progenitor_client::QueryParam::new("scope", &scope))
+            .query(&progenitor_client::QueryParam::new("since_ms", &since_ms))
+            .query(&progenitor_client::QueryParam::new("until_ms", &until_ms))
             .headers(header_map)
             .build()?;
         let info = OperationInfo {
@@ -4847,6 +4981,186 @@ impl Client {
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
             400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `GET` request to `/api/v1/events/stream`
+
+    */
+    pub async fn stream_events<'a>(
+        &'a self,
+        action_id: Option<&'a str>,
+        application_id: Option<&'a str>,
+        attempt: Option<u64>,
+        cursor: Option<&'a str>,
+        descending: Option<bool>,
+        error_code: Option<&'a str>,
+        errors_only: Option<bool>,
+        kind: Option<&'a str>,
+        limit: Option<i64>,
+        operation_id: Option<&'a str>,
+        scope: Option<&'a piqueld_core::observability::EventScope>,
+        since_ms: Option<i64>,
+        until_ms: Option<i64>,
+    ) -> Result<ResponseValue<ByteStream>, Error<piqueld_core::api::ErrorBody>> {
+        let url = format!("{}/api/v1/events/stream", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .query(&progenitor_client::QueryParam::new("action_id", &action_id))
+            .query(&progenitor_client::QueryParam::new(
+                "application_id",
+                &application_id,
+            ))
+            .query(&progenitor_client::QueryParam::new("attempt", &attempt))
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new(
+                "descending",
+                &descending,
+            ))
+            .query(&progenitor_client::QueryParam::new(
+                "error_code",
+                &error_code,
+            ))
+            .query(&progenitor_client::QueryParam::new(
+                "errors_only",
+                &errors_only,
+            ))
+            .query(&progenitor_client::QueryParam::new("kind", &kind))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .query(&progenitor_client::QueryParam::new(
+                "operation_id",
+                &operation_id,
+            ))
+            .query(&progenitor_client::QueryParam::new("scope", &scope))
+            .query(&progenitor_client::QueryParam::new("since_ms", &since_ms))
+            .query(&progenitor_client::QueryParam::new("until_ms", &until_ms))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "stream_events",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => Ok(ResponseValue::stream(response)),
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            410u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `GET` request to `/api/v1/notifications/deliveries`
+
+    */
+    pub async fn notification_deliveries<'a>(
+        &'a self,
+        cursor: Option<&'a str>,
+        limit: Option<i64>,
+    ) -> Result<
+        ResponseValue<
+            piqueld_core::api::Envelope<
+                piqueld_core::api::Page<piqueld_core::observability::NotificationDelivery>,
+            >,
+        >,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!("{}/api/v1/notifications/deliveries", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "notification_deliveries",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `POST` request to `/api/v1/notifications/deliveries/{id}/retry`
+
+    */
+    pub async fn retry_notification_delivery<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<piqueld_core::api::Envelope<bool>>, Error<piqueld_core::api::ErrorBody>>
+    {
+        let url = format!(
+            "{}/api/v1/notifications/deliveries/{}/retry",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "retry_notification_delivery",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             503u16 => Err(Error::ErrorResponse(
@@ -5001,6 +5315,46 @@ impl Client {
             .build()?;
         let info = OperationInfo {
             operation_id: "system_readiness",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Sends a `GET` request to `/api/v1/system/resources`
+
+    */
+    pub async fn system_resources<'a>(
+        &'a self,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::observability::DaemonStats>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!("{}/api/v1/system/resources", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "system_resources",
         };
         self.pre(&mut request, &info).await?;
         let result = self.exec(request, &info).await;

@@ -84,8 +84,18 @@ in
           };
           retention.event_days = lib.mkOption {
             type = lib.types.ints.unsigned;
-            default = 30;
-            description = "Days to retain informational events; zero disables pruning.";
+            default = 0;
+            description = "Days to retain application events; zero disables pruning.";
+          };
+          retention.daemon_event_days = lib.mkOption {
+            type = lib.types.ints.unsigned;
+            default = 0;
+            description = "Days to retain daemon diagnostics independently of application deletion; zero disables pruning.";
+          };
+          metrics.listen = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "Metrics-only socket addresses; empty disables exposure.";
           };
         };
       };

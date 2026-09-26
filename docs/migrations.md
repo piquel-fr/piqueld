@@ -40,9 +40,10 @@ services or networks.
 
 Deployment snapshots, execution records and attempt outcomes are retained until
 application deletion. Deletion removes the application's database records,
-history and request receipts after runtime verification; Docker volumes remain.
-Ordinary operational events still use `retention.event_days` (30 by default,
-zero disables pruning). Non-deployment operation retention remains configurable.
+application-owned history and request receipts after runtime verification; Docker volumes remain.
+Daemon-scoped failures retain optional application context after deletion.
+Application events use `retention.event_days`; shared daemon events use
+`retention.daemon_event_days` (both default to zero, disabling pruning). Non-deployment operation retention remains configurable.
 
 The daemon prepares its private data directory before opening SQLite. The store
 checks the database file path. During builds, the daemon build script provisions
@@ -53,3 +54,38 @@ Migration 0004 adds executor-independent build attempts and bounded output chunk
 Build metadata is owned by the application rather than an operation, so pruning
 operation history cannot erase build history. Interrupted running records are
 recovered at coordinator startup; output retention leaves metadata intact.
+
+`0006_observability.sql` adds self-contained diagnostic and action context to
+events, active action recovery, retention coverage, and a durable webhook outbox
+with activation watermarks and observed health conditions. Existing events keep
+application scope; old diagnostic detail is not reconstructed. The migration
+starts notification processing after existing events, avoiding historical alerts.
+See [observability](observability.md) for the API and deletion contract.
+
+`0007_notification_recovery_sources.sql` pairs recovery deliveries with their
+original failures at each destination. Pending recoveries from schema 6 have no
+reliable destination pairing and are cancelled during upgrade; other delivery
+history and pending failure notifications are preserved.
+
+## Upgrade and rollback
+
+Migrations are forward-only. An older daemon rejects a database with a newer
+schema; reverting the binary alone is insufficient. Before upgrading, create a
+SQLite backup in a private directory, for example:
+
+```sh
+sqlite3 /var/lib/piqueld/piqueld.db ".backup '/safe/location/piqueld-before-upgrade.db'"
+sqlite3 /safe/location/piqueld-before-upgrade.db 'PRAGMA integrity_check; PRAGMA user_version;'
+```
+
+The SQLite backup command includes committed WAL data. Preserve the matching
+daemon configuration and previous binary too. To roll back, stop the upgraded
+daemon, restore the backup as `piqueld.db` in a fresh data directory, and configure
+the previous daemon to use that directory. Do not reuse WAL/SHM files from the
+upgraded database. Restore also reverts application edits and deployment history
+accepted after the backup; reconciliation observes the current Docker state
+against that restored intent.
+
+The migration tests cover a populated schema-5 upgrade, retained event identity
+and notification activation, restoration of the pre-upgrade snapshot, and
+preservation of delivery history when upgrading schema 6.

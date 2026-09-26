@@ -3327,3 +3327,180 @@ async fn field_edit_requires_an_explicit_value_and_revision() {
         assert_eq!(response.status(), status, "body {body}");
     }
 }
+
+#[tokio::test]
+async fn typed_edits_record_safe_field_history() {
+    use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let edit = ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::EnvironmentEntry(("SECRET".into(), Some("private-value".into()))),
+    };
+    api.client
+        .edit_application(
+            &saved.application_id,
+            &edit,
+            &EditOptions {
+                expected_generation: Some(saved.generation),
+                ..EditOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    let events = api
+        .client
+        .events(Some(&saved.application_id), None, 100)
+        .await
+        .unwrap();
+    let recorded = events
+        .items
+        .iter()
+        .find(|e| e.kind == "application_edited")
+        .unwrap();
+    assert_eq!(recorded.phase.as_deref(), Some("service"));
+    assert_eq!(recorded.resource.as_deref(), Some("web"));
+    assert_eq!(recorded.generation, Some(2));
+    assert!(
+        !serde_json::to_string(recorded)
+            .unwrap()
+            .contains("private-value")
+    );
+}
+
+#[tokio::test]
+async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let app = api
+        .client
+        .apply_and_deploy(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    api.runtime
+        .unavailable
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let error = api
+        .client
+        .application_logs(&app.application_id, Some("web"), 5, 60)
+        .await
+        .unwrap_err();
+    let piqueld_client::ClientError::Api { error, .. } = error else {
+        panic!("API error");
+    };
+    let id = error.details["diagnostic_id"].as_str().unwrap();
+    let event = api.client.diagnostic(id).await.unwrap();
+    assert_eq!(event.request_id.as_deref(), Some(error.request_id.as_str()));
+    assert_eq!(
+        event.application_id.as_ref().map(ToString::to_string),
+        Some(app.application_id.clone())
+    );
+    assert_eq!(event.scope, piqueld_core::observability::EventScope::Daemon);
+    let errors = api
+        .client
+        .filtered_events(
+            &piqueld_client::observability::EventFilter {
+                errors_only: true,
+                ..Default::default()
+            },
+            None,
+            100,
+        )
+        .await
+        .unwrap();
+    assert!(
+        errors
+            .items
+            .iter()
+            .any(|e| e.diagnostic.as_ref().is_some_and(|d| d.id == id))
+    );
+    assert!(api.client.daemon_stats().await.unwrap().diagnostics > 0);
+    let metrics =
+        piqueld::api::http::metrics_router(ApiState::new(api.store.clone(), api.runtime.clone()));
+    let response = metrics.clone().oneshot(request("/metrics")).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        std::str::from_utf8(&body)
+            .unwrap()
+            .contains("piqueld_database_bytes")
+    );
+    assert_eq!(
+        metrics
+            .oneshot(request("/api/v1/applications"))
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+}
+
+#[tokio::test]
+async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let app = api
+        .client
+        .apply_and_deploy(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    api.finish_operation(
+        &app.operation_id,
+        Some(("service_update_failed", "Update paused")),
+    )
+    .await;
+    let events = api.client.events(None, None, 100).await.unwrap().items;
+    let after = events[events.len() - 2].id;
+    let router = router(ApiState::new(api.store.clone(), api.runtime.clone()));
+    for limit in [0, 101] {
+        let response = router
+            .clone()
+            .oneshot(request(&format!("/api/v1/events/stream?limit={limit}")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+    }
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/events/stream?errors_only=true&limit=1")
+                .header("last-event-id", format!("v1:{after}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let mut body = response.into_body();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut bytes = Vec::new();
+        loop {
+            let frame = body.frame().await.unwrap().unwrap();
+            if let Ok(data) = frame.into_data() {
+                bytes.extend_from_slice(&data);
+                if let Some(end) = bytes.windows(2).position(|window| window == b"\n\n") {
+                    bytes.truncate(end);
+                    return bytes;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let text = std::str::from_utf8(&frame).unwrap();
+    assert!(text.contains("operation_failed"));
+    assert!(text.contains(&format!("id: v1:{}", events.last().unwrap().id)));
+    api.store.prune_events(i64::MAX).await.unwrap();
+    let response = router
+        .oneshot(request(&format!("/api/v1/events/stream?cursor=v1:{after}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 410);
+}

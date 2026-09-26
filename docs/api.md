@@ -254,3 +254,6 @@ Migration expires previously captured unstructured output while retaining build
 metadata. Truncation and expiration are explicit. Output retains the configured
 prefix, defaults to 4 MiB per attempt and expires 30 days after completion.
 Metadata survives operation pruning and is deleted with its application.
+
+See [observability](observability.md) for diagnostic history, daemon statistics, analytics, metrics
+and webhook delivery configuration.

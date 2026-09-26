@@ -10,6 +10,8 @@ compile_error!("Windows is not supported by piqueld-client");
 
 /// Application desired-state, planning, and observation contracts.
 pub mod applications;
+/// Durable history and observability controls.
+pub mod observability;
 /// Generated OpenAPI document retrieval.
 pub mod openapi;
 /// Operation inspection contracts.
