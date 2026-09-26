@@ -6,6 +6,7 @@ mod application;
 mod build;
 mod deployment;
 mod event;
+pub(crate) mod ingress;
 mod operation;
 mod repository;
 mod status;
@@ -44,6 +45,12 @@ pub enum StoreError {
     /// The edited manifest fails semantic validation.
     #[error(transparent)]
     Validation(#[from] piqueld_core::ValidationErrors),
+    /// An exact public hostname belongs to another application.
+    #[error("hostname {hostname} is reserved by another application")]
+    HostnameConflict {
+        /// Conflicting canonical public hostname.
+        hostname: String,
+    },
     /// A storage operation failed without a lower-level source.
     #[error("database operation failed")]
     Database,

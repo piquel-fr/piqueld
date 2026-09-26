@@ -2671,6 +2671,76 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
 }
 
 #[tokio::test]
+async fn route_field_edits_follow_service_renames_and_removals() {
+    use piqueld_client::{
+        Route,
+        edit::{ApplicationEdit, EditOptions, ServiceEdit},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api
+        .client
+        .apply_application(&AcceptanceApi::request())
+        .await
+        .unwrap();
+    let id = &saved.application_id;
+    let route = Route {
+        hostname: "notes.example.com".into(),
+        service: "web".into(),
+        port: 3000,
+    };
+    let options = |generation| EditOptions {
+        expected_generation: Some(generation),
+        ..EditOptions::default()
+    };
+    api.client
+        .edit_application(
+            id,
+            &ApplicationEdit::Routes(vec![route.clone()]),
+            &options(1),
+        )
+        .await
+        .unwrap();
+    let app = api.client.application(id).await.unwrap();
+    assert_eq!(app.application.to_manifest().spec.routes, vec![route]);
+    api.client
+        .edit_application(
+            id,
+            &ApplicationEdit::Service {
+                name: "web".into(),
+                edit: ServiceEdit::Name("frontend".into()),
+            },
+            &options(2),
+        )
+        .await
+        .unwrap();
+    let app = api.client.application(id).await.unwrap();
+    assert_eq!(
+        app.application.to_manifest().spec.routes[0].service,
+        "frontend"
+    );
+    api.client
+        .edit_application(
+            id,
+            &ApplicationEdit::RemoveService("frontend".into()),
+            &options(3),
+        )
+        .await
+        .unwrap();
+    assert!(
+        api.client
+            .application(id)
+            .await
+            .unwrap()
+            .application
+            .to_manifest()
+            .spec
+            .routes
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision() {
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
     let temp = tempfile::tempdir().unwrap();

@@ -38,6 +38,7 @@ directory permissions. Group membership grants full operator access.
 The supported manifest and runtime model are documented in:
 
 - [`docs/application-manifest.md`](docs/application-manifest.md)
+- [`docs/ingress.md`](docs/ingress.md)
 - [`docs/api.md`](docs/api.md)
 - [`docs/web-ui.md`](docs/web-ui.md)
 - [`docs/piquelctl.md`](docs/piquelctl.md)
@@ -50,7 +51,7 @@ The supported manifest and runtime model are documented in:
 | Supported | Deferred until later releases |
 | --- | --- |
 | Prebuilt images, Git/Docker builds, repository-backed manifests, replicas, environment, command/args, health checks, resource limits, named volumes, and mounts | Automatic deployment, registry management, credentials, and secrets |
-| Single-node Swarm reconciliation, drift repair, durable operations, polling, volume retention, application log snapshots, and the essential `piquelctl` workflow | Published ports, routes, Traefik, state transfer, authentication, and multi-node operation |
+| Single-node Swarm reconciliation, managed Caddy HTTPS routes, drift repair, durable operations, polling, volume retention, application log snapshots, and the essential `piquelctl` workflow | Arbitrary TCP/UDP ports, tunnels, state transfer, authentication, and multi-node operation |
 | Unix-socket, localhost, and Tailscale API transports, plus a Leptos/WASM dashboard for saving configuration, deploying, inspecting history, and reading recent logs | Secrets, streams, and the advanced web UI |
 
 ## Development

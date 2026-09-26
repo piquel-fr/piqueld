@@ -53,3 +53,11 @@ Migration 0004 adds executor-independent build attempts and bounded output chunk
 Build metadata is owned by the application rather than an operation, so pruning
 operation history cannot erase build history. Interrupted running records are
 recovered at coordinator startup; output retention leaves metadata intact.
+
+Migration 0006 adds transactional hostname reservations and a per-application
+routing projection. Desired routes are journaled before gateway I/O; the last
+accepted projection retains ownership until a removal is acknowledged. Saved
+configuration, captured deployment inputs, resolved targets, and both routing
+projections participate in reservation checks within the same SQLite transaction.
+An interrupted gateway update is reapplied from durable intent. Application deletion
+cascades routing records only after gateway withdrawal and runtime cleanup succeed.

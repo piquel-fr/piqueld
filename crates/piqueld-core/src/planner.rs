@@ -469,6 +469,22 @@ impl Plan {
         }
     }
 
+    /// Whether desired resources have converged and obsolete backends can be retired.
+    /// Route cutover must succeed at this boundary before cleanup executes.
+    #[must_use]
+    pub fn desired_resources_ready(&self) -> bool {
+        !self.is_blocked()
+            && self.actions.iter().all(|action| {
+                matches!(
+                    action.kind,
+                    ActionKind::RemoveService { .. }
+                        | ActionKind::RemoveNetwork { .. }
+                        | ActionKind::RetainVolume { .. }
+                        | ActionKind::WaitForServiceRemoval { .. }
+                )
+            })
+    }
+
     fn reconcile(desired: &ResolvedApplication, observed: &ObservedApplication) -> Self {
         let mut plan = Self::default();
         let mut blocked_names = BTreeSet::new();

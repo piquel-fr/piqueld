@@ -33,7 +33,12 @@ impl ApplicationService {
         );
         let database = database.is_ok_and(|result| result.is_ok());
         let (docker, swarm) = runtime.unwrap_or((false, false));
+        let ingress = match &self.ingress {
+            Some(ingress) => ingress.status().await,
+            None => piqueld_core::api::IngressStatus::default(),
+        };
         ReadinessStatus {
+            ingress,
             ready: database && docker && swarm,
             database: DependencyStatus::new(database, "Database is unavailable or timed out"),
             docker: DependencyStatus::new(docker, "Docker Engine is unavailable or timed out"),

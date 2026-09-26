@@ -89,6 +89,11 @@ pub(crate) enum AppCommand {
         #[command(subcommand)]
         command: crate::editing::VolumeCommand,
     },
+    /// Add or remove public HTTPS routes.
+    Route {
+        #[command(subcommand)]
+        command: crate::editing::RouteCommand,
+    },
     /// Connect, edit, or disconnect the manifest repository.
     Repository {
         #[command(subcommand)]

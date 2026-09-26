@@ -44,6 +44,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | derived database path | `<data_dir>/piqueld.db` |
 | `docker.socket` | `/var/run/docker.sock` |
 | `docker.auto_initialize_swarm` | `true` |
+| `ingress.enabled` | `false` (restart required) |
 | `reconciliation.scan_interval_seconds` | `60` |
 | `reconciliation.prepare_timeout_seconds` | `300` |
 | `reconciliation.convergence_timeout_seconds` | `120` |
@@ -118,3 +119,23 @@ between tailnet nodes is encrypted by Tailscale; piqueld does not manage HTTPS,
 Tailscale Serve, enrollment, or certificates. Set `listen_mode = "localhost"`
 to remove the Tailscale listener, or `"off"` for Unix-socket-only access, and
 restart the daemon. Independently configured proxies can still expose localhost.
+
+## Managed application ingress
+
+`[ingress] enabled = true` enables the installation-owned Caddy gateway on TCP
+ports 80/443. This setting is read once at startup and is read-only in the UI.
+Enabling requires Docker Engine 28+ and API 1.48+; the daemon reports gateway
+startup, port conflicts, and version failures through ingress health without
+stopping application management. Application images' own ports remain private.
+
+Restart after changing the TOML. With ingress enabled, stopping piqueld leaves
+Caddy serving independently. Restarting piqueld with ingress disabled removes the
+managed gateway container and its restart policy, closing public listeners while
+retaining route intent, reservations, and certificates. No DNS or certificate work
+runs while disabled. Re-enabling restores deployed routes, including deployments
+made while disabled, without activating saved-but-undeployed changes.
+
+Gateway certificates, accepted configuration, and the private administration socket
+live below `<data_dir>/ingress`. Only dedicated subdirectories are mounted into
+Caddy; it receives neither the Docker socket nor the daemon API socket/database.
+See [ingress](ingress.md) for DNS, networking, lifecycle, and status details.

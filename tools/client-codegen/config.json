@@ -196,6 +196,16 @@
       "rustType": "piqueld_core::edit::StringsValue"
     },
     {
+      "schema": "Route",
+      "name": "Route",
+      "rustType": "piqueld_core::manifest::Route"
+    },
+    {
+      "schema": "RoutesValue",
+      "name": "RoutesValue",
+      "rustType": "piqueld_core::edit::RoutesValue"
+    },
+    {
       "schema": "Volume",
       "name": "Volume",
       "rustType": "piqueld_core::manifest::Volume"

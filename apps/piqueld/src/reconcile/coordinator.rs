@@ -161,7 +161,8 @@ impl<D: DockerApi> Controller<D> {
         };
         if !matches!(
             code,
-            "docker_unavailable"
+            "ingress_unavailable"
+                | "docker_unavailable"
                 | "image_resolution_failed"
                 | "docker_request_failed"
                 | "convergence_timeout"
@@ -232,7 +233,7 @@ impl<D: DockerApi> Controller<D> {
             }
         } else if let Some(target) = target {
             PlanRequest::Reconcile {
-                desired: target.clone(),
+                desired: target.clone().with_ingress(self.ingress_enabled()),
             }
         } else {
             return Ok(());
@@ -251,7 +252,10 @@ impl<D: DockerApi> Controller<D> {
         if prepared.is_none() && !application.delete_intent {
             return Ok(());
         }
-        if !plan_requires_execution(&plan) && !application.delete_intent {
+        if !plan_requires_execution(&plan)
+            && !application.delete_intent
+            && latest.error_code.as_deref() != Some("ingress_unavailable")
+        {
             self.store
                 .set_status_for_operation(&latest.id, ApplicationState::Ready, None)
                 .await?;
@@ -299,10 +303,13 @@ impl<D: DockerApi> Controller<D> {
         let Some(target) = app.resolved else {
             return Ok(());
         };
+        let accepted_routes = self.store.applied_routes(id).await?;
         let observed = self.docker.observe(id).await?;
         let plan = Plan::from_request(
             &PlanRequest::Reconcile {
-                desired: target.clone(),
+                desired: target
+                    .clone()
+                    .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
             },
             &observed,
         );
@@ -316,6 +323,14 @@ impl<D: DockerApi> Controller<D> {
         else {
             return Ok(());
         };
+        if matches!(
+            action.kind,
+            piqueld_core::ActionKind::RemoveService { .. }
+                | piqueld_core::ActionKind::RemoveNetwork { .. }
+        ) && target.routes != accepted_routes
+        {
+            return Ok(());
+        }
         let _guard = self.mutations.lock().await;
         if self
             .store

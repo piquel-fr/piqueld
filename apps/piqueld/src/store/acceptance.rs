@@ -58,7 +58,12 @@ impl Store {
             sqlx::query!("INSERT INTO request_receipts(request_id,fingerprint,response_json,expires_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(request_id) DO UPDATE SET fingerprint=excluded.fingerprint,response_json=excluded.response_json,expires_at_ms=excluded.expires_at_ms",request_id,fingerprint,response_json,expires)
                 .execute(&mut *tx).await.map_err(StoreError::database)?;
         }
-        tx.commit().await.map_err(StoreError::database)?;
+        let application_id = match &response {
+            MutationResponse::Saved(saved) => &saved.application_id,
+            MutationResponse::Operation(operation) => &operation.application_id,
+            MutationResponse::Rename(renamed) => &renamed.application_id,
+        };
+        Self::commit_application_changes(tx, [application_id.as_str()]).await?;
         Ok((response, wake))
     }
 

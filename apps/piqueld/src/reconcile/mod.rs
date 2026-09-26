@@ -23,6 +23,7 @@ pub struct Controller<D> {
     mutations: tokio::sync::Mutex<()>,
     prepare_timeout: Duration,
     store: Arc<Store>,
+    ingress: Option<Arc<crate::ingress::Ingress>>,
     retry: RetryPolicy,
 }
 
@@ -35,8 +36,28 @@ impl<D> Controller<D> {
             mutations: tokio::sync::Mutex::new(()),
             prepare_timeout: Duration::from_secs(300),
             store,
+            ingress: None,
             retry: RetryPolicy::default(),
         }
+    }
+
+    /// Attaches installation-owned ingress without coupling its process lifetime.
+    #[must_use]
+    pub fn with_ingress(mut self, ingress: Arc<crate::ingress::Ingress>) -> Self {
+        self.ingress = Some(ingress);
+        self
+    }
+
+    fn ingress_enabled(&self) -> bool {
+        self.ingress.as_ref().is_some_and(|ingress| ingress.enabled)
+    }
+
+    /// Applies the daemon's validated reconciliation timing configuration.
+    #[must_use]
+    pub fn with_config(mut self, config: &crate::config::ReconciliationConfig) -> Self {
+        self.prepare_timeout = Duration::from_secs(config.prepare_timeout_seconds);
+        self.retry.convergence_timeout = Duration::from_secs(config.convergence_timeout_seconds);
+        self
     }
 
     /// Sets the complete image-preparation deadline.

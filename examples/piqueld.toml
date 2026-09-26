@@ -16,6 +16,10 @@ port = 7845
 socket = "/var/run/docker.sock"
 auto_initialize_swarm = true
 
+[ingress]
+# Requires Docker 28+ and free public ports 80/443. Restart to apply.
+enabled = false
+
 [reconciliation]
 scan_interval_seconds = 60
 prepare_timeout_seconds = 300

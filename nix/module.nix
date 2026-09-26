@@ -62,6 +62,11 @@ in
             default = true;
             description = "Initialize an inactive Docker Engine as a single-node Swarm.";
           };
+          ingress.enabled = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Manage a Caddy gateway on ports 80/443. Requires Docker 28+. Restart piqueld to apply; disabling stops public routing but retains route configuration and certificates.";
+          };
           reconciliation.scan_interval_seconds = lib.mkOption {
             type = lib.types.ints.between 1 86400;
             default = 60;

@@ -1,6 +1,7 @@
 use axum::{Extension, response::IntoResponse};
 use http::header;
 use piqueld_core::api::ErrorBody;
+use piqueld_core::{edit::RoutesValue, manifest::Route};
 use serde_json::Value;
 use std::sync::Arc;
 use utoipa::{OpenApi, ToResponse};
@@ -13,7 +14,7 @@ use utoipa::{OpenApi, ToResponse};
         description = "piqueld control-plane API. Mutation responses identify durable operations; named volumes are retained on deletion.",
         license(name = "Apache-2.0", identifier = "Apache-2.0")
     ),
-    components(schemas(ErrorBody))
+    components(schemas(ErrorBody, Route, RoutesValue))
 )]
 struct ApiDoc;
 

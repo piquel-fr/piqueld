@@ -223,8 +223,7 @@ impl DesiredNetwork {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
             return false;
         };
-        !self.labels.contains_key(SERVICE_LABEL)
-            && self.name == DockerNetworkName::for_application(&application)
+        !self.labels.contains_key(SERVICE_LABEL) && self.name.is_for_application(&application)
     }
 }
 
@@ -351,9 +350,55 @@ pub struct ResolvedApplication {
     pub volumes: Vec<DesiredVolume>,
     /// Desired services.
     pub services: Vec<DesiredService>,
+    /// Deployed public route intent, including when ingress is disabled.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<crate::manifest::ValidatedRoute>,
 }
 
 impl ResolvedApplication {
+    /// Projects route intent into runtime networks only when ingress is enabled.
+    #[must_use]
+    pub fn with_ingress(self, enabled: bool) -> Self {
+        self.with_ingress_routes(enabled, &[])
+    }
+
+    /// Retains network access for accepted routes until their cutover succeeds.
+    #[must_use]
+    pub fn with_ingress_routes(
+        mut self,
+        enabled: bool,
+        accepted: &[crate::manifest::ValidatedRoute],
+    ) -> Self {
+        let name = DockerNetworkName::for_ingress(&self.id);
+        self.networks.retain(|network| network.name != name);
+        for service in &mut self.services {
+            service.networks.retain(|network| network != &name);
+            if enabled
+                && self
+                    .routes
+                    .iter()
+                    .chain(accepted)
+                    .any(|route| route.service == service.logical_name)
+            {
+                service.networks.push(name.clone());
+                service.networks.sort();
+            }
+        }
+        if enabled && (!self.routes.is_empty() || !accepted.is_empty()) {
+            let labels = Ownership {
+                instance_id: self.instance_id.clone(),
+                application_id: self.id.clone(),
+                service: None,
+                spec_hash: self.spec_hash.clone(),
+            }
+            .labels();
+            self.networks.push(DesiredNetwork { name, labels });
+            self.networks
+                .sort_by(|left, right| left.name.cmp(&right.name));
+        }
+        self
+    }
+
     /// Reuses immutable sources for services whose requested image is unchanged.
     #[must_use]
     pub fn reusable_resolutions(&self, application: &NormalizedApplication) -> ResolutionSet {
@@ -451,6 +496,7 @@ pub fn compile_application(
     };
     let private_network = DockerNetworkName::for_application(app.id());
     Ok(ResolvedApplication {
+        routes: app.spec().routes.clone(),
         id: app.id().clone(),
         name: app.metadata().name.clone(),
         instance_id,

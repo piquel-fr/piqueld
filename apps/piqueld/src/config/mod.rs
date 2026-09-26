@@ -15,6 +15,8 @@ pub struct DaemonConfig {
     pub server: ServerConfig,
     /// Docker Engine connection and bootstrap policy.
     pub docker: DockerConfig,
+    /// Installation-owned HTTP ingress. Read once at startup.
+    pub ingress: IngressConfig,
     /// Reconciliation scheduling limits.
     pub reconciliation: ReconciliationConfig,
     /// Retention limits for terminal operation history.
@@ -104,6 +106,14 @@ impl DaemonConfig {
         }
         Ok(())
     }
+}
+
+/// Explicit installation-wide ingress enablement.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct IngressConfig {
+    /// Start the managed Caddy gateway and expose deployed routes on ports 80/443.
+    pub enabled: bool,
 }
 
 /// Persistent build output policy; metadata remains until application deletion.
@@ -357,6 +367,13 @@ impl DaemonConfig {
                         self.docker.auto_initialize_swarm.to_string(),
                     ),
                 ],
+            ),
+            (
+                "Ingress",
+                vec![(
+                    "Enabled (restart required)",
+                    self.ingress.enabled.to_string(),
+                )],
             ),
             (
                 "Reconciliation",

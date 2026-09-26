@@ -152,6 +152,7 @@ impl Mutation {
 /// the database layer to know about the controller.
 #[derive(Clone)]
 pub struct ApplicationService {
+    ingress: Option<Arc<crate::ingress::Ingress>>,
     configuration: Option<Arc<piqueld_core::api::HostConfiguration>>,
     store: Arc<Store>,
     runtime: Arc<dyn RuntimeBoundary>,
@@ -166,7 +167,15 @@ impl ApplicationService {
             store,
             runtime,
             configuration: None,
+            ingress: None,
         }
+    }
+
+    /// Shares managed ingress state with transport-independent daemon operations.
+    #[must_use]
+    pub fn with_ingress(mut self, ingress: Arc<crate::ingress::Ingress>) -> Self {
+        self.ingress = Some(ingress);
+        self
     }
 
     /// Attaches the effective host configuration for read-only API inspection.

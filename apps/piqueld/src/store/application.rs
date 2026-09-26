@@ -63,7 +63,7 @@ impl Store {
     ) -> Result<Operation, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let result = Self::save_application_on(&mut tx, app, resolved, expected).await?;
-        tx.commit().await.map_err(StoreError::database)?;
+        Self::commit_application_changes(tx, [app.id().as_str()]).await?;
         Ok(result)
     }
 
@@ -111,7 +111,7 @@ impl Store {
     ) -> Result<Operation, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let result = Self::request_delete_on(&mut tx, id, expected).await?;
-        tx.commit().await.map_err(StoreError::database)?;
+        Self::commit_application_changes(tx, [id.as_str()]).await?;
         Ok(result)
     }
 
@@ -142,7 +142,7 @@ impl Store {
     ) -> Result<Operation, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let result = Self::request_deploy_on(&mut tx, id, expected).await?;
-        tx.commit().await.map_err(StoreError::database)?;
+        Self::commit_application_changes(tx, [id.as_str()]).await?;
         Ok(result)
     }
 
@@ -224,7 +224,7 @@ impl Store {
         }
         Self::accept_deployment_on(&mut tx, operation).await?;
         Self::operation_event(&mut tx, &operation.id, "target_resolved", None, now_ms()).await?;
-        tx.commit().await.map_err(StoreError::database)
+        Self::commit_application_changes(tx, [operation.application_id.as_str()]).await
     }
 
     /// Publishes the prepared target after ownership and configuration checks pass.
@@ -249,7 +249,7 @@ impl Store {
             Self::operation_event(&mut tx, &operation.id, "target_promoted", None, now_ms())
                 .await?;
         }
-        tx.commit().await.map_err(StoreError::database)
+        Self::commit_application_changes(tx, [app_id]).await
     }
 
     /// Reads a live application.

@@ -76,7 +76,7 @@ impl Store {
         .await
         .map_err(StoreError::database)?;
         Self::operation_event(&mut tx, &operation.id, "manifest_fetched", commit, now_ms()).await?;
-        tx.commit().await.map_err(StoreError::database)
+        Self::commit_application_changes(tx, [app_id]).await
     }
 
     // Called in the same transaction that saves the fully prepared runtime target.

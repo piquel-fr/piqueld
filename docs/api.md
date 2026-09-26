@@ -64,6 +64,7 @@ immutable deployment snapshot commit in the same transaction.
 | DELETE | `/services/{service}` | None |
 | POST | `/volumes` | `{ "name": "data" }` |
 | DELETE | `/volumes/{volume}` | None; mounted volumes are rejected |
+| PUT | `/routes` | `{ "value": [{ "hostname": "notes.example.com", "service": "web", "port": 3000 }] }`; replaces this application's routes |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }` |
 | PUT | `/services/{service}/source` | `{ "value": Source }` |
@@ -85,6 +86,9 @@ source/check settings require the appropriate variant; switch variants through
 missing resources are rejected. Optional values must explicitly use null to clear.
 The same validation and Git ownership rules apply even with `force=true`.
 Disconnecting a repository preserves saved services and volumes for local editing.
+Renaming a service updates its routes; removing a service removes its routes.
+Routes remain saved while ingress is disabled and become active only after deployment
+with ingress enabled in the daemon's read-only TOML configuration.
 
 For dashboard forms, typed section endpoints also allow atomically replacing
 `/volumes`, service `/environment`, `/mounts`, `/resources`, `/general`

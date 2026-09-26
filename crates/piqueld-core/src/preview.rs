@@ -45,6 +45,12 @@ impl ManifestChange {
                 }
             }
         }
+        for route in &application.spec().routes {
+            fields.insert(
+                format!("routes.{}", route.hostname),
+                serde_json::json!({"service":route.service,"port":route.port}),
+            );
+        }
         for volume in &application.spec().volumes {
             fields.insert(
                 format!("volumes.{}", volume.name),

@@ -404,11 +404,29 @@ impl SwarmScenario {
             assert!(tokio::time::Instant::now() < removal_deadline);
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        self.engine
-            .docker
-            .remove_network(self.network.name.as_str(), &self.labels)
-            .await
-            .unwrap();
+        // Swarm removes service objects before their tasks release the network.
+        loop {
+            match self
+                .engine
+                .docker
+                .remove_network(self.network.name.as_str(), &self.labels)
+                .await
+            {
+                Ok(()) => break,
+                Err(DockerError::RequestSource { source, .. })
+                    if matches!(source.downcast_ref::<bollard::errors::Error>(),
+                        Some(bollard::errors::Error::DockerResponseServerError { status_code: 400, message })
+                            if message.contains("is in use by task")) =>
+                {
+                    assert!(
+                        tokio::time::Instant::now() < removal_deadline,
+                        "network task cleanup timed out: {source}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => panic!("network removal failed: {error:?}"),
+            }
+        }
         let network_removal_deadline = tokio::time::Instant::now() + Duration::from_mins(1);
         while self
             .engine

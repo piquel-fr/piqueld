@@ -3,6 +3,12 @@
 /// Sanitized failure returned while executing a durable operation.
 #[derive(Debug, thiserror::Error)]
 pub enum OperationError {
+    /// A saved or captured route belongs to another application.
+    #[error("hostname {0} is reserved by another application")]
+    HostnameConflict(String),
+    /// Managed gateway could not apply the required routing transition.
+    #[error("ingress configuration could not be applied; see ingress health and daemon logs")]
+    Ingress(#[source] anyhow::Error),
     /// Docker failure with its complete diagnostic cause chain.
     #[error("{}", .0.operation_classification())]
     Docker(#[source] crate::docker::DockerError),
@@ -79,6 +85,8 @@ impl OperationError {
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
+            Self::HostnameConflict(_) => "hostname_conflict",
+            Self::Ingress(_) => "ingress_unavailable",
             Self::Docker(error) => error.operation_classification().code(),
             Self::Journal(_) => "journal_unavailable",
             Self::ManifestInput {
@@ -161,7 +169,12 @@ impl crate::docker::DockerError {
 
 impl From<crate::store::StoreError> for OperationError {
     fn from(error: crate::store::StoreError) -> Self {
-        Self::Journal(error)
+        match error {
+            crate::store::StoreError::HostnameConflict { hostname } => {
+                Self::HostnameConflict(hostname)
+            }
+            other => Self::Journal(other),
+        }
     }
 }
 

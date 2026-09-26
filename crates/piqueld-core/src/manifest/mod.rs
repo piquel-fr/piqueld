@@ -2,13 +2,15 @@
 
 pub mod domain;
 pub mod input;
+pub mod routes;
+pub use routes::{Hostname, ValidatedRoute};
 
 use domain::{ValidatedMetadata, ValidatedSpec};
 pub mod validation;
 
 pub use input::{
     ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, Metadata, Mount,
-    RepositoryManifest, ResourceLimits, Service, Source, Volume,
+    RepositoryManifest, ResourceLimits, Route, Service, Source, Volume,
 };
 pub(crate) use validation::valid_image_reference;
 pub use validation::{
@@ -95,6 +97,7 @@ fn normalize_spec(spec: &mut ValidatedSpec) {
         service.mounts.sort();
     }
     spec.volumes.sort();
+    spec.routes.sort();
 }
 
 impl NormalizedApplication {

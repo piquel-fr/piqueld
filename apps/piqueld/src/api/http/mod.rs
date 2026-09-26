@@ -102,6 +102,12 @@ impl From<StoreError> for ApiError {
                 Self::new(status, code, "The field edit could not be applied")
                     .details(json!({"reason": error.to_string()}))
             }
+            StoreError::HostnameConflict { hostname } => Self::new(
+                StatusCode::CONFLICT,
+                "hostname_conflict",
+                "Hostname is reserved by another application",
+            )
+            .details(json!({"hostname": hostname})),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",

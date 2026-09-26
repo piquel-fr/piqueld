@@ -87,3 +87,24 @@ separate ten-minute budget including its queue wait and pulls; the configured
 preparation deadline still bounds the entire checkout/build/resolve phase.
 Raw service update retries share one absolute request deadline. Cancelling a
 request aborts its connection driver, and timeout errors retain their cause.
+
+## Ingress coordination
+
+Runtime targets retain portable route intent regardless of global ingress enablement.
+The controller projects ingress networks only when enabled. Exposed services join
+their application's dedicated attachable overlay; other services stay private.
+The standalone gateway joins overlays live and pins its stable egress network's
+Docker gateway priority, avoiding gateway replacement during application additions.
+
+Route additions/repoints happen after desired-resource convergence and before
+obsolete backend cleanup. Existing destinations retain their network attachments
+until Caddy accepts the replacement. Removals are journaled and withdrawn at rollout
+promotion (or deletion execution), independently of replacement readiness. Failed
+proxy configuration blocks cleanup and retries; it never silently declares success.
+Saving alone does not alter public traffic. Swarm services still update in place;
+retaining a route is not a blue-green deployment or an automatic application rollback.
+
+Gateway startup/configuration drift repair runs independently from application jobs.
+Piqueld shutdown leaves Caddy running with its persistent configuration and restart
+policy. Disabling via TOML requires restart and explicitly removes the gateway.
+Public HTTPS probes do not block deployment convergence and are shown separately.

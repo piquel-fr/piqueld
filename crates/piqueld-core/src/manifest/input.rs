@@ -37,6 +37,9 @@ pub struct ApplicationSpec {
     pub services: Vec<Service>,
     /// Declared named volumes.
     pub volumes: Vec<Volume>,
+    /// Exact public HTTP routes, activated on deployment.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<Route>,
 }
 
 /// Independently selects the manifest used by a manual deployment.
@@ -204,4 +207,17 @@ pub struct ResourceLimits {
     /// Memory limit in bytes.
     #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_u64)]
     pub memory_bytes: Option<u64>,
+}
+
+/// Public HTTP route input, validated independently of ingress enablement.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Route {
+    /// Exact public DNS hostname.
+    pub hostname: String,
+    /// Logical service in this application.
+    pub service: String,
+    /// Internal HTTP backend port.
+    #[schema(minimum = 1)]
+    pub port: u16,
 }
