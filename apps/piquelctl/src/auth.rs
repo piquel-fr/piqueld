@@ -6,7 +6,12 @@ use crate::{
 };
 use piqueld_client::{Client, auth::User};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io::Write, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::Write,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct Credentials {
@@ -54,8 +59,10 @@ impl Credentials {
         )
     }
     fn read() -> Result<Self> {
-        let path = Self::path()?;
-        match std::fs::File::open(&path) {
+        Self::read_at(&Self::path()?)
+    }
+    fn read_at(path: &Path) -> Result<Self> {
+        match std::fs::File::open(path) {
             Ok(file) => {
                 #[cfg(unix)]
                 {
@@ -75,19 +82,49 @@ impl Credentials {
             Err(error) => Err(error.into()),
         }
     }
-    fn save(&self) -> Result<()> {
-        let path = Self::path()?;
+    /// Lock a stable sidecar (never the atomically replaced credentials inode)
+    /// across the whole read/modify/write. Network requests happen outside it.
+    fn update_at(path: &Path, update: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| std::path::Path::new("."));
         std::fs::create_dir_all(parent)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut lock_path = path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock = options.open(PathBuf::from(lock_path))?;
+        lock.lock()?;
+        let mut credentials = Self::read_at(path)?;
+        update(&mut credentials)?;
         let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        serde_json::to_writer(&mut file, self).map_err(std::io::Error::other)?;
+        serde_json::to_writer(&mut file, &credentials).map_err(std::io::Error::other)?;
         file.flush()?;
         file.as_file().sync_all()?;
         file.persist(path).map_err(|e| e.error)?;
         Ok(())
+    }
+    fn remove(&mut self, key: &str, id: &str, token: &str) {
+        if let Some(endpoint) = self.endpoints.get_mut(key) {
+            // A login completed while remote revocation was in flight. Keep its
+            // replacement token, which the logout request did not revoke.
+            if endpoint
+                .accounts
+                .get(id)
+                .is_some_and(|account| account.token == token)
+            {
+                endpoint.accounts.remove(id);
+            }
+            if !endpoint.accounts.contains_key(&endpoint.selected) {
+                endpoint.selected = endpoint.accounts.keys().next().cloned().unwrap_or_default();
+            }
+        }
     }
     fn selected<'a>(&'a self, cli: &Cli) -> Result<Option<(&'a str, &'a Account)>> {
         let endpoint = self.endpoints.get(&Self::key(cli));
@@ -167,20 +204,21 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
                     let token = result.token.ok_or_else(|| {
                         CliError::new(ErrorKind::General, "device login omitted credential")
                     })?;
-                    let mut credentials = Credentials::read()?;
-                    let endpoint = credentials
-                        .endpoints
-                        .entry(Credentials::key(cli))
-                        .or_default();
-                    endpoint.selected.clone_from(&user.id);
-                    endpoint.accounts.insert(
-                        user.id.clone(),
-                        Account {
-                            username: user.username.clone(),
-                            token,
-                        },
-                    );
-                    credentials.save()?;
+                    Credentials::update_at(&Credentials::path()?, |credentials| {
+                        let endpoint = credentials
+                            .endpoints
+                            .entry(Credentials::key(cli))
+                            .or_default();
+                        endpoint.selected.clone_from(&user.id);
+                        endpoint.accounts.insert(
+                            user.id.clone(),
+                            Account {
+                                username: user.username.clone(),
+                                token,
+                            },
+                        );
+                        Ok(())
+                    })?;
                     return console.emit(&AccountReport(user));
                 }
                 _ => {
@@ -199,23 +237,89 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
     }
 }
 pub(crate) async fn logout(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
+    let saved = if std::env::var_os("PIQUELD_TOKEN").is_none() {
+        Credentials::read()?
+            .selected(cli)?
+            .map(|(id, account)| (id.to_owned(), account.token.clone()))
+    } else {
+        None
+    };
+    let client = if let Some((_, token)) = &saved {
+        client.clone().with_bearer(token)?
+    } else {
+        client.clone()
+    };
     match client.auth_logout().await {
         Ok(_) => {}
         Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 401 => {}
         Err(error) => return Err(error.into()),
     }
-    if std::env::var_os("PIQUELD_TOKEN").is_none() {
-        let mut credentials = Credentials::read()?;
-        let id = credentials.selected(cli)?.map(|(id, _)| id.to_owned());
-        if let Some(endpoint) = credentials.endpoints.get_mut(&Credentials::key(cli)) {
-            if let Some(id) = id {
-                endpoint.accounts.remove(&id);
-            }
-            if !endpoint.accounts.contains_key(&endpoint.selected) {
-                endpoint.selected = endpoint.accounts.keys().next().cloned().unwrap_or_default();
-            }
-        }
-        credentials.save()?;
+    if let Some((id, token)) = saved {
+        Credentials::update_at(&Credentials::path()?, |credentials| {
+            credentials.remove(&Credentials::key(cli), &id, &token);
+            Ok(())
+        })?;
     }
     console.info("Signed out")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_credential_updates_preserve_every_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        let barrier = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            for index in 0..16 {
+                let path = &path;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    Credentials::update_at(path, |credentials| {
+                        let endpoint = credentials.endpoints.entry("daemon".into()).or_default();
+                        let id = index.to_string();
+                        endpoint.accounts.insert(
+                            id.clone(),
+                            Account {
+                                username: id,
+                                token: "secret".into(),
+                            },
+                        );
+                        Ok(())
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        assert_eq!(
+            Credentials::read_at(&path).unwrap().endpoints["daemon"]
+                .accounts
+                .len(),
+            16
+        );
+    }
+
+    #[test]
+    fn logout_keeps_a_concurrent_replacement_login() {
+        let mut credentials = Credentials::default();
+        let endpoint = credentials.endpoints.entry("daemon".into()).or_default();
+        endpoint.selected = "alice".into();
+        endpoint.accounts.insert(
+            "alice".into(),
+            Account {
+                username: "alice".into(),
+                token: "new".into(),
+            },
+        );
+        credentials.remove("daemon", "alice", "old");
+        assert_eq!(
+            credentials.endpoints["daemon"].accounts["alice"].token,
+            "new"
+        );
+        credentials.remove("daemon", "alice", "new");
+        assert!(credentials.endpoints["daemon"].accounts.is_empty());
+    }
 }
