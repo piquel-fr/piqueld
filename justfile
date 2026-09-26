@@ -24,6 +24,10 @@ daemon *ARGS:
 fmt:
     @cargo fmt --all
 
+# CI checks formatting without modifying sources; local validation uses fmt.
+fmt-check:
+    @cargo fmt --all -- --check
+
 lint:
     @cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
