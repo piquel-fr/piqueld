@@ -169,48 +169,96 @@ impl OperationError {
     /// Creates a public diagnostic using only explicitly safe source fields.
     #[must_use]
     pub fn diagnostic(&self) -> piqueld_core::observability::Diagnostic {
+        let source: &(dyn std::error::Error + 'static) = match self {
+            Self::GitBuildFailed(error) | Self::ManifestFetchFailed(error) => error.as_ref(),
+            _ => self,
+        };
+        Self::diagnostic_from(self.code(), self.message(), source)
+    }
+
+    fn diagnostic_from(
+        code: &str,
+        summary: String,
+        source: &(dyn std::error::Error + 'static),
+    ) -> piqueld_core::observability::Diagnostic {
         let mut diagnostic = piqueld_core::observability::Diagnostic::new(
             format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
-            self.code(),
-            self.message(),
+            code,
+            summary,
         );
-        if let Self::Docker(error) = self {
-            match error {
-                crate::docker::DockerError::ImageResolutionSource {
-                    source: bollard::errors::Error::DockerResponseServerError { status_code, .. },
-                    ..
-                } => {
-                    diagnostic.causes.push(format!(
-                        "Docker returned HTTP status {status_code} while resolving the image"
-                    ));
+        let mut source = Some(source);
+        for _ in 0..8 {
+            let Some(error) = source else {
+                break;
+            };
+            if let Some(error) = error.downcast_ref::<crate::docker::DockerError>() {
+                use crate::docker::DockerError;
+                let operation = match error {
+                    DockerError::Unavailable(operation)
+                    | DockerError::ImageResolution(operation)
+                    | DockerError::Request(operation)
+                    | DockerError::Validation(operation)
+                    | DockerError::UnavailableSource { operation, .. }
+                    | DockerError::ImageResolutionSource { operation, .. }
+                    | DockerError::RequestSource { operation, .. } => Some(*operation),
+                    _ => None,
+                };
+                if let Some(operation) = operation {
+                    diagnostic
+                        .causes
+                        .push(format!("Docker operation: {operation}"));
                 }
-                crate::docker::DockerError::UnavailableSource { source, .. }
-                | crate::docker::DockerError::RequestSource { source, .. } => {
-                    let mut cause: Option<&(dyn std::error::Error + 'static)> =
-                        Some(source.as_ref());
-                    for _ in 0..8 {
-                        let Some(current) = cause else {
-                            break;
-                        };
-                        if let Some(error) = current.downcast_ref::<std::io::Error>() {
-                            diagnostic
-                                .causes
-                                .push(format!("I/O failure: {:?}", error.kind()));
-                        }
-                        if let Some(bollard::errors::Error::DockerResponseServerError {
-                            status_code,
-                            ..
-                        }) = current.downcast_ref::<bollard::errors::Error>()
+            }
+            if let Some(error) = error.downcast_ref::<std::io::Error>() {
+                diagnostic
+                    .causes
+                    .push(format!("I/O failure: {:?}", error.kind()));
+                if let Some(code) = error.raw_os_error() {
+                    diagnostic
+                        .causes
+                        .push(format!("Operating system error code: {code}"));
+                }
+            }
+            if let Some(bollard::errors::Error::DockerResponseServerError { status_code, .. }) =
+                error.downcast_ref::<bollard::errors::Error>()
+            {
+                diagnostic
+                    .causes
+                    .push(format!("Docker returned HTTP status {status_code}"));
+            }
+            if let Some(error) = error.downcast_ref::<crate::command::CommandFailure>() {
+                diagnostic
+                    .causes
+                    .push(format!("Command stage: {}", error.operation));
+                diagnostic.causes.push(error.status.code().map_or_else(
+                    || "Command terminated without an exit code".into(),
+                    |code| format!("Command exit code: {code}"),
+                ));
+            }
+            if let Some(error) = error.downcast_ref::<sqlx::Error>() {
+                match error {
+                    sqlx::Error::Database(database) => {
+                        diagnostic
+                            .causes
+                            .push(format!("Database failure: {:?}", database.kind()));
+                        if let Some(code) =
+                            database.code().and_then(|code| code.parse::<i64>().ok())
                         {
                             diagnostic
                                 .causes
-                                .push(format!("Docker returned HTTP status {status_code}"));
+                                .push(format!("Database error code: {code}"));
                         }
-                        cause = current.source();
                     }
+                    sqlx::Error::PoolTimedOut => diagnostic
+                        .causes
+                        .push("Timed out waiting for a database connection".into()),
+                    sqlx::Error::PoolClosed => diagnostic
+                        .causes
+                        .push("Database connection pool is closed".into()),
+                    _ => {}
                 }
-                _ => {}
             }
+            source = error.source();
         }
         diagnostic
     }
@@ -236,11 +284,20 @@ impl crate::application::BoundaryError {
                 "Resolved application could not be compiled".into(),
             ),
         };
-        piqueld_core::observability::Diagnostic::new(
-            format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
-            code,
-            summary,
-        )
+        let source: &(dyn std::error::Error + 'static) = match self {
+            Self::GitBuild(error) => error.as_ref(),
+            _ => self,
+        };
+        let mut diagnostic = OperationError::diagnostic_from(code, summary, source);
+        if let Self::Compilation(errors) = self {
+            diagnostic.causes.extend(
+                errors
+                    .iter()
+                    .take(16)
+                    .map(|error| format!("{}: {} ({})", error.resource, error.message, error.code)),
+            );
+        }
+        diagnostic
     }
 }
 
@@ -307,6 +364,71 @@ mod tests {
                     .is::<bollard::errors::Error>()
             );
             assert!(!error.message().contains("internal registry diagnostic"));
+            let diagnostic = error.diagnostic();
+            assert!(
+                diagnostic
+                    .causes
+                    .contains(&format!("Docker returned HTTP status {status_code}"))
+            );
+            assert!(
+                !serde_json::to_string(&diagnostic)
+                    .unwrap()
+                    .contains("internal registry diagnostic")
+            );
         }
+    }
+
+    #[test]
+    fn preparation_diagnostics_preserve_safe_typed_causes() {
+        let error =
+            crate::application::BoundaryError::Runtime(DockerError::ImageResolutionSource {
+                operation: "pull image",
+                source: bollard::errors::Error::DockerResponseServerError {
+                    status_code: 401,
+                    message: "registry-secret".into(),
+                },
+            });
+        let diagnostic = error.diagnostic();
+        assert_eq!(diagnostic.code, "image_resolution_rejected");
+        assert_eq!(
+            diagnostic.causes,
+            [
+                "Docker operation: pull image",
+                "Docker returned HTTP status 401"
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&diagnostic)
+                .unwrap()
+                .contains("registry-secret")
+        );
+        let io = crate::application::BoundaryError::GitBuild(
+            anyhow::Error::from(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "secret path",
+            ))
+            .context("repository URL with secret"),
+        )
+        .diagnostic();
+        assert!(io.causes.contains(&"I/O failure: PermissionDenied".into()));
+        assert!(!serde_json::to_string(&io).unwrap().contains("secret"));
+        let storage = OperationError::Journal(crate::store::StoreError::DatabaseSource(
+            sqlx::Error::PoolClosed,
+        ))
+        .diagnostic();
+        assert!(
+            storage
+                .causes
+                .contains(&"Database connection pool is closed".into())
+        );
+        let compilation =
+            crate::application::BoundaryError::Compilation(vec![piqueld_core::CompileError {
+                resource: "web".into(),
+                code: "source_unresolved".into(),
+                message: "service source has not been resolved to an immutable image".into(),
+            }])
+            .diagnostic();
+        assert!(compilation.causes[0].contains("web"));
+        assert!(compilation.causes[0].contains("source_unresolved"));
     }
 }
