@@ -7,6 +7,7 @@
 #   lint              -> clippy
 #   test / doc-test   -> test
 #   test-embedded     -> embedded-test
+#   test-e2e          -> browser-e2e
 #   deny              -> deny
 #   openapi-check     -> openapi
 #   boundary          -> boundary
@@ -103,6 +104,48 @@ jobs:
           tailwindcss-sha256: "dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a"
           binaryen-version: "132"
       - run: just test-embedded
+
+  browser-e2e:
+    name: browser-e2e
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
+        with:
+          tool: just,cargo-nextest
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+          cache-directories: |
+            target-ui
+            ${{ runner.temp }}/piqueld-tools
+      - uses: ./.github/actions/dashboard-tools
+        with:
+          trunk-version: "0.21.14"
+          tailwindcss-version: "4.3.3"
+          tailwindcss-sha256: "dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a"
+          binaryen-version: "132"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Install pinned pnpm locally
+        run: |
+          npm install --prefix "$RUNNER_TEMP/piqueld-e2e-tools" pnpm@12.3.4
+          echo "$RUNNER_TEMP/piqueld-e2e-tools/node_modules/.bin" >> "$GITHUB_PATH"
+      - run: just setup-e2e
+      - run: pnpm --dir e2e audit --audit-level=moderate
+      - run: just test-e2e
+      - name: Preserve browser failure diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: browser-e2e-report
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 7
+          if-no-files-found: warn
 
   test:
     name: test
