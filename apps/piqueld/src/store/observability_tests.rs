@@ -2,7 +2,9 @@
 use super::*;
 use crate::api::{Mutation, MutationResponse};
 use crate::config::{DaemonConfig, WebhookDestination, WebhookKind};
-use piqueld_core::observability::{Diagnostic, EventFilter, EventScope};
+use piqueld_core::observability::{
+    DeliveryState, Diagnostic, EventFilter, EventScope, NotificationCategory,
+};
 
 async fn application(store: &Store) -> Operation {
     let manifest=piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='observable'\n[spec]").unwrap();
@@ -194,7 +196,7 @@ async fn retries_keep_cause_and_outbox_deduplicates_until_recovery() {
     store.process_notifications().await.unwrap();
     let deliveries = store.deliveries(None, 100).await.unwrap();
     assert_eq!(deliveries.items.len(), 2);
-    assert_eq!(deliveries.items[0].category, "recovery");
+    assert_eq!(deliveries.items[0].category, NotificationCategory::Recovery);
 }
 #[tokio::test]
 async fn disabling_cancels_pending_and_reenabling_never_replays() {
@@ -226,7 +228,7 @@ async fn disabling_cancels_pending_and_reenabling_never_replays() {
     store.configure_deliveries().await.unwrap();
     assert_eq!(
         store.deliveries(None, 100).await.unwrap().items[0].state,
-        "cancelled"
+        DeliveryState::Cancelled
     );
     drop(store);
     config.notifications.enabled = true;
@@ -313,4 +315,267 @@ async fn pruning_marks_stream_gaps_and_analytics_coverage() {
     let analytics = store.deployment_analytics(None, 0, now_ms()).await.unwrap();
     assert!(analytics.incomplete);
     assert_eq!(analytics.succeeded, 1);
+}
+
+#[tokio::test]
+async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let mut config = notifications();
+    let mut second = config.notifications.destinations[0].clone();
+    second.name = "second".into();
+    config.notifications.destinations.push(second);
+    let store = Store::open(&path)
+        .await
+        .unwrap()
+        .with_observability(&config);
+    store.configure_deliveries().await.unwrap();
+    let op = application(&store).await;
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Failed,
+            Some(("service_update_failed", "Service failed")),
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    let (delayed, _) = store.claim_delivery().await.unwrap().unwrap();
+    store
+        .complete_delivery(
+            &delayed.id,
+            DeliveryState::Pending,
+            Some("Receiver unavailable"),
+            3600,
+        )
+        .await
+        .unwrap();
+    let (acknowledged, _) = store.claim_delivery().await.unwrap().unwrap();
+    store
+        .complete_delivery(&acknowledged.id, DeliveryState::Delivered, None, 0)
+        .await
+        .unwrap();
+    drop(store);
+
+    // A newly enabled destination did not receive the failure and must not receive recovery.
+    let mut added = config.notifications.destinations[0].clone();
+    added.name = "new-destination".into();
+    config.notifications.destinations.push(added);
+    let store = Store::open(&path)
+        .await
+        .unwrap()
+        .with_observability(&config);
+    store.configure_deliveries().await.unwrap();
+    store
+        .retry_operation(&store.operation(&op.id).await.unwrap())
+        .await
+        .unwrap();
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Requested,
+            OperationState::Running,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Succeeded,
+            None,
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    let (recovery, _) = store.claim_delivery().await.unwrap().unwrap();
+    assert_eq!(recovery.category, NotificationCategory::Recovery);
+    assert_eq!(recovery.destination, acknowledged.destination);
+    store
+        .complete_delivery(&recovery.id, DeliveryState::Delivered, None, 0)
+        .await
+        .unwrap();
+    assert!(store.claim_delivery().await.unwrap().is_none());
+    assert_eq!(store.deliveries(None, 100).await.unwrap().items.len(), 4);
+    drop(store);
+
+    let store = Store::open(&path)
+        .await
+        .unwrap()
+        .with_observability(&config);
+    store.configure_deliveries().await.unwrap();
+    assert!(store.claim_delivery().await.unwrap().is_none());
+    // The delayed failure's acknowledgement makes only its own recovery eligible.
+    store
+        .complete_delivery(&delayed.id, DeliveryState::Delivered, None, 0)
+        .await
+        .unwrap();
+    store.prune_events(now_ms() + 1).await.unwrap();
+    assert!(store.event(delayed.event_id).await.is_ok());
+    let (recovery, _) = store.claim_delivery().await.unwrap().unwrap();
+    assert_eq!(recovery.category, NotificationCategory::Recovery);
+    assert_eq!(recovery.destination, delayed.destination);
+    assert!(store.event(recovery.event_id).await.is_ok());
+}
+
+#[tokio::test]
+async fn undelivered_failures_expire_and_cancel_recovery_even_when_nothing_is_due() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = notifications();
+    let store = Store::open(temp.path().join("db"))
+        .await
+        .unwrap()
+        .with_observability(&config);
+    store.configure_deliveries().await.unwrap();
+    let op = application(&store).await;
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Failed,
+            Some(("service_update_failed", "Service failed")),
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    let (failure, _) = store.claim_delivery().await.unwrap().unwrap();
+    store
+        .complete_delivery(
+            &failure.id,
+            DeliveryState::Pending,
+            Some("Unavailable"),
+            3600,
+        )
+        .await
+        .unwrap();
+    store
+        .retry_operation(&store.operation(&op.id).await.unwrap())
+        .await
+        .unwrap();
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Requested,
+            OperationState::Running,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Succeeded,
+            None,
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    sqlx::query!(
+        "UPDATE notification_deliveries SET retry_started_at_ms=0 WHERE id=?1",
+        failure.id
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    assert!(store.claim_delivery().await.unwrap().is_none());
+    let deliveries = store.deliveries(None, 100).await.unwrap().items;
+    assert_eq!(deliveries.len(), 2);
+    assert_eq!(
+        deliveries
+            .iter()
+            .find(|d| d.id == failure.id)
+            .unwrap()
+            .state,
+        DeliveryState::Failed
+    );
+    assert_eq!(
+        deliveries
+            .iter()
+            .find(|d| d.category == NotificationCategory::Recovery)
+            .unwrap()
+            .state,
+        DeliveryState::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn recovery_waits_for_all_pending_failure_categories_at_the_same_destination() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = notifications();
+    let store = Store::open(temp.path().join("db"))
+        .await
+        .unwrap()
+        .with_observability(&config);
+    store.configure_deliveries().await.unwrap();
+    let op = application(&store).await;
+    for code in ["git_build_failed", "service_update_failed"] {
+        store
+            .transition_operation(
+                &op.id,
+                OperationState::Running,
+                OperationState::Failed,
+                Some((code, "Attempt failed")),
+            )
+            .await
+            .unwrap();
+        store.process_notifications().await.unwrap();
+        store
+            .retry_operation(&store.operation(&op.id).await.unwrap())
+            .await
+            .unwrap();
+        store
+            .transition_operation(
+                &op.id,
+                OperationState::Requested,
+                OperationState::Running,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let (first, _) = store.claim_delivery().await.unwrap().unwrap();
+    store
+        .complete_delivery(&first.id, DeliveryState::Delivered, None, 0)
+        .await
+        .unwrap();
+    let (second, _) = store.claim_delivery().await.unwrap().unwrap();
+    store
+        .complete_delivery(
+            &second.id,
+            DeliveryState::Pending,
+            Some("Unavailable"),
+            3600,
+        )
+        .await
+        .unwrap();
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Succeeded,
+            None,
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    assert!(store.claim_delivery().await.unwrap().is_none());
+    // An unacknowledged terminal failure doesn't suppress recovery for an acknowledged one.
+    store
+        .complete_delivery(&second.id, DeliveryState::Failed, Some("Rejected"), 0)
+        .await
+        .unwrap();
+    let (recovery, _) = store.claim_delivery().await.unwrap().unwrap();
+    assert_eq!(recovery.category, NotificationCategory::Recovery);
+    store
+        .complete_delivery(&recovery.id, DeliveryState::Delivered, None, 0)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.retry_delivery(&second.id).await,
+        Err(StoreError::InvalidInput)
+    ));
+    assert!(store.claim_delivery().await.unwrap().is_none());
 }

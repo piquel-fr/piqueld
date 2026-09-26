@@ -5,7 +5,7 @@ use piqueld_core::{
     api::Page,
     observability::{Diagnostic, EventFilter, EventScope},
 };
-use sqlx::{Sqlite, Transaction};
+use sqlx::{QueryBuilder, Sqlite, Transaction};
 
 impl Store {
     pub(super) async fn operation_event(
@@ -18,7 +18,18 @@ impl Store {
         let operation = Self::operation_on(tx, id).await?;
         let diagnostic = if let Some(code) = &operation.error_code {
             let attempt = i64::try_from(operation.attempt).map_err(StoreError::corrupt)?;
-            let prior = sqlx::query_scalar!("SELECT diagnostic_json FROM events WHERE operation_id=?1 AND attempt=?2 AND error_code=?3 AND diagnostic_json IS NOT NULL ORDER BY id DESC LIMIT 1",id,attempt,code).fetch_optional(&mut **tx).await.map_err(StoreError::database)?.flatten();
+            let prior = sqlx::query_scalar!(
+                "SELECT diagnostic_json
+                FROM events
+                WHERE operation_id=?1 AND attempt=?2 AND error_code=?3 AND diagnostic_json IS NOT NULL
+                ORDER BY id DESC LIMIT 1",
+                id,
+                attempt,
+                code,
+            )
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(StoreError::database)?.flatten();
             Some(match prior {
                 Some(json) => serde_json::from_str(&json).map_err(StoreError::corrupt)?,
                 None => Diagnostic::new(
@@ -40,7 +51,23 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .map_err(StoreError::corrupt)?;
-        sqlx::query!("INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms,scope,diagnostic_id,diagnostic_json) SELECT application_id,id,generation,attempt,?1,?2,error_code,phase,resource,?3,?4,?5,?6 FROM operations WHERE id=?7",kind,message,now,scope,diagnostic_id,json,id).execute(&mut **tx).await.map_err(StoreError::database)?;
+        sqlx::query!(
+            "INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,
+            resource,created_at_ms,scope,diagnostic_id,diagnostic_json) SELECT application_id,id,
+            generation,attempt,?1,?2,error_code,phase,resource,?3,?4,?5,?6
+            FROM operations
+            WHERE id=?7",
+            kind,
+            message,
+            now,
+            scope,
+            diagnostic_id,
+            json,
+            id,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
 
@@ -88,14 +115,12 @@ impl Store {
         if let Some(id) = &filter.application_id {
             ApplicationId::parse(id).map_err(StoreError::invalid_input)?;
         }
-        let attempt = filter
-            .attempt
-            .map(i64::try_from)
-            .transpose()
-            .map_err(StoreError::invalid_input)?;
-        let scope = filter.scope.map(EventScope::as_str);
-        let descending = filter.descending;
-        let mut rows = sqlx::query!("SELECT id,application_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms,scope,action_id,retry,retry_delay_ms,duration_ms,request_id,diagnostic_json FROM events WHERE ((?1=0 AND id>?2) OR (?1=1 AND id<?2)) AND (?3 IS NULL OR application_id=?3) AND (?4 IS NULL OR operation_id=?4) AND (?5 IS NULL OR attempt=?5) AND (?6 IS NULL OR action_id=?6) AND (?7 IS NULL OR kind=?7) AND (?8 IS NULL OR error_code=?8) AND (?9 IS NULL OR scope=?9) AND (?10 IS NULL OR created_at_ms>=?10) AND (?11 IS NULL OR created_at_ms<=?11) AND (?12=0 OR error_code IS NOT NULL) ORDER BY CASE WHEN ?1=0 THEN id END ASC, CASE WHEN ?1=1 THEN id END DESC LIMIT ?13",descending,cursor,filter.application_id,filter.operation_id,attempt,filter.action_id,filter.kind,filter.error_code,scope,filter.since_ms,filter.until_ms,filter.errors_only,fetch).fetch_all(&self.pool).await.map_err(StoreError::database)?;
+        let mut query = EventRow::query(filter, cursor, fetch)?;
+        let mut rows = query
+            .build_query_as::<EventRow>()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(StoreError::database)?;
         let more = rows.len() > limit;
         rows.truncate(limit);
         let next_cursor = more
@@ -103,60 +128,7 @@ impl Store {
             .flatten();
         let items = rows
             .into_iter()
-            .map(|r| {
-                Ok(Event {
-                    id: r.id,
-                    application_id: r
-                        .application_id
-                        .map(ApplicationId::parse)
-                        .transpose()
-                        .map_err(StoreError::corrupt)?,
-                    operation_id: r.operation_id,
-                    generation: r
-                        .generation
-                        .map(u64::try_from)
-                        .transpose()
-                        .map_err(StoreError::corrupt)?,
-                    attempt: r
-                        .attempt
-                        .map(u64::try_from)
-                        .transpose()
-                        .map_err(StoreError::corrupt)?,
-                    kind: r.kind,
-                    message: r.message,
-                    error_code: r.error_code,
-                    phase: r.phase,
-                    resource: r.resource,
-                    created_at_ms: r.created_at_ms,
-                    scope: match r.scope.as_str() {
-                        "daemon" => EventScope::Daemon,
-                        "application" => EventScope::Application,
-                        _ => return Err(StoreError::Corrupt),
-                    },
-                    action_id: r.action_id,
-                    retry: r
-                        .retry
-                        .map(u64::try_from)
-                        .transpose()
-                        .map_err(StoreError::corrupt)?,
-                    retry_delay_ms: r
-                        .retry_delay_ms
-                        .map(u64::try_from)
-                        .transpose()
-                        .map_err(StoreError::corrupt)?,
-                    duration_ms: r
-                        .duration_ms
-                        .map(u64::try_from)
-                        .transpose()
-                        .map_err(StoreError::corrupt)?,
-                    request_id: r.request_id,
-                    diagnostic: r
-                        .diagnostic_json
-                        .map(|json| serde_json::from_str(&json))
-                        .transpose()
-                        .map_err(StoreError::corrupt)?,
-                })
-            })
+            .map(EventRow::into_event)
             .collect::<Result<_, StoreError>>()?;
         Ok(Page { items, next_cursor })
     }
@@ -188,7 +160,7 @@ impl Store {
     pub async fn diagnostic(&self, id: &str) -> Result<Event, StoreError> {
         let row = sqlx::query!(
             "SELECT id AS \"id!\" FROM events WHERE diagnostic_id=?1 ORDER BY id LIMIT 1",
-            id
+            id,
         )
         .fetch_optional(&self.pool)
         .await
@@ -214,7 +186,24 @@ impl Store {
         let app = application.map(ApplicationId::as_str);
         let json = serde_json::to_string(&diagnostic).map_err(StoreError::corrupt)?;
         let now = now_ms();
-        sqlx::query!("INSERT INTO events(scope,application_id,kind,message,error_code,diagnostic_id,diagnostic_json,request_id,created_at_ms) SELECT ?1,?2,'diagnostic',?3,?4,?5,?6,?7,?8 WHERE ?1='daemon' OR EXISTS(SELECT 1 FROM applications WHERE id=?2)",scope,app,diagnostic.summary,diagnostic.code,diagnostic.id,json,request_id,now).execute(&self.pool).await.map_err(StoreError::database)?;
+        sqlx::query!(
+            "INSERT INTO events(scope,application_id,kind,message,error_code,diagnostic_id,diagnostic_json,request_id,
+            created_at_ms) SELECT ?1,?2,'diagnostic',?3,?4,?5,?6,?7,?8
+            WHERE ?1='daemon' OR EXISTS(SELECT 1
+            FROM applications
+            WHERE id=?2)",
+            scope,
+            app,
+            diagnostic.summary,
+            diagnostic.code,
+            diagnostic.id,
+            json,
+            request_id,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
     pub(crate) async fn report_diagnostic(
@@ -265,17 +254,235 @@ impl Store {
     async fn prune_scope(&self, cutoff: i64, scope: EventScope) -> Result<u64, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let scope = scope.as_str();
-        let removed = sqlx::query!("DELETE FROM events WHERE scope=?1 AND created_at_ms<?2 AND NOT EXISTS(SELECT 1 FROM notification_deliveries d WHERE d.event_id=events.id AND d.state='pending') AND NOT EXISTS(SELECT 1 FROM active_actions a WHERE a.id=events.action_id) RETURNING id,created_at_ms",scope,cutoff).fetch_all(&mut *tx).await.map_err(StoreError::database)?;
+        let removed = sqlx::query!(
+            "DELETE
+            FROM events
+            WHERE scope=?1 AND created_at_ms<?2 AND NOT EXISTS(SELECT 1
+            FROM notification_deliveries d
+            WHERE d.event_id=events.id AND d.state='pending') AND NOT EXISTS(SELECT 1
+            FROM notification_deliveries failure JOIN notification_recovery_sources s ON s.failure_id=failure.id JOIN notification_deliveries recovery ON recovery.id=s.recovery_id
+            WHERE failure.event_id=events.id AND recovery.state='pending') AND NOT EXISTS(SELECT 1
+            FROM active_actions a
+            WHERE a.id=events.action_id)
+            RETURNING id,created_at_ms",
+            scope,
+            cutoff,
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
         if let Some(last_id) = removed.iter().map(|r| r.id).max() {
             let last_time = removed
                 .iter()
                 .map(|r| r.created_at_ms)
                 .max()
                 .ok_or(StoreError::Corrupt)?;
-            sqlx::query!("UPDATE history_coverage SET pruned_through_ms=MAX(COALESCE(pruned_through_ms,0),?1),pruned_through_id=MAX(pruned_through_id,?2) WHERE singleton=1",last_time,last_id).execute(&mut *tx).await.map_err(StoreError::database)?;
+            sqlx::query!(
+                "UPDATE history_coverage
+                SET pruned_through_ms=MAX(COALESCE(pruned_through_ms,0),?1),pruned_through_id=MAX(pruned_through_id,?2)
+                WHERE singleton=1",
+                last_time,
+                last_id,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
         }
         let count = u64::try_from(removed.len()).map_err(StoreError::corrupt)?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(count)
+    }
+}
+
+// Optional predicates are assembled from fixed column names; every value is bound.
+// Direct ordering lets SQLite stop after one page instead of sorting retained history.
+#[derive(sqlx::FromRow)]
+struct EventRow {
+    id: i64,
+    application_id: Option<String>,
+    operation_id: Option<String>,
+    generation: Option<i64>,
+    attempt: Option<i64>,
+    kind: String,
+    message: Option<String>,
+    error_code: Option<String>,
+    phase: Option<String>,
+    resource: Option<String>,
+    created_at_ms: i64,
+    scope: String,
+    action_id: Option<String>,
+    retry: Option<i64>,
+    retry_delay_ms: Option<i64>,
+    duration_ms: Option<i64>,
+    request_id: Option<String>,
+    diagnostic_json: Option<String>,
+}
+
+impl EventRow {
+    fn query(
+        filter: &EventFilter,
+        cursor: i64,
+        fetch: i64,
+    ) -> Result<QueryBuilder<'_, Sqlite>, StoreError> {
+        let mut query = QueryBuilder::new(
+            "SELECT id, application_id, operation_id, generation, attempt, kind, message, error_code, \
+             phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
+             request_id, diagnostic_json FROM events WHERE id",
+        );
+        query
+            .push(if filter.descending { " < " } else { " > " })
+            .push_bind(cursor);
+        for (column, value) in [
+            ("application_id", filter.application_id.as_deref()),
+            ("operation_id", filter.operation_id.as_deref()),
+            ("action_id", filter.action_id.as_deref()),
+            ("kind", filter.kind.as_deref()),
+            ("error_code", filter.error_code.as_deref()),
+            ("scope", filter.scope.map(EventScope::as_str)),
+        ] {
+            if let Some(value) = value {
+                query
+                    .push(" AND ")
+                    .push(column)
+                    .push(" = ")
+                    .push_bind(value);
+            }
+        }
+        if let Some(attempt) = filter.attempt {
+            query
+                .push(" AND attempt = ")
+                .push_bind(i64::try_from(attempt).map_err(StoreError::invalid_input)?);
+        }
+        if let Some(since) = filter.since_ms {
+            query.push(" AND created_at_ms >= ").push_bind(since);
+        }
+        if let Some(until) = filter.until_ms {
+            query.push(" AND created_at_ms <= ").push_bind(until);
+        }
+        if filter.errors_only {
+            query.push(" AND error_code IS NOT NULL");
+        }
+        query
+            .push(if filter.descending {
+                " ORDER BY id DESC LIMIT "
+            } else {
+                " ORDER BY id ASC LIMIT "
+            })
+            .push_bind(fetch);
+        Ok(query)
+    }
+
+    fn into_event(self) -> Result<Event, StoreError> {
+        Ok(Event {
+            id: self.id,
+            application_id: self
+                .application_id
+                .map(ApplicationId::parse)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            operation_id: self.operation_id,
+            generation: self
+                .generation
+                .map(u64::try_from)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            attempt: self
+                .attempt
+                .map(u64::try_from)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            kind: self.kind,
+            message: self.message,
+            error_code: self.error_code,
+            phase: self.phase,
+            resource: self.resource,
+            created_at_ms: self.created_at_ms,
+            scope: match self.scope.as_str() {
+                "daemon" => EventScope::Daemon,
+                "application" => EventScope::Application,
+                _ => return Err(StoreError::Corrupt),
+            },
+            action_id: self.action_id,
+            retry: self
+                .retry
+                .map(u64::try_from)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            retry_delay_ms: self
+                .retry_delay_ms
+                .map(u64::try_from)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            duration_ms: self
+                .duration_ms
+                .map(u64::try_from)
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            request_id: self.request_id,
+            diagnostic: self
+                .diagnostic_json
+                .map(|json| serde_json::from_str(&json))
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::{Execute, Row};
+
+    #[tokio::test]
+    async fn history_pages_use_indexes_without_sorting_retained_events() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("db")).await.unwrap();
+        for descending in [false, true] {
+            for (filter, index) in [
+                (EventFilter::default(), "INTEGER PRIMARY KEY"),
+                (
+                    EventFilter {
+                        application_id: Some("app-query".into()),
+                        ..Default::default()
+                    },
+                    "event_application",
+                ),
+                (
+                    EventFilter {
+                        operation_id: Some("op-query".into()),
+                        ..Default::default()
+                    },
+                    "event_operation",
+                ),
+                (
+                    EventFilter {
+                        action_id: Some("action-query".into()),
+                        ..Default::default()
+                    },
+                    "event_action",
+                ),
+            ] {
+                let filter = EventFilter {
+                    descending,
+                    ..filter
+                };
+                let mut query =
+                    EventRow::query(&filter, if descending { i64::MAX } else { 0 }, 51).unwrap();
+                let mut query = query.build();
+                let explain = format!("EXPLAIN QUERY PLAN {}", query.sql());
+                let args = query.take_arguments().unwrap().unwrap();
+                let rows = sqlx::query_with(&explain, args)
+                    .fetch_all(&store.pool)
+                    .await
+                    .unwrap();
+                let plan = rows
+                    .iter()
+                    .map(|row| row.get::<String, _>("detail"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(plan.contains(index), "{plan}");
+                assert!(!plan.contains("TEMP B-TREE"), "{plan}");
+            }
+        }
     }
 }

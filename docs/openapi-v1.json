@@ -1008,6 +1008,16 @@
         ],
         "type": "object"
       },
+      "DeliveryState": {
+        "description": "Lifecycle of a durable webhook delivery.",
+        "enum": [
+          "Pending",
+          "Delivered",
+          "Failed",
+          "Cancelled"
+        ],
+        "type": "string"
+      },
       "DependencyStatus": {
         "description": "One diagnostic dependency probe, independent of application health.",
         "oneOf": [
@@ -2635,8 +2645,8 @@
                       "type": "integer"
                     },
                     "category": {
-                      "description": "Notification category, including recovery.",
-                      "type": "string"
+                      "$ref": "#/components/schemas/NotificationCategory",
+                      "description": "Notification category, including recovery."
                     },
                     "created_at_ms": {
                       "description": "Creation timestamp.",
@@ -2667,8 +2677,8 @@
                       "type": "integer"
                     },
                     "state": {
-                      "description": "pending, delivered, failed, or cancelled.",
-                      "type": "string"
+                      "$ref": "#/components/schemas/DeliveryState",
+                      "description": "Current delivery lifecycle state."
                     },
                     "updated_at_ms": {
                       "description": "Last update timestamp.",
@@ -3578,6 +3588,17 @@
         ],
         "type": "object"
       },
+      "NotificationCategory": {
+        "description": "Global notification categories supported by daemon configuration.",
+        "enum": [
+          "BuildFailures",
+          "DeploymentFailures",
+          "ServiceDegradation",
+          "DaemonFailures",
+          "Recovery"
+        ],
+        "type": "string"
+      },
       "NotificationDelivery": {
         "description": "A retained notification delivery; credentials and receiver response bodies are excluded.",
         "properties": {
@@ -3587,8 +3608,8 @@
             "type": "integer"
           },
           "category": {
-            "description": "Notification category, including recovery.",
-            "type": "string"
+            "$ref": "#/components/schemas/NotificationCategory",
+            "description": "Notification category, including recovery."
           },
           "created_at_ms": {
             "description": "Creation timestamp.",
@@ -3619,8 +3640,8 @@
             "type": "integer"
           },
           "state": {
-            "description": "pending, delivered, failed, or cancelled.",
-            "type": "string"
+            "$ref": "#/components/schemas/DeliveryState",
+            "description": "Current delivery lifecycle state."
           },
           "updated_at_ms": {
             "description": "Last update timestamp.",

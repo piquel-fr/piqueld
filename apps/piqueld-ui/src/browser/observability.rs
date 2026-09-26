@@ -4,7 +4,7 @@ use leptos::*;
 use leptos_router::{A, use_params_map, use_query_map};
 use piqueld_client::{
     Client, Event,
-    observability::{DaemonStats, EventFilter, EventScope},
+    observability::{DaemonStats, DeliveryState, EventFilter, EventScope},
 };
 
 #[derive(Clone, Copy)]
@@ -267,7 +267,7 @@ pub(super) fn NotificationsPage() -> impl IntoView {
         {move ||error.get().map(|e|view!{<p class="form-error">{e}</p>})}
         {move ||match data.get(){None=>view!{<p>"Loading deliveries…"</p>}.into_view(),Some(Err(e))=>view!{<p class="form-error">{e}</p>}.into_view(),Some(Ok(page))=>view!{<section class="observability-panel">
             {page.items.is_empty().then(||view!{<p>"No notification deliveries."</p>})}
-            {page.items.into_iter().map(|d|{let id=d.id.clone();view!{<article class="event-card"><strong>{format!("{} · {} · {}",d.destination,d.category,d.state)}</strong><p>{format!("{} attempts · {}",d.attempts,timestamp(d.updated_at_ms))}</p><p>{d.last_error}</p><p class="help">{d.id}</p>{(d.state=="failed").then(||view!{<button on:click=move |_|{let id=id.clone();spawn_local(async move{match Client::browser().retry_notification(&id).await {Ok(())=>{error.set(None);refresh.request();},Err(e)=>error.set(Some(client_error_message(&e)))}});}>"Retry delivery"</button>})}</article>}}).collect_view()}
+            {page.items.into_iter().map(|d|{let id=d.id.clone();view!{<article class="event-card"><strong>{format!("{} · {} · {}",d.destination,d.category,d.state)}</strong><p>{format!("{} attempts · {}",d.attempts,timestamp(d.updated_at_ms))}</p><p>{d.last_error}</p><p class="help">{d.id}</p>{(d.state==DeliveryState::Failed).then(||view!{<button on:click=move |_|{let id=id.clone();spawn_local(async move{match Client::browser().retry_notification(&id).await {Ok(())=>{error.set(None);refresh.request();},Err(e)=>error.set(Some(client_error_message(&e)))}});}>"Retry delivery"</button>})}</article>}}).collect_view()}
             {page.next_cursor.map(|next|view!{<button on:click=move |_|cursor.set(Some(next.clone()))>"Older deliveries"</button>})}
         </section>}.into_view()}}
     }

@@ -24,6 +24,8 @@ Docker rolled back or that nothing happened. Reconciliation inspects actual stat
 before continuing. A failure after a successful external request but before its
 result commits has the same uncertainty. Journal availability is a prerequisite
 for infrastructure changes, including startup Swarm initialization and repair.
+Execution cleanup waits for in-flight repair to commit before closing abandoned
+actions that share the operation's context.
 
 Diagnostics contain an occurrence ID, stable code, safe summary, sanitized causal
 facts, retryability and suggested next action. Context stays on the event even
@@ -32,6 +34,11 @@ the diagnostic event records the request ID. Input validation errors are ordinar
 API errors, not persisted incidents. Daemon logs include occurrence IDs. If
 storage itself fails, the response/log ID remains useful but the diagnostic may
 not be retrievable from the database.
+
+Safe causal facts include Docker request stages and HTTP statuses, I/O error
+kinds and OS codes, command stages and exit codes, database failure kinds/codes,
+and validated compilation diagnostics. Preparation and execution use the same
+extraction rules; arbitrary source messages and command output stay excluded.
 
 Raw engine response bodies, manifest environment values, webhook URLs and receiver
 response bodies are excluded from diagnostics. Build output remains a separate,
@@ -130,6 +137,15 @@ Recovery notifications apply to observed dependencies/services and successful
 operations that clear an alerted condition. Internal error groups without a
 positive recovery observation stay deduplicated; they do not generate speculative
 recovery messages or periodic reminders.
+
+Recovery is paired with failure deliveries at each destination, including its
+configured URL identity. A new or changed destination never receives recovery for
+a failure it was not sent. Recovery waits until all paired failure deliveries
+finish retrying and at least one was acknowledged. If none was acknowledged,
+recovery is cancelled. These relationships survive restart and protect the
+failure history while recovery remains queued. The recovery retry window starts
+with its first delivery attempt, so waiting for a failure cannot exhaust it.
+Manual retry cannot replay a failed alert after its recovery was acknowledged.
 
 The outbox is durable and separate from runtime work. JSON payloads contain
 `version: 1`, `instance_id`, `delivery_id`, `category`, and the source `event`.

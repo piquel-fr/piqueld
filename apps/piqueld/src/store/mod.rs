@@ -254,9 +254,8 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
 
-        // SQLite does not expose PRAGMA assignment through bind parameters, so
-        // the schema-version assignment below is the only dynamically assembled
-        // statement in the store.
+        // SQLite does not expose PRAGMA assignment through bind parameters.
+        // The assigned version below comes only from the embedded migrations.
         let version: i64 = sqlx::query_scalar!("PRAGMA user_version")
             .fetch_one(&pool)
             .await

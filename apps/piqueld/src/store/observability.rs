@@ -22,7 +22,24 @@ impl Store {
         {
             return Ok(stats.clone());
         }
-        let row=sqlx::query!("SELECT (SELECT COUNT(*) FROM events) AS events,(SELECT COUNT(DISTINCT diagnostic_id) FROM events WHERE diagnostic_id IS NOT NULL) AS diagnostics,(SELECT COALESCE(SUM(length(data)),0) FROM build_log_chunks) AS build_bytes,(SELECT COUNT(*) FROM operations WHERE state='running') AS running,(SELECT COUNT(*) FROM operations WHERE state='requested') AS queued,(SELECT COUNT(*) FROM notification_deliveries WHERE state='pending') AS pending,(SELECT COUNT(*) FROM notification_deliveries WHERE state='failed') AS failed").fetch_one(&self.pool).await.map_err(StoreError::database)?;
+        let row = sqlx::query!(
+            "SELECT (SELECT COUNT(*)
+            FROM events) AS events,(SELECT COUNT(DISTINCT diagnostic_id)
+            FROM events
+            WHERE diagnostic_id IS NOT NULL) AS diagnostics,(SELECT COALESCE(SUM(length(data)),0)
+            FROM build_log_chunks) AS build_bytes,(SELECT COUNT(*)
+            FROM operations
+            WHERE state='running') AS running,(SELECT COUNT(*)
+            FROM operations
+            WHERE state='requested') AS queued,(SELECT COUNT(*)
+            FROM notification_deliveries
+            WHERE state='pending') AS pending,(SELECT COUNT(*)
+            FROM notification_deliveries
+            WHERE state='failed') AS failed"
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
         let database_bytes = tokio::fs::metadata(&self.database_path)
             .await
             .map_err(StoreError::path)?
@@ -127,7 +144,18 @@ impl Store {
         .fetch_one(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        let attempts=sqlx::query!("SELECT a.deployment_id,a.attempt,a.outcome_json FROM deployment_attempts a JOIN deployments d ON d.id=a.deployment_id WHERE (?1 IS NULL OR d.application_id=?1) AND json_extract(a.outcome_json,'$.finished_at_ms') BETWEEN ?2 AND ?3 ORDER BY a.deployment_id,a.attempt",application,since,until).fetch_all(&mut *tx).await.map_err(StoreError::database)?;
+        let attempts = sqlx::query!(
+            "SELECT a.deployment_id,a.attempt,a.outcome_json
+            FROM deployment_attempts a JOIN deployments d ON d.id=a.deployment_id
+            WHERE (?1 IS NULL OR d.application_id=?1) AND json_extract(a.outcome_json,'$.finished_at_ms') BETWEEN ?2 AND ?3
+            ORDER BY a.deployment_id,a.attempt",
+            application,
+            since,
+            until,
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
         let mut result = DeploymentAnalytics {
             since_ms: since,
             until_ms: until,
@@ -173,10 +201,66 @@ impl Store {
                 std::time::Duration::from_millis(sum).as_secs_f64() * 1000.0 / f64::from(count),
             );
         }
-        result.action_retries=sqlx::query_scalar!("SELECT COUNT(*) FROM events WHERE kind='action_retry' AND (?1 IS NULL OR application_id=?1) AND created_at_ms BETWEEN ?2 AND ?3",application,since,until).fetch_one(&mut *tx).await.map_err(StoreError::database)?;
-        result.actions=sqlx::query!("SELECT phase,COUNT(*) AS \"count!: i64\",AVG(duration_ms) AS \"mean?: f64\" FROM events WHERE duration_ms IS NOT NULL AND phase IS NOT NULL AND (?1 IS NULL OR application_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 GROUP BY phase ORDER BY phase",application,since,until).fetch_all(&mut *tx).await.map_err(StoreError::database)?.into_iter().map(|r|ActionDuration {phase:r.phase.unwrap_or_default(),count:r.count,mean_ms:r.mean.unwrap_or(0.0)}).collect();
-        result.failures=sqlx::query!("SELECT error_code,COUNT(DISTINCT COALESCE(diagnostic_id,CAST(id AS TEXT))) AS \"count!: i64\" FROM events WHERE error_code IS NOT NULL AND (?1 IS NULL OR application_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 GROUP BY error_code ORDER BY 2 DESC,error_code LIMIT 20",application,since,until).fetch_all(&mut *tx).await.map_err(StoreError::database)?.into_iter().map(|r|FailureCount{code:r.error_code.unwrap_or_default(),count:r.count}).collect();
+        Self::action_analytics(&mut tx, application, &mut result).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(result)
+    }
+
+    async fn action_analytics(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        application: Option<&str>,
+        result: &mut DeploymentAnalytics,
+    ) -> Result<(), StoreError> {
+        let since = result.since_ms;
+        let until = result.until_ms;
+        result.action_retries = sqlx::query_scalar!(
+            "SELECT COUNT(*)
+            FROM events
+            WHERE kind='action_retry' AND (?1 IS NULL OR application_id=?1) AND created_at_ms BETWEEN ?2 AND ?3",
+            application,
+            since,
+            until,
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        result.actions = sqlx::query!(
+            "SELECT phase,COUNT(*) AS \"count!: i64\",AVG(duration_ms) AS \"mean?: f64\"
+            FROM events
+            WHERE duration_ms IS NOT NULL AND phase IS NOT NULL AND (?1 IS NULL OR application_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 GROUP BY phase
+            ORDER BY phase",
+            application,
+            since,
+            until,
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .map(|r| ActionDuration {
+            phase: r.phase.unwrap_or_default(),
+            count: r.count,
+            mean_ms: r.mean.unwrap_or(0.0),
+        })
+        .collect();
+        result.failures = sqlx::query!(
+            "SELECT error_code,COUNT(DISTINCT COALESCE(diagnostic_id,CAST(id AS TEXT))) AS \"count!: i64\"
+            FROM events
+            WHERE error_code IS NOT NULL AND (?1 IS NULL OR application_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 GROUP BY error_code
+            ORDER BY 2 DESC,error_code LIMIT 20",
+            application,
+            since,
+            until,
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .map(|r| FailureCount {
+            code: r.error_code.unwrap_or_default(),
+            count: r.count,
+        })
+        .collect();
+        Ok(())
     }
 }

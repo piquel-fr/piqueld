@@ -1,4 +1,5 @@
 use super::ConfigError;
+use piqueld_core::observability::NotificationCategory;
 use serde::Deserialize;
 
 /// Metrics-only HTTP endpoints. An empty list disables exposure.
@@ -89,27 +90,26 @@ impl NotificationConfig {
         }
         Ok(())
     }
-    pub(crate) fn category_enabled(&self, category: &str) -> bool {
+    pub(crate) fn category_enabled(&self, category: NotificationCategory) -> bool {
         self.enabled
             && match category {
-                "build_failures" => self.build_failures,
-                "deployment_failures" => self.deployment_failures,
-                "service_degradation" => self.service_degradation,
-                "daemon_failures" => self.daemon_failures,
-                "recovery" => self.recovery,
-                _ => false,
+                NotificationCategory::BuildFailures => self.build_failures,
+                NotificationCategory::DeploymentFailures => self.deployment_failures,
+                NotificationCategory::ServiceDegradation => self.service_degradation,
+                NotificationCategory::DaemonFailures => self.daemon_failures,
+                NotificationCategory::Recovery => self.recovery,
             }
     }
-    pub(crate) fn enabled_categories(&self) -> Vec<&'static str> {
+    pub(crate) fn enabled_categories(&self) -> Vec<NotificationCategory> {
         [
-            "build_failures",
-            "deployment_failures",
-            "service_degradation",
-            "daemon_failures",
-            "recovery",
+            NotificationCategory::BuildFailures,
+            NotificationCategory::DeploymentFailures,
+            NotificationCategory::ServiceDegradation,
+            NotificationCategory::DaemonFailures,
+            NotificationCategory::Recovery,
         ]
         .into_iter()
-        .filter(|category| self.category_enabled(category))
+        .filter(|category| self.category_enabled(*category))
         .collect()
     }
 }

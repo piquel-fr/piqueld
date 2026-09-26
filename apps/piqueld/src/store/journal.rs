@@ -44,7 +44,21 @@ impl Store {
                 .map_err(StoreError::corrupt)?,
             started_at_ms: now_ms(),
         };
-        sqlx::query!("INSERT INTO active_actions(id,operation_id,application_id,generation,phase,resource,attempt,started_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",action.id,action.operation_id,action.application_id,action.generation,action.phase,action.resource,action.attempt,action.started_at_ms).execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!(
+            "INSERT INTO active_actions(id,operation_id,application_id,generation,phase,resource,attempt,started_at_ms)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            action.id,
+            action.operation_id,
+            action.application_id,
+            action.generation,
+            action.phase,
+            action.resource,
+            action.attempt,
+            action.started_at_ms,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
         Self::action_event_on(&mut tx, &action, "action_started", None, None, None).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(action)
@@ -59,7 +73,7 @@ impl Store {
         let changed = sqlx::query!(
             "UPDATE active_actions SET retry=?1 WHERE id=?2",
             retry,
-            action.id
+            action.id,
         )
         .execute(&mut *tx)
         .await
@@ -96,7 +110,7 @@ impl Store {
         let delay_ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
         sqlx::query!(
             "UPDATE events SET retry_delay_ms=?1 WHERE id=last_insert_rowid()",
-            delay_ms
+            delay_ms,
         )
         .execute(&mut *tx)
         .await
@@ -110,7 +124,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let active =
-            sqlx::query_scalar!("SELECT COUNT(*) FROM active_actions WHERE id=?1", action.id)
+            sqlx::query_scalar!("SELECT COUNT(*) FROM active_actions WHERE id=?1", action.id,)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(StoreError::database)?;
@@ -133,7 +147,7 @@ impl Store {
             None,
         )
         .await?;
-        sqlx::query!("DELETE FROM active_actions WHERE id=?1", action.id)
+        sqlx::query!("DELETE FROM active_actions WHERE id=?1", action.id,)
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
@@ -174,7 +188,30 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .map_err(StoreError::corrupt)?;
-        sqlx::query!("INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms,scope,action_id,retry,duration_ms,diagnostic_id,diagnostic_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",action.application_id,action.operation_id,action.generation,action.attempt,kind,message,code,action.phase,action.resource,now,scope,action.id,retry,duration,id,json).execute(&mut **tx).await.map_err(StoreError::database)?;
+        sqlx::query!(
+            "INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,error_code,phase,
+            resource,created_at_ms,scope,action_id,retry,duration_ms,diagnostic_id,diagnostic_json)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            action.application_id,
+            action.operation_id,
+            action.generation,
+            action.attempt,
+            kind,
+            message,
+            code,
+            action.phase,
+            action.resource,
+            now,
+            scope,
+            action.id,
+            retry,
+            duration,
+            id,
+            json,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
     /// Closes incomplete action records without inventing an external outcome.
@@ -183,10 +220,23 @@ impl Store {
     pub async fn interrupt_actions(&self, operation: Option<&str>) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
-        sqlx::query!("INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,phase,resource,created_at_ms,scope,action_id,retry) SELECT application_id,operation_id,generation,attempt,'action_outcome_unknown','Execution was interrupted before its result was committed; reconciliation will inspect current runtime state',phase,resource,?1,CASE WHEN application_id IS NULL THEN 'daemon' ELSE 'application' END,id,retry FROM active_actions WHERE ?2 IS NULL OR operation_id=?2",now,operation).execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!(
+            "INSERT INTO events(application_id,operation_id,generation,attempt,kind,message,phase,resource,created_at_ms,
+            scope,action_id,retry) SELECT application_id,operation_id,generation,attempt,'action_outcome_unknown',
+            'Execution was interrupted before its result was committed; reconciliation will inspect current runtime state',
+            phase,resource,?1,CASE WHEN application_id IS NULL THEN 'daemon' ELSE 'application' END,
+            id,retry
+            FROM active_actions
+            WHERE ?2 IS NULL OR operation_id=?2",
+            now,
+            operation,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
         sqlx::query!(
             "DELETE FROM active_actions WHERE ?1 IS NULL OR operation_id=?1",
-            operation
+            operation,
         )
         .execute(&mut *tx)
         .await

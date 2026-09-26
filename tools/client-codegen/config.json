@@ -234,6 +234,16 @@
       "schema": "EventScope",
       "name": "EventScope",
       "rustType": "piqueld_core::observability::EventScope"
+    },
+    {
+      "schema": "NotificationCategory",
+      "name": "NotificationCategory",
+      "rustType": "piqueld_core::observability::NotificationCategory"
+    },
+    {
+      "schema": "DeliveryState",
+      "name": "DeliveryState",
+      "rustType": "piqueld_core::observability::DeliveryState"
     }
   ]
 }

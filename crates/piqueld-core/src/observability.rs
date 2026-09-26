@@ -105,6 +105,61 @@ pub struct DaemonStats {
     pub failed_deliveries: i64,
 }
 
+macro_rules! notification_values {
+    ($(#[$meta:meta])* $name:ident { $($(#[$variant_meta:meta])* $variant:ident => $value:literal),+ $(,)? }) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, ToSchema)]
+        pub enum $name {
+            $($(#[$variant_meta])* #[serde(rename = $value)] $variant),+
+        }
+        impl $name {
+            /// Stable storage and wire representation.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self { $(Self::$variant => $value),+ }
+            }
+            /// Parses a stored value, rejecting unknown categories or states.
+            #[must_use]
+            pub fn parse(value: &str) -> Option<Self> {
+                match value { $($value => Some(Self::$variant)),+, _ => None }
+            }
+        }
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
+}
+notification_values! {
+    /// Global notification categories supported by daemon configuration.
+    NotificationCategory {
+        /// Source checkout or image build failures.
+        BuildFailures => "build_failures",
+        /// Failed deployment attempts.
+        DeploymentFailures => "deployment_failures",
+        /// Continuously observed degraded application health.
+        ServiceDegradation => "service_degradation",
+        /// Shared dependency and internal daemon failures.
+        DaemonFailures => "daemon_failures",
+        /// Recovery of a condition reported to this destination.
+        Recovery => "recovery",
+    }
+}
+notification_values! {
+    /// Lifecycle of a durable webhook delivery.
+    DeliveryState {
+        /// Waiting for delivery, retry, or its failure notification.
+        Pending => "pending",
+        /// The receiver acknowledged the delivery.
+        Delivered => "delivered",
+        /// Retries expired or the receiver rejected delivery.
+        Failed => "failed",
+        /// Configuration or incident policy cancelled delivery.
+        Cancelled => "cancelled",
+    }
+}
+
 /// A retained notification delivery; credentials and receiver response bodies are excluded.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct NotificationDelivery {
@@ -115,9 +170,9 @@ pub struct NotificationDelivery {
     /// Configured destination name.
     pub destination: String,
     /// Notification category, including recovery.
-    pub category: String,
-    /// pending, delivered, failed, or cancelled.
-    pub state: String,
+    pub category: NotificationCategory,
+    /// Current delivery lifecycle state.
+    pub state: DeliveryState,
     /// Number of delivery requests attempted.
     pub attempts: i64,
     /// Creation timestamp.

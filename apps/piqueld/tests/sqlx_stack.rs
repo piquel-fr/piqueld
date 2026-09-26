@@ -23,7 +23,7 @@ async fn sqlx_applies_migrations_and_preserves_instance_identity() {
     .fetch_one(&mut connection)
     .await
     .unwrap();
-    assert_eq!(table_count, 18);
+    assert_eq!(table_count, 19);
 
     let schema_version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(&mut connection)
@@ -116,6 +116,143 @@ async fn upgrades_legacy_configuration_to_latest_recoverable_deployment() {
             .await
             .unwrap();
     assert_eq!(retained, 1);
+}
+
+#[tokio::test]
+async fn observability_upgrade_preserves_populated_history_and_restorable_backup() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("schema-five.db");
+    let backup = directory.path().join("pre-upgrade.db");
+    let mut connection = populated_schema_five(&path).await;
+    let backup_path = backup.to_str().unwrap();
+    sqlx::query("VACUUM INTO ?")
+        .bind(backup_path)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+    let store = Store::open(&path).await.unwrap();
+    assert_eq!(store.instance_id(), "instance-upgrade");
+    let events = store.events(None, None, 100).await.unwrap().items;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].message.as_deref(), Some("Retained failure"));
+    assert_eq!(
+        events[0].scope,
+        piqueld_core::observability::EventScope::Application
+    );
+    assert!(events[0].diagnostic.is_none());
+    let mut connection = SqliteConnection::connect(&format!("sqlite://{}", path.display()))
+        .await
+        .unwrap();
+    let cursor: i64 = sqlx::query_scalar("SELECT event_id FROM notification_cursor")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(
+        cursor, events[0].id,
+        "pre-upgrade failures are not replayed"
+    );
+    assert!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&mut connection)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    connection.close().await.unwrap();
+
+    // Restore to a separate empty path: the old schema and its data remain usable.
+    let restored_path = directory.path().join("restored.db");
+    std::fs::copy(&backup, &restored_path).unwrap();
+    let restored_url = format!("sqlite://{}", restored_path.display());
+    let mut restored = SqliteConnection::connect(&restored_url).await.unwrap();
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut restored)
+        .await
+        .unwrap();
+    assert_eq!(version, 5);
+    let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_one(&mut restored)
+        .await
+        .unwrap();
+    assert_eq!(integrity, "ok");
+    let history: String = sqlx::query_scalar("SELECT message FROM events")
+        .fetch_one(&mut restored)
+        .await
+        .unwrap();
+    assert_eq!(history, "Retained failure");
+}
+
+#[tokio::test]
+async fn recovery_pairing_upgrade_preserves_outbox_and_cancels_unpaired_recoveries() {
+    let directory = tempfile::tempdir().unwrap();
+    let restored_path = directory.path().join("schema-six.db");
+    let restored_url = format!("sqlite://{}", restored_path.display());
+    let mut restored = populated_schema_five(&restored_path).await;
+    sqlx::raw_sql(include_str!("../../../migrations/0006_observability.sql"))
+        .execute(&mut restored)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "PRAGMA user_version=6;
+         UPDATE instance_metadata SET schema_version=6;
+         INSERT INTO notification_deliveries(
+             id,event_id,destination,destination_fingerprint,category,state,
+             created_at_ms,retry_started_at_ms,next_attempt_ms,updated_at_ms
+         ) VALUES
+             ('failure',1,'admin','fingerprint','deployment_failures','pending',1,1,1,1),
+             ('recovery',1,'admin','fingerprint','recovery','pending',1,1,1,1),
+             ('delivered',1,'other','fingerprint','recovery','delivered',1,1,1,1);",
+    )
+    .execute(&mut restored)
+    .await
+    .unwrap();
+    restored.close().await.unwrap();
+    let _upgraded = Store::open(&restored_path).await.unwrap();
+    let mut restored = SqliteConnection::connect(&restored_url).await.unwrap();
+    let deliveries: Vec<(String, String)> =
+        sqlx::query_as("SELECT id,state FROM notification_deliveries ORDER BY id")
+            .fetch_all(&mut restored)
+            .await
+            .unwrap();
+    assert_eq!(
+        deliveries,
+        vec![
+            ("delivered".into(), "delivered".into()),
+            ("failure".into(), "pending".into()),
+            ("recovery".into(), "cancelled".into()),
+        ]
+    );
+}
+
+async fn populated_schema_five(path: &std::path::Path) -> SqliteConnection {
+    let mut connection =
+        SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", path.display()))
+            .await
+            .unwrap();
+    for migration in [
+        include_str!("../../../migrations/0001_control_plane.sql"),
+        include_str!("../../../migrations/0002_deployments.sql"),
+        include_str!("../../../migrations/0003_deployment_inputs.sql"),
+        include_str!("../../../migrations/0004_build_records.sql"),
+        include_str!("../../../migrations/0005_structured_build_logs.sql"),
+    ] {
+        sqlx::raw_sql(migration)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+    }
+    sqlx::raw_sql(
+        "PRAGMA user_version=5;
+         INSERT INTO instance_metadata VALUES(1,'instance-upgrade',5,1);
+         INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms)
+         VALUES('app-upgrade','upgrade','{}',1,1,1);
+         INSERT INTO operations(id,application_id,kind,state,generation,created_at_ms,updated_at_ms,finished_at_ms)
+         VALUES('op-upgrade','app-upgrade','apply','failed',1,1,2,2);
+         INSERT INTO events(application_id,operation_id,kind,message,created_at_ms)
+         VALUES('app-upgrade','op-upgrade','operation_failed','Retained failure',2);",
+    ).execute(&mut connection).await.unwrap();
+    connection
 }
 
 #[tokio::test]

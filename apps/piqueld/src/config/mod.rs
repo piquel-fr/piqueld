@@ -453,7 +453,12 @@ impl DaemonConfig {
             ),
             (
                 "Notification categories".into(),
-                self.notifications.enabled_categories().join(", "),
+                self.notifications
+                    .enabled_categories()
+                    .iter()
+                    .map(|category| category.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
             ),
             (
                 "Notification destinations".into(),
