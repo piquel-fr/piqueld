@@ -27,6 +27,24 @@ pub struct Client {
 }
 
 impl Client {
+    /// Window event emitted when a browser API request needs a new session.
+    #[cfg(target_arch = "wasm32")]
+    pub const AUTHENTICATION_REQUIRED_EVENT: &'static str = "piqueld-authentication-required";
+
+    fn observe_response(response: &reqwest::Response) {
+        #[cfg(target_arch = "wasm32")]
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            && !response.url().path().contains("/auth/login/")
+            && !response.url().path().contains("/auth/register/")
+            && let Some(window) = web_sys::window()
+            && let Ok(event) = web_sys::Event::new(Self::AUTHENTICATION_REQUIRED_EVENT)
+        {
+            let _ = window.dispatch_event(&event);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = response;
+    }
+
     /// Creates a client for an HTTP or HTTPS endpoint.
     ///
     /// Accepts IP addresses and DNS names. Prefer HTTPS for remote access;
@@ -189,6 +207,7 @@ impl Client {
             .await
             .map_err(transport_error)?;
         let status = response.status();
+        Self::observe_response(&response);
         let payload = collect_response(response).await?;
         if !status.is_success() {
             return Err(api_error(status, &payload));
@@ -206,6 +225,19 @@ impl ClientHooks<ClientState> for generated::Client {
         _info: &OperationInfo,
     ) -> Result<(), Error<E>> {
         prepare_request(self.inner(), request).map_err(Error::InvalidRequest)
+    }
+
+    // The external hook is async although observing headers is synchronous.
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn post<E>(
+        &self,
+        result: &reqwest::Result<reqwest::Response>,
+        _info: &OperationInfo,
+    ) -> Result<(), Error<E>> {
+        if let Ok(response) = result {
+            Client::observe_response(response);
+        }
+        Ok(())
     }
 }
 
