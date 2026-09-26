@@ -197,3 +197,10 @@ stream filtering. Expiration and truncation remain explicit.
 
 See [observability](observability.md) for diagnostic history, daemon statistics, analytics, metrics
 and webhook delivery configuration.
+
+## Browser tests
+
+The [Playwright suite](../tests/playwright/README.md) exercises the embedded dashboard against
+an isolated API fixture. Run `just setup-playwright` once, then `just test-playwright`. Chromium
+is provided by a pinned Docker image; the tests need no system browser, Python,
+or ChromeDriver. The `browser-playwright` CI job retains failure traces and screenshots.

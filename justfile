@@ -1,7 +1,7 @@
 # Validation formats Rust sources and checks generated artifacts for freshness.
 default: validate
 
-validate: fmt lint check test doc-test deny openapi-check boundary check-wasm
+validate: fmt lint check test doc-test deny openapi-check boundary check-wasm test-playwright
 
 build:
     @cargo build --workspace --locked
@@ -68,6 +68,7 @@ boundary:
 # UI checks and release builds require the wasm target, Trunk,
 # wasm-bindgen-cli, binaryen, and Tailwind. Default all-feature Clippy also
 # builds the embedded dashboard unless PIQUELD_UI_DIST supplies a bundle.
+# Default Playwright validation builds it through its Rust fixture too.
 ui-check:
     @cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
 
@@ -90,3 +91,14 @@ generate:
 
 docker-test:
     @bash ./scripts/run-docker-integration-test.sh
+# Explicit development-only setup: pinned JS packages and a containerized browser.
+setup-playwright:
+    @pnpm --dir tests/playwright install --frozen-lockfile --ignore-scripts
+    @docker pull "mcr.microsoft.com/playwright:v$(node -p 'require("./tests/playwright/package.json").devDependencies["@playwright/test"]')-noble"
+
+# The Rust fixture serves the embedded UI/API with isolated state and no Docker backend.
+test-playwright *ARGS:
+    @cargo build --locked --package piquelctl
+    @cargo build --locked --package piqueld --features embedded-ui --example browser_fixture
+    @pnpm --dir tests/playwright check
+    @bash scripts/test-playwright.sh {{ARGS}}
