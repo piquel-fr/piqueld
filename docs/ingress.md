@@ -92,6 +92,9 @@ new destinations from being applied. Explicit withdrawals still proceed, and hea
 applications can update independently. The gateway never attaches an unverified
 network. Global health reports the degraded state, and logs identify the application
 and network to repair. Each route's public HTTPS readiness is checked independently.
+If a gateway upgrade is also pending, replacement waits until those networks are
+repaired or their routes are withdrawn. The running gateway keeps its existing
+attachments and continues applying other route changes in the meantime.
 Gateway requests do not hold the controller's global Docker mutation lock, so private
 application deployments can proceed while routing is waiting.
 

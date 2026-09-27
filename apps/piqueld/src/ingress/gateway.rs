@@ -1,3 +1,9 @@
+//! Manages this installation's Caddy gateway container in Docker: creating and
+//! starting it, connecting application networks, and loading the routes built by
+//! `configuration`. Replacements keep the old container and configuration for
+//! recovery if startup fails. Disabling ingress removes the managed containers
+//! but keeps certificates and configuration on disk.
+
 use super::{CADDY_IMAGE, Ingress};
 use crate::store::ingress::RoutingTable;
 use anyhow::{Context, Result, ensure};
@@ -297,12 +303,28 @@ impl Ingress {
     /// Both containers and the rollback configuration survive cancellation or a
     /// daemon crash. Reconciliation restores the old gateway if cutover did not
     /// finish; disablement removes all three managed container names.
+    /// Defers replacement while retained routes lack verified networks, allowing
+    /// the running gateway to keep its attachments and accept other route changes.
     pub(super) async fn replace_gateway(
         &self,
         table: &RoutingTable,
         networks: &BTreeSet<String>,
         spec: &Value,
     ) -> Result<()> {
+        if let Some((id, _)) = table.iter().find(|(id, routes)| {
+            !routes.is_empty()
+                && !networks.contains(&DockerNetworkName::for_ingress(id).to_string())
+        }) {
+            ensure!(
+                self.container()
+                    .await?
+                    .is_some_and(|container| container["State"]["Running"] == true),
+                "cannot replace gateway: retained routes for application {id} lack a verified network and the old gateway is not running"
+            );
+            tracing::warn!(application_id=%id,
+                "deferring gateway replacement until retained route networks are repaired or routes are withdrawn");
+            return Ok(());
+        }
         let next = format!("{}-next", self.name);
         let previous = format!("{}-previous", self.name);
         self.validate_replacement(&next, spec, table).await?;

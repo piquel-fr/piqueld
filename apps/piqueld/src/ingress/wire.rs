@@ -1,4 +1,7 @@
-//! Bounded Unix HTTP transport shared by Docker lifecycle and Caddy control.
+//! Sends HTTP requests through local socket files to Docker Engine and Caddy's
+//! private admin API. The gateway uses these APIs to manage its container and
+//! load routing configuration. Each request has a timeout and an 8 MiB response
+//! limit so an unresponsive API cannot leave reconciliation waiting indefinitely.
 use anyhow::{Context, Result, ensure};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, body::Bytes};
@@ -7,17 +10,22 @@ use serde_json::Value;
 use std::{path::PathBuf, time::Duration};
 use tokio::net::UnixStream;
 
+/// Client for one local HTTP API, identified by its Unix socket path.
+/// Opens a fresh connection for each request; constructing it performs no I/O.
 pub(super) struct UnixApi {
     socket: PathBuf,
     timeout: Duration,
 }
 
 impl UnixApi {
-    /// The caller supplies the operation budget; this covers connect and the full body.
+    /// Uses the caller's timeout for the entire request, including connecting
+    /// and reading the response. Ingress supplies the global Docker request timeout.
     pub(super) fn new(socket: PathBuf, timeout: Duration) -> Self {
         Self { socket, timeout }
     }
 
+    /// Sends optional JSON and returns the HTTP status and raw response bytes.
+    /// Callers interpret the status; Docker logs also need the undecoded body.
     pub(super) async fn request(
         &self,
         method: Method,
@@ -60,6 +68,8 @@ impl UnixApi {
         .context("ingress HTTP request timed out")?
     }
 
+    /// Requires a successful HTTP status and decodes JSON, or returns `Null`
+    /// for an empty response (as returned by Docker start/stop operations).
     pub(super) async fn json(
         &self,
         method: Method,
@@ -82,6 +92,8 @@ impl UnixApi {
         }
     }
 
+    /// Reads a Docker resource. A 404 means it does not exist; other failures
+    /// remain errors so reconciliation cannot mistake an API outage for absence.
     pub(super) async fn inspect(&self, path: &str) -> Result<Option<Value>> {
         let (status, body) = self.request(Method::GET, path, None).await?;
         if status == StatusCode::NOT_FOUND {

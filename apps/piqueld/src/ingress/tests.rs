@@ -347,6 +347,26 @@ impl Scenario {
         assert_eq!(self.body("one.example.test").await, "first backend");
     }
 
+    async fn replacement_preserves_unverified_attachment(&self) {
+        let original = self.gateway.container().await.unwrap().unwrap()["Id"].clone();
+        let table = self.store.routing_table().await.unwrap();
+        // A retained route still works on the old attachment, but a replacement
+        // cannot inherit it unless its network passed validation.
+        self.gateway
+            .replace_gateway(
+                &table,
+                &std::collections::BTreeSet::new(),
+                &self.gateway.container_spec(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            self.gateway.container().await.unwrap().unwrap()["Id"],
+            original
+        );
+        assert_eq!(self.body("one.example.test").await, "first backend");
+    }
+
     async fn replacement_failure_and_recovery(&self) {
         let original = self.gateway.container().await.unwrap().unwrap()["Id"].clone();
         let table = self.store.routing_table().await.unwrap();
@@ -486,16 +506,27 @@ impl Scenario {
             .stage_routes(&unavailable, &pending, true, None)
             .await
             .unwrap();
-        self.gateway
-            .synchronize_for(Some(&self.first))
-            .await
-            .unwrap();
-        assert!(!self.gateway.status().await.healthy);
+        let original = self.gateway.container().await.unwrap().unwrap()["Id"].clone();
+        let mut upgraded = Ingress::new(
+            true,
+            &self.socket,
+            self.directory.path(),
+            Arc::clone(&self.store),
+        )
+        .unwrap();
+        upgraded.issuer = self.gateway.issuer.clone();
+        upgraded.extra_hosts = self.gateway.extra_hosts.clone();
+        upgraded
+            .extra_hosts
+            .push("upgrade.example.test:127.0.0.1".into());
+        upgraded.synchronize_for(Some(&self.first)).await.unwrap();
+        assert!(!upgraded.status().await.healthy);
         assert_eq!(
             self.store.applied_routes(&unavailable).await.unwrap(),
             app.spec().routes
         );
         assert_eq!(self.body("one.example.test").await, "first backend");
+        assert_eq!(upgraded.container().await.unwrap().unwrap()["Id"], original);
         let network = piqueld_core::DockerNetworkName::for_ingress(&unavailable).to_string();
         self.gateway
             .docker
@@ -506,10 +537,7 @@ impl Scenario {
             )
             .await
             .unwrap();
-        self.gateway
-            .synchronize_for(Some(&self.first))
-            .await
-            .unwrap();
+        upgraded.synchronize_for(Some(&self.first)).await.unwrap();
         assert!(
             self.gateway.container().await.unwrap().unwrap()["NetworkSettings"]["Networks"]
                 .get(&network)
@@ -521,10 +549,7 @@ impl Scenario {
             .stage_routes(&self.first, &[], true, None)
             .await
             .unwrap();
-        self.gateway
-            .synchronize_for(Some(&self.first))
-            .await
-            .unwrap();
+        upgraded.synchronize_for(Some(&self.first)).await.unwrap();
         assert!(
             self.store
                 .applied_routes(&self.first)
@@ -547,22 +572,24 @@ impl Scenario {
             .stage_routes(&self.first, &routes, true, None)
             .await
             .unwrap();
-        self.gateway
-            .synchronize_for(Some(&self.first))
-            .await
-            .unwrap();
+        upgraded.synchronize_for(Some(&self.first)).await.unwrap();
         assert_eq!(self.body("one.example.test").await, "first backend");
+        assert_eq!(upgraded.container().await.unwrap().unwrap()["Id"], original);
         self.store
             .stage_routes(&unavailable, &[], true, None)
             .await
             .unwrap();
-        self.gateway.synchronize().await.unwrap();
-        assert!(self.gateway.status().await.healthy);
+        upgraded.synchronize().await.unwrap();
+        assert!(upgraded.status().await.healthy);
+        assert_ne!(upgraded.container().await.unwrap().unwrap()["Id"], original);
+        assert_eq!(self.body("one.example.test").await, "first backend");
         self.gateway
             .docker
             .json(Method::DELETE, &format!("/networks/{network}"), None)
             .await
             .unwrap();
+        // Restore the controller's specification before testing ordinary reloads.
+        self.gateway.synchronize().await.unwrap();
     }
 
     async fn restart_without_daemon(&self) {
@@ -828,6 +855,7 @@ async fn ingress_caddy_routes_tls_network_changes_and_disable() {
         .slow_gateway_does_not_block_private_deployment()
         .await;
     scenario.persistent_traffic_survives_reload().await;
+    scenario.replacement_preserves_unverified_attachment().await;
     scenario.replacement_failure_and_recovery().await;
     scenario
         .unavailable_network_does_not_block_withdrawals()
