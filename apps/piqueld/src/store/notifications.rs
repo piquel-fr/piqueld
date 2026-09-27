@@ -5,7 +5,8 @@ use piqueld_core::{
     Event,
     api::Page,
     observability::{
-        DeliveryState, Diagnostic, EventScope, NotificationCategory, NotificationDelivery,
+        DeliveryState, Diagnostic, DiagnosticCode, EventScope, NotificationCategory,
+        NotificationDelivery,
     },
 };
 use sha2::{Digest, Sha256};
@@ -446,9 +447,9 @@ impl Store {
         observed: i64,
     ) -> Result<i64, StoreError> {
         let code = if application.is_some() {
-            "service_degraded"
+            DiagnosticCode::ServiceDegraded
         } else {
-            key
+            DiagnosticCode::parse(key).ok_or(StoreError::InvalidInput)?
         };
         let subject = match (application, key) {
             (Some(id), _) => format!("Service health for application {id}"),
@@ -474,7 +475,7 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .map_err(StoreError::corrupt)?;
-        let error_code = failed.then_some(code);
+        let error_code = failed.then_some(code.as_str());
         let event = sqlx::query!(
             "INSERT INTO events(scope,application_id,kind,message,error_code,diagnostic_id,diagnostic_json,created_at_ms)
             VALUES(?1,?2,'dependency_health_changed',?3,?4,?5,?6,?7)",

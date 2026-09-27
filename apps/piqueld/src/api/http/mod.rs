@@ -441,7 +441,7 @@ async fn bind_error_request_id(
             .get::<piqueld_core::observability::Diagnostic>()
             .cloned()
             .unwrap_or_else(|| {
-                piqueld_core::observability::Diagnostic::new(
+                piqueld_core::observability::Diagnostic::from_recorded_code(
                     format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
                     &error.code,
                     error.message.clone(),

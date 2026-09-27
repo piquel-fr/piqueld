@@ -32,7 +32,7 @@ impl Store {
             .map_err(StoreError::database)?.flatten();
             Some(match prior {
                 Some(json) => serde_json::from_str(&json).map_err(StoreError::corrupt)?,
-                None => Diagnostic::new(
+                None => Diagnostic::from_recorded_code(
                     new_id("diagnostic"),
                     code,
                     message.unwrap_or("operation failed").to_owned(),

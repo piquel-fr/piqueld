@@ -237,53 +237,8 @@ pub struct DeploymentAnalytics {
     pub failures: Vec<FailureCount>,
 }
 
-impl Diagnostic {
-    /// Classifies a stable failure code without inspecting arbitrary error text.
-    #[must_use]
-    pub fn new(id: String, code: &str, summary: String) -> Self {
-        let scope = match code {
-            "docker_unavailable"
-            | "swarm_manager_unavailable"
-            | "swarm_topology_unsupported"
-            | "journal_unavailable"
-            | "storage_unavailable"
-            | "stored_state_corrupt"
-            | "schema_mismatch"
-            | "internal_error"
-            | "application_compilation_failed" => EventScope::Daemon,
-            _ => EventScope::Application,
-        };
-        let retryable = matches!(
-            code,
-            "docker_unavailable"
-                | "image_resolution_failed"
-                | "docker_request_failed"
-                | "convergence_timeout"
-                | "journal_unavailable"
-                | "storage_unavailable"
-        );
-        let next_action = match code {
-            "docker_unavailable" => "Check Docker Engine availability. Reconciliation retries after connectivity recovers.",
-            "image_resolution_rejected" => "Check the image reference and registry credentials, then retry the deployment.",
-            "git_build_failed" => "Open the build output, fix the source or build configuration, then deploy again.",
-            "service_update_failed" => "Inspect service health and logs. The previous healthy task may still be running.",
-            "convergence_timeout" => "Inspect service health and resource capacity. Reconciliation will retry.",
-            "journal_unavailable" | "storage_unavailable" => "Restore writable control-plane storage before infrastructure changes can resume.",
-            "ownership_conflict" | "docker_configuration_conflict" => "Inspect the conflicting resource and resolve its ownership or immutable configuration.",
-            _ if retryable => "Reconciliation will retry. Inspect the affected resource if the failure persists.",
-            _ => "Inspect the diagnostic and related events; resolve the cause before retrying.",
-        }.to_owned();
-        Self {
-            id,
-            code: code.to_owned(),
-            summary,
-            causes: Vec::new(),
-            retryable,
-            next_action,
-            scope,
-        }
-    }
-}
+mod diagnostic;
+pub use diagnostic::DiagnosticCode;
 
 #[cfg(test)]
 mod tests {

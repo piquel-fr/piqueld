@@ -50,7 +50,7 @@ impl ApplicationService {
                 result.as_ref().err().map(|error| {
                     piqueld_core::observability::Diagnostic::new(
                         format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
-                        "swarm_manager_unavailable",
+                        piqueld_core::observability::DiagnosticCode::SwarmManagerUnavailable,
                         error.to_string(),
                     )
                 }),

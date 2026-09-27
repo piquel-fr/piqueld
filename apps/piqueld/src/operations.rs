@@ -1,4 +1,5 @@
 //! Errors encountered while reconciling application operations.
+use piqueld_core::observability::DiagnosticCode;
 
 /// Sanitized failure returned while executing a durable operation.
 #[derive(Debug, thiserror::Error)]
@@ -78,33 +79,39 @@ impl OperationError {
     /// Returns the stable machine-readable failure code.
     #[must_use]
     pub fn code(&self) -> &'static str {
+        self.diagnostic_code().as_str()
+    }
+
+    /// Returns the typed classification used by diagnostic policy.
+    #[must_use]
+    pub fn diagnostic_code(&self) -> DiagnosticCode {
         match self {
-            Self::Docker(error) => error.operation_classification().code(),
-            Self::Journal(_) => "journal_unavailable",
+            Self::Docker(error) => error.operation_classification().diagnostic_code(),
+            Self::Journal(_) => DiagnosticCode::JournalUnavailable,
             Self::ManifestInput {
                 not_found: true, ..
             }
-            | Self::ManifestNotFound => "manifest_not_found",
+            | Self::ManifestNotFound => DiagnosticCode::ManifestNotFound,
             Self::ManifestInput {
                 not_found: false, ..
             }
-            | Self::ManifestInvalid => "manifest_invalid",
-            Self::GitBuildFailed(_) => "git_build_failed",
-            Self::Cancelled => "cancelled",
-            Self::Superseded => "superseded",
-            Self::OwnershipConflict => "ownership_conflict",
-            Self::DockerConfigurationConflict => "docker_configuration_conflict",
-            Self::SwarmManagerUnavailable => "swarm_manager_unavailable",
-            Self::SwarmTopologyUnsupported => "swarm_topology_unsupported",
-            Self::DockerUnavailable(_) => "docker_unavailable",
-            Self::ImageResolutionFailed(_) => "image_resolution_failed",
-            Self::ImageResolutionRejected(_) => "image_resolution_rejected",
-            Self::DockerRequestFailed(_) => "docker_request_failed",
-            Self::ValidationFailed(_) => "validation_failed",
-            Self::ManifestFetchFailed(_) => "manifest_fetch_failed",
-            Self::ServiceUpdateFailed => "service_update_failed",
-            Self::PlanBlocked(_) => "plan_blocked",
-            Self::ConvergenceTimeout => "convergence_timeout",
+            | Self::ManifestInvalid => DiagnosticCode::ManifestInvalid,
+            Self::GitBuildFailed(_) => DiagnosticCode::GitBuildFailed,
+            Self::Cancelled => DiagnosticCode::Cancelled,
+            Self::Superseded => DiagnosticCode::Superseded,
+            Self::OwnershipConflict => DiagnosticCode::OwnershipConflict,
+            Self::DockerConfigurationConflict => DiagnosticCode::DockerConfigurationConflict,
+            Self::SwarmManagerUnavailable => DiagnosticCode::SwarmManagerUnavailable,
+            Self::SwarmTopologyUnsupported => DiagnosticCode::SwarmTopologyUnsupported,
+            Self::DockerUnavailable(_) => DiagnosticCode::DockerUnavailable,
+            Self::ImageResolutionFailed(_) => DiagnosticCode::ImageResolutionFailed,
+            Self::ImageResolutionRejected(_) => DiagnosticCode::ImageResolutionRejected,
+            Self::DockerRequestFailed(_) => DiagnosticCode::DockerRequestFailed,
+            Self::ValidationFailed(_) => DiagnosticCode::ValidationFailed,
+            Self::ManifestFetchFailed(_) => DiagnosticCode::ManifestFetchFailed,
+            Self::ServiceUpdateFailed => DiagnosticCode::ServiceUpdateFailed,
+            Self::PlanBlocked(_) => DiagnosticCode::PlanBlocked,
+            Self::ConvergenceTimeout => DiagnosticCode::ConvergenceTimeout,
         }
     }
 
@@ -173,11 +180,11 @@ impl OperationError {
             Self::GitBuildFailed(error) | Self::ManifestFetchFailed(error) => error.as_ref(),
             _ => self,
         };
-        Self::diagnostic_from(self.code(), self.message(), source)
+        Self::diagnostic_from(self.diagnostic_code(), self.message(), source)
     }
 
     fn diagnostic_from(
-        code: &str,
+        code: DiagnosticCode,
         summary: String,
         source: &(dyn std::error::Error + 'static),
     ) -> piqueld_core::observability::Diagnostic {
@@ -269,18 +276,18 @@ impl crate::application::BoundaryError {
         let (code, summary) = match self {
             Self::Runtime(error) => {
                 let classification = error.operation_classification();
-                (classification.code(), classification.message())
+                (classification.diagnostic_code(), classification.message())
             }
             Self::Store(_) => (
-                "journal_unavailable",
+                DiagnosticCode::JournalUnavailable,
                 "Control-plane storage is unavailable".into(),
             ),
             Self::GitBuild(_) => (
-                "git_build_failed",
+                DiagnosticCode::GitBuildFailed,
                 "Git source build failed; inspect the associated build output".into(),
             ),
             Self::Compilation(_) => (
-                "application_compilation_failed",
+                DiagnosticCode::ApplicationCompilationFailed,
                 "Resolved application could not be compiled".into(),
             ),
         };

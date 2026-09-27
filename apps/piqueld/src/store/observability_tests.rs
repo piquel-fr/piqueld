@@ -76,7 +76,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
     );
     let diagnostic = Diagnostic::new(
         new_id("diagnostic"),
-        "docker_unavailable",
+        piqueld_core::observability::DiagnosticCode::DockerUnavailable,
         "Docker became unreachable".into(),
     );
     store
@@ -85,7 +85,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
         .unwrap();
     let failure = Diagnostic::new(
         new_id("diagnostic"),
-        "service_update_failed",
+        piqueld_core::observability::DiagnosticCode::ServiceUpdateFailed,
         "Service failed".into(),
     );
     store

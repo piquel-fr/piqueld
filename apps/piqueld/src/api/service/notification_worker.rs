@@ -227,7 +227,7 @@ mod tests {
             .record_diagnostic(
                 &piqueld_core::observability::Diagnostic::new(
                     "diagnostic-test".into(),
-                    "internal_error",
+                    piqueld_core::observability::DiagnosticCode::InternalError,
                     "Test failure".into(),
                 ),
                 None,
