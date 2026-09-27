@@ -708,7 +708,7 @@ pub fn metrics_router(state: ApiState) -> Router {
             "/metrics",
             get(
                 |axum::extract::State(state): axum::extract::State<ApiState>| async move {
-                    match state.metrics().await {
+                    match state.prometheus_metrics().await {
                         Ok(body) => (
                             StatusCode::OK,
                             [(

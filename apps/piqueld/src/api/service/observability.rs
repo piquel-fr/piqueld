@@ -83,10 +83,14 @@ impl ApplicationService {
     pub async fn retry_notification(&self, id: &str) -> Result<(), ApplicationError> {
         Ok(self.store.retry_delivery(id).await?)
     }
-    /// Encodes a metrics-only snapshot in Prometheus text exposition format.
+    /// Renders the cached daemon statistics for the metrics listener's `GET /metrics`.
+    /// Each available measurement becomes a `piqueld_*` sample with Prometheus
+    /// HELP/TYPE metadata. Unavailable OS measurements are omitted. Collection
+    /// uses the same cache as the daemon status page; this does not contact or
+    /// manage Prometheus, retain samples, or export application logs/events.
     /// # Errors
     /// Returns collection failures instead of publishing misleading zero values.
-    pub async fn metrics(&self) -> Result<String, ApplicationError> {
+    pub async fn prometheus_metrics(&self) -> Result<String, ApplicationError> {
         use std::fmt::Write as _;
         let stats = self.daemon_stats().await?;
         let mut output = String::new();
