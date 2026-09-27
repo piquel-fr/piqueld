@@ -11,7 +11,7 @@ type ScanFailures = Arc<tokio::sync::Mutex<HashSet<(piqueld_core::ApplicationId,
 
 impl<D: DockerApi> Controller<D> {
     /// One event loop polls application futures and discovery concurrently. No
-    /// application holds the loop while waiting for Docker, SQLite, or a timer.
+    /// application holds the loop while waiting for Docker, `SQLite`, or a timer.
     /// # Panics
     /// Panics if the scan interval is zero.
     /// # Errors

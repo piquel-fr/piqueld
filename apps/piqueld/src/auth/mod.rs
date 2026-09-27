@@ -97,7 +97,7 @@ impl Auth {
             "piqueld",
             host,
             vec![origin.clone()],
-            Duration::from_secs(300),
+            Duration::from_mins(5),
             Some(false),
             Some(false),
         );

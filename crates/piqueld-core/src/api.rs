@@ -387,7 +387,7 @@ impl DependencyStatus {
 pub struct ReadinessStatus {
     /// All deployment dependencies are ready.
     pub ready: bool,
-    /// SQLite can execute a read query.
+    /// `SQLite` can execute a read query.
     pub database: DependencyStatus,
     /// Docker answers its ping endpoint.
     pub docker: DependencyStatus,

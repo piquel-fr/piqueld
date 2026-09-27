@@ -218,7 +218,6 @@ impl Client {
 
 impl ClientHooks<ClientState> for generated::Client {
     // The external async trait fixes this signature even though preparation is synchronous.
-    #[allow(clippy::unused_async_trait_impl)]
     async fn pre<E>(
         &self,
         request: &mut reqwest::Request,
@@ -228,7 +227,6 @@ impl ClientHooks<ClientState> for generated::Client {
     }
 
     // The external hook is async although observing headers is synchronous.
-    #[allow(clippy::unused_async_trait_impl)]
     async fn post<E>(
         &self,
         result: &reqwest::Result<reqwest::Response>,

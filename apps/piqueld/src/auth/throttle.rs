@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const WINDOW: Duration = Duration::from_secs(60);
+const WINDOW: Duration = Duration::from_mins(1);
 const PER_PEER: u32 = 30;
 const GLOBAL: u32 = 60;
 

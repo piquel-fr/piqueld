@@ -1,4 +1,4 @@
-//! SQLite persistence and atomic acceptance of validated application commands;
+//! `SQLite` persistence and atomic acceptance of validated application commands;
 //! Docker planning and execution belong to the controller.
 
 mod acceptance;
@@ -207,7 +207,7 @@ pub struct ApplicationSummaryPage {
     pub next_cursor: Option<String>,
 }
 
-/// SQLite repository shared by the application service and controller.
+/// `SQLite` repository shared by the application service and controller.
 #[derive(Clone)]
 pub struct Store {
     pub(crate) pool: SqlitePool,

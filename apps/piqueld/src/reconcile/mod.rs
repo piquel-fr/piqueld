@@ -33,7 +33,7 @@ impl<D> Controller<D> {
         Self {
             docker: Arc::new(crate::docker::LimitedDocker::new(docker)),
             mutations: tokio::sync::Mutex::new(()),
-            prepare_timeout: Duration::from_secs(300),
+            prepare_timeout: Duration::from_mins(5),
             store,
             retry: RetryPolicy::default(),
         }

@@ -3143,7 +3143,7 @@
             "properties": {
               "database": {
                 "$ref": "#/components/schemas/DependencyStatus",
-                "description": "SQLite can execute a read query."
+                "description": "`SQLite` can execute a read query."
               },
               "docker": {
                 "$ref": "#/components/schemas/DependencyStatus",
@@ -4513,7 +4513,7 @@
         "properties": {
           "database": {
             "$ref": "#/components/schemas/DependencyStatus",
-            "description": "SQLite can execute a read query."
+            "description": "`SQLite` can execute a read query."
           },
           "docker": {
             "$ref": "#/components/schemas/DependencyStatus",
