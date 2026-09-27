@@ -38,6 +38,7 @@ struct FakeDocker {
     observed: Arc<Mutex<ObservedApplication>>,
     registry: Arc<Mutex<RegistryState>>,
     deny_network_removal: Arc<AtomicBool>,
+    fail_observations: Arc<AtomicBool>,
     resolution_gate: Option<Arc<ResolutionGate>>,
     isolate_observations: bool,
     mutations: Arc<Probe>,
@@ -264,6 +265,9 @@ impl DockerApi for FakeDocker {
         application: &ApplicationId,
     ) -> Result<ObservedApplication, DockerError> {
         let _probe = self.observations.enter().await;
+        if self.fail_observations.load(Ordering::SeqCst) {
+            return Err(DockerError::Unavailable("observing application"));
+        }
         let mut observed = self.observed.lock().await.clone();
         if self.isolate_observations {
             let belongs = |labels: &BTreeMap<String, String>| {
@@ -978,6 +982,7 @@ struct ResolutionGate {
 struct Probe {
     active: std::sync::atomic::AtomicUsize,
     maximum: std::sync::atomic::AtomicUsize,
+    total: std::sync::atomic::AtomicUsize,
 }
 struct ProbeGuard<'a>(&'a Probe);
 impl Drop for ProbeGuard<'_> {
@@ -988,6 +993,7 @@ impl Drop for ProbeGuard<'_> {
 impl Probe {
     async fn enter(&self) -> ProbeGuard<'_> {
         let guard = ProbeGuard(self);
+        self.total.fetch_add(1, Ordering::SeqCst);
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.maximum.fetch_max(active, Ordering::SeqCst);
         tokio::task::yield_now().await;
@@ -2108,6 +2114,18 @@ async fn unavailable_action_journal_prevents_runtime_mutations() {
             .is_err()
     );
     assert_eq!(harness.docker.mutations.maximum.load(Ordering::SeqCst), 0);
+    let open_actions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM active_actions")
+        .fetch_one(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(open_actions, 0);
+    let failed_actions: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM events WHERE kind='action_failed' AND error_code='journal_unavailable'",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .unwrap();
+    assert!(failed_actions > 0);
     sqlx::query("DROP TRIGGER reject_action_journal")
         .execute(&mut connection)
         .await
@@ -2118,4 +2136,78 @@ async fn unavailable_action_journal_prevents_runtime_mutations() {
         .await
         .unwrap();
     assert!(harness.docker.mutations.maximum.load(Ordering::SeqCst) > 0);
+}
+
+#[tokio::test]
+async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
+    let harness = ControllerHarness::new().await;
+    let operation = harness.create().await;
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.store.operation(&operation.id).await.unwrap().state,
+        OperationState::Succeeded
+    );
+    let observed_before = harness.docker.observations.total.load(Ordering::SeqCst);
+    harness
+        .docker
+        .fail_observations
+        .store(true, Ordering::SeqCst);
+    let store = Arc::clone(&harness.store);
+    let docker = Arc::clone(&harness.docker);
+    let application_id = harness.application.id().clone();
+    let cancellation = CancellationToken::new();
+    let token = cancellation.clone();
+    let controller = harness.controller;
+    let task = tokio::spawn(async move {
+        controller
+            .run(
+                Arc::new(tokio::sync::Notify::new()),
+                std::time::Duration::from_secs(60),
+                0,
+                0,
+                token,
+            )
+            .await
+    });
+    let recorded = || {
+        let store = Arc::clone(&store);
+        let application_id = application_id.to_string();
+        async move {
+            store
+                .filtered_events(
+                    &piqueld_core::observability::EventFilter {
+                        application_id: Some(application_id),
+                        kind: Some("diagnostic".into()),
+                        error_code: Some("docker_unavailable".into()),
+                        ..Default::default()
+                    },
+                    None,
+                    10,
+                )
+                .await
+                .unwrap()
+                .items
+                .len()
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if docker.observations.total.load(Ordering::SeqCst) >= observed_before + 2
+                && recorded().await > 0
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("health and reconciliation observers finished their failed Docker calls");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    cancellation.cancel();
+    task.await.unwrap().unwrap();
+    assert_eq!(recorded().await, 1);
 }
