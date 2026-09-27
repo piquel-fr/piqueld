@@ -72,7 +72,7 @@ impl Store {
     pub async fn retry_delivery(&self, id: &str) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let row = sqlx::query!(
-            "SELECT destination,category,destination_fingerprint FROM notification_deliveries WHERE id=?1 AND state='failed'",
+            "SELECT destination,category,destination_fingerprint,event_id FROM notification_deliveries WHERE id=?1 AND state='failed'",
             id,
         )
         .fetch_optional(&mut *tx)
@@ -98,6 +98,19 @@ impl Store {
         .map_err(StoreError::database)?;
         if recovered > 0 {
             return Err(StoreError::InvalidInput);
+        }
+        // A closed incident cannot be announced again without a matching recovery.
+        if row.category != NotificationCategory::Recovery.as_str() {
+            let open = sqlx::query_scalar!(
+                "SELECT COUNT(*) FROM notification_conditions WHERE event_id=?1",
+                row.event_id,
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+            if open == 0 {
+                return Err(StoreError::InvalidInput);
+            }
         }
         let now = now_ms();
         sqlx::query!(

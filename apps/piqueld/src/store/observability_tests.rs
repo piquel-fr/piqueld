@@ -198,6 +198,113 @@ async fn retries_keep_cause_and_outbox_deduplicates_until_recovery() {
     assert_eq!(deliveries.items.len(), 2);
     assert_eq!(deliveries.items[0].category, NotificationCategory::Recovery);
 }
+
+#[tokio::test]
+async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
+    for failed_before_close in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let config = notifications();
+        let store = Store::open(temp.path().join("db"))
+            .await
+            .unwrap()
+            .with_observability(&config);
+        store.configure_deliveries().await.unwrap();
+        let op = application(&store).await;
+        store
+            .transition_operation(
+                &op.id,
+                OperationState::Running,
+                OperationState::Failed,
+                Some(("service_update_failed", "Service failed")),
+            )
+            .await
+            .unwrap();
+        store.process_notifications().await.unwrap();
+        let (failure, _) = store.claim_delivery().await.unwrap().unwrap();
+        let state = if failed_before_close {
+            DeliveryState::Failed
+        } else {
+            DeliveryState::Pending
+        };
+        store
+            .complete_delivery(&failure.id, state, Some("Receiver rejected alert"), 3600)
+            .await
+            .unwrap();
+        if failed_before_close {
+            // The same failure remains retryable while its condition is open.
+            store.retry_delivery(&failure.id).await.unwrap();
+            store
+                .complete_delivery(&failure.id, DeliveryState::Failed, Some("Rejected"), 0)
+                .await
+                .unwrap();
+        }
+        store
+            .retry_operation(&store.operation(&op.id).await.unwrap())
+            .await
+            .unwrap();
+        store
+            .transition_operation(
+                &op.id,
+                OperationState::Requested,
+                OperationState::Running,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .transition_operation(
+                &op.id,
+                OperationState::Running,
+                OperationState::Succeeded,
+                None,
+            )
+            .await
+            .unwrap();
+        store.process_notifications().await.unwrap();
+        if !failed_before_close {
+            store
+                .complete_delivery(&failure.id, DeliveryState::Failed, Some("Rejected"), 0)
+                .await
+                .unwrap();
+            assert!(store.claim_delivery().await.unwrap().is_none());
+        }
+        assert!(matches!(
+            store.retry_delivery(&failure.id).await,
+            Err(StoreError::InvalidInput)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn open_daemon_incidents_remain_manually_retryable() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = notifications();
+    let store = Store::open(temp.path().join("db"))
+        .await
+        .unwrap()
+        .with_observability(&config);
+    store.configure_deliveries().await.unwrap();
+    let diagnostic = Diagnostic::new(
+        new_id("diagnostic"),
+        piqueld_core::observability::DiagnosticCode::InternalError,
+        "Daemon failure".into(),
+    );
+    store
+        .record_diagnostic(&diagnostic, None, None)
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    let (delivery, _) = store.claim_delivery().await.unwrap().unwrap();
+    store
+        .complete_delivery(&delivery.id, DeliveryState::Failed, Some("Rejected"), 0)
+        .await
+        .unwrap();
+    store.retry_delivery(&delivery.id).await.unwrap();
+    assert_eq!(
+        store.deliveries(None, 100).await.unwrap().items[0].state,
+        DeliveryState::Pending
+    );
+}
 #[tokio::test]
 async fn disabling_cancels_pending_and_reenabling_never_replays() {
     let temp = tempfile::tempdir().unwrap();

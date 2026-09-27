@@ -37,8 +37,9 @@ not be retrievable from the database.
 
 API failure occurrences are not sampled or deduplicated: repeated failed requests,
 including dashboard polling during an outage, each retain their request ID and
-diagnostic. Use nonzero retention settings to bound historical growth; webhook
-incident deduplication does not reduce the diagnostic journal's write volume.
+diagnostic. Health and reconciliation observations of the same application and
+failure code share one diagnostic within a discovery pass. Separate passes retain
+their own occurrences. Use nonzero retention settings to bound historical growth.
 
 Safe causal facts include Docker request stages and HTTP statuses, I/O error
 kinds and OS codes, command stages and exit codes, database failure kinds/codes,
@@ -156,7 +157,8 @@ finish retrying and at least one was acknowledged. If none was acknowledged,
 recovery is cancelled. These relationships survive restart and protect the
 failure history while recovery remains queued. The recovery retry window starts
 with its first delivery attempt, so waiting for a failure cannot exhaust it.
-Manual retry cannot replay a failed alert after its recovery was acknowledged.
+Manual retry cannot replay a failed alert after its condition closes, even if no
+receiver acknowledged that alert. Recovery deliveries remain manually retryable.
 
 The outbox is durable and separate from runtime work. JSON payloads contain
 `version: 1`, `instance_id`, `delivery_id`, `category`, and the source `event`.
