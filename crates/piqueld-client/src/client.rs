@@ -217,25 +217,25 @@ impl Client {
 }
 
 impl ClientHooks<ClientState> for generated::Client {
-    // The external async trait fixes this signature even though preparation is synchronous.
-    async fn pre<E>(
+    // Request preparation is synchronous, so the hook returns a ready future.
+    fn pre<E>(
         &self,
         request: &mut reqwest::Request,
         _info: &OperationInfo,
-    ) -> Result<(), Error<E>> {
-        prepare_request(self.inner(), request).map_err(Error::InvalidRequest)
+    ) -> impl Future<Output = Result<(), Error<E>>> {
+        std::future::ready(prepare_request(self.inner(), request).map_err(Error::InvalidRequest))
     }
 
-    // The external hook is async although observing headers is synchronous.
-    async fn post<E>(
+    // Header observation is synchronous as well.
+    fn post<E>(
         &self,
         result: &reqwest::Result<reqwest::Response>,
         _info: &OperationInfo,
-    ) -> Result<(), Error<E>> {
+    ) -> impl Future<Output = Result<(), Error<E>>> {
         if let Ok(response) = result {
             Client::observe_response(response);
         }
-        Ok(())
+        std::future::ready(Ok(()))
     }
 }
 
