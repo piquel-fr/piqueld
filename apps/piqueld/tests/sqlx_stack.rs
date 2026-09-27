@@ -183,48 +183,6 @@ async fn observability_upgrade_preserves_populated_history_and_restorable_backup
     assert_eq!(history, "Retained failure");
 }
 
-#[tokio::test]
-async fn recovery_pairing_upgrade_preserves_outbox_and_cancels_unpaired_recoveries() {
-    let directory = tempfile::tempdir().unwrap();
-    let restored_path = directory.path().join("schema-six.db");
-    let restored_url = format!("sqlite://{}", restored_path.display());
-    let mut restored = populated_schema_five(&restored_path).await;
-    sqlx::raw_sql(include_str!("../../../migrations/0006_observability.sql"))
-        .execute(&mut restored)
-        .await
-        .unwrap();
-    sqlx::raw_sql(
-        "PRAGMA user_version=6;
-         UPDATE instance_metadata SET schema_version=6;
-         INSERT INTO notification_deliveries(
-             id,event_id,destination,destination_fingerprint,category,state,
-             created_at_ms,retry_started_at_ms,next_attempt_ms,updated_at_ms
-         ) VALUES
-             ('failure',1,'admin','fingerprint','deployment_failures','pending',1,1,1,1),
-             ('recovery',1,'admin','fingerprint','recovery','pending',1,1,1,1),
-             ('delivered',1,'other','fingerprint','recovery','delivered',1,1,1,1);",
-    )
-    .execute(&mut restored)
-    .await
-    .unwrap();
-    restored.close().await.unwrap();
-    let _upgraded = Store::open(&restored_path).await.unwrap();
-    let mut restored = SqliteConnection::connect(&restored_url).await.unwrap();
-    let deliveries: Vec<(String, String)> =
-        sqlx::query_as("SELECT id,state FROM notification_deliveries ORDER BY id")
-            .fetch_all(&mut restored)
-            .await
-            .unwrap();
-    assert_eq!(
-        deliveries,
-        vec![
-            ("delivered".into(), "delivered".into()),
-            ("failure".into(), "pending".into()),
-            ("recovery".into(), "cancelled".into()),
-        ]
-    );
-}
-
 async fn populated_schema_five(path: &std::path::Path) -> SqliteConnection {
     let mut connection =
         SqliteConnection::connect(&format!("sqlite://{}?mode=rwc", path.display()))

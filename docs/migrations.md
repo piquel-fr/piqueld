@@ -62,10 +62,8 @@ application scope; old diagnostic detail is not reconstructed. The migration
 starts notification processing after existing events, avoiding historical alerts.
 See [observability](observability.md) for the API and deletion contract.
 
-`0007_notification_recovery_sources.sql` pairs recovery deliveries with their
-original failures at each destination. Pending recoveries from schema 6 have no
-reliable destination pairing and are cancelled during upgrade; other delivery
-history and pending failure notifications are preserved.
+Recovery deliveries are paired with their original failures at each destination
+in the same observability migration.
 
 ## Upgrade and rollback
 
@@ -87,5 +85,4 @@ accepted after the backup; reconciliation observes the current Docker state
 against that restored intent.
 
 The migration tests cover a populated schema-5 upgrade, retained event identity
-and notification activation, restoration of the pre-upgrade snapshot, and
-preservation of delivery history when upgrading schema 6.
+and notification activation, and restoration of the pre-upgrade snapshot.

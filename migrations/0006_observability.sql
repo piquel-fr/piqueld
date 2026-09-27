@@ -73,3 +73,11 @@ CREATE TABLE notification_routes (
     after_event_id INTEGER NOT NULL,
     PRIMARY KEY(category,destination)
 );
+
+-- A recovery is eligible only at destinations that received its failure alerts.
+CREATE TABLE notification_recovery_sources (
+    recovery_id TEXT NOT NULL REFERENCES notification_deliveries(id) ON DELETE CASCADE,
+    failure_id TEXT NOT NULL REFERENCES notification_deliveries(id) ON DELETE CASCADE,
+    PRIMARY KEY(recovery_id, failure_id)
+);
+CREATE INDEX recovery_failure ON notification_recovery_sources(failure_id);
