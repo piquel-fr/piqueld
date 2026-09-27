@@ -86,7 +86,7 @@ impl OperationError {
     #[must_use]
     pub fn diagnostic_code(&self) -> DiagnosticCode {
         match self {
-            Self::Docker(error) => error.operation_classification().diagnostic_code(),
+            Self::Docker(error) => error.diagnostic_code(),
             Self::Journal(_) => DiagnosticCode::JournalUnavailable,
             Self::ManifestInput {
                 not_found: true, ..
@@ -129,6 +129,11 @@ impl From<crate::docker::DockerError> for OperationError {
 }
 
 impl crate::docker::DockerError {
+    /// Uses the same stable classification for startup and operation diagnostics.
+    pub(crate) fn diagnostic_code(&self) -> DiagnosticCode {
+        self.operation_classification().diagnostic_code()
+    }
+
     /// Projects a safe public classification without consuming the cause.
     fn operation_classification(&self) -> OperationError {
         use OperationError as Failure;
@@ -310,7 +315,7 @@ impl crate::application::BoundaryError {
 
 #[cfg(test)]
 mod tests {
-    use super::OperationError;
+    use super::{DiagnosticCode, OperationError};
     use crate::docker::DockerError;
     use std::error::Error;
 
@@ -437,5 +442,34 @@ mod tests {
             .diagnostic();
         assert!(compilation.causes[0].contains("web"));
         assert!(compilation.causes[0].contains("source_unresolved"));
+    }
+
+    #[test]
+    fn swarm_bootstrap_errors_keep_distinct_diagnostic_guidance() {
+        for (error, expected_code, expected_action) in [
+            (
+                DockerError::Unavailable("checking Swarm"),
+                DiagnosticCode::DockerUnavailable,
+                "Check Docker Engine availability",
+            ),
+            (
+                DockerError::NotManager,
+                DiagnosticCode::SwarmManagerUnavailable,
+                "Inspect the diagnostic",
+            ),
+            (
+                DockerError::IncompatibleSwarm,
+                DiagnosticCode::SwarmTopologyUnsupported,
+                "Inspect the diagnostic",
+            ),
+        ] {
+            let diagnostic = piqueld_core::observability::Diagnostic::new(
+                "bootstrap".into(),
+                error.diagnostic_code(),
+                error.to_string(),
+            );
+            assert_eq!(diagnostic.code, expected_code.as_str());
+            assert!(diagnostic.next_action.contains(expected_action));
+        }
     }
 }

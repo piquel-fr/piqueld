@@ -50,13 +50,13 @@ impl ApplicationService {
                 result.as_ref().err().map(|error| {
                     piqueld_core::observability::Diagnostic::new(
                         format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
-                        piqueld_core::observability::DiagnosticCode::SwarmManagerUnavailable,
+                        error.diagnostic_code(),
                         error.to_string(),
                     )
                 }),
             )
             .await?;
-        result.context("Docker Engine is not an active single-node Swarm manager")?;
+        result.context("failed to establish single-node Docker Swarm readiness")?;
         store.configure_deliveries().await?;
         let webhook_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
