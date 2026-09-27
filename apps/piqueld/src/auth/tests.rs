@@ -37,6 +37,20 @@ impl Fixture {
         tx.commit().await.unwrap();
         (id, token)
     }
+
+    // Management tests only need a stored key; no WebAuthn ceremony reads it.
+    async fn passkey(&self, user_id: &str) -> String {
+        let id = Auth::id();
+        sqlx::query("INSERT INTO auth_passkeys VALUES(?,?,?,'{}',?)")
+            .bind(&id)
+            .bind(user_id)
+            .bind("Test key")
+            .bind(Auth::now())
+            .execute(&self.auth.0.store.pool)
+            .await
+            .unwrap();
+        id
+    }
 }
 
 #[tokio::test]
@@ -195,6 +209,8 @@ async fn any_account_can_edit_another_and_last_account_deletion_is_atomic() {
             .id,
         bob
     );
+    f.passkey(&alice).await;
+    f.passkey(&bob).await;
     let (first, second) = tokio::join!(
         f.auth.manage(&alice, Manage::DeleteUser { user_id: bob }),
         f.auth.manage(
@@ -214,6 +230,7 @@ async fn deleting_an_issuer_invalidates_its_invitations_and_credentials() {
     let f = Fixture::new().await;
     let (alice, token) = f.account("alice", "token", None).await;
     let (bob, _) = f.account("bob", "token", None).await;
+    f.passkey(&bob).await;
     let result = f
         .auth
         .manage(&alice, Manage::CreateInvitation)
@@ -228,6 +245,66 @@ async fn deleting_an_issuer_invalidates_its_invitations_and_credentials() {
         .unwrap();
     assert!(!f.auth.invitation_valid(secret).await.unwrap());
     assert!(f.auth.authenticate(&token).await.is_err());
+}
+
+#[tokio::test]
+async fn last_passkey_removal_and_owner_deletion_preserve_access() {
+    let f = Fixture::new().await;
+    let (alice, token) = f.account("alice", "token", None).await;
+    let (bob, _) = f.account("bob", "token", None).await;
+    let key = f.passkey(&alice).await;
+    for command in [
+        Manage::RemovePasskey { id: key.clone() },
+        Manage::DeleteUser {
+            user_id: alice.clone(),
+        },
+    ] {
+        assert!(matches!(
+            f.auth.manage(&bob, command).await,
+            Err(AuthError::Invalid("the last passkey cannot be removed"))
+        ));
+        let directory = f.auth.directory().await.unwrap();
+        assert_eq!(directory.users.len(), 2);
+        assert_eq!(directory.passkeys.len(), 1);
+        assert_eq!(directory.passkeys[0].id, key);
+        f.auth.authenticate(&token).await.unwrap();
+    }
+    // An account may have no passkeys, provided another account retains one.
+    f.auth
+        .manage(&alice, Manage::DeleteUser { user_id: bob })
+        .await
+        .unwrap();
+    assert_eq!(f.auth.directory().await.unwrap().users.len(), 1);
+}
+
+#[tokio::test]
+async fn concurrent_passkey_and_account_deletions_keep_one_passkey() {
+    for delete_account in [false, true] {
+        let f = Fixture::new().await;
+        let (alice, _) = f.account("alice", "token", None).await;
+        let (bob, _) = f.account("bob", "token", None).await;
+        let alice_key = f.passkey(&alice).await;
+        let bob_key = f.passkey(&bob).await;
+        let second = if delete_account {
+            Manage::DeleteUser { user_id: bob }
+        } else {
+            Manage::RemovePasskey { id: bob_key }
+        };
+        let (first, second) = tokio::join!(
+            f.auth
+                .manage(&alice, Manage::RemovePasskey { id: alice_key }),
+            f.auth.manage(&alice, second),
+        );
+        let error = match (first, second) {
+            (Ok(_), Err(error)) | (Err(error), Ok(_)) => error,
+            results => panic!("exactly one deletion must succeed: {results:?}"),
+        };
+        assert!(matches!(
+            error,
+            AuthError::Invalid("the last passkey cannot be removed")
+        ));
+        assert_eq!(f.auth.directory().await.unwrap().passkeys.len(), 1);
+    }
 }
 
 #[tokio::test]

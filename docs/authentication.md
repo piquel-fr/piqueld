@@ -77,8 +77,11 @@ Opening a link does not consume it. Deleting its issuer revokes pending links.
 Removing a passkey prevents future logins with that credential and leaves existing
 sessions/tokens intact. **Revoke all sessions and tokens** is a separate action.
 Deleting an account revokes everything belonging to it. Self-deletion is supported,
-but the final account cannot be deleted. If everybody loses their passkeys and
-all sessions/tokens become unusable, there is no supported recovery mechanism.
+but the final account cannot be deleted. Removing a passkey or deleting an account
+is rejected if it would leave the installation without any passkeys. This protects
+stored credentials, not access to the authenticators themselves: if everybody loses
+their passkeys and all sessions/tokens become unusable, there is no supported
+recovery mechanism.
 
 ## CLI and automation
 

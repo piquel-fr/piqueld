@@ -34,6 +34,10 @@ impl Auth {
     }
     pub(crate) async fn manage(&self, actor: &str, command: Manage) -> Result<Managed> {
         let (_writer, mut tx) = self.0.store.begin_immediate().await?;
+        let removes_passkeys = matches!(
+            command,
+            Manage::DeleteUser { .. } | Manage::RemovePasskey { .. }
+        );
         let mut result = Managed::default();
         match command {
             Manage::UpdateUser {
@@ -114,6 +118,15 @@ impl Auth {
                 let expires = days.map(|days| Self::now() + i64::from(days) * DAY);
                 result.token = Some(Self::issue(&mut tx, &user_id, "token", &name, expires).await?);
             }
+        }
+        // Account deletion also cascades to passkeys. Check both paths before
+        // committing, while the writer lock prevents concurrent last-key removal.
+        if removes_passkeys
+            && !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM auth_passkeys)")
+                .fetch_one(&mut *tx)
+                .await?
+        {
+            return Err(AuthError::Invalid("the last passkey cannot be removed"));
         }
         tx.commit().await?;
         Ok(result)
