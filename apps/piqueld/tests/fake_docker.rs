@@ -1548,9 +1548,11 @@ async fn convergence_timeout_closes_the_waiting_action_as_failed() {
         .docker
         .stall_convergence
         .store(true, Ordering::SeqCst);
+    // The deadline covers network, volume and service creation before the wait
+    // starts. Leave headroom so a loaded runner still reaches the waiting action.
     let controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store))
         .with_retry_policy(piqueld::reconcile::RetryPolicy {
-            convergence_timeout: std::time::Duration::from_millis(500),
+            convergence_timeout: std::time::Duration::from_secs(3),
             ..piqueld::reconcile::RetryPolicy::default()
         });
     let created = harness.create().await;
