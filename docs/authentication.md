@@ -49,7 +49,8 @@ Tailscale transport encryption alone does not make an HTTP website a secure
 browser context; remote browser access still needs an HTTPS hostname.
 
 Before the first account exists, the API exposes only authentication/setup
-endpoints (plus static website assets and TCP `/health`). Startup writes a private
+endpoints (plus static website assets, TCP `/health`, and the optional
+metrics-only listener). Startup writes a private
 `<data_dir>/setup-link` file, mode `0600`. Open that link, choose a username and
 optional display name, and register a passkey. The account, passkey, and permanent
 closure of initial setup commit together. The link becomes invalid immediately;
@@ -72,7 +73,9 @@ digits, dots, dashes, or underscores. Internal account IDs never change.
 Any user can create an invitation. Copy and share its link; no recipient or email
 address is attached. The first person to complete registration chooses their own
 account details. Links expire after 24 hours and can be revoked by any user.
-Opening a link does not consume it. Deleting its issuer revokes pending links.
+Opening a link does not consume it, but the dashboard removes the secret from
+the address bar and browser history; reopen the original link to retry an
+abandoned registration. Deleting its issuer revokes pending links.
 
 Removing a passkey prevents future logins with that credential and leaves existing
 sessions/tokens intact. **Revoke all sessions and tokens** is a separate action.
@@ -103,7 +106,9 @@ The browser still uses the configured HTTPS `auth.public_url` for passkeys.
 Library callers can opt in with `Client::with_insecure_http()`.
 
 `login` prints a browser URL and code. Sign in with a passkey at that URL, enter
-the code from your terminal, and explicitly approve the CLI. The pending request
+the code from your terminal, and explicitly approve the CLI. Only approve a code
+from a terminal you started yourself: anyone who can reach the daemon can start
+a device login, and approval grants that requester your account's access. The pending request
 expires after ten minutes. The CLI polls using a separate secret; the displayed
 code alone cannot retrieve its credential. Approval does not create an account;
 an invitation must be redeemed first.
@@ -132,11 +137,19 @@ alone. Do not put token values into connection profiles or Nix configuration.
 | CLI session | 30 days; repeat browser login afterward |
 | Automation token | 90 days by default; custom days or no expiry |
 
-Browser sessions use HTTP-only, SameSite=Strict cookies, with Secure enabled for
-HTTPS origins. Cookie-authenticated mutations require the configured Origin.
+Browser sessions use HTTP-only, SameSite=Strict cookies. For HTTPS origins they
+are also Secure and use the `__Host-` name prefix, so applications on sibling
+subdomains cannot set or shadow them. Cookie-authenticated mutations require the configured Origin.
 API/CLI credentials use `Authorization: Bearer …`. No tokens are automatically
 renewed. All API listeners require account authentication, regardless of socket
-group membership or Tailscale connectivity.
+group membership or Tailscale connectivity. The optional `metrics.listen`
+endpoint serves only `GET /metrics` and is not authenticated; see
+[observability](observability.md#optional-metrics-and-future-external-services).
+
+Successful registrations, passkey logins, device approvals (with the requesting
+peer address), and account-management actions are logged at `info` level with the
+acting account. Rejected passkey assertions, including signature-counter
+regressions that can indicate a cloned authenticator, are logged as warnings.
 
 If a browser request reports an expired or revoked session, the dashboard offers
 passkey login in place. Unsaved editor changes stay mounted. After signing in,
@@ -163,7 +176,8 @@ The pinned `webauthn-rs-core` integration requires OpenSSL and pkg-config for na
 builds; the Nix packages and development shell provide them.
 
 Public registration, login, and device-start requests share limits of 30 starts
-per TCP peer per minute and 60 per daemon per minute, across all listeners. Unix
+per TCP peer per minute and 60 per daemon per minute, across all listeners. IPv6
+peers are grouped by /64 prefix. Unix
 socket callers share one peer bucket. Excess requests receive HTTP 429 and
 `Retry-After: 60`; ongoing ceremonies and authenticated API work are unaffected.
 The global budget keeps admitted pending requests below the in-memory capacity.
