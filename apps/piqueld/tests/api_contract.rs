@@ -3504,3 +3504,81 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
         .unwrap();
     assert_eq!(response.status(), 410);
 }
+
+/// Every documented operation except the public sign-in endpoints must reject
+/// anonymous callers on both the website and Unix-socket routers.
+#[tokio::test]
+async fn every_documented_operation_requires_authentication() {
+    const PUBLIC: &[&str] = &[
+        "/api/v1/auth/status",
+        "/api/v1/auth/register/start",
+        "/api/v1/auth/register/finish",
+        "/api/v1/auth/login/start",
+        "/api/v1/auth/login/finish",
+        "/api/v1/auth/device/start",
+        "/api/v1/auth/device/poll",
+    ];
+    let temp = TempDir::new().unwrap();
+    let store = Arc::new(Store::open(temp.path().join("state.db")).await.unwrap());
+    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let instance = InstanceId::parse(store.instance_id().to_owned()).unwrap();
+    let state = ApiState::new(
+        Arc::clone(&store),
+        Arc::new(FakeRuntime {
+            instance,
+            unavailable: std::sync::atomic::AtomicBool::new(false),
+        }),
+    );
+    let document = piqueld::api::http::openapi_document();
+    let paths = document["paths"].as_object().unwrap();
+    let mut checked = 0;
+    for listener in [
+        piqueld::api::http::protect(
+            web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE)),
+            auth.clone(),
+        ),
+        piqueld::api::http::protect(api_router(state.clone()), auth.clone()),
+    ] {
+        for (path, item) in paths {
+            if PUBLIC.contains(&path.as_str()) {
+                continue;
+            }
+            let uri = path
+                .split('/')
+                .map(|segment| {
+                    if segment.starts_with('{') {
+                        "placeholder"
+                    } else {
+                        segment
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            for method in ["get", "post", "put", "patch", "delete"] {
+                if item.get(method).is_none() {
+                    continue;
+                }
+                let method = method.to_ascii_uppercase();
+                let response = listener
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method.as_str())
+                            .uri(&uri)
+                            .header("content-type", "application/json")
+                            .body(Body::from("{}"))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "{method} {path} must require authentication"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 60, "only {checked} operations were checked");
+}
