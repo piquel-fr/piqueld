@@ -78,6 +78,21 @@ fn navigate(path: &str) {
         let _ = window.location().set_href(path);
     }
 }
+/// Reads an invitation secret once and removes it from the address bar and
+/// session history, so it is not left behind if registration is abandoned.
+fn take_invitation() -> Option<String> {
+    let window = web_sys::window()?;
+    let secret = window
+        .location()
+        .hash()
+        .ok()?
+        .strip_prefix("#invite=")?
+        .to_owned();
+    if let (Ok(history), Ok(path)) = (window.history(), window.location().pathname()) {
+        let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&path));
+    }
+    Some(secret)
+}
 fn reload() {
     if let Some(window) = web_sys::window() {
         let _ = window.location().reload();
@@ -149,6 +164,7 @@ struct AuthState {
     current: RwSignal<Option<User>>,
     error: RwSignal<String>,
     expired: RwSignal<bool>,
+    invitation: StoredValue<Option<String>>,
 }
 impl AuthState {
     fn pending(self) -> View {
@@ -158,7 +174,7 @@ impl AuthState {
         if !self.error.get().is_empty() {
             return view! { <main class="dashboard-main"><p role="alert">{self.error.get()}</p><button on:click=move |_| reload()>"Retry"</button></main> }.into_view();
         }
-        view! { <SignIn initialized=self.initialized.get() current=self.current.get()/> }
+        view! { <SignIn initialized=self.initialized.get() current=self.current.get() invitation=self.invitation.get_value()/> }
             .into_view()
     }
 }
@@ -173,6 +189,7 @@ pub(super) fn Gate() -> impl IntoView {
         current: create_rw_signal(None::<User>),
         error: create_rw_signal(String::new()),
         expired: create_rw_signal(false),
+        invitation: store_value(take_invitation()),
     };
     provide_context(state);
     let listener = window_event_listener(
@@ -250,13 +267,11 @@ pub(super) fn AuthPage() -> impl IntoView {
 }
 
 #[component]
-fn SignIn(initialized: bool, current: Option<User>) -> impl IntoView {
+fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) -> impl IntoView {
     let feedback = Feedback::new();
-    let fragment = web_sys::window()
+    let device = web_sys::window()
         .and_then(|w| w.location().hash().ok())
-        .unwrap_or_default();
-    let invitation = fragment.strip_prefix("#invite=").map(str::to_owned);
-    let device = fragment == "#device";
+        .is_some_and(|fragment| fragment == "#device");
     let username = create_rw_signal(String::new());
     let display_name = create_rw_signal(String::new());
     let name = create_rw_signal("My passkey".to_owned());
@@ -289,6 +304,7 @@ fn SignIn(initialized: bool, current: Option<User>) -> impl IntoView {
                 })>"Sign in with a passkey"</button> }.into_view()
             } else if device {
                 view! { <h2>"Connect piquelctl"</h2><p>{format!("Signed in as {who}. Enter the code shown by the CLI you are connecting.")}</p>
+                    <p role="note"><strong>"Only approve a code shown in a terminal you started yourself in the last ten minutes."</strong>" Approval gives that terminal full access as your account. Never enter a code someone else sent you."</p>
                     <label class="field">"CLI code"<input autocomplete="off" prop:value=code on:input=move |e|code.set(event_target_value(&e))/></label>
                     <button class="primary" on:click=move |_|feedback.run(async move {
                         Client::browser().auth_device_approve(&code.get_untracked()).await.map_err(|e|e.to_string())?;
