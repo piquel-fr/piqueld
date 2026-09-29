@@ -105,16 +105,7 @@ impl Store {
             .map(Self::event_cursor)
             .transpose()?
             .unwrap_or(if filter.descending { i64::MAX } else { 0 });
-        if filter
-            .since_ms
-            .zip(filter.until_ms)
-            .is_some_and(|(a, b)| a > b)
-        {
-            return Err(StoreError::InvalidInput);
-        }
-        if let Some(id) = &filter.application_id {
-            ApplicationId::parse(id).map_err(StoreError::invalid_input)?;
-        }
+        validate_filter(filter)?;
         let mut query = EventRow::query(filter, cursor, fetch)?;
         let mut rows = query
             .build_query_as::<EventRow>()
@@ -131,6 +122,49 @@ impl Store {
             .map(EventRow::into_event)
             .collect::<Result<_, StoreError>>()?;
         Ok(Page { items, next_cursor })
+    }
+    /// Reads the next oldest-first stream batch after `after` from one snapshot.
+    /// The returned checkpoint covers every scanned event, including those the
+    /// filter excluded, so a quiet filtered stream still advances past pruning.
+    /// # Errors
+    /// Returns expired history, storage, decoding or invalid selection errors.
+    pub async fn stream_events(
+        &self,
+        filter: &EventFilter,
+        after: i64,
+        limit: usize,
+    ) -> Result<(Vec<Event>, i64), StoreError> {
+        let fetch = page_limit(limit)? + 1;
+        validate_filter(filter)?;
+        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let coverage = sqlx::query!(
+            r#"SELECT pruned_through_id AS "pruned!: i64",
+            (SELECT COALESCE(MAX(id),0) FROM events) AS "latest!: i64"
+            FROM history_coverage WHERE singleton=1"#
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        if after > 0 && after < coverage.pruned {
+            return Err(StoreError::HistoryExpired);
+        }
+        let mut rows = EventRow::query(filter, after, fetch)?
+            .build_query_as::<EventRow>()
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)?;
+        let more = rows.len() > limit;
+        rows.truncate(limit);
+        let checkpoint = match rows.last() {
+            Some(row) if more => row.id,
+            _ => coverage.latest.max(after),
+        };
+        let items = rows
+            .into_iter()
+            .map(EventRow::into_event)
+            .collect::<Result<_, StoreError>>()?;
+        Ok((items, checkpoint))
     }
     pub(crate) fn event_cursor(cursor: &str) -> Result<i64, StoreError> {
         cursor
@@ -217,21 +251,6 @@ impl Store {
         }
     }
 
-    /// Checks whether a stream can honestly resume at its previous position.
-    /// # Errors
-    /// Returns expired history or storage errors.
-    pub async fn check_event_resume(&self, after: i64) -> Result<(), StoreError> {
-        let pruned =
-            sqlx::query_scalar!("SELECT pruned_through_id FROM history_coverage WHERE singleton=1")
-                .fetch_one(&self.pool)
-                .await
-                .map_err(StoreError::database)?;
-        if after < pruned {
-            Err(StoreError::HistoryExpired)
-        } else {
-            Ok(())
-        }
-    }
     /// Prunes application-scoped events. Daemon history has a separate policy.
     /// # Errors
     /// Returns storage errors.
@@ -296,6 +315,20 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)?;
         Ok(count)
     }
+}
+
+fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
+    if filter
+        .since_ms
+        .zip(filter.until_ms)
+        .is_some_and(|(a, b)| a > b)
+    {
+        return Err(StoreError::InvalidInput);
+    }
+    if let Some(id) = &filter.application_id {
+        ApplicationId::parse(id).map_err(StoreError::invalid_input)?;
+    }
+    Ok(())
 }
 
 // Optional predicates are assembled from fixed column names; every value is bound.

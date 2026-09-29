@@ -99,8 +99,22 @@ impl Store {
         if recovered > 0 {
             return Err(StoreError::InvalidInput);
         }
-        // A closed incident cannot be announced again without a matching recovery.
-        if row.category != NotificationCategory::Recovery.as_str() {
+        // A recovery is stale once its incident has opened again.
+        if row.category == NotificationCategory::Recovery.as_str() {
+            let reopened = sqlx::query_scalar!(
+                "SELECT COUNT(*) FROM notification_recovery_sources s
+                JOIN notification_conditions c ON c.key=s.condition_key
+                WHERE s.recovery_id=?1",
+                id,
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+            if reopened > 0 {
+                return Err(StoreError::InvalidInput);
+            }
+        } else {
+            // A closed incident cannot be announced again without a matching recovery.
             let open = sqlx::query_scalar!(
                 "SELECT COUNT(*) FROM notification_conditions WHERE event_id=?1",
                 row.event_id,
@@ -213,6 +227,9 @@ impl Store {
         let events = self
             .events(None, Some(&format!("v1:{cursor}")), 100)
             .await?;
+        if events.items.is_empty() {
+            return Ok(());
+        }
         let (_writer, mut tx) = self.begin_immediate().await?;
         let current =
             sqlx::query_scalar!("SELECT event_id FROM notification_cursor WHERE singleton=1")
@@ -433,10 +450,11 @@ impl Store {
                     .await?
                     {
                         sqlx::query!(
-                            "INSERT INTO notification_recovery_sources(recovery_id,failure_id)
-                            VALUES(?1,?2) ON CONFLICT DO NOTHING",
+                            "INSERT INTO notification_recovery_sources(recovery_id,failure_id,condition_key)
+                            VALUES(?1,?2,?3) ON CONFLICT DO NOTHING",
                             recovery,
                             failure.id,
+                            key,
                         )
                         .execute(&mut **tx)
                         .await

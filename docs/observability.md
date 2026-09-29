@@ -31,9 +31,10 @@ Diagnostics contain an occurrence ID, stable code, safe summary, sanitized causa
 facts, retryability and suggested next action. Context stays on the event even
 when its operation is pruned. API failures include `details.diagnostic_id`, and
 the diagnostic event records the request ID. Input validation errors are ordinary
-API errors, not persisted incidents. Daemon logs include occurrence IDs. If
-storage itself fails, the response/log ID remains useful but the diagnostic may
-not be retrievable from the database.
+API errors, not persisted incidents. Daemon logs include occurrence IDs. API
+storage failures (`storage_unavailable`, `schema_mismatch`) are only logged, so
+their response ID correlates with daemon logs but is not retrievable from the
+database. Other diagnostics are likewise log-only if their write fails.
 
 API failure occurrences are not sampled or deduplicated: repeated failed requests,
 including dashboard polling during an outage, each retain their request ID and
@@ -97,7 +98,8 @@ ordering remains the default. Timestamps are Unix milliseconds.
 SSE uses the same filters with oldest-first ordering. Set `Last-Event-ID` to the
 last received SSE ID to reconnect (it takes precedence over `cursor`). Without a
 cursor, replay starts at retained history. Events are read from the journal in
-bounded pages; slow clients do not block writers. A stale resume position receives
+bounded pages; slow clients do not block writers. When the filter excludes newer
+events, the stream sends an ID-only message so `Last-Event-ID` still advances. A stale resume position receives
 HTTP 410, or a terminal `history_expired` event if pruning happens during the
 stream. A terminal `stream_error` indicates a storage failure. Clients should
 refresh their snapshot before reconnecting after an expired history response.
@@ -158,7 +160,8 @@ recovery is cancelled. These relationships survive restart and protect the
 failure history while recovery remains queued. The recovery retry window starts
 with its first delivery attempt, so waiting for a failure cannot exhaust it.
 Manual retry cannot replay a failed alert after its condition closes, even if no
-receiver acknowledged that alert. Recovery deliveries remain manually retryable.
+receiver acknowledged that alert. Recovery deliveries remain manually retryable
+until the same condition opens again.
 
 The outbox is durable and separate from runtime work. JSON payloads contain
 `version: 1`, `instance_id`, `delivery_id`, `category`, and the source `event`.

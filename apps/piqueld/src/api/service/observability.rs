@@ -26,11 +26,16 @@ impl ApplicationService {
     pub async fn diagnostic(&self, id: &str) -> Result<Event, ApplicationError> {
         Ok(self.store.diagnostic(id).await?)
     }
-    /// Ensures a stream can resume without silently skipping pruned history.
+    /// Reads the next stream batch and the position it covers.
     /// # Errors
-    /// Returns expired history or storage failures.
-    pub async fn check_event_resume(&self, after: i64) -> Result<(), ApplicationError> {
-        Ok(self.store.check_event_resume(after).await?)
+    /// Returns expired history, invalid filters or storage failures.
+    pub async fn stream_events(
+        &self,
+        filter: &EventFilter,
+        after: i64,
+        limit: usize,
+    ) -> Result<(Vec<Event>, i64), ApplicationError> {
+        Ok(self.store.stream_events(filter, after, limit).await?)
     }
     /// Records an unexpected boundary failure. A failed write keeps its ID in fallback logs.
     pub(crate) async fn record_diagnostic(

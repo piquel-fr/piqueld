@@ -11,6 +11,8 @@ CREATE INDEX event_diagnostic ON events(diagnostic_id) WHERE diagnostic_id IS NO
 CREATE INDEX event_operation ON events(operation_id,id);
 CREATE INDEX event_action ON events(action_id,id);
 CREATE INDEX event_scope ON events(scope,id);
+-- Scoped age pruning; without statistics SQLite would otherwise walk event_scope.
+CREATE INDEX event_scope_created ON events(scope,created_at_ms);
 CREATE INDEX event_error ON events(error_code,id);
 -- Only persist executing actions here. History remains in immutable events.
 CREATE TABLE active_actions (
@@ -43,6 +45,7 @@ CREATE TABLE notification_conditions (
     last_seen_ms INTEGER NOT NULL,
     notified INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX notification_condition_event ON notification_conditions(event_id);
 CREATE TABLE notification_deliveries (
     id TEXT PRIMARY KEY,
     event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -78,6 +81,7 @@ CREATE TABLE notification_routes (
 CREATE TABLE notification_recovery_sources (
     recovery_id TEXT NOT NULL REFERENCES notification_deliveries(id) ON DELETE CASCADE,
     failure_id TEXT NOT NULL REFERENCES notification_deliveries(id) ON DELETE CASCADE,
+    condition_key TEXT NOT NULL,
     PRIMARY KEY(recovery_id, failure_id)
 );
 CREATE INDEX recovery_failure ON notification_recovery_sources(failure_id);

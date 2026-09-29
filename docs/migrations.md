@@ -65,6 +65,11 @@ See [observability](observability.md) for the API and deletion contract.
 Recovery deliveries are paired with their original failures at each destination
 in the same observability migration.
 
+Before this release, `retention.event_days` defaulted to 30. Installations that
+relied on that default stop pruning events after upgrading; set
+`retention.event_days = 30` (and optionally `retention.daemon_event_days`) to keep
+bounded history.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

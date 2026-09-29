@@ -101,33 +101,28 @@ pub(super) async fn stream(
         .or(query.cursor.clone())
         .unwrap_or_else(|| "v1:0".into());
     let after = crate::store::Store::event_cursor(&cursor)?;
-    if after > 0 {
-        state.check_event_resume(after).await?;
-    }
     let filter = query.filter();
     let batch_size = query.limit.unwrap_or(100);
     // Validate before sending headers; all later errors explicitly terminate the stream.
-    let initial = state
-        .filtered_events(&filter, Some(&cursor), batch_size)
-        .await?
-        .items;
+    let (initial, checkpoint) = state.stream_events(&filter, after, batch_size).await?;
     let stream = futures_util::stream::unfold(
         (
             state,
             filter,
-            cursor,
+            after,
             std::collections::VecDeque::from(initial),
+            checkpoint,
             false,
         ),
-        move |(state, filter, mut cursor, mut pending, done)| async move {
+        move |(state, filter, mut after, mut pending, mut checkpoint, done)| async move {
             if done {
                 return None;
             }
             loop {
                 if let Some(event) = pending.pop_front() {
-                    cursor = format!("v1:{}", event.id);
+                    after = event.id;
                     let item = ServerEvent::default()
-                        .id(&cursor)
+                        .id(format!("v1:{after}"))
                         .event("event")
                         .json_data(event)
                         .unwrap_or_else(|_| {
@@ -137,22 +132,24 @@ pub(super) async fn stream(
                         });
                     return Some((
                         Ok::<_, std::convert::Infallible>(item),
-                        (state, filter, cursor, pending, false),
+                        (state, filter, after, pending, checkpoint, false),
+                    ));
+                }
+                if checkpoint > after {
+                    // An ID-only message moves Last-Event-ID past events the filter
+                    // excluded without dispatching an event to the client.
+                    after = checkpoint;
+                    return Some((
+                        Ok(ServerEvent::default().id(format!("v1:{after}"))),
+                        (state, filter, after, pending, checkpoint, false),
                     ));
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                let after = crate::store::Store::event_cursor(&cursor).unwrap_or(0);
-                let result = async {
-                    if after > 0 {
-                        state.check_event_resume(after).await?;
+                match state.stream_events(&filter, after, batch_size).await {
+                    Ok((items, next)) => {
+                        pending.extend(items);
+                        checkpoint = next;
                     }
-                    state
-                        .filtered_events(&filter, Some(&cursor), batch_size)
-                        .await
-                }
-                .await;
-                match result {
-                    Ok(page) => pending.extend(page.items),
                     Err(error) => {
                         let kind = if matches!(
                             error,
@@ -168,7 +165,7 @@ pub(super) async fn stream(
                             Ok(ServerEvent::default()
                                 .event(kind)
                                 .data("Reload history before reconnecting")),
-                            (state, filter, cursor, pending, true),
+                            (state, filter, after, pending, checkpoint, true),
                         ));
                     }
                 }

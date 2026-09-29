@@ -447,9 +447,16 @@ async fn bind_error_request_id(
                     error.message.clone(),
                 )
             });
-        state
-            .record_diagnostic(&diagnostic, Some(&error.request_id), application.as_ref())
-            .await;
+        // Storage failures are not written back to the failing store: retrying the
+        // write would only queue behind the global writer during the outage.
+        if !matches!(
+            error.code.as_str(),
+            "storage_unavailable" | "schema_mismatch"
+        ) {
+            state
+                .record_diagnostic(&diagnostic, Some(&error.request_id), application.as_ref())
+                .await;
+        }
         tracing::error!(diagnostic_id=%diagnostic.id, request_id=%error.request_id, code=%diagnostic.code, "API request failed");
         if !error.details.is_object() {
             error.details = json!({});

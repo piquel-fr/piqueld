@@ -276,6 +276,70 @@ async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
 }
 
 #[tokio::test]
+async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = notifications();
+    let store = Store::open(temp.path().join("db"))
+        .await
+        .unwrap()
+        .with_observability(&config);
+    store.configure_deliveries().await.unwrap();
+    let op = application(&store).await;
+    let rerun = async |to: OperationState, error: Option<(&str, &str)>| {
+        store
+            .transition_operation(&op.id, OperationState::Running, to, error)
+            .await
+            .unwrap();
+        store.process_notifications().await.unwrap();
+        let (delivery, _) = store.claim_delivery().await.unwrap().unwrap();
+        store
+            .retry_operation(&store.operation(&op.id).await.unwrap())
+            .await
+            .unwrap();
+        store
+            .transition_operation(
+                &op.id,
+                OperationState::Requested,
+                OperationState::Running,
+                None,
+            )
+            .await
+            .unwrap();
+        delivery
+    };
+    let failure = rerun(
+        OperationState::Failed,
+        Some(("service_update_failed", "Service failed")),
+    )
+    .await;
+    store
+        .complete_delivery(&failure.id, DeliveryState::Delivered, None, 0)
+        .await
+        .unwrap();
+    let recovery = rerun(OperationState::Succeeded, None).await;
+    assert_eq!(recovery.category, NotificationCategory::Recovery);
+    store
+        .complete_delivery(&recovery.id, DeliveryState::Failed, Some("Rejected"), 0)
+        .await
+        .unwrap();
+    // Before the incident reopens, the recovery is still accurate and retryable.
+    store.retry_delivery(&recovery.id).await.unwrap();
+    store
+        .complete_delivery(&recovery.id, DeliveryState::Failed, Some("Rejected"), 0)
+        .await
+        .unwrap();
+    rerun(
+        OperationState::Failed,
+        Some(("service_update_failed", "Service failed")),
+    )
+    .await;
+    assert!(matches!(
+        store.retry_delivery(&recovery.id).await,
+        Err(StoreError::InvalidInput)
+    ));
+}
+
+#[tokio::test]
 async fn open_daemon_incidents_remain_manually_retryable() {
     let temp = tempfile::tempdir().unwrap();
     let config = notifications();
@@ -490,11 +554,22 @@ async fn pruning_marks_stream_gaps_and_analytics_coverage() {
         .unwrap()
         .items[0]
         .id;
+    // A quiet filtered stream still advances to the newest scanned event.
+    let quiet = EventFilter {
+        kind: Some("no_such_kind".into()),
+        ..EventFilter::default()
+    };
+    let (items, checkpoint) = store.stream_events(&quiet, 0, 10).await.unwrap();
+    assert!(items.is_empty());
+    assert_eq!(checkpoint, last);
     store.prune_events(now_ms() + 1).await.unwrap();
     assert!(matches!(
-        store.check_event_resume(last - 1).await,
+        store
+            .stream_events(&EventFilter::default(), last - 1, 1)
+            .await,
         Err(StoreError::HistoryExpired)
     ));
+    assert!(store.stream_events(&quiet, checkpoint, 10).await.is_ok());
     let analytics = store.deployment_analytics(None, 0, now_ms()).await.unwrap();
     assert!(analytics.incomplete);
     assert_eq!(analytics.succeeded, 1);

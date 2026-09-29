@@ -69,13 +69,16 @@ impl ApplicationService {
                 },
             };
             if let Err(error) = result {
-                tracing::error!(error=?error, "notification journal processing failed");
+                tracing::error!(error=?error, "notification delivery failed");
             }
         }
     }
 
     async fn deliver_next_notification(&self, client: &reqwest::Client) -> Result<(), StoreError> {
-        self.store.process_notifications().await?;
+        // Queued deliveries, retries and recoveries must not wait on new-event ingestion.
+        if let Err(error) = self.store.process_notifications().await {
+            tracing::error!(error=?error, "notification event processing failed");
+        }
         let Some((delivery, destination)) = self.store.claim_delivery().await? else {
             return Ok(());
         };
