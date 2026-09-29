@@ -1,6 +1,6 @@
 //! Persist intent before a runtime request and record its observed outcome afterward.
 use super::{Store, StoreError, new_id, now_ms};
-use piqueld_core::observability::{Diagnostic, EventScope};
+use piqueld_core::observability::{Diagnostic, DiagnosticCode, EventScope};
 use sqlx::{Sqlite, Transaction};
 
 #[derive(Clone, Debug)]
@@ -131,8 +131,19 @@ impl Store {
         if active == 0 {
             return Err(StoreError::IllegalTransition);
         }
-        if let Some(diagnostic) = &diagnostic {
-            tracing::error!(diagnostic_id=%diagnostic.id,action_id=%action.id,operation_id=?action.operation_id,code=%diagnostic.code,"action failed");
+        match &diagnostic {
+            Some(diagnostic)
+                if matches!(
+                    DiagnosticCode::parse(&diagnostic.code),
+                    Some(DiagnosticCode::Cancelled | DiagnosticCode::Superseded)
+                ) =>
+            {
+                tracing::info!(diagnostic_id=%diagnostic.id,action_id=%action.id,operation_id=?action.operation_id,code=%diagnostic.code,"action stopped");
+            }
+            Some(diagnostic) => {
+                tracing::error!(diagnostic_id=%diagnostic.id,action_id=%action.id,operation_id=?action.operation_id,code=%diagnostic.code,"action failed");
+            }
+            None => {}
         }
         Self::action_event_on(
             &mut tx,

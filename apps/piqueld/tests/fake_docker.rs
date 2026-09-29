@@ -39,6 +39,7 @@ struct FakeDocker {
     registry: Arc<Mutex<RegistryState>>,
     deny_network_removal: Arc<AtomicBool>,
     fail_observations: Arc<AtomicBool>,
+    stall_convergence: Arc<AtomicBool>,
     resolution_gate: Option<Arc<ResolutionGate>>,
     isolate_observations: bool,
     mutations: Arc<Probe>,
@@ -357,7 +358,11 @@ impl DockerApi for FakeDocker {
         observed
             .services
             .retain(|service| service.name != desired.name.as_str());
-        observed.services.push(observed_service(desired));
+        let mut service = observed_service(desired);
+        if self.stall_convergence.load(Ordering::SeqCst) {
+            service.convergence = Convergence::Updating;
+        }
+        observed.services.push(service);
         Ok(())
     }
 
@@ -1534,6 +1539,46 @@ async fn failed_preparation_preserves_active_repair_and_identical_apply_does_not
     assert!(events.iter().any(|event| event.kind == "operation_failed"
         && event.error_code.as_deref() == Some("image_resolution_failed")
         && event.resource.as_deref() == Some("web")));
+}
+
+#[tokio::test]
+async fn convergence_timeout_closes_the_waiting_action_as_failed() {
+    let harness = ControllerHarness::new().await;
+    harness
+        .docker
+        .stall_convergence
+        .store(true, Ordering::SeqCst);
+    let controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store))
+        .with_retry_policy(piqueld::reconcile::RetryPolicy {
+            convergence_timeout: std::time::Duration::from_millis(500),
+            ..piqueld::reconcile::RetryPolicy::default()
+        });
+    let created = harness.create().await;
+    controller.scan(&CancellationToken::new()).await.unwrap();
+    let events = harness
+        .store
+        .filtered_events(
+            &piqueld_core::observability::EventFilter {
+                operation_id: Some(created.id.clone()),
+                ..Default::default()
+            },
+            None,
+            100,
+        )
+        .await
+        .unwrap()
+        .items;
+    assert!(
+        events.iter().any(|event| event.kind == "action_failed"
+            && event.error_code.as_deref() == Some("convergence_timeout")
+            && event.duration_ms.is_some()),
+        "{events:#?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.kind == "action_outcome_unknown")
+    );
 }
 
 #[tokio::test]

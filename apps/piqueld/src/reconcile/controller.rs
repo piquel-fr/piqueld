@@ -189,12 +189,9 @@ impl<D: DockerApi> Controller<D> {
             if tokio::time::Instant::now() >= deadline {
                 return Err(OperationError::ConvergenceTimeout);
             }
-            let observed = tokio::time::timeout_at(
-                deadline,
-                self.observe_with_retry(operation, cancellation, deadline),
-            )
-            .await
-            .map_err(|_| OperationError::ConvergenceTimeout)??;
+            let observed = self
+                .observe_with_retry(operation, cancellation, deadline)
+                .await?;
             self.check_current(operation).await?;
             self.store
                 .record_health(&operation.id, &observed)
@@ -230,12 +227,8 @@ impl<D: DockerApi> Controller<D> {
                 }
                 return Ok(());
             };
-            tokio::time::timeout_at(
-                deadline,
-                self.execute_action(action, operation, &ownership, cancellation),
-            )
-            .await
-            .map_err(|_| OperationError::ConvergenceTimeout)??;
+            self.execute_action(action, operation, &ownership, cancellation, deadline)
+                .await?;
         }
     }
 
