@@ -41,8 +41,10 @@ public_url = "https://piqueld.example.com"
 ```
 
 Terminate HTTPS at an external reverse proxy and forward requests to a configured
-piqueld listener. No forwarded-header trust configuration is needed: WebAuthn and
-CSRF checks use the explicitly configured origin. Restrict access to the proxy's
+piqueld listener. Keep both the proxy and piqueld reachable only from trusted
+networks, such as a tailnet or LAN; piqueld must never be exposed to the
+internet. No forwarded-header trust configuration is needed: WebAuthn and CSRF
+checks use the explicitly configured origin. Restrict access to the proxy's
 unencrypted upstream as appropriate for your deployment. `http://localhost:7845`
 is the development default. Use `localhost`, not an IP address, for browser login.
 Tailscale transport encryption alone does not make an HTTP website a secure
@@ -105,13 +107,17 @@ ensure transport encryption. HTTPS, loopback HTTP, and Unix sockets need no opt-
 The browser still uses the configured HTTPS `auth.public_url` for passkeys.
 Library callers can opt in with `Client::with_insecure_http()`.
 
-`login` prints a browser URL and code. Sign in with a passkey at that URL, enter
-the code from your terminal, and explicitly approve the CLI. Only approve a code
-from a terminal you started yourself: anyone who can reach the daemon can start
-a device login, and approval grants that requester your account's access. The pending request
-expires after ten minutes. The CLI polls using a separate secret; the displayed
-code alone cannot retrieve its credential. Approval does not create an account;
-an invitation must be redeemed first.
+`login` prints a browser URL, a code, and the network address the daemon sees
+the request coming from ("the daemon's local Unix socket" over the socket). Sign
+in with a passkey at that URL and enter the code. The dashboard then shows where
+the request came from and when it started; approve only if the address matches
+the one your terminal printed. Anyone who can reach the daemon can start a device
+login, and approval grants that requester your account's access. Behind a reverse
+proxy, every request shows the proxy's address, so the comparison cannot tell
+callers apart; check that the code came from your own terminal. The pending
+request expires after ten minutes. The CLI polls using a separate secret; the
+displayed code alone cannot retrieve its credential. Approval does not create an
+account; an invitation must be redeemed first.
 
 Credentials are stored separately from connection profiles, in
 `$XDG_CONFIG_HOME/piqueld/credentials.json` (default
@@ -160,7 +166,7 @@ still works when the server has already invalidated the session.
 
 The generated [OpenAPI contract](openapi-v1.json) documents `/api/v1/auth`:
 status, current account, registration and login ceremonies, logout, the account
-directory, management commands, and device start/poll/approve operations.
+directory, management commands, and device start/poll/inspect/approve operations.
 `POST /auth/manage` accepts a tagged `action`; all authenticated accounts can use
 all actions. Management responses never return existing credential secrets.
 The device protocol uses the device-code interaction pattern; the JSON endpoints
@@ -175,14 +181,15 @@ the exact configured origin, RP ID, credential, and immutable user handle.
 The pinned `webauthn-rs-core` integration requires OpenSSL and pkg-config for native
 builds; the Nix packages and development shell provide them.
 
-Public registration, login, and device-start requests share limits of 30 starts
-per TCP peer per minute and 60 per daemon per minute, across all listeners. IPv6
-peers are grouped by /64 prefix. Unix
-socket callers share one peer bucket. Excess requests receive HTTP 429 and
-`Retry-After: 60`; ongoing ceremonies and authenticated API work are unaffected.
-The global budget keeps admitted pending requests below the in-memory capacity.
-Forwarded IP headers are deliberately ignored: callers behind the same reverse
-proxy share its allowance. On publicly reachable deployments, also apply per-client
-limits at the trusted proxy; sustained or distributed traffic can still consume
-the daemon's admission budget. Limits reset on daemon restart, along with pending
-ceremonies and device requests.
+Public registration, login, and device-start requests are limited to 30 starts
+per TCP peer per minute, across all listeners. IPv6 peers are grouped by /64
+prefix, and Unix socket callers share one peer bucket. Excess requests receive
+HTTP 429 and `Retry-After: 60`; ongoing ceremonies and authenticated API work are
+unaffected. There is no daemon-wide limit, so one caller cannot block sign-in for
+everyone else. Forwarded IP headers are deliberately ignored: callers behind the
+same reverse proxy share its allowance. Limits reset on daemon restart, along
+with pending ceremonies and device requests.
+
+Never expose piqueld to the internet, including through a reverse proxy. These
+limits protect a trusted network from accidents, not a public endpoint from
+abuse. Pending ceremonies and device requests have fixed in-memory capacities.
