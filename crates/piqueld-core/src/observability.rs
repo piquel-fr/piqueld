@@ -85,7 +85,7 @@ pub struct DaemonStats {
     pub cpu_percent: Option<f64>,
     /// Main database file size.
     pub database_bytes: u64,
-    /// SQLite write-ahead log size.
+    /// `SQLite` write-ahead log size.
     pub wal_bytes: u64,
     /// Free bytes available to this process on the data filesystem.
     pub available_disk_bytes: Option<u64>,

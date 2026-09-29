@@ -1079,7 +1079,7 @@
             "type": "integer"
           },
           "wal_bytes": {
-            "description": "SQLite write-ahead log size.",
+            "description": "`SQLite` write-ahead log size.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -2049,7 +2049,7 @@
                 "type": "integer"
               },
               "wal_bytes": {
-                "description": "SQLite write-ahead log size.",
+                "description": "`SQLite` write-ahead log size.",
                 "format": "int64",
                 "minimum": 0,
                 "type": "integer"
