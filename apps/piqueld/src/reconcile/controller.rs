@@ -144,11 +144,42 @@ impl<D: DockerApi> Controller<D> {
         self.execute_operation(operation, cancellation).await?;
         if operation.kind == OperationKind::Delete {
             let names = self.store.secret_names(&operation.application_id).await?;
-            self.docker
-                .remove_secrets(&names, &self.ownership_labels(&operation.application_id))
-                .await?;
+            if !names.is_empty() {
+                self.remove_secrets(operation, &names).await?;
+            }
         }
         Ok(())
+    }
+
+    /// Journals retained secret removal like other runtime mutations.
+    async fn remove_secrets(
+        &self,
+        operation: &Operation,
+        names: &[String],
+    ) -> Result<(), OperationError> {
+        let journal = self
+            .store
+            .begin_action(Some(&operation.id), "remove_secrets", None)
+            .await?;
+        let result = match self.store.action_request(&journal, 1).await {
+            Ok(()) => self
+                .docker
+                .remove_secrets(names, &self.ownership_labels(&operation.application_id))
+                .await
+                .map_err(OperationError::from),
+            Err(error) => Err(error.into()),
+        };
+        self.store
+            .finish_action(
+                &journal,
+                result.as_ref().err().map(OperationError::diagnostic),
+            )
+            .await?;
+        result?;
+        self.store
+            .mutation_event(&operation.id)
+            .await
+            .map_err(OperationError::from)
     }
 
     /// Plans from fresh observations until no work remains. Only desired state and

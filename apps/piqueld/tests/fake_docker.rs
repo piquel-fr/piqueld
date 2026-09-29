@@ -37,6 +37,7 @@ use tokio_util::sync::CancellationToken;
 struct FakeDocker {
     observed: Arc<Mutex<ObservedApplication>>,
     secret_values: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    fail_secret_removal: Arc<AtomicBool>,
     registry: Arc<Mutex<RegistryState>>,
     deny_network_removal: Arc<AtomicBool>,
     fail_observations: Arc<AtomicBool>,
@@ -232,6 +233,9 @@ impl DockerApi for FakeDocker {
         names: &[String],
         _ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
+        if self.fail_secret_removal.load(Ordering::SeqCst) {
+            return Err(DockerError::Request("remove secrets"));
+        }
         let mut values = self.secret_values.lock().await;
         for name in names {
             values.remove(name);
@@ -2396,4 +2400,57 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
             .is_empty()
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn application_deletion_journals_secret_cleanup_failures() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let first = applications
+        .apply(manifest().validate().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    harness
+        .store
+        .put_secret(&first.application_id, "token", 0, b"value".to_vec())
+        .await
+        .unwrap();
+    harness
+        .docker
+        .fail_secret_removal
+        .store(true, Ordering::SeqCst);
+    let deletion = applications
+        .delete(&first.application_id, Some(1))
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let events = harness
+        .store
+        .filtered_events(
+            &piqueld_core::observability::EventFilter {
+                operation_id: Some(deletion.id.clone()),
+                ..Default::default()
+            },
+            None,
+            100,
+        )
+        .await
+        .unwrap()
+        .items;
+    let phases = |kind: &str| {
+        events
+            .iter()
+            .filter(|event| event.kind == kind && event.phase.as_deref() == Some("remove_secrets"))
+            .count()
+    };
+    assert_eq!(phases("action_requested"), 1, "{events:#?}");
+    assert!(events.iter().any(|event| event.kind == "action_failed"
+        && event.phase.as_deref() == Some("remove_secrets")
+        && event.error_code.as_deref() == Some("docker_request_failed")));
+    assert!(harness.store.get(&first.application_id).await.is_ok());
 }
