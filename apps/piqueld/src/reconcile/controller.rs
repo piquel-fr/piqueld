@@ -335,10 +335,15 @@ impl<D: DockerApi> Controller<D> {
             return Ok(());
         }
         self.store.progress(&operation.id, "routing", None).await?;
+        // Staging rejects an operation that a newer request replaced while it
+        // waited, including behind another application's gateway update.
         if let Some(ingress) = &self.ingress {
             Box::pin(ingress.apply(operation, routes, ready))
                 .await
-                .map_err(OperationError::Ingress)?;
+                .map_err(|error| match error.downcast_ref::<StoreError>() {
+                    Some(StoreError::IllegalTransition) => OperationError::Superseded,
+                    _ => OperationError::Ingress(error),
+                })?;
         } else {
             self.store
                 .stage_routes(
@@ -347,7 +352,11 @@ impl<D: DockerApi> Controller<D> {
                     ready,
                     Some(&operation.id),
                 )
-                .await?;
+                .await
+                .map_err(|error| match error {
+                    StoreError::IllegalTransition => OperationError::Superseded,
+                    other => other.into(),
+                })?;
             let table = self.store.routing_table().await?;
             self.store.acknowledge_routes(&table).await?;
         }
