@@ -302,7 +302,9 @@ impl Ingress {
 
     /// Both containers and the rollback configuration survive cancellation or a
     /// daemon crash. Reconciliation restores the old gateway if cutover did not
-    /// finish; disablement removes all three managed container names.
+    /// finish; disablement removes all three managed container names. Discarding
+    /// the rollback configuration commits a started replacement, so failing to
+    /// clean up the old container never reverts a serving gateway.
     /// Defers replacement while retained routes lack verified networks, allowing
     /// the running gateway to keep its attachments and accept other route changes.
     pub(super) async fn replace_gateway(
@@ -354,8 +356,7 @@ impl Ingress {
             // Docker cannot reliably rename a running overlay endpoint.
             self.rename_container(&self.name, &previous).await?;
             self.rename_container(&next, &self.name).await?;
-            self.start_gateway(table).await?;
-            self.remove_container(&previous).await
+            self.start_gateway(table).await
         }
         .await;
         if let Err(error) = result {
@@ -363,6 +364,11 @@ impl Ingress {
                 format!("gateway replacement failed ({error:#}); rollback also failed")
             })?;
             return Err(error.context("gateway replacement failed; previous gateway restored"));
+        }
+        tokio::fs::remove_file(self.rollback_path()).await?;
+        if let Err(error) = self.remove_container(&previous).await {
+            tracing::warn!(gateway=%self.name, error=%format!("{error:#}"),
+                "replaced gateway could not be removed; recovery retries the cleanup");
         }
         Ok(())
     }
@@ -424,6 +430,10 @@ impl Ingress {
         let previous = format!("{}-previous", self.name);
         let next = format!("{}-next", self.name);
         if self.named_container(&previous).await?.is_some() {
+            if !tokio::fs::try_exists(self.rollback_path()).await? {
+                // The replacement committed; only its cleanup was interrupted.
+                return self.remove_container(&previous).await;
+            }
             self.remove_container(&self.name).await?;
             self.restore_configuration().await?;
             self.rename_container(&previous, &self.name).await?;
@@ -444,8 +454,12 @@ impl Ingress {
         Ok(())
     }
 
+    fn rollback_path(&self) -> std::path::PathBuf {
+        self.directory.join("config/caddy/rollback.json")
+    }
+
     async fn restore_configuration(&self) -> Result<()> {
-        let bytes = tokio::fs::read(self.directory.join("config/caddy/rollback.json")).await?;
+        let bytes = tokio::fs::read(self.rollback_path()).await?;
         self.write_configuration("autosave.json", &serde_json::from_slice(&bytes)?)
             .await
     }

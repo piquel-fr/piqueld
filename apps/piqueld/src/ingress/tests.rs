@@ -480,6 +480,35 @@ impl Scenario {
         );
     }
 
+    /// A committed replacement is never reverted because cleanup failed.
+    async fn committed_replacement_survives_stale_cleanup(&self) {
+        let previous = format!("{}-previous", self.gateway.name);
+        let replaced = self.gateway.container().await.unwrap().unwrap()["Id"].clone();
+        self.gateway
+            .docker
+            .json(
+                Method::POST,
+                &format!("/containers/create?name={previous}"),
+                Some(&self.gateway.container_spec()),
+            )
+            .await
+            .unwrap();
+        self.gateway.recover_gateway().await.unwrap();
+        assert_eq!(
+            self.gateway.container().await.unwrap().unwrap()["Id"],
+            replaced
+        );
+        assert!(
+            self.gateway
+                .docker
+                .inspect(&format!("/containers/{previous}/json"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(self.body("one.example.test").await, "first backend");
+    }
+
     async fn unavailable_application(&self) -> (ApplicationId, NormalizedApplication) {
         let app = application("unavailable", "unavailable.example.test", "unavailable");
         let (MutationResponse::Saved(saved), _) = self
@@ -871,6 +900,9 @@ async fn ingress_caddy_routes_tls_network_changes_and_disable() {
     scenario.persistent_traffic_survives_reload().await;
     scenario.replacement_preserves_unverified_attachment().await;
     scenario.replacement_failure_and_recovery().await;
+    scenario
+        .committed_replacement_survives_stale_cleanup()
+        .await;
     scenario
         .unavailable_network_does_not_block_withdrawals()
         .await;
