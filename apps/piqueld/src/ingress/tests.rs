@@ -167,6 +167,17 @@ impl Scenario {
             .unwrap()
     }
 
+    /// Caddy's graceful reload may close a connection it accepted just before
+    /// the handoff without reading the request. Clients retry such idempotent
+    /// requests once; routing itself must still answer on that retry.
+    async fn body_across_reload(&self, host: &str) -> String {
+        match self.client.get(self.url(host)).send().await {
+            Ok(response) => response.text().await.unwrap(),
+            Err(error) if error.is_request() && !error.is_timeout() => self.body(host).await,
+            Err(error) => panic!("request failed across reload: {error:?}"),
+        }
+    }
+
     async fn assert_public_routing(&self) {
         let container = self.gateway.container().await.unwrap().unwrap();
         assert_eq!(
@@ -219,7 +230,10 @@ impl Scenario {
             async {
                 let mut requests = 0;
                 while !completed.load(std::sync::atomic::Ordering::SeqCst) {
-                    assert_eq!(self.body("one.example.test").await, "first backend");
+                    assert_eq!(
+                        self.body_across_reload("one.example.test").await,
+                        "first backend"
+                    );
                     requests += 1;
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
