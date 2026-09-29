@@ -195,6 +195,12 @@ impl Auth {
             None
         };
         tx.commit().await?;
+        tracing::info!(
+            user_id = %user.id,
+            username = %user.username,
+            new_account = is_new,
+            "registered passkey"
+        );
         Ok((user, token))
     }
     pub(crate) async fn login_start(&self, binding: &str) -> Result<Ceremony> {
@@ -247,6 +253,7 @@ impl Auth {
         )
         .await?;
         tx.commit().await?;
+        tracing::info!(user_id = %user.id, username = %user.username, "signed in with passkey");
         Ok((user, token))
     }
 }

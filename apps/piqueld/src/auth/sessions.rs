@@ -10,6 +10,7 @@ pub(crate) struct Identity {
 }
 pub(super) struct Device {
     user_code: String,
+    requester: Option<std::net::IpAddr>,
     expires: i64,
     pub(super) next_poll: i64,
     approved_by: Option<String>,
@@ -61,7 +62,10 @@ impl Auth {
         tx.commit().await?;
         Ok(())
     }
-    pub(crate) async fn device_start(&self) -> Result<DeviceStart> {
+    pub(crate) async fn device_start(
+        &self,
+        requester: Option<std::net::IpAddr>,
+    ) -> Result<DeviceStart> {
         let mut devices = self.0.devices.lock().await;
         devices.retain(|_, device| device.expires > Self::now());
         if devices.len() >= MAX_PENDING {
@@ -85,6 +89,7 @@ impl Auth {
             Self::hash(&device_code),
             Device {
                 user_code: user_code.clone(),
+                requester,
                 expires: Self::now() + 600,
                 next_poll: 0,
                 approved_by: None,
@@ -109,6 +114,12 @@ impl Auth {
             return Err(AuthError::Invalid("device code has already been approved"));
         }
         device.approved_by = Some(identity.credential_id.clone());
+        tracing::info!(
+            user_id = %identity.user.id,
+            username = %identity.user.username,
+            requester = ?device.requester,
+            "approved CLI device login"
+        );
         Ok(())
     }
     pub(crate) async fn device_poll(&self, code: &str) -> Result<DeviceToken> {

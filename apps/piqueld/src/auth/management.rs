@@ -39,6 +39,7 @@ impl Auth {
             Manage::DeleteUser { .. } | Manage::RemovePasskey { .. }
         );
         let mut result = Managed::default();
+        let action = format!("{command:?}");
         match command {
             Manage::UpdateUser {
                 user_id,
@@ -129,6 +130,7 @@ impl Auth {
             return Err(AuthError::Invalid("the last passkey cannot be removed"));
         }
         tx.commit().await?;
+        tracing::info!(actor, action, "account management action applied");
         Ok(result)
     }
 }

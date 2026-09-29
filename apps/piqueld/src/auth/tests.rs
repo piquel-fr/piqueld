@@ -312,7 +312,7 @@ async fn device_approval_is_explicit_single_use_and_bound_to_a_live_session() {
     let f = Fixture::new().await;
     let (_, token) = f.account("alice", "browser", Some(Auth::now() + DAY)).await;
     let identity = f.auth.authenticate(&token).await.unwrap();
-    let start = f.auth.device_start().await.unwrap();
+    let start = f.auth.device_start(None).await.unwrap();
     assert_eq!(
         f.auth.device_poll(&start.device_code).await.unwrap().status,
         "authorization_pending"
@@ -345,7 +345,7 @@ async fn device_approval_is_explicit_single_use_and_bound_to_a_live_session() {
         .await
         .unwrap();
     assert!(f.auth.device_poll(&start.device_code).await.is_err());
-    let start = f.auth.device_start().await.unwrap();
+    let start = f.auth.device_start(None).await.unwrap();
     f.auth
         .device_approve(&start.user_code, &identity)
         .await
@@ -595,4 +595,44 @@ async fn login_start_limits_share_listeners_ignore_forwarded_ips_and_leave_sessi
         router.oneshot(request).await.unwrap().status(),
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn https_cookies_use_host_prefix_and_ignore_unprefixed_names() {
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+    };
+    use tower::ServiceExt;
+    let f = Fixture::new().await;
+    let (_, token) = f.account("alice", "browser", Some(Auth::now() + DAY)).await;
+    let auth = Auth::new(&f.auth.0.store, "https://piqueld.example").unwrap();
+    assert_eq!(
+        auth.cookie("piqueld_session", "secret", 60),
+        "__Host-piqueld_session=secret; Path=/; HttpOnly; SameSite=Strict; Max-Age=60; Secure"
+    );
+    assert_eq!(
+        f.auth.cookie("piqueld_session", "secret", 60),
+        "piqueld_session=secret; Path=/; HttpOnly; SameSite=Strict; Max-Age=60"
+    );
+    let router = crate::api::http::protect(
+        Router::new().route("/api/v1/private", get(|| async { "ok" })),
+        auth,
+    );
+    for (cookie, expected) in [
+        (format!("piqueld_session={token}"), StatusCode::UNAUTHORIZED),
+        (format!("__Host-piqueld_session={token}"), StatusCode::OK),
+    ] {
+        let request = Request::builder()
+            .uri("/api/v1/private")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            expected
+        );
+    }
 }

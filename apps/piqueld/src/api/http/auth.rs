@@ -3,7 +3,7 @@ use super::ApiError;
 use crate::auth::{Auth, AuthError, Identity};
 use axum::{
     Extension, Json, Router,
-    extract::Request,
+    extract::{ConnectInfo, Request},
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -12,6 +12,7 @@ use piqueld_core::auth::{
     AuthStatus, Ceremony, CeremonyFinish, DeviceApprove, DevicePoll, DeviceStart, DeviceToken,
     Directory, Manage, Managed, RegistrationStart, User,
 };
+use std::net::SocketAddr;
 
 /// Wraps an API router with mandatory authentication and the authentication
 /// service. Apply this boundary to every listener before serving requests.
@@ -24,7 +25,12 @@ pub fn protect(router: Router, auth: Auth) -> Router {
 impl From<AuthError> for ApiError {
     fn from(error: AuthError) -> Self {
         match error {
-            AuthError::Unauthorized | AuthError::Webauthn(_) => Self::new(
+            AuthError::Webauthn(ref source) => {
+                // Includes counter regressions that can indicate a cloned authenticator.
+                tracing::warn!(error = %source, "passkey verification failed");
+                Self::from(AuthError::Unauthorized)
+            }
+            AuthError::Unauthorized => Self::new(
                 StatusCode::UNAUTHORIZED,
                 "authentication_required",
                 "Sign in with a passkey or run piquelctl login",
@@ -102,7 +108,7 @@ async fn authenticate(
     {
         let peer = request
             .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .get::<ConnectInfo<SocketAddr>>()
             .map(|peer| peer.0.ip());
         if let Err(error) = auth.admit_start(peer).await {
             let mut response = ApiError::from(error).into_response();
@@ -121,7 +127,7 @@ async fn authenticate(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    let session = cookie(request.headers(), "piqueld_session");
+    let session = cookie(request.headers(), &auth.cookie_name("piqueld_session"));
     let uses_cookie = bearer.is_none() && session.is_some();
     let origin = request
         .headers()
@@ -174,8 +180,9 @@ fn session_response(auth: &Auth, user: User, token: Option<String>) -> Response 
     }
     response
 }
-fn binding(headers: &HeaderMap) -> Result<&str, ApiError> {
-    cookie(headers, "piqueld_ceremony").ok_or_else(|| AuthError::Unauthorized.into())
+fn binding<'a>(auth: &Auth, headers: &'a HeaderMap) -> Result<&'a str, ApiError> {
+    cookie(headers, &auth.cookie_name("piqueld_ceremony"))
+        .ok_or_else(|| AuthError::Unauthorized.into())
 }
 fn challenge_response(auth: &Auth, ceremony: Ceremony, binding: &str) -> Response {
     let mut response = Json(ceremony).into_response();
@@ -216,7 +223,7 @@ pub(super) async fn register_finish(
     Json(input): Json<CeremonyFinish>,
 ) -> Result<Response, ApiError> {
     let (user, token) = auth
-        .registration_finish(input, binding(&headers)?, identity.is_some())
+        .registration_finish(input, binding(&auth, &headers)?, identity.is_some())
         .await?;
     Ok(session_response(&auth, user, token))
 }
@@ -232,7 +239,7 @@ pub(super) async fn login_finish(
     headers: HeaderMap,
     Json(input): Json<CeremonyFinish>,
 ) -> Result<Response, ApiError> {
-    let (user, token) = auth.login_finish(input, binding(&headers)?).await?;
+    let (user, token) = auth.login_finish(input, binding(&auth, &headers)?).await?;
     Ok(session_response(&auth, user, Some(token)))
 }
 #[utoipa::path(post,path="/api/v1/auth/logout",operation_id="authLogout",responses((status=200,body=Managed)))]
@@ -264,8 +271,10 @@ pub(super) async fn manage(
 #[utoipa::path(post,path="/api/v1/auth/device/start",operation_id="authDeviceStart",responses((status=200,body=DeviceStart)))]
 pub(super) async fn device_start(
     Extension(auth): Extension<Auth>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
 ) -> Result<Json<DeviceStart>, ApiError> {
-    Ok(Json(auth.device_start().await?))
+    let requester = peer.map(|Extension(ConnectInfo(peer))| peer.ip());
+    Ok(Json(auth.device_start(requester).await?))
 }
 #[utoipa::path(post,path="/api/v1/auth/device/poll",operation_id="authDevicePoll",request_body=DevicePoll,responses((status=200,body=DeviceToken)))]
 pub(super) async fn device_poll(

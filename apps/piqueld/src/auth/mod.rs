@@ -203,9 +203,20 @@ impl Auth {
     pub(crate) fn origin(&self) -> &str {
         &self.0.origin
     }
+    /// Returns the cookie name for this origin. HTTPS origins use the `__Host-`
+    /// prefix so sibling subdomains, such as deployed applications, cannot set
+    /// or shadow piqueld cookies.
+    pub(crate) fn cookie_name(&self, name: &str) -> String {
+        if self.0.secure {
+            format!("__Host-{name}")
+        } else {
+            name.to_owned()
+        }
+    }
     pub(crate) fn cookie(&self, name: &str, secret: &str, age: i64) -> String {
         format!(
-            "{name}={secret}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}{}",
+            "{}={secret}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}{}",
+            self.cookie_name(name),
             if self.0.secure { "; Secure" } else { "" }
         )
     }
