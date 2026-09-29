@@ -3,10 +3,11 @@ use super::{
     Notify, OperationState, Plan, PlanRequest, StoreError, StoredApplication, blocked_plan_message,
 };
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::Instrument;
 
 type Discovered = (bool, Vec<(StoredApplication, String)>);
+type ScanFailures = Arc<tokio::sync::Mutex<HashSet<(piqueld_core::ApplicationId, String)>>>;
 
 impl<D: DockerApi> Controller<D> {
     /// One event loop polls application futures and discovery concurrently. No
@@ -43,6 +44,7 @@ impl<D: DockerApi> Controller<D> {
                 discovery = Some(
                     async move {
                         if recover {
+                            self.store.interrupt_actions(None).await?;
                             self.store.recover_interrupted().await?;
                             self.store.recover_builds().await?;
                         }
@@ -67,11 +69,13 @@ impl<D: DockerApi> Controller<D> {
                     match result {
                         Ok((full,applications))=> {
                             recovered=true;
+                            let failures = ScanFailures::default();
                             for (application,operation_id) in applications {
                                 let id=application.application.id().clone();
                                 if full && health_active.insert(id.clone()) {
                                     let health_id=id.clone();
                                     let health_operation=operation_id.clone();
+                                    let health_failures=Arc::clone(&failures);
                                     let span = tracing::debug_span!("application_health", application_id = %id, operation_id = %operation_id, generation = application.generation);
                                     health_jobs.push(async move {
                                         let result=async {
@@ -79,7 +83,7 @@ impl<D: DockerApi> Controller<D> {
                                             let observed=self.docker.observe(&health_id).await.map_err(super::OperationError::from)?;
                                             self.store.record_health(&health_operation,&observed).await.map_err(super::OperationError::from)
                                         }.await;
-                                        (health_id,health_operation,application.generation,result)
+                                        (health_id,health_operation,application.generation,result,health_failures)
                                     }.instrument(span));
                                 }
 
@@ -90,22 +94,31 @@ impl<D: DockerApi> Controller<D> {
                                 }
                                 let token=cancellation.child_token();
                                 active.insert(id.clone(),(operation_id,token.clone()));
+                                let scan_failures=Arc::clone(&failures);
                                 jobs.push(async move {
-                                    let result=Box::pin(self.scan_application(&application,&token)).await;
+                                    let result=Box::pin(self.scan_application(&application,&token,&scan_failures)).await;
                                     (id,result)
                                 });
                             }
                         }
-                        Err(error)=>tracing::error!(%error,"application discovery failed"),
+                        Err(error)=>{
+                            let failure=super::OperationError::Journal(error);
+                            self.store.report_diagnostic(&failure.diagnostic(),None).await;
+                        },
                     }
                 }
-                Some((id,operation_id,generation,result))=health_jobs.next(), if !health_jobs.is_empty()=> {
+                Some((id,operation_id,generation,result,failures))=health_jobs.next(), if !health_jobs.is_empty()=> {
                     health_active.remove(&id);
-                    if let Err(error)=result { tracing::warn!(application_id=%id,%operation_id,generation,%error,"health reporting failed"); }
+                    if let Err(error)=result {
+                        if let Err(report_error)=self.record_scan_diagnostic(&id,&error.diagnostic(),&failures).await {
+                            tracing::error!(application_id=%id,error=?report_error,"health diagnostic could not be persisted");
+                        }
+                        tracing::warn!(application_id=%id,%operation_id,generation,%error,"health reporting failed");
+                    }
                 }
                 Some((id,result))=jobs.next(), if !jobs.is_empty()=> {
                     active.remove(&id);
-                    if let Err(error)=result { tracing::warn!(application_id=%id,%error,"application reconciliation failed"); }
+                    if let Err(error)=result { let failure=super::OperationError::Journal(error); self.store.report_diagnostic(&failure.diagnostic(),Some(&id)).await; }
                     requested=true;
                 }
             }
@@ -144,10 +157,12 @@ impl<D: DockerApi> Controller<D> {
     pub async fn scan(&self, cancellation: &CancellationToken) -> Result<(), StoreError> {
         let applications = self.discover(true).await?;
         let mut jobs = FuturesUnordered::new();
+        let failures = ScanFailures::default();
         for (application, _) in applications {
-            jobs.push(
-                async move { Box::pin(self.scan_application(&application, cancellation)).await },
-            );
+            let scan_failures = Arc::clone(&failures);
+            jobs.push(async move {
+                Box::pin(self.scan_application(&application, cancellation, &scan_failures)).await
+            });
         }
         while let Some(result) = jobs.next().await {
             result?;
@@ -185,6 +200,7 @@ impl<D: DockerApi> Controller<D> {
         &self,
         application: &StoredApplication,
         cancellation: &CancellationToken,
+        failures: &ScanFailures,
     ) -> Result<(), StoreError> {
         let Some(latest) = self
             .store
@@ -193,12 +209,8 @@ impl<D: DockerApi> Controller<D> {
         else {
             return Ok(());
         };
-        if let Err(error) = self
-            .maintain_active(application.application.id(), &latest.id)
-            .await
-        {
-            tracing::warn!(%error,"active target repair failed");
-        }
+        self.repair_before_execution(application, &latest.id, failures)
+            .await?;
         if latest.state == OperationState::Requested
             || (latest.state == OperationState::Running && latest.error_code.is_none())
         {
@@ -216,7 +228,12 @@ impl<D: DockerApi> Controller<D> {
         let observed = match self.docker.observe(application.application.id()).await {
             Ok(observed) => observed,
             Err(error) => {
-                tracing::warn!(%error,"could not observe application health");
+                self.record_scan_diagnostic(
+                    application.application.id(),
+                    &super::OperationError::from(error).diagnostic(),
+                    failures,
+                )
+                .await?;
                 return Ok(());
             }
         };
@@ -284,6 +301,50 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    async fn repair_before_execution(
+        &self,
+        application: &StoredApplication,
+        operation_id: &str,
+        failures: &ScanFailures,
+    ) -> Result<(), StoreError> {
+        if let Err(error) = self
+            .maintain_active(application.application.id(), operation_id)
+            .await
+        {
+            if let super::OperationError::Journal(error) = error {
+                return Err(error);
+            }
+            self.record_scan_diagnostic(
+                application.application.id(),
+                &error.diagnostic(),
+                failures,
+            )
+            .await?;
+            tracing::warn!(%error,"active target repair failed");
+        }
+        Ok(())
+    }
+
+    // A health job and reconciliation can observe the same failure concurrently.
+    // Keep one diagnostic per application/code in their shared discovery pass.
+    async fn record_scan_diagnostic(
+        &self,
+        application: &piqueld_core::ApplicationId,
+        diagnostic: &piqueld_core::observability::Diagnostic,
+        failures: &ScanFailures,
+    ) -> Result<(), StoreError> {
+        let key = (application.clone(), diagnostic.code.clone());
+        let mut recorded = failures.lock().await;
+        if recorded.contains(&key) {
+            return Ok(());
+        }
+        self.store
+            .record_diagnostic(diagnostic, None, Some(application))
+            .await?;
+        recorded.insert(key);
+        Ok(())
+    }
+
     async fn maintain_active(
         &self,
         id: &piqueld_core::ApplicationId,
@@ -327,28 +388,36 @@ impl<D: DockerApi> Controller<D> {
             return Ok(());
         }
         let ownership = self.ownership_labels(id);
+        let journal = self
+            .store
+            .begin_action(
+                Some(operation_id),
+                action.kind.name(),
+                Some(action.kind.resource_name()),
+            )
+            .await?;
+        if let Err(error) = self.store.action_request(&journal, 1).await {
+            let failure = super::OperationError::from(error);
+            self.store
+                .finish_action(&journal, Some(failure.diagnostic()))
+                .await?;
+            return Err(failure);
+        }
         let result = self
             .mutate_action(&action.kind, &ownership)
             .await
             .map_err(super::OperationError::from);
-        let error = result
-            .as_ref()
-            .err()
-            .map(|error| (error.code(), error.message()));
         self.store
-            .maintenance_event(
-                operation_id,
-                action.kind.name(),
-                action.kind.resource_name(),
-                error
-                    .as_ref()
-                    .map(|(code, message)| (*code, message.as_str())),
+            .finish_action(
+                &journal,
+                result.as_ref().err().map(super::OperationError::diagnostic),
             )
             .await?;
         result
     }
 
     async fn prune_history(&self, operation_days: u64, event_days: u64) -> Result<(), StoreError> {
+        self.store.prune_daemon_events().await?;
         self.store.prune_receipts().await?;
         self.store.prune_build_logs().await?;
         let now = std::time::SystemTime::now()

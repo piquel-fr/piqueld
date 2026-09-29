@@ -1,5 +1,5 @@
 //! Shared process execution for Git and Docker, retaining only diagnostic tails.
-use anyhow::{Context, bail};
+use anyhow::Context;
 use std::{collections::VecDeque, process::Stdio};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -7,6 +7,16 @@ use tokio::{
 };
 
 pub(crate) struct LoggedCommand;
+
+/// Typed facts are safe to expose; output tails remain internal diagnostics.
+#[derive(Debug, thiserror::Error)]
+#[error("{operation} failed ({status}):\nstdout: {stdout}\nstderr: {stderr}")]
+pub(crate) struct CommandFailure {
+    pub(crate) operation: &'static str,
+    pub(crate) status: std::process::ExitStatus,
+    stdout: String,
+    stderr: String,
+}
 impl LoggedCommand {
     const TAIL_BYTES: usize = 8192;
 
@@ -37,11 +47,13 @@ impl LoggedCommand {
         )
         .with_context(|| operation)?;
         if !status.success() {
-            bail!(
-                "{operation} failed ({status}):\nstdout: {}\nstderr: {}",
-                String::from_utf8_lossy(&stdout),
-                String::from_utf8_lossy(&stderr)
-            );
+            return Err(CommandFailure {
+                operation,
+                status,
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            }
+            .into());
         }
         Ok(())
     }
@@ -101,5 +113,28 @@ mod tests {
         assert!(error.contains("�stdout tail"));
         assert!(error.contains("�stderr tail"));
         assert!(error.len() < LoggedCommand::TAIL_BYTES * 2 + 200);
+    }
+
+    #[tokio::test]
+    async fn command_diagnostics_keep_stage_and_exit_code_without_output() {
+        let error = LoggedCommand::run(
+            Command::new("sh").args(["-c", "printf private-token >&2; exit 7"]),
+            "clone Git repository",
+        )
+        .await
+        .unwrap_err();
+        let diagnostic = crate::application::BoundaryError::GitBuild(error).diagnostic();
+        assert_eq!(
+            diagnostic.causes,
+            [
+                "Command stage: clone Git repository",
+                "Command exit code: 7"
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&diagnostic)
+                .unwrap()
+                .contains("private-token")
+        );
     }
 }

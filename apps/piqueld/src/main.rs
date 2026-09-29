@@ -50,6 +50,14 @@ async fn main() -> Result<()> {
     let runtime_dir = piqueld::RuntimeDir::acquire(&config.server.runtime_dir).await?;
     let tcp_listeners = config.server.bind_tcp().await?;
     let unix_listener = runtime_dir.bind_api().await?;
+    let mut metrics_listeners = Vec::new();
+    for address in &config.metrics.listen {
+        metrics_listeners.push(
+            TcpListener::bind(address)
+                .await
+                .with_context(|| format!("failed to bind metrics listener {address}"))?,
+        );
+    }
 
     let cancellation = CancellationToken::new();
     let (state, controller) = ApplicationService::start(&config, cancellation.clone()).await?;
@@ -66,14 +74,30 @@ async fn main() -> Result<()> {
 
     let tcp_apis: Vec<_> = tcp_listeners
         .into_iter()
-        .map(|listener| spawn_tcp_api(listener, state.clone(), ui_assets, cancellation.clone()))
+        .map(|listener| {
+            spawn_tcp_api(
+                listener,
+                piqueld::api::http::web_router(state.clone(), ui_assets),
+                cancellation.clone(),
+            )
+        })
+        .collect();
+    let metrics_apis: Vec<_> = metrics_listeners
+        .into_iter()
+        .map(|listener| {
+            spawn_tcp_api(
+                listener,
+                piqueld::api::http::metrics_router(state.clone()),
+                cancellation.clone(),
+            )
+        })
         .collect();
     let unix_api = spawn_unix_api(unix_listener, state, cancellation.clone());
 
     piqueld::run_until_cancelled(cancellation).await?;
 
     signal_task.await.context("shutdown task failed")??;
-    for tcp_api in tcp_apis {
+    for tcp_api in tcp_apis.into_iter().chain(metrics_apis) {
         tcp_api
             .await
             .context("TCP API task failed")?
@@ -135,15 +159,14 @@ fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> 
 
 fn spawn_tcp_api(
     listener: TcpListener,
-    state: ApiState,
-    ui_assets: UiAssets,
+    router: axum::Router,
     cancellation: CancellationToken,
 ) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
     info!(address = ?listener.local_addr(), "HTTP API listening");
     tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(listener, piqueld::api::http::web_router(state, ui_assets))
+            axum::serve(listener, router)
                 .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);

@@ -318,16 +318,15 @@ impl Client {
         cursor: Option<&str>,
         limit: u16,
     ) -> Result<Page<piqueld_core::Event>, ClientError> {
-        if !(1..=100).contains(&limit) {
-            return Err(invalid_request("event limit must be between 1 and 100"));
-        }
-        generated_result(
-            self.generated
-                .list_events(application_id, cursor, Some(i64::from(limit)))
-                .await,
+        self.filtered_events(
+            &piqueld_core::observability::EventFilter {
+                application_id: application_id.map(str::to_owned),
+                ..Default::default()
+            },
+            cursor,
+            limit,
         )
         .await
-        .map(|response| response.data)
     }
 }
 

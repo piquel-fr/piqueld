@@ -182,10 +182,28 @@ impl Store {
             return Err(StoreError::IllegalTransition);
         }
         let app_id = operation.application_id.as_str();
-        sqlx::query!("DELETE FROM events WHERE application_id=?1", app_id)
+        sqlx::query!(
+            "DELETE FROM notification_conditions WHERE application_id=?1",
+            app_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM dependency_observations WHERE key=?1", app_id)
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM active_actions WHERE application_id=?1", app_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        sqlx::query!(
+            "DELETE FROM events WHERE application_id=?1 AND scope='application'",
+            app_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
         sqlx::query!("DELETE FROM request_receipts WHERE json_extract(response_json,'$.Operation.application_id')=?1 OR json_extract(response_json,'$.Saved.application_id')=?1 OR json_extract(response_json,'$.Rename.application_id')=?1",app_id).execute(&mut *tx).await.map_err(StoreError::database)?;
         sqlx::query!(
             "DELETE FROM applications WHERE id=?1 AND delete_intent=1",

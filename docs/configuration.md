@@ -47,7 +47,10 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `reconciliation.scan_interval_seconds` | `60` |
 | `reconciliation.prepare_timeout_seconds` | `300` |
 | `reconciliation.convergence_timeout_seconds` | `120` |
-| `retention.event_days` | `30` (`0` disables event pruning, independently of operations) |
+| `retention.event_days` | `0` (application event pruning disabled) |
+| `retention.daemon_event_days` | `0` (daemon event pruning disabled) |
+| `metrics.listen` | `[]` (metrics-only listener disabled) |
+| `notifications.enabled` | `false` |
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
 
 Reconciliation intervals and timeouts are bounded to `1..=86400` seconds.
@@ -118,3 +121,6 @@ between tailnet nodes is encrypted by Tailscale; piqueld does not manage HTTPS,
 Tailscale Serve, enrollment, or certificates. Set `listen_mode = "localhost"`
 to remove the Tailscale listener, or `"off"` for Unix-socket-only access, and
 restart the daemon. Independently configured proxies can still expose localhost.
+
+See [observability](observability.md) for notification category switches, webhook
+destinations, metrics exposure, diagnostic ownership and retention semantics.

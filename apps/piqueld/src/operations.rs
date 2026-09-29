@@ -1,4 +1,5 @@
 //! Errors encountered while reconciling application operations.
+use piqueld_core::observability::DiagnosticCode;
 
 /// Sanitized failure returned while executing a durable operation.
 #[derive(Debug, thiserror::Error)]
@@ -78,33 +79,39 @@ impl OperationError {
     /// Returns the stable machine-readable failure code.
     #[must_use]
     pub fn code(&self) -> &'static str {
+        self.diagnostic_code().as_str()
+    }
+
+    /// Returns the typed classification used by diagnostic policy.
+    #[must_use]
+    pub fn diagnostic_code(&self) -> DiagnosticCode {
         match self {
-            Self::Docker(error) => error.operation_classification().code(),
-            Self::Journal(_) => "journal_unavailable",
+            Self::Docker(error) => error.diagnostic_code(),
+            Self::Journal(_) => DiagnosticCode::JournalUnavailable,
             Self::ManifestInput {
                 not_found: true, ..
             }
-            | Self::ManifestNotFound => "manifest_not_found",
+            | Self::ManifestNotFound => DiagnosticCode::ManifestNotFound,
             Self::ManifestInput {
                 not_found: false, ..
             }
-            | Self::ManifestInvalid => "manifest_invalid",
-            Self::GitBuildFailed(_) => "git_build_failed",
-            Self::Cancelled => "cancelled",
-            Self::Superseded => "superseded",
-            Self::OwnershipConflict => "ownership_conflict",
-            Self::DockerConfigurationConflict => "docker_configuration_conflict",
-            Self::SwarmManagerUnavailable => "swarm_manager_unavailable",
-            Self::SwarmTopologyUnsupported => "swarm_topology_unsupported",
-            Self::DockerUnavailable(_) => "docker_unavailable",
-            Self::ImageResolutionFailed(_) => "image_resolution_failed",
-            Self::ImageResolutionRejected(_) => "image_resolution_rejected",
-            Self::DockerRequestFailed(_) => "docker_request_failed",
-            Self::ValidationFailed(_) => "validation_failed",
-            Self::ManifestFetchFailed(_) => "manifest_fetch_failed",
-            Self::ServiceUpdateFailed => "service_update_failed",
-            Self::PlanBlocked(_) => "plan_blocked",
-            Self::ConvergenceTimeout => "convergence_timeout",
+            | Self::ManifestInvalid => DiagnosticCode::ManifestInvalid,
+            Self::GitBuildFailed(_) => DiagnosticCode::GitBuildFailed,
+            Self::Cancelled => DiagnosticCode::Cancelled,
+            Self::Superseded => DiagnosticCode::Superseded,
+            Self::OwnershipConflict => DiagnosticCode::OwnershipConflict,
+            Self::DockerConfigurationConflict => DiagnosticCode::DockerConfigurationConflict,
+            Self::SwarmManagerUnavailable => DiagnosticCode::SwarmManagerUnavailable,
+            Self::SwarmTopologyUnsupported => DiagnosticCode::SwarmTopologyUnsupported,
+            Self::DockerUnavailable(_) => DiagnosticCode::DockerUnavailable,
+            Self::ImageResolutionFailed(_) => DiagnosticCode::ImageResolutionFailed,
+            Self::ImageResolutionRejected(_) => DiagnosticCode::ImageResolutionRejected,
+            Self::DockerRequestFailed(_) => DiagnosticCode::DockerRequestFailed,
+            Self::ValidationFailed(_) => DiagnosticCode::ValidationFailed,
+            Self::ManifestFetchFailed(_) => DiagnosticCode::ManifestFetchFailed,
+            Self::ServiceUpdateFailed => DiagnosticCode::ServiceUpdateFailed,
+            Self::PlanBlocked(_) => DiagnosticCode::PlanBlocked,
+            Self::ConvergenceTimeout => DiagnosticCode::ConvergenceTimeout,
         }
     }
 
@@ -122,6 +129,11 @@ impl From<crate::docker::DockerError> for OperationError {
 }
 
 impl crate::docker::DockerError {
+    /// Uses the same stable classification for startup and operation diagnostics.
+    pub(crate) fn diagnostic_code(&self) -> DiagnosticCode {
+        self.operation_classification().diagnostic_code()
+    }
+
     /// Projects a safe public classification without consuming the cause.
     fn operation_classification(&self) -> OperationError {
         use OperationError as Failure;
@@ -165,9 +177,145 @@ impl From<crate::store::StoreError> for OperationError {
     }
 }
 
+impl OperationError {
+    /// Creates a public diagnostic using only explicitly safe source fields.
+    #[must_use]
+    pub fn diagnostic(&self) -> piqueld_core::observability::Diagnostic {
+        let source: &(dyn std::error::Error + 'static) = match self {
+            Self::GitBuildFailed(error) | Self::ManifestFetchFailed(error) => error.as_ref(),
+            _ => self,
+        };
+        Self::diagnostic_from(self.diagnostic_code(), self.message(), source)
+    }
+
+    fn diagnostic_from(
+        code: DiagnosticCode,
+        summary: String,
+        source: &(dyn std::error::Error + 'static),
+    ) -> piqueld_core::observability::Diagnostic {
+        let mut diagnostic = piqueld_core::observability::Diagnostic::new(
+            format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
+            code,
+            summary,
+        );
+        let mut source = Some(source);
+        for _ in 0..8 {
+            let Some(error) = source else {
+                break;
+            };
+            if let Some(error) = error.downcast_ref::<crate::docker::DockerError>() {
+                use crate::docker::DockerError;
+                let operation = match error {
+                    DockerError::Unavailable(operation)
+                    | DockerError::ImageResolution(operation)
+                    | DockerError::Request(operation)
+                    | DockerError::Validation(operation)
+                    | DockerError::UnavailableSource { operation, .. }
+                    | DockerError::ImageResolutionSource { operation, .. }
+                    | DockerError::RequestSource { operation, .. } => Some(*operation),
+                    _ => None,
+                };
+                if let Some(operation) = operation {
+                    diagnostic
+                        .causes
+                        .push(format!("Docker operation: {operation}"));
+                }
+            }
+            if let Some(error) = error.downcast_ref::<std::io::Error>() {
+                diagnostic
+                    .causes
+                    .push(format!("I/O failure: {:?}", error.kind()));
+                if let Some(code) = error.raw_os_error() {
+                    diagnostic
+                        .causes
+                        .push(format!("Operating system error code: {code}"));
+                }
+            }
+            if let Some(bollard::errors::Error::DockerResponseServerError { status_code, .. }) =
+                error.downcast_ref::<bollard::errors::Error>()
+            {
+                diagnostic
+                    .causes
+                    .push(format!("Docker returned HTTP status {status_code}"));
+            }
+            if let Some(error) = error.downcast_ref::<crate::command::CommandFailure>() {
+                diagnostic
+                    .causes
+                    .push(format!("Command stage: {}", error.operation));
+                diagnostic.causes.push(error.status.code().map_or_else(
+                    || "Command terminated without an exit code".into(),
+                    |code| format!("Command exit code: {code}"),
+                ));
+            }
+            if let Some(error) = error.downcast_ref::<sqlx::Error>() {
+                match error {
+                    sqlx::Error::Database(database) => {
+                        diagnostic
+                            .causes
+                            .push(format!("Database failure: {:?}", database.kind()));
+                        if let Some(code) =
+                            database.code().and_then(|code| code.parse::<i64>().ok())
+                        {
+                            diagnostic
+                                .causes
+                                .push(format!("Database error code: {code}"));
+                        }
+                    }
+                    sqlx::Error::PoolTimedOut => diagnostic
+                        .causes
+                        .push("Timed out waiting for a database connection".into()),
+                    sqlx::Error::PoolClosed => diagnostic
+                        .causes
+                        .push("Database connection pool is closed".into()),
+                    _ => {}
+                }
+            }
+            source = error.source();
+        }
+        diagnostic
+    }
+}
+
+impl crate::application::BoundaryError {
+    pub(crate) fn diagnostic(&self) -> piqueld_core::observability::Diagnostic {
+        let (code, summary) = match self {
+            Self::Runtime(error) => {
+                let classification = error.operation_classification();
+                (classification.diagnostic_code(), classification.message())
+            }
+            Self::Store(_) => (
+                DiagnosticCode::JournalUnavailable,
+                "Control-plane storage is unavailable".into(),
+            ),
+            Self::GitBuild(_) => (
+                DiagnosticCode::GitBuildFailed,
+                "Git source build failed; inspect the associated build output".into(),
+            ),
+            Self::Compilation(_) => (
+                DiagnosticCode::ApplicationCompilationFailed,
+                "Resolved application could not be compiled".into(),
+            ),
+        };
+        let source: &(dyn std::error::Error + 'static) = match self {
+            Self::GitBuild(error) => error.as_ref(),
+            _ => self,
+        };
+        let mut diagnostic = OperationError::diagnostic_from(code, summary, source);
+        if let Self::Compilation(errors) = self {
+            diagnostic.causes.extend(
+                errors
+                    .iter()
+                    .take(16)
+                    .map(|error| format!("{}: {} ({})", error.resource, error.message, error.code)),
+            );
+        }
+        diagnostic
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::OperationError;
+    use super::{DiagnosticCode, OperationError};
     use crate::docker::DockerError;
     use std::error::Error;
 
@@ -228,6 +376,100 @@ mod tests {
                     .is::<bollard::errors::Error>()
             );
             assert!(!error.message().contains("internal registry diagnostic"));
+            let diagnostic = error.diagnostic();
+            assert!(
+                diagnostic
+                    .causes
+                    .contains(&format!("Docker returned HTTP status {status_code}"))
+            );
+            assert!(
+                !serde_json::to_string(&diagnostic)
+                    .unwrap()
+                    .contains("internal registry diagnostic")
+            );
+        }
+    }
+
+    #[test]
+    fn preparation_diagnostics_preserve_safe_typed_causes() {
+        let error =
+            crate::application::BoundaryError::Runtime(DockerError::ImageResolutionSource {
+                operation: "pull image",
+                source: bollard::errors::Error::DockerResponseServerError {
+                    status_code: 401,
+                    message: "registry-secret".into(),
+                },
+            });
+        let diagnostic = error.diagnostic();
+        assert_eq!(diagnostic.code, "image_resolution_rejected");
+        assert_eq!(
+            diagnostic.causes,
+            [
+                "Docker operation: pull image",
+                "Docker returned HTTP status 401"
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&diagnostic)
+                .unwrap()
+                .contains("registry-secret")
+        );
+        let io = crate::application::BoundaryError::GitBuild(
+            anyhow::Error::from(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "secret path",
+            ))
+            .context("repository URL with secret"),
+        )
+        .diagnostic();
+        assert!(io.causes.contains(&"I/O failure: PermissionDenied".into()));
+        assert!(!serde_json::to_string(&io).unwrap().contains("secret"));
+        let storage = OperationError::Journal(crate::store::StoreError::DatabaseSource(
+            sqlx::Error::PoolClosed,
+        ))
+        .diagnostic();
+        assert!(
+            storage
+                .causes
+                .contains(&"Database connection pool is closed".into())
+        );
+        let compilation =
+            crate::application::BoundaryError::Compilation(vec![piqueld_core::CompileError {
+                resource: "web".into(),
+                code: "source_unresolved".into(),
+                message: "service source has not been resolved to an immutable image".into(),
+            }])
+            .diagnostic();
+        assert!(compilation.causes[0].contains("web"));
+        assert!(compilation.causes[0].contains("source_unresolved"));
+    }
+
+    #[test]
+    fn swarm_bootstrap_errors_keep_distinct_diagnostic_guidance() {
+        for (error, expected_code, expected_action) in [
+            (
+                DockerError::Unavailable("checking Swarm"),
+                DiagnosticCode::DockerUnavailable,
+                "Check Docker Engine availability",
+            ),
+            (
+                DockerError::NotManager,
+                DiagnosticCode::SwarmManagerUnavailable,
+                "Inspect the diagnostic",
+            ),
+            (
+                DockerError::IncompatibleSwarm,
+                DiagnosticCode::SwarmTopologyUnsupported,
+                "Inspect the diagnostic",
+            ),
+        ] {
+            let diagnostic = piqueld_core::observability::Diagnostic::new(
+                "bootstrap".into(),
+                error.diagnostic_code(),
+                error.to_string(),
+            );
+            assert_eq!(diagnostic.code, expected_code.as_str());
+            assert!(diagnostic.next_action.contains(expected_action));
         }
     }
 }

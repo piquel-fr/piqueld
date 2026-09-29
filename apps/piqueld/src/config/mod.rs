@@ -1,6 +1,8 @@
 //! Read-only host configuration for the single-node Docker Swarm daemon.
 
 mod listeners;
+mod observability;
+pub use observability::{MetricsConfig, NotificationConfig, WebhookDestination, WebhookKind};
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -21,6 +23,10 @@ pub struct DaemonConfig {
     pub retention: RetentionConfig,
     /// Durable build-output bounds.
     pub build_history: BuildHistoryConfig,
+    /// Optional metrics-only listener.
+    pub metrics: MetricsConfig,
+    /// Global webhook notification settings.
+    pub notifications: NotificationConfig,
 }
 
 impl DaemonConfig {
@@ -61,6 +67,17 @@ impl DaemonConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
+        self.notifications.validate()?;
+        if self
+            .metrics
+            .listen
+            .iter()
+            .any(|address| address.port() == 0)
+        {
+            return Err(ConfigError::Invalid(
+                "metrics ports must be greater than zero".into(),
+            ));
+        }
         for (name, path) in [
             ("server.data_dir", &self.server.data_dir),
             ("server.runtime_dir", &self.server.runtime_dir),
@@ -274,13 +291,16 @@ pub struct RetentionConfig {
     pub finished_operation_days: u64,
     /// Days informational events are retained; zero disables pruning.
     pub event_days: u64,
+    /// Days daemon-scoped history is retained; zero disables pruning.
+    pub daemon_event_days: u64,
 }
 
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
             finished_operation_days: 10,
-            event_days: 30,
+            event_days: 0,
+            daemon_event_days: 0,
         }
     }
 }
@@ -331,7 +351,10 @@ impl DaemonConfig {
     /// Projects effective settings into the read-only public dashboard response.
     #[must_use]
     pub fn view(&self) -> piqueld_core::api::HostConfiguration {
-        let groups = [
+        let mut groups: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<String, String>,
+        > = [
             (
                 "Server",
                 vec![
@@ -406,6 +429,60 @@ impl DaemonConfig {
             )
         })
         .collect();
+        groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
+    }
+    fn observability_view(&self) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([
+            (
+                "Metrics listeners".into(),
+                self.metrics
+                    .listen
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            (
+                "Daemon history (days)".into(),
+                self.retention.daemon_event_days.to_string(),
+            ),
+            (
+                "Notifications enabled".into(),
+                self.notifications.enabled.to_string(),
+            ),
+            (
+                "Notification categories".into(),
+                self.notifications
+                    .enabled_categories()
+                    .iter()
+                    .map(|category| category.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            (
+                "Notification destinations".into(),
+                self.notifications
+                    .destinations
+                    .iter()
+                    .map(|d| {
+                        format!(
+                            "{} ({})",
+                            d.name,
+                            if d.enabled { "enabled" } else { "disabled" }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            (
+                "Notification failure threshold (seconds)".into(),
+                self.notifications.failure_threshold_seconds.to_string(),
+            ),
+            (
+                "Webhook retry window (seconds)".into(),
+                self.notifications.retry_window_seconds.to_string(),
+            ),
+        ])
     }
 }

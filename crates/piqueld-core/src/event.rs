@@ -26,6 +26,27 @@ pub struct Event {
     pub phase: Option<String>,
     /// Related logical or Docker resource.
     pub resource: Option<String>,
+    /// Lifetime owner, independent of contextual application references.
+    #[serde(default)]
+    pub scope: crate::observability::EventScope,
+    /// Action execution identity.
+    #[serde(default)]
+    pub action_id: Option<String>,
+    /// One-based action request attempt.
+    #[serde(default)]
+    pub retry: Option<u64>,
+    /// Scheduled delay before another request, in milliseconds.
+    #[serde(default)]
+    pub retry_delay_ms: Option<u64>,
+    /// Action duration in milliseconds.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    /// Correlated API request identity.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// Safe, independently readable failure details.
+    #[serde(default)]
+    pub diagnostic: Option<crate::observability::Diagnostic>,
     /// Unix timestamp in milliseconds.
     pub created_at_ms: i64,
 }

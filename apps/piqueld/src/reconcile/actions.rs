@@ -11,6 +11,7 @@ impl<D: DockerApi> Controller<D> {
         operation: &Operation,
         ownership: &std::collections::BTreeMap<String, String>,
         cancellation: &CancellationToken,
+        deadline: tokio::time::Instant,
     ) -> Result<(), OperationError> {
         self.store
             .progress(
@@ -20,25 +21,43 @@ impl<D: DockerApi> Controller<D> {
             )
             .await
             .map_err(OperationError::from)?;
+        let journal = self
+            .store
+            .begin_action(
+                Some(&operation.id),
+                action.kind.name(),
+                Some(action.kind.resource_name()),
+            )
+            .await?;
         let started = std::time::Instant::now();
         tracing::debug!("action started");
+        // Actions enforce the deadline themselves so a timeout closes the action as
+        // a failure instead of leaving it for interrupted-action recovery.
         let result = match &action.kind {
-            kind if kind.mutates_runtime() => {
-                self.retry(operation, cancellation, || {
+            kind if kind.mutates_runtime() => tokio::time::timeout_at(
+                deadline,
+                self.retry(operation, &journal, cancellation, || {
                     self.mutate_action(kind, ownership)
-                })
-                .await
-            }
+                }),
+            )
+            .await
+            .unwrap_or(Err(OperationError::ConvergenceTimeout)),
             ActionKind::WaitForService { service } => {
-                self.wait_service(operation, service, false, cancellation)
+                self.wait_service(operation, service, false, cancellation, deadline)
                     .await
             }
             ActionKind::WaitForServiceRemoval { service } => {
-                self.wait_service(operation, service, true, cancellation)
+                self.wait_service(operation, service, true, cancellation, deadline)
                     .await
             }
             _ => Ok(()),
         };
+        self.store
+            .finish_action(
+                &journal,
+                result.as_ref().err().map(OperationError::diagnostic),
+            )
+            .await?;
         tracing::debug!(
             succeeded = result.is_ok(),
             duration_ms = started.elapsed().as_secs_f64() * 1_000.0,
@@ -83,6 +102,7 @@ impl<D: DockerApi> Controller<D> {
     pub(super) async fn retry<F, Fut>(
         &self,
         operation: &Operation,
+        journal: &crate::store::JournalAction,
         cancellation: &CancellationToken,
         mut call: F,
     ) -> Result<(), OperationError>
@@ -100,6 +120,7 @@ impl<D: DockerApi> Controller<D> {
             let result = {
                 let _guard = self.mutations.lock().await;
                 self.check_current(operation).await?;
+                self.store.action_request(journal, attempt + 1).await?;
                 call().await
             };
             match result {
@@ -119,8 +140,12 @@ impl<D: DockerApi> Controller<D> {
                     return Err(error.into());
                 }
                 Err(error) => {
+                    let diagnostic = OperationError::from(error).diagnostic();
+                    self.store
+                        .action_retry(journal, attempt + 1, delay, &diagnostic)
+                        .await?;
                     tracing::warn!(
-                        error = ?error,
+                        diagnostic_id = %diagnostic.id,
                         attempt = attempt + 1,
                         attempts,
                         retry_delay_ms = delay.as_secs_f64() * 1_000.0,
@@ -141,8 +166,8 @@ impl<D: DockerApi> Controller<D> {
         name: &str,
         removed: bool,
         cancellation: &CancellationToken,
+        deadline: tokio::time::Instant,
     ) -> Result<(), OperationError> {
-        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
         loop {
             let observed = self
                 .observe_with_retry(operation, cancellation, deadline)
@@ -158,11 +183,14 @@ impl<D: DockerApi> Controller<D> {
             if tokio::time::Instant::now() >= deadline {
                 return Err(OperationError::ConvergenceTimeout);
             }
-            tokio::select! {()=cancellation.cancelled()=>return Err(OperationError::Cancelled),()=tokio::time::sleep(Duration::from_millis(250))=>{}}
+            let poll = Duration::from_millis(250)
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+            tokio::select! {()=cancellation.cancelled()=>return Err(OperationError::Cancelled),()=tokio::time::sleep(poll)=>{}}
         }
     }
 
     /// Reads application state until Docker responds or the convergence deadline expires.
+    /// A failed observation is journaled as one action and closed on every exit.
     #[tracing::instrument(skip_all, fields(phase = "observation"))]
     pub(super) async fn observe_with_retry(
         &self,
@@ -170,41 +198,71 @@ impl<D: DockerApi> Controller<D> {
         cancellation: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<piqueld_core::ObservedApplication, OperationError> {
+        let mut journal = None;
+        let result = tokio::time::timeout_at(
+            deadline,
+            self.observe_attempts(operation, cancellation, deadline, &mut journal),
+        )
+        .await
+        .unwrap_or(Err(OperationError::ConvergenceTimeout));
+        if let Some(action) = &journal {
+            self.store
+                .finish_action(
+                    action,
+                    result.as_ref().err().map(OperationError::diagnostic),
+                )
+                .await?;
+        }
+        result
+    }
+
+    async fn observe_attempts(
+        &self,
+        operation: &Operation,
+        cancellation: &CancellationToken,
+        deadline: tokio::time::Instant,
+        journal: &mut Option<crate::store::JournalAction>,
+    ) -> Result<piqueld_core::ObservedApplication, OperationError> {
         let mut delay = self.retry.initial_delay;
-        let mut attempt = 0_u64;
+        let mut attempt = 0_u32;
         loop {
             attempt = attempt.saturating_add(1);
             self.check_current(operation).await?;
             if cancellation.is_cancelled() {
                 return Err(OperationError::Cancelled);
             }
-            match self.docker.observe(&operation.application_id).await {
+            let error = match self.docker.observe(&operation.application_id).await {
                 Ok(observed) => return Ok(observed),
-                Err(
-                    error @ (DockerError::OwnershipConflict
+                Err(error) => error,
+            };
+            if journal.is_none() {
+                *journal = Some(
+                    self.store
+                        .begin_action(Some(&operation.id), "observation", None)
+                        .await?,
+                );
+            }
+            let action = journal.as_ref().expect("failed observation has an action");
+            let terminal = matches!(
+                error,
+                DockerError::OwnershipConflict
                     | DockerError::ConfigurationConflict
                     | DockerError::NotManager
                     | DockerError::IncompatibleSwarm
-                    | DockerError::Validation(_)),
-                ) => {
-                    tracing::error!(error = ?error, "Docker observation rejected");
-                    return Err(error.into());
-                }
-                Err(error) => {
-                    let now = tokio::time::Instant::now();
-                    if now >= deadline {
-                        tracing::error!(error = ?error, "Docker observation failed after retries");
-                        return Err(error.into());
-                    }
-                    let remaining = deadline.saturating_duration_since(now);
-                    tracing::warn!(error = ?error, attempt, retry_delay_ms = delay.min(remaining).as_secs_f64() * 1_000.0, "Docker observation failed; retrying");
-                    tokio::select! {
-                        () = cancellation.cancelled() => return Err(OperationError::Cancelled),
-                        () = tokio::time::sleep(delay.min(remaining)) => {}
-                    }
-                    delay = delay.saturating_mul(2).min(self.retry.max_delay);
-                }
+                    | DockerError::Validation(_)
+            );
+            let error = OperationError::from(error);
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if terminal || remaining.is_zero() {
+                return Err(error);
             }
+            let diagnostic = error.diagnostic();
+            self.store
+                .action_retry(action, attempt, delay.min(remaining), &diagnostic)
+                .await?;
+            tracing::warn!(diagnostic_id=%diagnostic.id,attempt,retry_delay_ms=delay.min(remaining).as_secs_f64()*1000.0,"Docker observation failed; retrying");
+            tokio::select! {()=cancellation.cancelled()=>return Err(OperationError::Cancelled),()=tokio::time::sleep(delay.min(remaining))=>{}}
+            delay = delay.saturating_mul(2).min(self.retry.max_delay);
         }
     }
 }

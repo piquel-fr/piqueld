@@ -239,6 +239,26 @@ impl Store {
         let mut manifest = current.application.to_manifest();
         edit.clone().apply(&mut manifest)?;
         let application = manifest.validate()?.normalize(id.clone());
+        let field = match &edit {
+            ApplicationEdit::Name(_) => "name",
+            ApplicationEdit::Repository(_)
+            | ApplicationEdit::RepositoryUrl(_)
+            | ApplicationEdit::RepositoryBranch(_)
+            | ApplicationEdit::RepositoryCommit(_)
+            | ApplicationEdit::RepositoryPath(_) => "repository",
+            ApplicationEdit::AddService(_) | ApplicationEdit::RemoveService(_) => "services",
+            ApplicationEdit::Service { .. } => "service",
+            ApplicationEdit::AddVolume(_)
+            | ApplicationEdit::Volumes(_)
+            | ApplicationEdit::RemoveVolume(_) => "volumes",
+        };
+        let resource = match &edit {
+            ApplicationEdit::Service { name, .. } | ApplicationEdit::RemoveService(name) => {
+                Some(name.as_str())
+            }
+            ApplicationEdit::AddService(service) => Some(service.name.as_str()),
+            _ => None,
+        };
         let mut saved = if let ApplicationEdit::Name(name) = edit {
             let (MutationResponse::Rename(renamed), _) =
                 Self::rename_on(tx, current, latest, id, name, now).await?
@@ -251,7 +271,12 @@ impl Store {
                 operation_id: None,
             }
         } else {
-            Self::save_configuration_on(tx, &application, Some(current.generation)).await?
+            let saved =
+                Self::save_configuration_on(tx, &application, Some(current.generation)).await?;
+            let generation = i64::try_from(saved.generation).map_err(StoreError::corrupt)?;
+            let app_id = id.as_str();
+            sqlx::query!("INSERT INTO events(application_id,generation,kind,message,phase,resource,created_at_ms) VALUES(?1,?2,'application_edited','Saved application configuration',?3,?4,?5)",app_id,generation,field,resource,now).execute(&mut **tx).await.map_err(StoreError::database)?;
+            saved
         };
         Self::deploy_saved(tx, &application, &mut saved, deploy).await?;
         Ok((MutationResponse::Saved(saved), deploy))

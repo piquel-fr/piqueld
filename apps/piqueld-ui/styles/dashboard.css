@@ -378,3 +378,11 @@
         }
     }
 }
+
+.observability-panel { padding: 1.25rem; border: 1px solid var(--border, #30343b); border-radius: .75rem; margin-block: 1rem; }
+.observability-filters { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; margin-bottom: 1rem; }
+.observability-filters label { display: flex; flex-direction: column; gap: .35rem; }
+.observability-values { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(0, 2fr); gap: .6rem 1rem; }
+.observability-values dd { margin: 0; overflow-wrap: anywhere; }
+.event-card { padding: 1rem 0; border-bottom: 1px solid var(--border, #30343b); overflow-wrap: anywhere; }
+.event-card p { margin-block: .35rem; }

@@ -65,8 +65,11 @@ supersession, promotion, deletion completion, significant resource mutations,
 active-target repairs, and meaningful health transitions. Operations expose current
 phase/resource; failure events retain those fields and a structured error code. State
 changes and their events share a transaction. Events never drive execution or
-reconstruct state. Their independent retention defaults to 30 days; zero disables
-pruning. Unchanged observations and raw Docker errors are not logged as events.
+reconstruct state. Their independent retention defaults to no age pruning. Application and daemon
+scopes have separate policies. Action intent is journaled before runtime mutation;
+retries and outcomes retain sanitized diagnostics. Unchanged successful
+observations and raw Docker response bodies are not logged as events. See
+[observability](observability.md) for crash recovery and notification semantics.
 
 Docker requests have deadlines, image resolution checks tag stability, and
 service observation inspects complete specifications. Raw engine error sources

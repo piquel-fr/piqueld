@@ -52,3 +52,6 @@ pub use images::{ImageReference, ImmutableImage, RepositoryDigest};
 
 /// Typed saved-configuration editing contracts.
 pub mod edit;
+
+/// Durable observability API contracts.
+pub mod observability;

@@ -26,6 +26,31 @@
         ],
         "type": "object"
       },
+      "ActionDuration": {
+        "description": "Aggregated duration for one action phase.",
+        "properties": {
+          "count": {
+            "description": "Completed actions measured.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "mean_ms": {
+            "description": "Mean duration in milliseconds.",
+            "format": "double",
+            "type": "number"
+          },
+          "phase": {
+            "description": "Action phase.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phase",
+          "count",
+          "mean_ms"
+        ],
+        "type": "object"
+      },
       "ActionKind": {
         "description": "Concrete action that can appear in a runtime plan.",
         "oneOf": [
@@ -880,6 +905,119 @@
         ],
         "type": "object"
       },
+      "DaemonStats": {
+        "description": "Current daemon measurements. Missing OS values are unavailable, never fabricated zeroes.",
+        "properties": {
+          "available_disk_bytes": {
+            "description": "Free bytes available to this process on the data filesystem.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "build_output_bytes": {
+            "description": "Retained build-output bytes.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "cpu_percent": {
+            "description": "CPU usage between samples; 100 means one full CPU core.",
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "cpu_seconds": {
+            "description": "CPU seconds used by this process.",
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "database_bytes": {
+            "description": "Main database file size.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "diagnostics": {
+            "description": "Number of retained diagnostic occurrences.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "events": {
+            "description": "Number of retained events.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "failed_deliveries": {
+            "description": "Notification deliveries that exhausted retries or were rejected.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "memory_bytes": {
+            "description": "Resident memory in bytes.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "pending_deliveries": {
+            "description": "Notification deliveries awaiting a retry.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "queued_operations": {
+            "description": "Operations waiting to execute.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "running_operations": {
+            "description": "Operations currently executing.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "sampled_at_ms": {
+            "description": "Unix milliseconds when this snapshot was collected.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "uptime_seconds": {
+            "description": "Process lifetime in seconds.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "wal_bytes": {
+            "description": "SQLite write-ahead log size.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sampled_at_ms",
+          "uptime_seconds",
+          "database_bytes",
+          "wal_bytes",
+          "events",
+          "diagnostics",
+          "build_output_bytes",
+          "running_operations",
+          "queued_operations",
+          "pending_deliveries",
+          "failed_deliveries"
+        ],
+        "type": "object"
+      },
+      "DeliveryState": {
+        "description": "Lifecycle of a durable webhook delivery.",
+        "enum": [
+          "pending",
+          "delivered",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      },
       "DependencyStatus": {
         "description": "One diagnostic dependency probe, independent of application health.",
         "oneOf": [
@@ -919,6 +1057,101 @@
             "type": "object"
           }
         ]
+      },
+      "DeploymentAnalytics": {
+        "description": "Analytics derived from durable records within a selected time interval.",
+        "properties": {
+          "action_retries": {
+            "description": "Individual Docker/action failures followed by retry.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "actions": {
+            "description": "Durations grouped by phase.",
+            "items": {
+              "$ref": "#/components/schemas/ActionDuration"
+            },
+            "type": "array"
+          },
+          "deployments": {
+            "description": "Distinct deployments with terminal attempts in the interval.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "failed": {
+            "description": "Deployments whose latest attempt in the interval failed.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "failed_attempts": {
+            "description": "Failed execution attempts, including subsequent recoveries.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "failures": {
+            "description": "Common failures, descending by count.",
+            "items": {
+              "$ref": "#/components/schemas/FailureCount"
+            },
+            "type": "array"
+          },
+          "history_started_at_ms": {
+            "description": "First time detailed observability was available.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "incomplete": {
+            "description": "Selected interval extends beyond available detailed history.",
+            "type": "boolean"
+          },
+          "mean_duration_ms": {
+            "description": "Mean completed deployment attempt duration.",
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
+          "pruned_through_ms": {
+            "description": "History was removed through this timestamp, when known.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "retry_attempts": {
+            "description": "Execution attempts beyond the first.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "since_ms": {
+            "description": "Inclusive lower time bound.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "succeeded": {
+            "description": "Deployments whose latest attempt in the interval succeeded.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "until_ms": {
+            "description": "Inclusive upper time bound.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "since_ms",
+          "until_ms",
+          "history_started_at_ms",
+          "incomplete",
+          "deployments",
+          "succeeded",
+          "failed",
+          "failed_attempts",
+          "retry_attempts",
+          "action_retries",
+          "actions",
+          "failures"
+        ],
+        "type": "object"
       },
       "DeploymentView": {
         "description": "Durable deployment snapshot and execution summary.",
@@ -1146,6 +1379,52 @@
           "logical_name",
           "name",
           "labels"
+        ],
+        "type": "object"
+      },
+      "Diagnostic": {
+        "description": "Safe structured explanation of a failure. Never contains raw engine payloads.",
+        "properties": {
+          "causes": {
+            "description": "Explicitly sanitized causal facts.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "code": {
+            "description": "Stable classification.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable occurrence identity shared with responses and logs.",
+            "type": "string"
+          },
+          "next_action": {
+            "description": "What happens next or what the administrator can do.",
+            "type": "string"
+          },
+          "retryable": {
+            "description": "Whether automatic recovery is appropriate.",
+            "type": "boolean"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/EventScope",
+            "description": "Retention ownership."
+          },
+          "summary": {
+            "description": "What failed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "summary",
+          "causes",
+          "retryable",
+          "next_action",
+          "scope"
         ],
         "type": "object"
       },
@@ -1444,6 +1723,368 @@
               "items",
               "truncated",
               "expired"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_DaemonStats": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Current daemon measurements. Missing OS values are unavailable, never fabricated zeroes.",
+            "properties": {
+              "available_disk_bytes": {
+                "description": "Free bytes available to this process on the data filesystem.",
+                "format": "int64",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "build_output_bytes": {
+                "description": "Retained build-output bytes.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "cpu_percent": {
+                "description": "CPU usage between samples; 100 means one full CPU core.",
+                "format": "double",
+                "nullable": true,
+                "type": "number"
+              },
+              "cpu_seconds": {
+                "description": "CPU seconds used by this process.",
+                "format": "double",
+                "nullable": true,
+                "type": "number"
+              },
+              "database_bytes": {
+                "description": "Main database file size.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "diagnostics": {
+                "description": "Number of retained diagnostic occurrences.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "events": {
+                "description": "Number of retained events.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "failed_deliveries": {
+                "description": "Notification deliveries that exhausted retries or were rejected.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "memory_bytes": {
+                "description": "Resident memory in bytes.",
+                "format": "int64",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "pending_deliveries": {
+                "description": "Notification deliveries awaiting a retry.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "queued_operations": {
+                "description": "Operations waiting to execute.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "running_operations": {
+                "description": "Operations currently executing.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "sampled_at_ms": {
+                "description": "Unix milliseconds when this snapshot was collected.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "uptime_seconds": {
+                "description": "Process lifetime in seconds.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "wal_bytes": {
+                "description": "SQLite write-ahead log size.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sampled_at_ms",
+              "uptime_seconds",
+              "database_bytes",
+              "wal_bytes",
+              "events",
+              "diagnostics",
+              "build_output_bytes",
+              "running_operations",
+              "queued_operations",
+              "pending_deliveries",
+              "failed_deliveries"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_DeploymentAnalytics": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Analytics derived from durable records within a selected time interval.",
+            "properties": {
+              "action_retries": {
+                "description": "Individual Docker/action failures followed by retry.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "actions": {
+                "description": "Durations grouped by phase.",
+                "items": {
+                  "$ref": "#/components/schemas/ActionDuration"
+                },
+                "type": "array"
+              },
+              "deployments": {
+                "description": "Distinct deployments with terminal attempts in the interval.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "failed": {
+                "description": "Deployments whose latest attempt in the interval failed.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "failed_attempts": {
+                "description": "Failed execution attempts, including subsequent recoveries.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "failures": {
+                "description": "Common failures, descending by count.",
+                "items": {
+                  "$ref": "#/components/schemas/FailureCount"
+                },
+                "type": "array"
+              },
+              "history_started_at_ms": {
+                "description": "First time detailed observability was available.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "incomplete": {
+                "description": "Selected interval extends beyond available detailed history.",
+                "type": "boolean"
+              },
+              "mean_duration_ms": {
+                "description": "Mean completed deployment attempt duration.",
+                "format": "double",
+                "nullable": true,
+                "type": "number"
+              },
+              "pruned_through_ms": {
+                "description": "History was removed through this timestamp, when known.",
+                "format": "int64",
+                "nullable": true,
+                "type": "integer"
+              },
+              "retry_attempts": {
+                "description": "Execution attempts beyond the first.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "since_ms": {
+                "description": "Inclusive lower time bound.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "succeeded": {
+                "description": "Deployments whose latest attempt in the interval succeeded.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "until_ms": {
+                "description": "Inclusive upper time bound.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "since_ms",
+              "until_ms",
+              "history_started_at_ms",
+              "incomplete",
+              "deployments",
+              "succeeded",
+              "failed",
+              "failed_attempts",
+              "retry_attempts",
+              "action_retries",
+              "actions",
+              "failures"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_Event": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "One immutable, sanitized fact about control-plane activity.",
+            "properties": {
+              "action_id": {
+                "description": "Action execution identity.",
+                "nullable": true,
+                "type": "string"
+              },
+              "application_id": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/ApplicationId"
+                      }
+                    ],
+                    "description": "Related application, when applicable."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
+              "attempt": {
+                "description": "Execution attempt for attempt-related events.",
+                "format": "int64",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "created_at_ms": {
+                "description": "Unix timestamp in milliseconds.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "diagnostic": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Diagnostic"
+                      }
+                    ],
+                    "description": "Safe, independently readable failure details."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
+              "duration_ms": {
+                "description": "Action duration in milliseconds.",
+                "format": "int64",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "error_code": {
+                "description": "Stable failure classification, when this event records failure.",
+                "nullable": true,
+                "type": "string"
+              },
+              "generation": {
+                "description": "Intent generation, when applicable.",
+                "format": "int64",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "id": {
+                "description": "Monotonic event identity used for pagination.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "kind": {
+                "description": "Stable event category, such as `operation_failed` or `health_changed`.",
+                "type": "string"
+              },
+              "message": {
+                "description": "Sanitized diagnostic or state description.",
+                "nullable": true,
+                "type": "string"
+              },
+              "operation_id": {
+                "description": "Related operation, retained even if that operation is pruned.",
+                "nullable": true,
+                "type": "string"
+              },
+              "phase": {
+                "description": "Execution phase at the time of the event.",
+                "nullable": true,
+                "type": "string"
+              },
+              "request_id": {
+                "description": "Correlated API request identity.",
+                "nullable": true,
+                "type": "string"
+              },
+              "resource": {
+                "description": "Related logical or Docker resource.",
+                "nullable": true,
+                "type": "string"
+              },
+              "retry": {
+                "description": "One-based action request attempt.",
+                "format": "int64",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "retry_delay_ms": {
+                "description": "Scheduled delay before another request, in milliseconds.",
+                "format": "int64",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/EventScope",
+                "description": "Lifetime owner, independent of contextual application references."
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "created_at_ms"
             ],
             "type": "object"
           }
@@ -1834,6 +2475,11 @@
                 "items": {
                   "description": "One immutable, sanitized fact about control-plane activity.",
                   "properties": {
+                    "action_id": {
+                      "description": "Action execution identity.",
+                      "nullable": true,
+                      "type": "string"
+                    },
                     "application_id": {
                       "oneOf": [
                         {
@@ -1863,6 +2509,32 @@
                     "created_at_ms": {
                       "description": "Unix timestamp in milliseconds.",
                       "format": "int64",
+                      "type": "integer"
+                    },
+                    "diagnostic": {
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/Diagnostic"
+                            }
+                          ],
+                          "description": "Safe, independently readable failure details."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "duration_ms": {
+                      "description": "Action duration in milliseconds.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "nullable": true,
                       "type": "integer"
                     },
                     "error_code": {
@@ -1901,16 +2573,129 @@
                       "nullable": true,
                       "type": "string"
                     },
+                    "request_id": {
+                      "description": "Correlated API request identity.",
+                      "nullable": true,
+                      "type": "string"
+                    },
                     "resource": {
                       "description": "Related logical or Docker resource.",
                       "nullable": true,
                       "type": "string"
+                    },
+                    "retry": {
+                      "description": "One-based action request attempt.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    "retry_delay_ms": {
+                      "description": "Scheduled delay before another request, in milliseconds.",
+                      "format": "int64",
+                      "minimum": 0,
+                      "nullable": true,
+                      "type": "integer"
+                    },
+                    "scope": {
+                      "$ref": "#/components/schemas/EventScope",
+                      "description": "Lifetime owner, independent of contextual application references."
                     }
                   },
                   "required": [
                     "id",
                     "kind",
                     "created_at_ms"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "description": "Cursor for the next page, when more items are available.",
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "items"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_Page_NotificationDelivery": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Cursor-paginated API response.",
+            "properties": {
+              "items": {
+                "description": "Items in this page.",
+                "items": {
+                  "description": "A retained notification delivery; credentials and receiver response bodies are excluded.",
+                  "properties": {
+                    "attempts": {
+                      "description": "Number of delivery requests attempted.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "category": {
+                      "$ref": "#/components/schemas/NotificationCategory",
+                      "description": "Notification category, including recovery."
+                    },
+                    "created_at_ms": {
+                      "description": "Creation timestamp.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "destination": {
+                      "description": "Configured destination name.",
+                      "type": "string"
+                    },
+                    "event_id": {
+                      "description": "Source event.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "id": {
+                      "description": "Stable delivery identity, preserved through retries.",
+                      "type": "string"
+                    },
+                    "last_error": {
+                      "description": "Safe delivery failure summary.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "next_attempt_ms": {
+                      "description": "Scheduled attempt timestamp.",
+                      "format": "int64",
+                      "type": "integer"
+                    },
+                    "state": {
+                      "$ref": "#/components/schemas/DeliveryState",
+                      "description": "Current delivery lifecycle state."
+                    },
+                    "updated_at_ms": {
+                      "description": "Last update timestamp.",
+                      "format": "int64",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "event_id",
+                    "destination",
+                    "category",
+                    "state",
+                    "attempts",
+                    "created_at_ms",
+                    "next_attempt_ms",
+                    "updated_at_ms"
                   ],
                   "type": "object"
                 },
@@ -2260,6 +3045,18 @@
         ],
         "type": "object"
       },
+      "Envelope_bool": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "EnvironmentValue": {
         "additionalProperties": false,
         "properties": {
@@ -2305,6 +3102,11 @@
       "Event": {
         "description": "One immutable, sanitized fact about control-plane activity.",
         "properties": {
+          "action_id": {
+            "description": "Action execution identity.",
+            "nullable": true,
+            "type": "string"
+          },
           "application_id": {
             "oneOf": [
               {
@@ -2334,6 +3136,32 @@
           "created_at_ms": {
             "description": "Unix timestamp in milliseconds.",
             "format": "int64",
+            "type": "integer"
+          },
+          "diagnostic": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Diagnostic"
+                  }
+                ],
+                "description": "Safe, independently readable failure details."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "duration_ms": {
+            "description": "Action duration in milliseconds.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
             "type": "integer"
           },
           "error_code": {
@@ -2372,16 +3200,66 @@
             "nullable": true,
             "type": "string"
           },
+          "request_id": {
+            "description": "Correlated API request identity.",
+            "nullable": true,
+            "type": "string"
+          },
           "resource": {
             "description": "Related logical or Docker resource.",
             "nullable": true,
             "type": "string"
+          },
+          "retry": {
+            "description": "One-based action request attempt.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "retry_delay_ms": {
+            "description": "Scheduled delay before another request, in milliseconds.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/EventScope",
+            "description": "Lifetime owner, independent of contextual application references."
           }
         },
         "required": [
           "id",
           "kind",
           "created_at_ms"
+        ],
+        "type": "object"
+      },
+      "EventScope": {
+        "description": "Ownership of historical data, independent of its contextual application ID.",
+        "enum": [
+          "application",
+          "daemon"
+        ],
+        "type": "string"
+      },
+      "FailureCount": {
+        "description": "Frequency of a diagnostic classification.",
+        "properties": {
+          "code": {
+            "description": "Stable failure code.",
+            "type": "string"
+          },
+          "count": {
+            "description": "Recorded occurrences.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "count"
         ],
         "type": "object"
       },
@@ -2707,6 +3585,80 @@
           "kind",
           "metadata",
           "spec"
+        ],
+        "type": "object"
+      },
+      "NotificationCategory": {
+        "description": "Global notification categories supported by daemon configuration.",
+        "enum": [
+          "build_failures",
+          "deployment_failures",
+          "service_degradation",
+          "daemon_failures",
+          "recovery"
+        ],
+        "type": "string"
+      },
+      "NotificationDelivery": {
+        "description": "A retained notification delivery; credentials and receiver response bodies are excluded.",
+        "properties": {
+          "attempts": {
+            "description": "Number of delivery requests attempted.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "category": {
+            "$ref": "#/components/schemas/NotificationCategory",
+            "description": "Notification category, including recovery."
+          },
+          "created_at_ms": {
+            "description": "Creation timestamp.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "destination": {
+            "description": "Configured destination name.",
+            "type": "string"
+          },
+          "event_id": {
+            "description": "Source event.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "description": "Stable delivery identity, preserved through retries.",
+            "type": "string"
+          },
+          "last_error": {
+            "description": "Safe delivery failure summary.",
+            "nullable": true,
+            "type": "string"
+          },
+          "next_attempt_ms": {
+            "description": "Scheduled attempt timestamp.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/DeliveryState",
+            "description": "Current delivery lifecycle state."
+          },
+          "updated_at_ms": {
+            "description": "Last update timestamp.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "event_id",
+          "destination",
+          "category",
+          "state",
+          "attempts",
+          "created_at_ms",
+          "next_attempt_ms",
+          "updated_at_ms"
         ],
         "type": "object"
       },
@@ -3843,6 +4795,71 @@
   },
   "openapi": "3.0.3",
   "paths": {
+    "/api/v1/analytics/deployments": {
+      "get": {
+        "operationId": "deploymentAnalytics",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "application_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since_ms",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until_ms",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_DeploymentAnalytics"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
     "/api/v1/applications": {
       "get": {
         "operationId": "listApplications",
@@ -12147,6 +13164,53 @@
         }
       }
     },
+    "/api/v1/diagnostics/{id}": {
+      "get": {
+        "operationId": "getDiagnostic",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Event"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
     "/api/v1/events": {
       "get": {
         "operationId": "listEvents",
@@ -12157,6 +13221,90 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "operation_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "attempt",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error_code",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "errors_only",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EventScope"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since_ms",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until_ms",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "descending",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -12187,9 +13335,282 @@
                 }
               }
             },
-            "description": "Informational history, oldest first"
+            "description": "Structured history"
           },
           "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/events/stream": {
+      "get": {
+        "operationId": "streamEvents",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "application_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "operation_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "attempt",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error_code",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "errors_only",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EventScope"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since_ms",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until_ms",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "descending",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Resumable SSE; IDs are v1:<event-id>"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/deliveries": {
+      "get": {
+        "operationId": "notificationDeliveries",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Page_NotificationDelivery"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/deliveries/{id}/retry": {
+      "post": {
+        "operationId": "retryNotificationDelivery",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_bool"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -12340,6 +13761,33 @@
               }
             },
             "description": "Deployment dependencies unavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/system/resources": {
+      "get": {
+        "operationId": "systemResources",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_DaemonStats"
+                }
+              }
+            },
+            "description": ""
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
           }
         }
       }

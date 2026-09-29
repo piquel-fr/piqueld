@@ -15,12 +15,16 @@ pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
     let preview = create_rw_signal(None::<piqueld_client::PlanView>);
     let deploy = move |_| {
-        let Ok(client) = mutation_client() else {
-            return;
+        context.set_error(None);
+        let client = match mutation_client() {
+            Ok(client) => client,
+            Err(error) => {
+                context.set_error(Some(error));
+                return;
+            }
         };
         let app = context.saved.get_untracked();
         context.busy.set(true);
-        context.error.set(None);
         spawn_local(async move {
             let mut result = client
                 .deploy_application(app.application.id().as_str(), app.generation)
@@ -51,11 +55,11 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             expected_application_id: Some(app.application.id().to_string()),
         };
         context.busy.set(true);
-        context.error.set(None);
+        context.set_error(None);
         spawn_local(async move {
             match Client::browser().plan_application(&request).await {
                 Ok(plan) => preview.set(Some(plan)),
-                Err(error) => context.error.set(Some(client_error_message(&error))),
+                Err(error) => context.set_error(Some(client_error_message(&error))),
             }
             context.busy.set(false);
         });
@@ -670,6 +674,7 @@ impl super::EditorContext {
 
 #[component]
 fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
+    let history = format!("/dashboard/events?operation={}", attempt.id);
     view! {
         <p class="attempt">
             {format!(
@@ -679,6 +684,7 @@ fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
                 attempt.error_code.unwrap_or_default(),
                 attempt.error_message.unwrap_or_default(),
             )}
+            <leptos_router::A href=history>" View events and diagnostics"</leptos_router::A>
         </p>
     }
 }
