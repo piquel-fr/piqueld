@@ -13,6 +13,9 @@ use std::{
     time::Duration,
 };
 
+/// Upper bound for one device login, regardless of the daemon's `expires_in`.
+const MAX_DEVICE_LOGIN_SECS: u64 = 15 * 60;
+
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct Credentials {
     endpoints: BTreeMap<String, Endpoint>,
@@ -190,7 +193,8 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
         "Waiting for passkey login…".into(),
     ])?;
     let finish = async {
-        let mut interval = u64::from(start.interval);
+        // Never let a daemon response turn polling into a tight loop.
+        let mut interval = u64::from(start.interval).max(1);
         loop {
             tokio::time::sleep(Duration::from_secs(interval)).await;
             let result = client.auth_device_poll(&start.device_code).await?;
@@ -232,7 +236,7 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
     };
     tokio::select! {
         result=finish=>result,
-        ()=tokio::time::sleep(Duration::from_secs(u64::from(start.expires_in)))=>Err(CliError::new(ErrorKind::Input,"login expired; run piquelctl login again")),
+        ()=tokio::time::sleep(Duration::from_secs(u64::from(start.expires_in).min(MAX_DEVICE_LOGIN_SECS)))=>Err(CliError::new(ErrorKind::Input,"login expired; run piquelctl login again")),
         signal=tokio::signal::ctrl_c()=>{signal?;Err(CliError::new(ErrorKind::Interrupted,"login cancelled"))},
     }
 }
