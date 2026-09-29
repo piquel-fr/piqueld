@@ -1,4 +1,7 @@
-//! Admission limits for public ceremony/device starts, shared by all listeners.
+//! Per-peer admission limits for public ceremony/device starts, shared by all
+//! listeners. There is deliberately no daemon-wide cap: one caller must not be
+//! able to block sign-in for everyone else. The daemon is never exposed to the
+//! internet; pending state stays bounded by the ceremony and device capacities.
 use super::{AuthError, Result};
 use std::{
     collections::HashMap,
@@ -8,7 +11,6 @@ use std::{
 
 const WINDOW: Duration = Duration::from_mins(1);
 const PER_PEER: u32 = 30;
-const GLOBAL: u32 = 60;
 
 struct Window {
     started: Instant,
@@ -23,31 +25,16 @@ impl Window {
     }
 }
 
+#[derive(Default)]
 pub(super) struct Throttle {
-    global: Window,
     peers: HashMap<Option<IpAddr>, Window>,
-}
-impl Default for Throttle {
-    fn default() -> Self {
-        Self {
-            global: Window::new(Instant::now()),
-            peers: HashMap::new(),
-        }
-    }
 }
 impl Throttle {
     // Unix sockets share the None bucket. Never trust caller-supplied forwarding
-    // headers. The global budget also bounds this map and pending-state growth:
-    // at most 660 admissions within the longest (ten-minute) pending lifetime.
+    // headers.
     pub(super) fn admit(&mut self, peer: Option<IpAddr>, now: Instant) -> Result<()> {
-        if now.duration_since(self.global.started) >= WINDOW {
-            self.global = Window::new(now);
-        }
         self.peers
             .retain(|_, window| now.duration_since(window.started) < WINDOW);
-        if self.global.count >= GLOBAL {
-            return Err(AuthError::Busy);
-        }
         let window = self
             .peers
             .entry(peer.map(bucket))
@@ -56,7 +43,6 @@ impl Throttle {
             return Err(AuthError::Busy);
         }
         window.count += 1;
-        self.global.count += 1;
         Ok(())
     }
 }
@@ -78,19 +64,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn isolates_peers_bounds_global_admission_and_recovers_after_window() {
+    fn isolates_peers_without_a_shared_cap_and_recovers_after_window() {
         let mut throttle = Throttle::default();
         let now = Instant::now();
         let a = Some("192.0.2.1".parse().unwrap());
-        let b = Some("192.0.2.2".parse().unwrap());
         for _ in 0..PER_PEER {
             throttle.admit(a, now).unwrap();
         }
         assert!(throttle.admit(a, now).is_err());
-        for _ in 0..PER_PEER {
-            throttle.admit(b, now).unwrap();
+        // Exhausted peers never consume anyone else's allowance.
+        for host in 2..10 {
+            let peer = Some(format!("192.0.2.{host}").parse().unwrap());
+            for _ in 0..PER_PEER {
+                throttle.admit(peer, now).unwrap();
+            }
         }
-        assert!(throttle.admit(None, now).is_err());
+        throttle.admit(None, now).unwrap();
         throttle.admit(a, now + WINDOW).unwrap();
         assert_eq!(throttle.peers.len(), 1);
     }
