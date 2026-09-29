@@ -3,6 +3,9 @@ use super::{
     Operation, OperationError,
 };
 
+/// Decrypted values keyed by their immutable Docker secret names.
+pub(super) type SecretValues = Vec<(String, zeroize::Zeroizing<Vec<u8>>)>;
+
 impl<D: DockerApi> Controller<D> {
     #[tracing::instrument(skip_all, fields(action = action.kind.name(), resource = action.kind.resource_name()))]
     pub(super) async fn execute_action(
@@ -34,14 +37,17 @@ impl<D: DockerApi> Controller<D> {
         // Actions enforce the deadline themselves so a timeout closes the action as
         // a failure instead of leaving it for interrupted-action recovery.
         let result = match &action.kind {
-            kind if kind.mutates_runtime() => tokio::time::timeout_at(
-                deadline,
-                self.retry(operation, &journal, cancellation, || {
-                    self.mutate_action(kind, ownership)
-                }),
-            )
-            .await
-            .unwrap_or(Err(OperationError::ConvergenceTimeout)),
+            kind if kind.mutates_runtime() => match self.service_secrets(kind, ownership).await {
+                Ok(secrets) => tokio::time::timeout_at(
+                    deadline,
+                    self.retry(operation, &journal, cancellation, || {
+                        self.mutate_action(kind, ownership, &secrets)
+                    }),
+                )
+                .await
+                .unwrap_or(Err(OperationError::ConvergenceTimeout)),
+                Err(error) => Err(error),
+            },
             ActionKind::WaitForService { service } => {
                 self.wait_service(operation, service, false, cancellation, deadline)
                     .await
@@ -71,32 +77,46 @@ impl<D: DockerApi> Controller<D> {
         }
         result
     }
+    /// Decrypts a service's pinned secret versions before any Docker request, so key
+    /// failures are classified as secret storage rather than runtime failures.
+    pub(super) async fn service_secrets(
+        &self,
+        kind: &ActionKind,
+        ownership: &std::collections::BTreeMap<String, String>,
+    ) -> Result<SecretValues, OperationError> {
+        let ActionKind::EnsureService { service } = kind else {
+            return Ok(Vec::new());
+        };
+        if service.secrets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let app = ownership
+            .get(super::APPLICATION_LABEL)
+            .and_then(|app| piqueld_core::ApplicationId::parse(app).ok())
+            .ok_or(OperationError::OwnershipConflict)?;
+        let mut values = Vec::with_capacity(service.secrets.len());
+        for secret in &service.secrets {
+            let value = self
+                .store
+                .secret_plaintext(&app, &secret.secret_name)
+                .await?;
+            values.push((secret.secret_name.clone(), value));
+        }
+        Ok(values)
+    }
+
     pub(super) async fn mutate_action(
         &self,
         kind: &ActionKind,
         ownership: &std::collections::BTreeMap<String, String>,
+        secrets: &SecretValues,
     ) -> Result<(), DockerError> {
         match kind {
             ActionKind::EnsureNetwork { network } => self.docker.ensure_network(network).await,
             ActionKind::EnsureVolume { volume } => self.docker.ensure_volume(volume).await,
             ActionKind::EnsureService { service } => {
-                let app = ownership
-                    .get(super::APPLICATION_LABEL)
-                    .ok_or(DockerError::OwnershipConflict)?;
-                let app = piqueld_core::ApplicationId::parse(app)
-                    .map_err(|_| DockerError::OwnershipConflict)?;
-                for secret in &service.secrets {
-                    let value = self
-                        .store
-                        .secret_plaintext(&app, &secret.secret_name)
-                        .await
-                        .map_err(|error| DockerError::RequestSource {
-                            operation: "load secret for service",
-                            source: error.into(),
-                        })?;
-                    self.docker
-                        .ensure_secret(&secret.secret_name, &value, ownership)
-                        .await?;
+                for (name, value) in secrets {
+                    self.docker.ensure_secret(name, value, ownership).await?;
                 }
                 self.docker.ensure_service(service).await
             }

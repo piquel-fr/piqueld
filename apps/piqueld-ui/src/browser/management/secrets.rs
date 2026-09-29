@@ -1,10 +1,11 @@
 //! Write-only secret values and saved file references.
-use super::{client_error_message, dirty_group, editor, text_input};
+use super::{client_error_message, diagnostic_id, dirty_group, editor, text_input};
 use leptos::{
     Callable, Callback, CollectView, For, IntoView, Show, SignalGet, SignalGetUntracked, SignalSet,
     SignalUpdate, SignalWithUntracked, component, create_rw_signal, event_target_value,
     spawn_local, store_value, view, window,
 };
+use leptos_router::A;
 use piqueld_client::{
     ApplicationView, Client,
     edit::{ApplicationEdit, ServiceEdit},
@@ -17,6 +18,15 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
     let ready = create_rw_signal(false);
     let loading = create_rw_signal(false);
     let error = create_rw_signal(None::<String>);
+    let diagnostic = create_rw_signal(None::<String>);
+    let fail = move |message: String, e: &piqueld_client::ClientError| {
+        diagnostic.set(diagnostic_id(e));
+        error.set(Some(message));
+    };
+    let clear = move || {
+        diagnostic.set(None);
+        error.set(None);
+    };
     let notice = create_rw_signal(String::new());
     let name = create_rw_signal(String::new());
     let value = create_rw_signal(String::new());
@@ -39,9 +49,9 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                 Ok(items) => {
                     metadata.set(items);
                     ready.set(true);
-                    error.set(None);
+                    clear();
                 }
-                Err(e) => error.set(Some(client_error_message(&e))),
+                Err(e) => fail(client_error_message(&e), &e),
             }
             loading.set(false);
         });
@@ -64,7 +74,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
         let id = id.get_value();
         context.busy.set(true);
         notice.set(String::new());
-        error.set(None);
+        clear();
         spawn_local(async move {
             match Client::browser()
                 .put_secret(&id, &name, generation, bytes)
@@ -81,7 +91,13 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                 }
                 Err(e) => {
                     ready.set(false);
-                    error.set(Some(format!("{} Refresh metadata before another secret change. The submitted value has been cleared.", client_error_message(&e))));
+                    fail(
+                        format!(
+                            "{} Refresh metadata before another secret change. The submitted value has been cleared.",
+                            client_error_message(&e)
+                        ),
+                        &e,
+                    );
                 }
             }
             context.busy.set(false);
@@ -103,7 +119,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
         let id = id.get_value();
         context.busy.set(true);
         notice.set(String::new());
-        error.set(None);
+        clear();
         spawn_local(async move {
             match Client::browser()
                 .delete_secret(&id, &secret.name, secret.generation)
@@ -112,14 +128,17 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                 Ok(()) => {
                     metadata.update(|items| items.retain(|s| s.name != secret.name));
                     notice.set("Secret deleted.".into());
-                    error.set(None);
+                    clear();
                 }
                 Err(e) => {
                     ready.set(false);
-                    error.set(Some(format!(
-                        "{} Refresh metadata, then retry deletion if cleanup is pending.",
-                        client_error_message(&e)
-                    )));
+                    fail(
+                        format!(
+                            "{} Refresh metadata, then retry deletion if cleanup is pending.",
+                            client_error_message(&e)
+                        ),
+                        &e,
+                    );
                 }
             }
             context.busy.set(false);
@@ -128,7 +147,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
     view! {<section class="settings-card"><h3>"Application secrets"</h3>
         <p class="help">"Values are write-only. File references below are saved configuration; deploy after saving to use them."</p>
         <button disabled=move ||context.blocked() || loading.get() on:click=move |_|reload.call(())>"Refresh metadata"</button>
-        {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}<p role="status">{move ||notice.get()}</p>
+        {move ||error.get().map(|e|view!{<div class="form-error" role="alert"><p>{e}</p>{move ||diagnostic.get().map(|id|view!{<A href=format!("/dashboard/errors/{id}")>"Diagnostic details"</A>})}</div>})}<p role="status">{move ||notice.get()}</p>
         {move ||metadata.get().into_iter().map(|secret|{let selected=secret.name.clone();view!{
             <div class="form-actions"><strong>{secret.name.clone()}</strong><span>{format!("Version {}{}",secret.generation,if secret.deleting { " · deletion pending" } else { "" })}</span>
                 <button disabled=move ||context.blocked() || !ready.get() || secret.deleting on:click=move |_|name.set(selected.clone())>"Replace value"</button>

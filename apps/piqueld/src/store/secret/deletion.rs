@@ -106,8 +106,13 @@ impl Store {
         // The reservation token prevents those completions from touching the new value.
         sqlx::query!("DELETE FROM deployment_secret_pins WHERE application_id=?1 AND name=?2 AND EXISTS(SELECT 1 FROM application_secrets WHERE application_id=?1 AND name=?2 AND deletion_id=?3)",id,name,deletion_id)
             .execute(&mut *tx).await.map_err(StoreError::database)?;
-        sqlx::query!("DELETE FROM application_secrets WHERE application_id=?1 AND name=?2 AND deletion_id=?3",id,name,deletion_id)
-            .execute(&mut *tx).await.map_err(StoreError::database)?;
+        let deleted = sqlx::query!("DELETE FROM application_secrets WHERE application_id=?1 AND name=?2 AND deletion_id=?3",id,name,deletion_id)
+            .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
+        if deleted > 0 {
+            let now = super::now_ms();
+            sqlx::query!("INSERT INTO events(application_id,kind,message,resource,created_at_ms) VALUES(?1,'secret_deleted','Deleted secret and its runtime versions',?2,?3)",id,name,now)
+                .execute(&mut *tx).await.map_err(StoreError::database)?;
+        }
         tx.commit().await.map_err(StoreError::database)
     }
 }

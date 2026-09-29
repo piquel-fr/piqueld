@@ -275,7 +275,8 @@ Application secret endpoints expose metadata only:
   Docker versions before encrypted records. Partial failure or restart leaves
   `deleting: true`; retry DELETE to finish. Replacement and new configuration
   references return 409 `secret_deleting` until cleanup completes. A version conflict
-  returns 409; missing or invalid key material returns 503 for value-dependent work.
+  returns 409; missing or invalid key material returns 503 `secret_storage_unavailable`
+  with a `details.diagnostic_id` for value-dependent work.
 
 Values never appear in responses, manifests or deployment snapshots. Deployments
 pin immutable versions during effective-input preparation; retries preserve those

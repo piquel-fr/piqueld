@@ -133,7 +133,8 @@ deleted. New writes authenticate a persistent key
 verifier; replacing the key with a different valid 32-byte file fails closed.
 On upgrade, all existing ciphertext is authenticated before creating the verifier.
 Restore the original key, owned by the daemon user with private permissions.
-Secret metadata remains readable without it.
+Secret metadata remains readable without it. Key failures are recorded as
+`secret_storage_unavailable` diagnostics; see [observability](observability.md).
 
 Secret values use authenticated XChaCha20-Poly1305 encryption, binding ciphertext
 to application, logical name and version. The implementation uses

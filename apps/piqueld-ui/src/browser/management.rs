@@ -60,14 +60,7 @@ impl EditorContext {
     }
     fn failure(self, error: &ClientError) {
         self.set_error(Some(client_error_message(error)));
-        self.diagnostic_id.set(match error {
-            ClientError::Api { error, .. } => error
-                .details
-                .get("diagnostic_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned),
-            _ => None,
-        });
+        self.diagnostic_id.set(diagnostic_id(error));
         if matches!(error, ClientError::Transport { .. }) {
             self.uncertain.set(true);
             self.set_error(Some("The request outcome is unknown. Reload saved configuration and deployment history before another action.".into()));
@@ -135,6 +128,18 @@ impl EditorContext {
 fn editor() -> EditorContext {
     use_context().expect("application editor context")
 }
+/// Returns the persisted diagnostic occurrence attached to an API failure.
+fn diagnostic_id(error: &ClientError) -> Option<String> {
+    match error {
+        ClientError::Api { error, .. } => error
+            .details
+            .get("diagnostic_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        _ => None,
+    }
+}
+
 fn transport_failure(error: &ClientError) -> bool {
     matches!(error, ClientError::Transport { .. })
 }

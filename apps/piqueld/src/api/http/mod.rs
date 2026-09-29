@@ -92,23 +92,26 @@ impl ApiError {
     }
 }
 
-impl From<StoreError> for ApiError {
-    fn from(value: StoreError) -> Self {
-        Self::log_storage_error(&value);
-        match value {
-            StoreError::Validation(errors) => errors.into(),
-            StoreError::Edit(error) => error.into(),
+impl ApiError {
+    /// Maps secret lifecycle failures selected by `From<StoreError>`.
+    fn from_secret_error(error: StoreError) -> Self {
+        match error {
             StoreError::SecretVersionConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "secret_generation_conflict",
                 "Secret changed since inspection; read its metadata and retry",
             )
             .details(json!({"expected_generation": expected, "actual_generation": actual})),
-            StoreError::SecretSource(_) => Self::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "secret_storage_unavailable",
-                "Secret storage is unavailable",
-            ),
+            error @ StoreError::SecretSource(_) => {
+                let diagnostic = crate::operations::OperationError::from(error).diagnostic();
+                let mut error = Self::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "secret_storage_unavailable",
+                    "Secret storage is unavailable",
+                );
+                error.diagnostic = Some(Box::new(diagnostic));
+                error
+            }
             StoreError::SecretDeleting => Self::new(
                 StatusCode::CONFLICT,
                 "secret_deleting",
@@ -124,6 +127,22 @@ impl From<StoreError> for ApiError {
                 "secret_referenced",
                 "Secret is still referenced by application configuration or a deployment",
             ),
+            other => unreachable!("non-secret storage error: {other}"),
+        }
+    }
+}
+
+impl From<StoreError> for ApiError {
+    fn from(value: StoreError) -> Self {
+        Self::log_storage_error(&value);
+        match value {
+            StoreError::Validation(errors) => errors.into(),
+            StoreError::Edit(error) => error.into(),
+            error @ (StoreError::SecretVersionConflict { .. }
+            | StoreError::SecretSource(_)
+            | StoreError::SecretDeleting
+            | StoreError::SecretQuota
+            | StoreError::SecretReferenced) => Self::from_secret_error(error),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",

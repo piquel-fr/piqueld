@@ -10,6 +10,9 @@ pub enum OperationError {
     /// Durable operation failure with its storage cause.
     #[error("operation journal is unavailable")]
     Journal(#[source] crate::store::StoreError),
+    /// Secret values could not be decrypted with the configured master key.
+    #[error("secret storage is unavailable")]
+    SecretStorageUnavailable(#[source] crate::store::StoreError),
     /// Repository input could not be located or decoded.
     #[error("{}", if *.not_found { "manifest not found" } else { "repository manifest is invalid or its application name does not match" })]
     ManifestInput {
@@ -88,6 +91,7 @@ impl OperationError {
         match self {
             Self::Docker(error) => error.diagnostic_code(),
             Self::Journal(_) => DiagnosticCode::JournalUnavailable,
+            Self::SecretStorageUnavailable(_) => DiagnosticCode::SecretStorageUnavailable,
             Self::ManifestInput {
                 not_found: true, ..
             }
@@ -173,7 +177,12 @@ impl crate::docker::DockerError {
 
 impl From<crate::store::StoreError> for OperationError {
     fn from(error: crate::store::StoreError) -> Self {
-        Self::Journal(error)
+        match error {
+            error @ crate::store::StoreError::SecretSource(_) => {
+                Self::SecretStorageUnavailable(error)
+            }
+            other => Self::Journal(other),
+        }
     }
 }
 
@@ -220,6 +229,9 @@ impl OperationError {
                         .causes
                         .push(format!("Docker operation: {operation}"));
                 }
+            }
+            if let Some(failure) = error.downcast_ref::<crate::secrets::KeyFailure>() {
+                diagnostic.causes.push(failure.fact().into());
             }
             if let Some(error) = error.downcast_ref::<std::io::Error>() {
                 diagnostic

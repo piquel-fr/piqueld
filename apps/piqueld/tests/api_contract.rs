@@ -3531,6 +3531,43 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
     assert_eq!(response.status(), 410);
 }
 
+/// Secret lifecycle history names secrets and journals cleanup without values.
+async fn assert_secret_history(client: &Client, application_id: &str) {
+    let history = client
+        .events(Some(application_id), None, 100)
+        .await
+        .unwrap()
+        .items;
+    let recorded = |kind: &str| {
+        history
+            .iter()
+            .find(|event| event.kind == kind)
+            .unwrap_or_else(|| panic!("{kind} recorded: {history:#?}"))
+    };
+    assert_eq!(recorded("secret_saved").resource.as_deref(), Some("token"));
+    assert_eq!(
+        recorded("secret_saved").message.as_deref(),
+        Some("Stored secret version 1")
+    );
+    assert_eq!(
+        recorded("secret_deleted").resource.as_deref(),
+        Some("token")
+    );
+    let removal = history
+        .iter()
+        .find(|event| {
+            event.kind == "action_succeeded" && event.phase.as_deref() == Some("remove_secrets")
+        })
+        .expect("runtime cleanup is journaled");
+    assert_eq!(removal.resource.as_deref(), Some("token"));
+    assert!(removal.operation_id.is_none());
+    assert!(
+        !serde_json::to_string(&history)
+            .unwrap()
+            .contains("private-token-value")
+    );
+}
+
 #[tokio::test]
 async fn secret_api_is_application_scoped_write_only_and_versioned() {
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
@@ -3626,6 +3663,45 @@ async fn secret_api_is_application_scoped_write_only_and_versioned() {
             .unwrap()
             .is_empty()
     );
+    assert_secret_history(&client, &app.application_id).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let app = create_and_inspect(&client, &manifest()).await;
+    client
+        .put_secret(&app.application_id, "token", 0, b"value".to_vec())
+        .await
+        .unwrap();
+    std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
+    let error = client
+        .put_secret(&app.application_id, "token", 1, b"replacement".to_vec())
+        .await
+        .unwrap_err();
+    let piqueld_client::ClientError::Api { status, error, .. } = error else {
+        panic!("API error");
+    };
+    assert_eq!(status.as_u16(), 503);
+    assert_eq!(error.code, "secret_storage_unavailable");
+    let event = client
+        .diagnostic(error.details["diagnostic_id"].as_str().unwrap())
+        .await
+        .unwrap();
+    let diagnostic = event.diagnostic.unwrap();
+    assert_eq!(diagnostic.code, "secret_storage_unavailable");
+    assert_eq!(
+        diagnostic.scope,
+        piqueld_core::observability::EventScope::Daemon
+    );
+    assert!(!diagnostic.retryable);
+    assert_eq!(diagnostic.causes, ["Secret master key: missing"]);
+    assert_eq!(event.request_id.as_deref(), Some(error.request_id.as_str()));
     server.abort();
 }
 
@@ -3689,6 +3765,27 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         cleanup.await.unwrap(),
         Err(ApplicationError::Runtime(_))
     ));
+    let failed = store
+        .filtered_events(
+            &piqueld_core::observability::EventFilter {
+                kind: Some("action_failed".into()),
+                ..Default::default()
+            },
+            None,
+            100,
+        )
+        .await
+        .unwrap()
+        .items;
+    assert!(
+        failed
+            .iter()
+            .any(|event| event.phase.as_deref() == Some("remove_secrets")
+                && event.resource.as_deref() == Some("token")
+                && event.application_id.as_ref() == Some(app.id())
+                && event.diagnostic.is_some()),
+        "{failed:#?}"
+    );
     assert!(
         service
             .secrets(app.id())

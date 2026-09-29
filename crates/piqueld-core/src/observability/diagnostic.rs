@@ -66,6 +66,8 @@ diagnostic_codes! {
     ManifestFetchFailed => "manifest_fetch_failed",
     /// Saved configuration could not be rendered.
     ManifestSerializationFailed => "manifest_serialization_failed",
+    /// The secret master key is missing, unreadable, or does not match stored values.
+    SecretStorageUnavailable => "secret_storage_unavailable",
     /// A Docker request failed local validation.
     ValidationFailed => "validation_failed",
     /// The runtime plan cannot execute safely.
@@ -132,6 +134,11 @@ impl DiagnosticCode {
                 Application,
                 false,
                 "Inspect the conflicting resource and resolve its ownership or immutable configuration.",
+            ),
+            Self::SecretStorageUnavailable => (
+                Daemon,
+                false,
+                "Restore the original secrets.key, owned by the daemon user with private permissions. Secret metadata remains readable.",
             ),
             Self::ManifestNotFound
             | Self::ManifestInvalid

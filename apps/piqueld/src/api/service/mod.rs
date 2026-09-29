@@ -225,9 +225,25 @@ impl ApplicationService {
             .store
             .begin_secret_deletion(application, name, expected_generation)
             .await?;
-        self.runtime
-            .remove_secrets(application, &deletion.versions)
+        let journal = self
+            .store
+            .begin_application_action(application, "remove_secrets", Some(name))
             .await?;
+        let result = match self.store.action_request(&journal, 1).await {
+            Ok(()) => {
+                self.runtime
+                    .remove_secrets(application, &deletion.versions)
+                    .await
+            }
+            Err(error) => Err(error.into()),
+        };
+        self.store
+            .finish_action(
+                &journal,
+                result.as_ref().err().map(BoundaryError::diagnostic),
+            )
+            .await?;
+        result?;
         self.store
             .finish_secret_deletion(application, name, &deletion.id)
             .await?;

@@ -11,6 +11,35 @@ use std::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+/// Master-key failures whose kind is safe to expose as a diagnostic fact.
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+pub(crate) enum KeyFailure {
+    /// Encrypted values exist but the key file does not.
+    #[error("secret master key is missing; restore secrets.key from backup")]
+    Missing,
+    /// The key file is not a private regular file owned by the daemon user.
+    #[error("secret master key must be a private file owned by the daemon user")]
+    NotPrivate,
+    /// The key file does not contain a 256-bit key.
+    #[error("secret master key must contain exactly 32 bytes; restore the original key")]
+    InvalidLength,
+    /// The key does not authenticate stored ciphertext.
+    #[error("secret authentication failed; verify the original master key and database backup")]
+    AuthenticationFailed,
+}
+
+impl KeyFailure {
+    /// Sanitized causal fact recorded in diagnostics.
+    pub(crate) const fn fact(self) -> &'static str {
+        match self {
+            Self::Missing => "Secret master key: missing",
+            Self::NotPrivate => "Secret master key: not a private file owned by the daemon user",
+            Self::InvalidLength => "Secret master key: invalid length",
+            Self::AuthenticationFailed => "Secret master key: does not authenticate stored values",
+        }
+    }
+}
+
 pub(crate) struct SecretCipher(XChaCha20Poly1305);
 pub(crate) struct Envelope {
     pub(crate) nonce: Vec<u8>,
@@ -22,7 +51,7 @@ impl SecretCipher {
         use anyhow::{Context, bail};
         if !path.try_exists().context("inspect secret master key")? {
             if encrypted_data_exists {
-                bail!("secret master key is missing; restore secrets.key from backup");
+                bail!(KeyFailure::Missing);
             }
             let parent = path.parent().context("locate secret key directory")?;
             let mut temporary = tempfile::NamedTempFile::new_in(parent)
@@ -55,14 +84,14 @@ impl SecretCipher {
             || metadata.mode() & 0o077 != 0
             || metadata.uid() != rustix::process::geteuid().as_raw()
         {
-            bail!("secret master key must be a private file owned by the daemon user");
+            bail!(KeyFailure::NotPrivate);
         }
         let mut bytes = Zeroizing::new(Vec::with_capacity(33));
         file.take(33)
             .read_to_end(&mut bytes)
             .context("read secret master key")?;
         if bytes.len() != 32 {
-            bail!("secret master key must contain exactly 32 bytes; restore the original key");
+            bail!(KeyFailure::InvalidLength);
         }
         Ok(Self(XChaCha20Poly1305::new_from_slice(&bytes).map_err(
             |_| anyhow::anyhow!("invalid secret key length"),
@@ -106,7 +135,16 @@ impl SecretCipher {
             anyhow::bail!("invalid encrypted secret nonce");
         }
         let aad = Self::context(application, name, generation);
-        let plaintext=self.0.decrypt(XNonce::from_slice(&envelope.nonce),Payload{msg:&envelope.ciphertext,aad:&aad}).map_err(|_|anyhow::anyhow!("secret authentication failed; verify the original master key and database backup"))?;
+        let plaintext = self
+            .0
+            .decrypt(
+                XNonce::from_slice(&envelope.nonce),
+                Payload {
+                    msg: &envelope.ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| KeyFailure::AuthenticationFailed)?;
         Ok(Zeroizing::new(plaintext))
     }
 }

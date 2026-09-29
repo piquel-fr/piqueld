@@ -396,17 +396,16 @@ impl<D: DockerApi> Controller<D> {
                 Some(action.kind.resource_name()),
             )
             .await?;
-        if let Err(error) = self.store.action_request(&journal, 1).await {
-            let failure = super::OperationError::from(error);
-            self.store
-                .finish_action(&journal, Some(failure.diagnostic()))
-                .await?;
-            return Err(failure);
-        }
-        let result = self
-            .mutate_action(&action.kind, &ownership)
-            .await
-            .map_err(super::OperationError::from);
+        let result = match self.service_secrets(&action.kind, &ownership).await {
+            Ok(secrets) => match self.store.action_request(&journal, 1).await {
+                Ok(()) => self
+                    .mutate_action(&action.kind, &ownership, &secrets)
+                    .await
+                    .map_err(super::OperationError::from),
+                Err(error) => Err(error.into()),
+            },
+            Err(error) => Err(error),
+        };
         self.store
             .finish_action(
                 &journal,

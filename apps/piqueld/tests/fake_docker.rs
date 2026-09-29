@@ -2454,3 +2454,73 @@ async fn application_deletion_journals_secret_cleanup_failures() {
         && event.error_code.as_deref() == Some("docker_request_failed")));
     assert!(harness.store.get(&first.application_id).await.is_ok());
 }
+
+#[tokio::test]
+async fn missing_secret_key_fails_rollout_before_docker_mutation() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let first = applications
+        .apply(manifest().validate().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    harness
+        .store
+        .put_secret(&first.application_id, "token", 0, b"value".to_vec())
+        .await
+        .unwrap();
+    std::fs::remove_file(harness.database_path.with_file_name("secrets.key")).unwrap();
+    let mut input = manifest();
+    input.spec.services[0]
+        .secrets
+        .push(piqueld_core::manifest::SecretMount {
+            name: "token".into(),
+            target: "/run/secrets/token".into(),
+        });
+    let deployment = applications
+        .apply(input.validate().unwrap(), Some(1))
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let operation = harness.store.operation(&deployment.id).await.unwrap();
+    assert_eq!(
+        operation.error_code.as_deref(),
+        Some("secret_storage_unavailable")
+    );
+    assert!(harness.docker.secret_values.lock().await.is_empty());
+    let events = harness
+        .store
+        .filtered_events(
+            &piqueld_core::observability::EventFilter {
+                operation_id: Some(deployment.id.clone()),
+                ..Default::default()
+            },
+            None,
+            100,
+        )
+        .await
+        .unwrap()
+        .items;
+    let service = |kind: &str| {
+        events
+            .iter()
+            .find(|event| event.kind == kind && event.phase.as_deref() == Some("ensure_service"))
+    };
+    let failed = service("action_failed").expect("service action failed");
+    assert_eq!(
+        failed.error_code.as_deref(),
+        Some("secret_storage_unavailable")
+    );
+    assert_eq!(
+        failed.diagnostic.as_ref().unwrap().causes,
+        ["Secret master key: missing"]
+    );
+    assert!(
+        service("action_requested").is_none(),
+        "no Docker request is made without secret values: {events:#?}"
+    );
+}
