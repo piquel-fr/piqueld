@@ -4784,6 +4784,42 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Sends a `POST` request to `/api/v1/auth/device/inspect`
+
+    */
+    pub async fn auth_device_inspect<'a>(
+        &'a self,
+        body: &'a piqueld_core::auth::DeviceApprove,
+    ) -> Result<ResponseValue<piqueld_core::auth::DeviceRequest>, Error<()>> {
+        let url = format!("{}/api/v1/auth/device/inspect", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "auth_device_inspect",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Sends a `POST` request to `/api/v1/auth/device/poll`
 
     */

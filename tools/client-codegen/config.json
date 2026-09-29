@@ -276,6 +276,11 @@
       "rustType": "piqueld_core::auth::DeviceApprove"
     },
     {
+      "schema": "DeviceRequest",
+      "name": "DeviceRequest",
+      "rustType": "piqueld_core::auth::DeviceRequest"
+    },
+    {
       "schema": "DeviceToken",
       "name": "DeviceToken",
       "rustType": "piqueld_core::auth::DeviceToken"

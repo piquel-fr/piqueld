@@ -636,3 +636,42 @@ async fn https_cookies_use_host_prefix_and_ignore_unprefixed_names() {
         );
     }
 }
+
+#[tokio::test]
+async fn device_inspection_reports_the_requester_until_approval() {
+    let f = Fixture::new().await;
+    let (_, token) = f.account("alice", "browser", Some(Auth::now() + DAY)).await;
+    let identity = f.auth.authenticate(&token).await.unwrap();
+    let peer = "192.0.2.7".parse().unwrap();
+    let start = f.auth.device_start(Some(peer)).await.unwrap();
+    assert_eq!(start.requester.as_deref(), Some("192.0.2.7"));
+    let request = f
+        .auth
+        .device_inspect(&format!(" {} ", start.user_code.to_lowercase()))
+        .await
+        .unwrap();
+    assert_eq!(request.user_code, start.user_code);
+    assert_eq!(request.requester.as_deref(), Some("192.0.2.7"));
+    assert!(request.age <= 1 && (599..=600).contains(&request.expires_in));
+    // Inspection does not approve anything.
+    assert_eq!(
+        f.auth.device_poll(&start.device_code).await.unwrap().status,
+        "authorization_pending"
+    );
+    assert!(f.auth.device_inspect("AAAA-AAAA").await.is_err());
+    f.auth
+        .device_approve(&start.user_code, &identity)
+        .await
+        .unwrap();
+    assert!(f.auth.device_inspect(&start.user_code).await.is_err());
+    let local = f.auth.device_start(None).await.unwrap();
+    assert!(local.requester.is_none());
+    assert!(
+        f.auth
+            .device_inspect(&local.user_code)
+            .await
+            .unwrap()
+            .requester
+            .is_none()
+    );
+}

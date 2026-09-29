@@ -1500,6 +1500,38 @@
         ],
         "type": "object"
       },
+      "DeviceRequest": {
+        "description": "Pending device login shown to the approver before they confirm it.",
+        "properties": {
+          "age": {
+            "description": "Seconds since the login started.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires_in": {
+            "description": "Seconds until the request expires.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "requester": {
+            "description": "Network address the daemon observed when the login started. Absent for\nrequests made over the Unix socket.",
+            "nullable": true,
+            "type": "string"
+          },
+          "user_code": {
+            "description": "Code entered by the user.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_code",
+          "age",
+          "expires_in"
+        ],
+        "type": "object"
+      },
       "DeviceStart": {
         "description": "Device login challenge for an interactive CLI.",
         "properties": {
@@ -1518,6 +1550,11 @@
             "format": "int32",
             "minimum": 0,
             "type": "integer"
+          },
+          "requester": {
+            "description": "Network address the daemon observed for this request, shown again on\nthe approval page. Absent for requests made over the Unix socket.",
+            "nullable": true,
+            "type": "string"
           },
           "user_code": {
             "description": "Human-readable code explicitly confirmed in the browser.",
@@ -13612,6 +13649,33 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Managed"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/v1/auth/device/inspect": {
+      "post": {
+        "operationId": "authDeviceInspect",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceApprove"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceRequest"
                 }
               }
             },

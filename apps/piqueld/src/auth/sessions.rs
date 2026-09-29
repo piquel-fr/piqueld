@@ -1,7 +1,8 @@
 //! Durable opaque sessions and short-lived, explicitly approved device logins.
 use super::{Auth, AuthError, DAY, MAX_PENDING, Result};
-use piqueld_core::auth::{DeviceStart, DeviceToken, User};
+use piqueld_core::auth::{DeviceRequest, DeviceStart, DeviceToken, User};
 use sqlx::{Row, SqliteConnection};
+use std::collections::HashMap;
 
 #[derive(Clone)]
 pub(crate) struct Identity {
@@ -11,6 +12,7 @@ pub(crate) struct Identity {
 pub(super) struct Device {
     user_code: String,
     requester: Option<std::net::IpAddr>,
+    created: i64,
     expires: i64,
     pub(super) next_poll: i64,
     approved_by: Option<String>,
@@ -85,12 +87,14 @@ impl Auth {
                 break code;
             }
         };
+        let now = Self::now();
         devices.insert(
             Self::hash(&device_code),
             Device {
                 user_code: user_code.clone(),
                 requester,
-                expires: Self::now() + 600,
+                created: now,
+                expires: now + 600,
                 next_poll: 0,
                 approved_by: None,
             },
@@ -101,10 +105,14 @@ impl Auth {
             verification_uri: format!("{}/dashboard/auth#device", self.origin()),
             expires_in: 600,
             interval: 5,
+            requester: requester.map(|address| address.to_string()),
         })
     }
-    pub(crate) async fn device_approve(&self, code: &str, identity: &Identity) -> Result<()> {
-        let mut devices = self.0.devices.lock().await;
+    /// Finds a live, unapproved request by the code the user typed.
+    fn pending_device<'a>(
+        devices: &'a mut HashMap<String, Device>,
+        code: &str,
+    ) -> Result<&'a mut Device> {
         let normalized = code.trim().to_ascii_uppercase();
         let device = devices
             .values_mut()
@@ -113,11 +121,30 @@ impl Auth {
         if device.approved_by.is_some() {
             return Err(AuthError::Invalid("device code has already been approved"));
         }
+        Ok(device)
+    }
+    /// Describes a pending request so the approver can check where it came from.
+    pub(crate) async fn device_inspect(&self, code: &str) -> Result<DeviceRequest> {
+        let mut devices = self.0.devices.lock().await;
+        let device = Self::pending_device(&mut devices, code)?;
+        let now = Self::now();
+        Ok(DeviceRequest {
+            user_code: device.user_code.clone(),
+            requester: device.requester.map(|address| address.to_string()),
+            age: u32::try_from(now - device.created).unwrap_or(0),
+            expires_in: u32::try_from(device.expires - now).unwrap_or(0),
+        })
+    }
+    pub(crate) async fn device_approve(&self, code: &str, identity: &Identity) -> Result<()> {
+        let mut devices = self.0.devices.lock().await;
+        let device = Self::pending_device(&mut devices, code)?;
         device.approved_by = Some(identity.credential_id.clone());
         tracing::info!(
             user_id = %identity.user.id,
             username = %identity.user.username,
-            requester = ?device.requester,
+            requester = %device
+                .requester
+                .map_or_else(|| "unix-socket".to_owned(), |address| address.to_string()),
             "approved CLI device login"
         );
         Ok(())

@@ -32,6 +32,9 @@
 .auth-page button, .auth-account button { margin: .4rem .4rem .4rem 0; }
 .auth-account { margin-bottom: 1.5rem; }
 .auth-secret { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; }
+.device-request { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; margin-block: .75rem; }
+.device-request dt { font-weight: 600; }
+.device-request dd { margin: 0; overflow-wrap: anywhere; }
 .auth-overlay {
   position: fixed;
   inset: 0;

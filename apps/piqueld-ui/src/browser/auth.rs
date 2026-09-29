@@ -275,7 +275,6 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
     let username = create_rw_signal(String::new());
     let display_name = create_rw_signal(String::new());
     let name = create_rw_signal("My passkey".to_owned());
-    let code = create_rw_signal(String::new());
     let is_registration = invitation.is_some();
     let signed_in = current.is_some();
     let who = current.map(|u| u.username).unwrap_or_default();
@@ -303,17 +302,80 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
                     reload(); Ok(String::new())
                 })>"Sign in with a passkey"</button> }.into_view()
             } else if device {
-                view! { <h2>"Connect piquelctl"</h2><p>{format!("Signed in as {who}. Enter the code shown by the CLI you are connecting.")}</p>
-                    <p role="note"><strong>"Only approve a code shown in a terminal you started yourself in the last ten minutes."</strong>" Approval gives that terminal full access as your account. Never enter a code someone else sent you."</p>
-                    <label class="field">"CLI code"<input autocomplete="off" prop:value=code on:input=move |e|code.set(event_target_value(&e))/></label>
-                    <button class="primary" on:click=move |_|feedback.run(async move {
-                        Client::browser().auth_device_approve(&code.get_untracked()).await.map_err(|e|e.to_string())?;
-                        Ok("CLI approved. You can return to your terminal.".into())
-                    })>"Approve CLI login"</button><Logout/>
-                }.into_view()
+                view! { <DeviceApproval who=who.clone()/> }.into_view()
             } else {view!{<a href="/dashboard/">"Open dashboard"</a><Logout/>}.into_view()}}
             </fieldset>
         </section></main>
+    }
+}
+
+/// Two-step CLI approval: the approver first sees where the request came from.
+#[component]
+fn DeviceApproval(who: String) -> impl IntoView {
+    let feedback = Feedback::new();
+    let code = create_rw_signal(String::new());
+    let request = create_rw_signal(None::<DeviceRequest>);
+    let review = move |_| {
+        feedback.run(async move {
+            let found = Client::browser()
+                .auth_device_inspect(&code.get_untracked())
+                .await
+                .map_err(|e| e.to_string())?;
+            request.set(Some(found));
+            Ok(String::new())
+        });
+    };
+    let approve = move |_| {
+        let Some(pending) = request.get_untracked() else {
+            return;
+        };
+        feedback.run(async move {
+            Client::browser()
+                .auth_device_approve(&pending.user_code)
+                .await
+                .map_err(|e| e.to_string())?;
+            request.set(None);
+            code.set(String::new());
+            Ok("CLI approved. You can return to your terminal.".into())
+        });
+    };
+    view! {
+        <h2>"Connect piquelctl"</h2>
+        <p>{format!("Signed in as {who}. Enter the code shown by the CLI you are connecting.")}</p>
+        <p role="note"><strong>"Only approve a code shown in a terminal you started yourself in the last ten minutes."</strong>" Approval gives that terminal full access as your account. Never enter a code someone else sent you."</p>
+        {feedback.view()}
+        <fieldset disabled=move || feedback.busy.get()>
+        {move || match request.get() {
+            None => view! {
+                <label class="field">"CLI code"<input autocomplete="off" prop:value=code on:input=move |e|code.set(event_target_value(&e))/></label>
+                <button class="primary" on:click=review>"Review request"</button>
+            }.into_view(),
+            Some(pending) => view! {
+                <dl class="device-request">
+                    <dt>"Code"</dt><dd>{pending.user_code.clone()}</dd>
+                    <dt>"Requested from"</dt><dd>{requester_label(pending.requester.as_deref())}</dd>
+                    <dt>"Started"</dt><dd>{age_label(pending.age)}</dd>
+                </dl>
+                <p>"piquelctl printed the address it connected from. Approve only if it matches this request."</p>
+                <button class="primary" on:click=approve>"Approve CLI login"</button>
+                <button on:click=move |_| request.set(None)>"Cancel"</button>
+            }.into_view(),
+        }}
+        </fieldset>
+        <Logout/>
+    }
+}
+fn requester_label(requester: Option<&str>) -> String {
+    requester.map_or_else(
+        || "the daemon's local Unix socket".into(),
+        |address| format!("network address {address}"),
+    )
+}
+fn age_label(seconds: u32) -> String {
+    match seconds / 60 {
+        0 => "less than a minute ago".into(),
+        1 => "1 minute ago".into(),
+        minutes => format!("{minutes} minutes ago"),
     }
 }
 

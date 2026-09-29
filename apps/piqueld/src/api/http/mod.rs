@@ -365,6 +365,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(auth::manage))
         .routes(routes!(auth::device_start))
         .routes(routes!(auth::device_poll))
+        .routes(routes!(auth::device_inspect))
         .routes(routes!(auth::device_approve))
         .routes(routes!(system::status))
         .routes(routes!(system::readiness))

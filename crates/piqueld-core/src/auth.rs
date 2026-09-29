@@ -176,6 +176,9 @@ pub struct DeviceStart {
     pub expires_in: u32,
     /// Minimum polling interval, in seconds.
     pub interval: u32,
+    /// Network address the daemon observed for this request, shown again on
+    /// the approval page. Absent for requests made over the Unix socket.
+    pub requester: Option<String>,
 }
 /// CLI polling request.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -188,6 +191,19 @@ pub struct DevicePoll {
 pub struct DeviceApprove {
     /// Code entered by the user.
     pub user_code: String,
+}
+/// Pending device login shown to the approver before they confirm it.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct DeviceRequest {
+    /// Code entered by the user.
+    pub user_code: String,
+    /// Network address the daemon observed when the login started. Absent for
+    /// requests made over the Unix socket.
+    pub requester: Option<String>,
+    /// Seconds since the login started.
+    pub age: u32,
+    /// Seconds until the request expires.
+    pub expires_in: u32,
 }
 /// Poll result; the token is returned exactly once after explicit approval.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

@@ -9,8 +9,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use piqueld_core::auth::{
-    AuthStatus, Ceremony, CeremonyFinish, DeviceApprove, DevicePoll, DeviceStart, DeviceToken,
-    Directory, Manage, Managed, RegistrationStart, User,
+    AuthStatus, Ceremony, CeremonyFinish, DeviceApprove, DevicePoll, DeviceRequest, DeviceStart,
+    DeviceToken, Directory, Manage, Managed, RegistrationStart, User,
 };
 use std::net::SocketAddr;
 
@@ -282,6 +282,13 @@ pub(super) async fn device_poll(
     Json(input): Json<DevicePoll>,
 ) -> Result<Json<DeviceToken>, ApiError> {
     Ok(Json(auth.device_poll(&input.device_code).await?))
+}
+#[utoipa::path(post,path="/api/v1/auth/device/inspect",operation_id="authDeviceInspect",request_body=DeviceApprove,responses((status=200,body=DeviceRequest)))]
+pub(super) async fn device_inspect(
+    Extension(auth): Extension<Auth>,
+    Json(input): Json<DeviceApprove>,
+) -> Result<Json<DeviceRequest>, ApiError> {
+    Ok(Json(auth.device_inspect(&input.user_code).await?))
 }
 #[utoipa::path(post,path="/api/v1/auth/device/approve",operation_id="authDeviceApprove",request_body=DeviceApprove,responses((status=200,body=Managed)))]
 pub(super) async fn device_approve(

@@ -190,6 +190,14 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
     console.prompt_lines(&[
         format!("Open {}", start.verification_uri),
         format!("Enter code: {}", start.user_code),
+        // The approval page shows the same address, so the approver can match them.
+        format!(
+            "The daemon sees this login coming from: {}",
+            start
+                .requester
+                .as_deref()
+                .unwrap_or("the daemon's local Unix socket")
+        ),
         "Waiting for passkey login…".into(),
     ])?;
     let finish = async {

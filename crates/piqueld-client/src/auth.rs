@@ -79,6 +79,19 @@ impl Client {
         )
         .await
     }
+    /// Describes a pending device login so the approver can check its origin.
+    /// # Errors
+    /// Returns invalid-code, authentication, transport, decoding, or API failures.
+    pub async fn auth_device_inspect(&self, user_code: &str) -> Result<DeviceRequest, ClientError> {
+        crate::client::generated_result(
+            self.generated
+                .auth_device_inspect(&DeviceApprove {
+                    user_code: user_code.into(),
+                })
+                .await,
+        )
+        .await
+    }
     /// Explicitly approves the device code entered in the browser.
     /// # Errors
     /// Returns invalid-code, authentication, transport, decoding, or API failures.
