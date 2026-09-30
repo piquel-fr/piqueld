@@ -8,16 +8,11 @@ pub(crate) use sessions::Identity;
 #[cfg(test)]
 mod tests;
 
+use crate::store::{CredentialKind, NewCredential, now_secs};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use piqueld_core::auth::{AuthStatus, User};
 use sha2::{Digest, Sha256};
-use sqlx::Row;
-use std::{
-    collections::HashMap,
-    path::Path,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use webauthn_rs_core::WebauthnCore;
 
@@ -37,11 +32,8 @@ pub enum AuthError {
     /// Bounded pending authentication capacity has been reached.
     #[error("too many pending authentication requests; try again shortly")]
     Busy,
-    /// Database operation failed.
+    /// Authentication storage failed or refused the change.
     #[error("authentication storage failed")]
-    Database(#[from] sqlx::Error),
-    /// Shared database writer queue failed.
-    #[error("authentication storage transaction failed")]
     Store(#[from] crate::store::StoreError),
     /// Stored data or challenge encoding failed.
     #[error("authentication encoding failed")]
@@ -162,24 +154,9 @@ impl Auth {
         )?;
         writeln!(file, "{}/dashboard/auth#invite={secret}", self.0.origin)?;
         file.as_file().sync_all()?;
-        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
-        sqlx::query("UPDATE auth_setup SET secret_hash=? WHERE singleton=1 AND initialized=0")
-            .bind(Self::hash(&secret))
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
+        self.0.store.set_setup_secret(&Self::hash(&secret)).await?;
         file.persist(path).context("persist private setup link")?;
         Ok(())
-    }
-
-    pub(crate) fn now() -> i64 {
-        i64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        )
-        .unwrap_or(i64::MAX)
     }
 
     pub(crate) async fn admit_start(&self, peer: Option<std::net::IpAddr>) -> Result<()> {
@@ -199,6 +176,22 @@ impl Auth {
     }
     fn id() -> String {
         uuid::Uuid::now_v7().to_string()
+    }
+    /// Generates a credential secret, returning it with the record to store.
+    fn new_credential(
+        kind: CredentialKind,
+        name: &str,
+        expires_at: Option<i64>,
+    ) -> Result<(String, NewCredential<'_>)> {
+        let secret = Self::secret()?;
+        let credential = NewCredential {
+            id: Self::id(),
+            secret_hash: Self::hash(&secret),
+            kind,
+            name,
+            expires_at,
+        };
+        Ok((secret, credential))
     }
     pub(crate) fn origin(&self) -> &str {
         &self.0.origin
@@ -221,29 +214,17 @@ impl Auth {
         )
     }
     pub(crate) async fn status(&self) -> Result<AuthStatus> {
-        let initialized: bool =
-            sqlx::query_scalar("SELECT initialized FROM auth_setup WHERE singleton=1")
-                .fetch_one(&self.0.store.pool)
-                .await?;
         Ok(AuthStatus {
-            initialized,
+            initialized: self.0.store.auth_initialized().await?,
             public_url: self.0.origin.clone(),
         })
     }
     async fn user(&self, id: &str) -> Result<User> {
-        let row = sqlx::query("SELECT id,username,display_name FROM auth_users WHERE id=?")
-            .bind(id)
-            .fetch_optional(&self.0.store.pool)
+        self.0
+            .store
+            .auth_user(id)
             .await?
-            .ok_or(AuthError::Unauthorized)?;
-        Ok(Self::user_row(&row))
-    }
-    fn user_row(row: &sqlx::sqlite::SqliteRow) -> User {
-        User {
-            id: row.get("id"),
-            username: row.get("username"),
-            display_name: row.get("display_name"),
-        }
+            .ok_or(AuthError::Unauthorized)
     }
     fn validate_profile(username: &str, display_name: &str) -> Result<()> {
         if username.is_empty()
@@ -260,8 +241,6 @@ impl Auth {
         Ok(())
     }
     async fn invitation_valid(&self, secret: &str) -> Result<bool> {
-        let hash = Self::hash(secret);
-        Ok(sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM auth_setup WHERE initialized=0 AND secret_hash=?) OR EXISTS(SELECT 1 FROM auth_invitations WHERE secret_hash=? AND expires_at>?)")
-            .bind(&hash).bind(&hash).bind(Self::now()).fetch_one(&self.0.store.pool).await?)
+        Ok(self.0.store.invitation_valid(&Self::hash(secret)).await?)
     }
 }

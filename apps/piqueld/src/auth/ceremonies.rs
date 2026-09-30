@@ -1,9 +1,11 @@
 //! Fixed `WebAuthn` policy: discoverable credentials, required user verification,
 //! exact origin/RP binding, and server-side single-use ceremony state.
-use super::{Auth, AuthError, CEREMONY_LIFETIME, MAX_PENDING, Result};
+use super::{
+    Auth, AuthError, CEREMONY_LIFETIME, CredentialKind, DAY, MAX_PENDING, Result, now_secs,
+};
+use crate::store::{NewPasskey, PasskeyOwner};
 use base64::Engine;
 use piqueld_core::auth::{Ceremony, CeremonyFinish, RegistrationStart, User};
-use sqlx::Row;
 use webauthn_rs_core::proto::{
     AuthenticationState, Credential, PublicKeyCredential, RegistrationState, UserVerificationPolicy,
 };
@@ -31,7 +33,7 @@ impl Auth {
         options: serde_json::Value,
     ) -> Result<Ceremony> {
         let mut pending = self.0.ceremonies.lock().await;
-        pending.retain(|_, item| item.expires > Self::now());
+        pending.retain(|_, item| item.expires > now_secs());
         if pending.len() >= MAX_PENDING {
             return Err(AuthError::Busy);
         }
@@ -39,7 +41,7 @@ impl Auth {
         pending.insert(
             id.clone(),
             Pending {
-                expires: Self::now() + CEREMONY_LIFETIME,
+                expires: now_secs() + CEREMONY_LIFETIME,
                 binding: Self::hash(binding),
                 kind,
             },
@@ -49,7 +51,7 @@ impl Auth {
     async fn consume(&self, id: &str, binding: &str) -> Result<Kind> {
         let mut pending = self.0.ceremonies.lock().await;
         let item = pending.get(id).ok_or(AuthError::Unauthorized)?;
-        if item.expires <= Self::now() || item.binding != Self::hash(binding) {
+        if item.expires <= now_secs() || item.binding != Self::hash(binding) {
             return Err(AuthError::Unauthorized);
         }
         Ok(pending.remove(id).ok_or(AuthError::Unauthorized)?.kind)
@@ -83,12 +85,11 @@ impl Auth {
                 Some(Self::hash(&secret)),
             )
         };
-        let existing: Vec<String> =
-            sqlx::query_scalar("SELECT credential FROM auth_passkeys WHERE user_id=?")
-                .bind(&user.id)
-                .fetch_all(&self.0.store.pool)
-                .await?;
-        let excluded = existing
+        let excluded = self
+            .0
+            .store
+            .passkey_credentials(&user.id)
+            .await?
             .iter()
             .map(|value| serde_json::from_str::<Credential>(value).map(|c| c.cred_id))
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -141,60 +142,27 @@ impl Auth {
             .0
             .webauthn
             .register_credential(&response, &state, None)?;
-        let id = super::URL_SAFE_NO_PAD.encode(&credential.cred_id);
-        let credential = serde_json::to_string(&credential)?;
-        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
-        let is_new = invitation.is_some();
-        if let Some(hash) = invitation {
-            let setup = sqlx::query("UPDATE auth_setup SET initialized=1, secret_hash=NULL WHERE initialized=0 AND secret_hash=?").bind(&hash).execute(&mut *tx).await?.rows_affected();
-            if setup == 0 {
-                let consumed = sqlx::query(
-                    "DELETE FROM auth_invitations WHERE secret_hash=? AND expires_at>?",
-                )
-                .bind(&hash)
-                .bind(Self::now())
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
-                if consumed != 1 {
-                    return Err(AuthError::Unauthorized);
-                }
-            }
-            sqlx::query(
-                "INSERT INTO auth_users(id,username,display_name,created_at) VALUES(?,?,?,?)",
-            )
-            .bind(&user.id)
-            .bind(&user.username)
-            .bind(&user.display_name)
-            .bind(Self::now())
-            .execute(&mut *tx)
-            .await?;
-        }
-        sqlx::query(
-            "INSERT INTO auth_passkeys(id,user_id,name,credential,created_at) VALUES(?,?,?,?,?)",
-        )
-        .bind(id)
-        .bind(&user.id)
-        .bind(name)
-        .bind(credential)
-        .bind(Self::now())
-        .execute(&mut *tx)
-        .await?;
-        let token = if is_new {
-            Some(
-                Self::issue(
-                    &mut tx,
-                    &user.id,
-                    "browser",
-                    "Browser",
-                    Some(Self::now() + 7 * super::DAY),
-                )
-                .await?,
-            )
-        } else {
-            None
+        let passkey = NewPasskey {
+            id: &super::URL_SAFE_NO_PAD.encode(&credential.cred_id),
+            name: &name,
+            credential: &serde_json::to_string(&credential)?,
         };
-        tx.commit().await?;
+        let is_new = invitation.is_some();
+        let (owner, token) = match &invitation {
+            Some(invitation_hash) => {
+                let (token, session) = Self::browser_session()?;
+                let owner = PasskeyOwner::New {
+                    user: &user,
+                    invitation_hash,
+                    session,
+                };
+                (owner, Some(token))
+            }
+            None => (PasskeyOwner::Existing(&user.id), None),
+        };
+        if !self.0.store.add_passkey(owner, passkey).await? {
+            return Err(AuthError::Unauthorized);
+        }
         tracing::info!(
             user_id = %user.id,
             username = %user.username,
@@ -202,6 +170,14 @@ impl Auth {
             "registered passkey"
         );
         Ok((user, token))
+    }
+    /// A week-long browser session, which also ends after a day without use.
+    fn browser_session() -> Result<(String, crate::store::NewCredential<'static>)> {
+        Self::new_credential(
+            CredentialKind::Browser,
+            "Browser",
+            Some(now_secs() + 7 * DAY),
+        )
     }
     pub(crate) async fn login_start(&self, binding: &str) -> Result<Ceremony> {
         let builder = self.0.webauthn.new_challenge_authenticate_builder(
@@ -227,32 +203,24 @@ impl Auth {
             .ok_or(AuthError::Unauthorized)?;
         let user_id = std::str::from_utf8(handle).map_err(|_| AuthError::Unauthorized)?;
         let credential_id = super::URL_SAFE_NO_PAD.encode(response.get_credential_id());
-        // Serializing credential lookup, verification, counter updates, and session
-        // issuance prevents a concurrent deletion/replay from resurrecting access.
-        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
-        let row = sqlx::query("SELECT p.credential,u.id,u.username,u.display_name FROM auth_passkeys p JOIN auth_users u ON u.id=p.user_id WHERE p.id=? AND u.id=?")
-            .bind(&credential_id).bind(user_id).fetch_optional(&mut *tx).await?.ok_or(AuthError::Unauthorized)?;
-        let user = Self::user_row(&row);
-        let mut credential: Credential = serde_json::from_str(row.get("credential"))?;
-        state.set_allowed_credentials(vec![credential.clone()]);
-        let result = self.0.webauthn.authenticate_credential(&response, &state)?;
-        credential.counter = result.counter();
-        credential.backup_state = result.backup_state();
-        credential.backup_eligible = result.backup_eligible();
-        sqlx::query("UPDATE auth_passkeys SET credential=? WHERE id=?")
-            .bind(serde_json::to_string(&credential)?)
-            .bind(&credential_id)
-            .execute(&mut *tx)
-            .await?;
-        let token = Self::issue(
-            &mut tx,
-            user_id,
-            "browser",
-            "Browser",
-            Some(Self::now() + 7 * super::DAY),
-        )
-        .await?;
-        tx.commit().await?;
+        let (token, session) = Self::browser_session()?;
+        // The store verifies the assertion and updates its signature counter
+        // under the writer lock, then opens the session in the same transaction.
+        let verify = |stored: &str| -> Result<String> {
+            let mut credential: Credential = serde_json::from_str(stored)?;
+            state.set_allowed_credentials(vec![credential.clone()]);
+            let result = self.0.webauthn.authenticate_credential(&response, &state)?;
+            credential.counter = result.counter();
+            credential.backup_state = result.backup_state();
+            credential.backup_eligible = result.backup_eligible();
+            Ok(serde_json::to_string(&credential)?)
+        };
+        let user = self
+            .0
+            .store
+            .sign_in_with_passkey(&credential_id, user_id, verify, &session)
+            .await?
+            .ok_or(AuthError::Unauthorized)?;
         tracing::info!(user_id = %user.id, username = %user.username, "signed in with passkey");
         Ok((user, token))
     }

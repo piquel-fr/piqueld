@@ -1,7 +1,6 @@
 //! Durable opaque sessions and short-lived, explicitly approved device logins.
-use super::{Auth, AuthError, DAY, MAX_PENDING, Result};
+use super::{Auth, AuthError, CredentialKind, DAY, MAX_PENDING, Result, now_secs};
 use piqueld_core::auth::{DeviceRequest, DeviceStart, DeviceToken, User};
-use sqlx::{Row, SqliteConnection};
 use std::collections::HashMap;
 
 #[derive(Clone)]
@@ -18,58 +17,37 @@ pub(super) struct Device {
     approved_by: Option<String>,
 }
 impl Auth {
-    pub(super) async fn issue(
-        db: &mut SqliteConnection,
-        user_id: &str,
-        kind: &str,
-        name: &str,
-        expires: Option<i64>,
-    ) -> Result<String> {
-        let token = Self::secret()?;
-        sqlx::query("INSERT INTO auth_credentials(id,user_id,secret_hash,kind,name,created_at,last_used_at,expires_at) VALUES(?,?,?,?,?,?,?,?)")
-            .bind(Self::id()).bind(user_id).bind(Self::hash(&token)).bind(kind).bind(name).bind(Self::now()).bind(Self::now()).bind(expires).execute(db).await?;
-        Ok(token)
-    }
     pub(crate) async fn authenticate(&self, secret: &str) -> Result<Identity> {
         if secret.len() != 43 {
             return Err(AuthError::Unauthorized);
         }
-        let now = Self::now();
-        let row = sqlx::query("SELECT c.id AS credential_id,c.last_used_at,u.id,u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=? AND (c.expires_at IS NULL OR c.expires_at>?) AND (c.kind!='browser' OR c.last_used_at>?)")
-            .bind(Self::hash(secret)).bind(now).bind(now-DAY).fetch_optional(&self.0.store.pool).await?.ok_or(AuthError::Unauthorized)?;
-        let identity = Identity {
-            user: Self::user_row(&row),
-            credential_id: row.get("credential_id"),
-        };
+        let owner = self
+            .0
+            .store
+            .credential_owner(&Self::hash(secret))
+            .await?
+            .ok_or(AuthError::Unauthorized)?;
         // Keep ordinary requests read-only. A refresh queues with reconciliation
         // writers and rechecks validity after waiting, so revocation still wins.
-        if row.get::<i64, _>("last_used_at") <= now - 60 {
-            let (_writer, mut tx) = self.0.store.begin_immediate().await?;
-            let now = Self::now();
-            let updated = sqlx::query("UPDATE auth_credentials SET last_used_at=MAX(last_used_at,?) WHERE id=? AND (expires_at IS NULL OR expires_at>?) AND (kind!='browser' OR last_used_at>?)")
-                .bind(now).bind(&identity.credential_id).bind(now).bind(now-DAY).execute(&mut *tx).await?.rows_affected();
-            if updated == 0 {
-                return Err(AuthError::Unauthorized);
-            }
-            tx.commit().await?;
+        if owner.last_used_at <= now_secs() - 60
+            && !self.0.store.touch_credential(&owner.credential_id).await?
+        {
+            return Err(AuthError::Unauthorized);
         }
-        Ok(identity)
+        Ok(Identity {
+            user: owner.user,
+            credential_id: owner.credential_id,
+        })
     }
     pub(crate) async fn logout(&self, credential_id: &str) -> Result<()> {
-        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
-        sqlx::query("DELETE FROM auth_credentials WHERE id=?")
-            .bind(credential_id)
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok(())
+        Ok(self.0.store.revoke_credential(credential_id).await?)
     }
     pub(crate) async fn device_start(
         &self,
         requester: Option<std::net::IpAddr>,
     ) -> Result<DeviceStart> {
         let mut devices = self.0.devices.lock().await;
-        devices.retain(|_, device| device.expires > Self::now());
+        devices.retain(|_, device| device.expires > now_secs());
         if devices.len() >= MAX_PENDING {
             return Err(AuthError::Busy);
         }
@@ -87,7 +65,7 @@ impl Auth {
                 break code;
             }
         };
-        let now = Self::now();
+        let now = now_secs();
         devices.insert(
             Self::hash(&device_code),
             Device {
@@ -116,7 +94,7 @@ impl Auth {
         let normalized = code.trim().to_ascii_uppercase();
         let device = devices
             .values_mut()
-            .find(|device| device.user_code == normalized && device.expires > Self::now())
+            .find(|device| device.user_code == normalized && device.expires > now_secs())
             .ok_or(AuthError::Invalid("device code is invalid or expired"))?;
         if device.approved_by.is_some() {
             return Err(AuthError::Invalid("device code has already been approved"));
@@ -127,7 +105,7 @@ impl Auth {
     pub(crate) async fn device_inspect(&self, code: &str) -> Result<DeviceRequest> {
         let mut devices = self.0.devices.lock().await;
         let device = Self::pending_device(&mut devices, code)?;
-        let now = Self::now();
+        let now = now_secs();
         Ok(DeviceRequest {
             user_code: device.user_code.clone(),
             requester: device.requester.map(|address| address.to_string()),
@@ -153,11 +131,11 @@ impl Auth {
         let mut devices = self.0.devices.lock().await;
         let key = Self::hash(code);
         let device = devices.get_mut(&key).ok_or(AuthError::Unauthorized)?;
-        if device.expires <= Self::now() {
+        if device.expires <= now_secs() {
             devices.remove(&key);
             return Err(AuthError::Unauthorized);
         }
-        let now = Self::now();
+        let now = now_secs();
         if device.next_poll > now {
             return Ok(DeviceToken {
                 status: "slow_down".into(),
@@ -173,13 +151,14 @@ impl Auth {
                 user: None,
             });
         };
-        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
-        let row = sqlx::query("SELECT u.id,u.username,u.display_name FROM auth_users u JOIN auth_credentials c ON c.user_id=u.id WHERE c.id=? AND (c.expires_at IS NULL OR c.expires_at>?) AND (c.kind!='browser' OR c.last_used_at>?)")
-            .bind(approved_by).bind(now).bind(now-DAY).fetch_optional(&mut *tx).await?.ok_or(AuthError::Unauthorized)?;
-        let user = Self::user_row(&row);
-        let token =
-            Self::issue(&mut tx, &user.id, "cli", "piquelctl", Some(now + 30 * DAY)).await?;
-        tx.commit().await?;
+        let (token, credential) =
+            Self::new_credential(CredentialKind::Cli, "piquelctl", Some(now + 30 * DAY))?;
+        let user = self
+            .0
+            .store
+            .issue_for_credential_owner(&approved_by, &credential)
+            .await?
+            .ok_or(AuthError::Unauthorized)?;
         devices.remove(&key);
         Ok(DeviceToken {
             status: "complete".into(),

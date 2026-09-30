@@ -51,18 +51,11 @@ impl From<AuthError> for ApiError {
                 "authentication_busy",
                 "Too many authentication requests; try again shortly",
             ),
-            AuthError::Database(ref source)
-                if source
-                    .as_database_error()
-                    .is_some_and(sqlx::error::DatabaseError::is_unique_violation) =>
-            {
-                Self::new(
-                    StatusCode::CONFLICT,
-                    "account_conflict",
-                    "Account name or passkey is already registered",
-                )
-            }
-            AuthError::Database(source) => StoreError::DatabaseSource(source).into(),
+            AuthError::Store(StoreError::AlreadyExists) => Self::new(
+                StatusCode::CONFLICT,
+                "account_conflict",
+                "Account name or passkey is already registered",
+            ),
             AuthError::Store(source) => source.into(),
             error => {
                 tracing::error!(error = ?error, "authentication operation failed");

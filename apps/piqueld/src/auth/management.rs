@@ -1,43 +1,13 @@
-use super::{Auth, AuthError, DAY, Result};
-use piqueld_core::auth::{CredentialView, Directory, InvitationView, Manage, Managed, PasskeyView};
-use sqlx::Row;
+use super::{Auth, AuthError, CredentialKind, DAY, Result, now_secs};
+use piqueld_core::auth::{Directory, Manage, Managed};
 impl Auth {
     pub(crate) async fn directory(&self) -> Result<Directory> {
-        let mut tx = self.0.store.pool.begin().await?;
-        let users =
-            sqlx::query("SELECT id,username,display_name FROM auth_users ORDER BY username")
-                .fetch_all(&mut *tx)
-                .await?
-                .iter()
-                .map(Self::user_row)
-                .collect();
-        let passkeys = sqlx::query("SELECT id,user_id,name FROM auth_passkeys ORDER BY created_at")
-            .fetch_all(&mut *tx)
-            .await?
-            .iter()
-            .map(|r| PasskeyView {
-                id: r.get("id"),
-                user_id: r.get("user_id"),
-                name: r.get("name"),
-            })
-            .collect();
-        let credentials = sqlx::query("SELECT id,user_id,kind,name,last_used_at,expires_at FROM auth_credentials WHERE (expires_at IS NULL OR expires_at>?) AND (kind!='browser' OR last_used_at>?) ORDER BY created_at")
-            .bind(Self::now()).bind(Self::now()-DAY).fetch_all(&mut *tx).await?.iter().map(|r| CredentialView { id:r.get("id"),user_id:r.get("user_id"),kind:r.get("kind"),name:r.get("name"),last_used_at:r.get("last_used_at"),expires_at:r.get("expires_at") }).collect();
-        let invitations = sqlx::query("SELECT id,issuer_id,expires_at FROM auth_invitations WHERE expires_at>? ORDER BY expires_at").bind(Self::now()).fetch_all(&mut *tx).await?.iter().map(|r| InvitationView { id:r.get("id"),issuer_id:r.get("issuer_id"),expires_at:r.get("expires_at") }).collect();
-        tx.commit().await?;
-        Ok(Directory {
-            users,
-            passkeys,
-            credentials,
-            invitations,
-        })
+        Ok(self.0.store.auth_directory().await?)
     }
+    /// Applies one account change. The store refuses changes that would leave
+    /// nobody able to sign in.
     pub(crate) async fn manage(&self, actor: &str, command: Manage) -> Result<Managed> {
-        let (_writer, mut tx) = self.0.store.begin_immediate().await?;
-        let removes_passkeys = matches!(
-            command,
-            Manage::DeleteUser { .. } | Manage::RemovePasskey { .. }
-        );
+        let store = &self.0.store;
         let mut result = Managed::default();
         let action = format!("{command:?}");
         match command {
@@ -47,62 +17,26 @@ impl Auth {
                 display_name,
             } => {
                 Self::validate_profile(&username, &display_name)?;
-                sqlx::query("UPDATE auth_users SET username=?,display_name=? WHERE id=?")
-                    .bind(username)
-                    .bind(display_name)
-                    .bind(user_id)
-                    .execute(&mut *tx)
+                store
+                    .update_user(&user_id, &username, &display_name)
                     .await?;
             }
-            Manage::DeleteUser { user_id } => {
-                let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_users")
-                    .fetch_one(&mut *tx)
-                    .await?;
-                if count <= 1 {
-                    return Err(AuthError::Invalid("the last account cannot be deleted"));
-                }
-                sqlx::query("DELETE FROM auth_users WHERE id=?")
-                    .bind(user_id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
-            Manage::RemovePasskey { id } => {
-                sqlx::query("DELETE FROM auth_passkeys WHERE id=?")
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
+            Manage::DeleteUser { user_id } => store.delete_user(&user_id).await?,
+            Manage::RemovePasskey { id } => store.remove_passkey(&id).await?,
             Manage::RenamePasskey { id, name } => {
                 if name.is_empty() || name.len() > 200 {
                     return Err(AuthError::Invalid("passkey name must contain 1–200 bytes"));
                 }
-                sqlx::query("UPDATE auth_passkeys SET name=? WHERE id=?")
-                    .bind(name)
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
+                store.rename_passkey(&id, &name).await?;
             }
-            Manage::RevokeCredential { id } => {
-                sqlx::query("DELETE FROM auth_credentials WHERE id=?")
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
-            Manage::RevokeAll { user_id } => {
-                sqlx::query("DELETE FROM auth_credentials WHERE user_id=?")
-                    .bind(user_id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
-            Manage::RevokeInvitation { id } => {
-                sqlx::query("DELETE FROM auth_invitations WHERE id=?")
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
+            Manage::RevokeCredential { id } => store.revoke_credential(&id).await?,
+            Manage::RevokeAll { user_id } => store.revoke_credentials(&user_id).await?,
+            Manage::RevokeInvitation { id } => store.revoke_invitation(&id).await?,
             Manage::CreateInvitation => {
                 let secret = Self::secret()?;
-                sqlx::query("INSERT INTO auth_invitations(id,issuer_id,secret_hash,expires_at) VALUES(?,?,?,?)").bind(Self::id()).bind(actor).bind(Self::hash(&secret)).bind(Self::now()+DAY).execute(&mut *tx).await?;
+                store
+                    .create_invitation(&Self::id(), actor, &Self::hash(&secret), now_secs() + DAY)
+                    .await?;
                 result.invitation_url =
                     Some(format!("{}/dashboard/auth#invite={secret}", self.origin()));
             }
@@ -116,20 +50,13 @@ impl Auth {
                         "token requires a name and a positive lifetime (or no expiry)",
                     ));
                 }
-                let expires = days.map(|days| Self::now() + i64::from(days) * DAY);
-                result.token = Some(Self::issue(&mut tx, &user_id, "token", &name, expires).await?);
+                let expires = days.map(|days| now_secs() + i64::from(days) * DAY);
+                let (token, credential) =
+                    Self::new_credential(CredentialKind::Token, &name, expires)?;
+                store.insert_credential(&user_id, &credential).await?;
+                result.token = Some(token);
             }
         }
-        // Account deletion also cascades to passkeys. Check both paths before
-        // committing, while the writer lock prevents concurrent last-key removal.
-        if removes_passkeys
-            && !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM auth_passkeys)")
-                .fetch_one(&mut *tx)
-                .await?
-        {
-            return Err(AuthError::Invalid("the last passkey cannot be removed"));
-        }
-        tx.commit().await?;
         tracing::info!(actor, action, "account management action applied");
         Ok(result)
     }

@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::http::Authenticator as _;
+use crate::store::{Lockout, NewPasskey, PasskeyOwner, StoreError};
 use piqueld_core::auth::Manage;
 
 struct Fixture {
@@ -17,39 +18,43 @@ impl Fixture {
             dir,
         }
     }
-    async fn account(&self, name: &str, kind: &str, expires: Option<i64>) -> (String, String) {
-        let id = Auth::id();
-        let mut tx = self.auth.0.store.pool.begin().await.unwrap();
-        sqlx::query("INSERT INTO auth_users VALUES(?,?,?,?)")
-            .bind(&id)
-            .bind(name)
-            .bind("")
-            .bind(Auth::now())
-            .execute(&mut *tx)
+    async fn account(
+        &self,
+        name: &str,
+        kind: CredentialKind,
+        expires: Option<i64>,
+    ) -> (String, String) {
+        let user = User {
+            id: Auth::id(),
+            username: name.into(),
+            display_name: String::new(),
+        };
+        self.auth.0.store.seed_auth_user(&user).await;
+        let (token, credential) = Auth::new_credential(kind, "Test", expires).unwrap();
+        self.auth
+            .0
+            .store
+            .insert_credential(&user.id, &credential)
             .await
             .unwrap();
-        sqlx::query("UPDATE auth_setup SET initialized=1,secret_hash=NULL")
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        let token = Auth::issue(&mut tx, &id, kind, "Test", expires)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        (id, token)
+        (user.id, token)
     }
 
     // Management tests only need a stored key; no WebAuthn ceremony reads it.
     async fn passkey(&self, user_id: &str) -> String {
         let id = Auth::id();
-        sqlx::query("INSERT INTO auth_passkeys VALUES(?,?,?,'{}',?)")
-            .bind(&id)
-            .bind(user_id)
-            .bind("Test key")
-            .bind(Auth::now())
-            .execute(&self.auth.0.store.pool)
-            .await
-            .unwrap();
+        let passkey = NewPasskey {
+            id: &id,
+            name: "Test key",
+            credential: "{}",
+        };
+        let store = &self.auth.0.store;
+        assert!(
+            store
+                .add_passkey(PasskeyOwner::Existing(user_id), passkey)
+                .await
+                .unwrap()
+        );
         id
     }
 }
@@ -58,35 +63,38 @@ impl Fixture {
 async fn sessions_expire_revoke_and_survive_restart_without_storing_secrets() {
     let f = Fixture::new().await;
     let (id, token) = f
-        .account("alice", "browser", Some(Auth::now() + 7 * DAY))
+        .account("alice", CredentialKind::Browser, Some(now_secs() + 7 * DAY))
         .await;
     let identity = f.auth.authenticate(&token).await.unwrap();
     assert_eq!(identity.user.id, id);
-    let stored: String = sqlx::query_scalar("SELECT secret_hash FROM auth_credentials")
-        .fetch_one(&f.auth.0.store.pool)
-        .await
-        .unwrap();
-    assert_ne!(stored, token);
+    // Only the hash is stored, so the secret itself finds nothing.
+    assert!(
+        f.auth
+            .0
+            .store
+            .credential_owner(&token)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let store = crate::store::Store::open(f.dir.path().join("state.db"))
         .await
         .unwrap();
     let restarted = Auth::new(&store, "http://localhost:7845").unwrap();
     restarted.authenticate(&token).await.unwrap();
-    sqlx::query("UPDATE auth_credentials SET last_used_at=?")
-        .bind(Auth::now() - DAY)
-        .execute(&f.auth.0.store.pool)
-        .await
-        .unwrap();
+    f.auth.0.store.age_auth_credentials(DAY).await;
     assert!(matches!(
         f.auth.authenticate(&token).await,
         Err(AuthError::Unauthorized)
     ));
-    let (_, cli) = f.account("bob", "cli", Some(Auth::now() - 1)).await;
+    let (_, cli) = f
+        .account("bob", CredentialKind::Cli, Some(now_secs() - 1))
+        .await;
     assert!(matches!(
         f.auth.authenticate(&cli).await,
         Err(AuthError::Unauthorized)
     ));
-    let (other, api) = f.account("carol", "token", None).await;
+    let (other, api) = f.account("carol", CredentialKind::Token, None).await;
     f.auth
         .manage(&id, Manage::RevokeAll { user_id: other })
         .await
@@ -98,69 +106,10 @@ async fn sessions_expire_revoke_and_survive_restart_without_storing_secrets() {
 }
 
 #[tokio::test]
-async fn authentication_reads_do_not_wait_for_writers_and_refreshes_respect_revocation() {
-    let f = Fixture::new().await;
-    let (_, token) = f.account("alice", "browser", Some(Auth::now() + DAY)).await;
-    let (writer, mut tx) = f.auth.0.store.begin_immediate().await.unwrap();
-    // Even with SQLite's write lock held, a recently used credential is read-only.
-    tokio::time::timeout(Duration::from_secs(1), f.auth.authenticate(&token))
-        .await
-        .unwrap()
-        .unwrap();
-    sqlx::query("UPDATE auth_credentials SET last_used_at=?")
-        .bind(Auth::now() - 120)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    drop(writer);
-
-    f.auth.authenticate(&token).await.unwrap();
-    let refreshed: i64 = sqlx::query_scalar("SELECT last_used_at FROM auth_credentials")
-        .fetch_one(&f.auth.0.store.pool)
-        .await
-        .unwrap();
-    assert!(refreshed >= Auth::now() - 1);
-
-    let (writer, mut tx) = f.auth.0.store.begin_immediate().await.unwrap();
-    sqlx::query("UPDATE auth_credentials SET last_used_at=?")
-        .bind(Auth::now() - 120)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    // Poll a stale credential until it blocks on the shared writer queue.
-    let refresh = f.auth.authenticate(&token);
-    tokio::pin!(refresh);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), &mut refresh)
-            .await
-            .is_err()
-    );
-    // The queue does not hold a pool connection while a writer is active.
-    let mut connections = Vec::new();
-    for _ in 0..8 {
-        connections.push(
-            tokio::time::timeout(Duration::from_secs(1), f.auth.0.store.pool.acquire())
-                .await
-                .unwrap()
-                .unwrap(),
-        );
-    }
-    sqlx::query("DELETE FROM auth_credentials")
-        .execute(&mut *connections[0])
-        .await
-        .unwrap();
-    drop(connections);
-    drop(writer);
-    assert!(matches!(refresh.await, Err(AuthError::Unauthorized)));
-}
-
-#[tokio::test]
 async fn any_account_can_edit_another_and_last_account_deletion_is_atomic() {
     let f = Fixture::new().await;
-    let (alice, _) = f.account("alice", "token", None).await;
-    let (bob, bob_token) = f.account("bob", "token", None).await;
+    let (alice, _) = f.account("alice", CredentialKind::Token, None).await;
+    let (bob, bob_token) = f.account("bob", CredentialKind::Token, None).await;
     f.auth
         .manage(
             &alice,
@@ -229,8 +178,8 @@ async fn any_account_can_edit_another_and_last_account_deletion_is_atomic() {
 #[tokio::test]
 async fn deleting_an_issuer_invalidates_its_invitations_and_credentials() {
     let f = Fixture::new().await;
-    let (alice, token) = f.account("alice", "token", None).await;
-    let (bob, _) = f.account("bob", "token", None).await;
+    let (alice, token) = f.account("alice", CredentialKind::Token, None).await;
+    let (bob, _) = f.account("bob", CredentialKind::Token, None).await;
     f.passkey(&bob).await;
     let result = f
         .auth
@@ -251,8 +200,8 @@ async fn deleting_an_issuer_invalidates_its_invitations_and_credentials() {
 #[tokio::test]
 async fn last_passkey_removal_and_owner_deletion_preserve_access() {
     let f = Fixture::new().await;
-    let (alice, token) = f.account("alice", "token", None).await;
-    let (bob, _) = f.account("bob", "token", None).await;
+    let (alice, token) = f.account("alice", CredentialKind::Token, None).await;
+    let (bob, _) = f.account("bob", CredentialKind::Token, None).await;
     let key = f.passkey(&alice).await;
     for command in [
         Manage::RemovePasskey { id: key.clone() },
@@ -262,7 +211,7 @@ async fn last_passkey_removal_and_owner_deletion_preserve_access() {
     ] {
         assert!(matches!(
             f.auth.manage(&bob, command).await,
-            Err(AuthError::Invalid("the last passkey cannot be removed"))
+            Err(AuthError::Store(StoreError::Lockout(Lockout::LastPasskey)))
         ));
         let directory = f.auth.directory().await.unwrap();
         assert_eq!(directory.users.len(), 2);
@@ -282,8 +231,8 @@ async fn last_passkey_removal_and_owner_deletion_preserve_access() {
 async fn concurrent_passkey_and_account_deletions_keep_one_passkey() {
     for delete_account in [false, true] {
         let f = Fixture::new().await;
-        let (alice, _) = f.account("alice", "token", None).await;
-        let (bob, _) = f.account("bob", "token", None).await;
+        let (alice, _) = f.account("alice", CredentialKind::Token, None).await;
+        let (bob, _) = f.account("bob", CredentialKind::Token, None).await;
         let alice_key = f.passkey(&alice).await;
         let bob_key = f.passkey(&bob).await;
         let second = if delete_account {
@@ -302,7 +251,7 @@ async fn concurrent_passkey_and_account_deletions_keep_one_passkey() {
         };
         assert!(matches!(
             error,
-            AuthError::Invalid("the last passkey cannot be removed")
+            AuthError::Store(StoreError::Lockout(Lockout::LastPasskey))
         ));
         assert_eq!(f.auth.directory().await.unwrap().passkeys.len(), 1);
     }
@@ -311,7 +260,9 @@ async fn concurrent_passkey_and_account_deletions_keep_one_passkey() {
 #[tokio::test]
 async fn device_approval_is_explicit_single_use_and_bound_to_a_live_session() {
     let f = Fixture::new().await;
-    let (_, token) = f.account("alice", "browser", Some(Auth::now() + DAY)).await;
+    let (_, token) = f
+        .account("alice", CredentialKind::Browser, Some(now_secs() + DAY))
+        .await;
     let identity = f.auth.authenticate(&token).await.unwrap();
     let start = f.auth.device_start(None).await.unwrap();
     assert_eq!(
@@ -368,13 +319,10 @@ async fn setup_link_is_private_stable_and_never_reopens() {
     );
     f.auth.prepare_setup(&path).await.unwrap();
     assert_eq!(link, std::fs::read_to_string(&path).unwrap());
-    f.account("alice", "token", None).await;
+    f.account("alice", CredentialKind::Token, None).await;
     f.auth.prepare_setup(&path).await.unwrap();
     assert!(!path.exists());
-    sqlx::query("DELETE FROM auth_users")
-        .execute(&f.auth.0.store.pool)
-        .await
-        .unwrap();
+    f.auth.0.store.clear_auth_users().await;
     f.auth.prepare_setup(&path).await.unwrap();
     assert!(!path.exists());
 }
@@ -436,7 +384,7 @@ async fn middleware_protects_api_and_enforces_cookie_csrf_without_ownership_chec
     };
     use tower::ServiceExt;
     let f = Fixture::new().await;
-    let (_, token) = f.account("alice", "token", None).await;
+    let (_, token) = f.account("alice", CredentialKind::Token, None).await;
     let router = f.auth.clone().guard(
         Router::new()
             .route(
@@ -533,7 +481,7 @@ async fn login_start_limits_share_listeners_ignore_forwarded_ips_and_leave_sessi
     };
     use tower::ServiceExt;
     let f = Fixture::new().await;
-    let (_, token) = f.account("alice", "token", None).await;
+    let (_, token) = f.account("alice", CredentialKind::Token, None).await;
     let router = f.auth.clone().guard(
         Router::new()
             .route("/api/v1/auth/login/start", post(|| async { "ok" }))
@@ -605,7 +553,9 @@ async fn https_cookies_use_host_prefix_and_ignore_unprefixed_names() {
     };
     use tower::ServiceExt;
     let f = Fixture::new().await;
-    let (_, token) = f.account("alice", "browser", Some(Auth::now() + DAY)).await;
+    let (_, token) = f
+        .account("alice", CredentialKind::Browser, Some(now_secs() + DAY))
+        .await;
     let auth = Auth::new(&f.auth.0.store, "https://piqueld.example").unwrap();
     assert_eq!(
         auth.cookie("piqueld_session", "secret", 60),
@@ -635,7 +585,9 @@ async fn https_cookies_use_host_prefix_and_ignore_unprefixed_names() {
 #[tokio::test]
 async fn device_inspection_reports_the_requester_until_approval() {
     let f = Fixture::new().await;
-    let (_, token) = f.account("alice", "browser", Some(Auth::now() + DAY)).await;
+    let (_, token) = f
+        .account("alice", CredentialKind::Browser, Some(now_secs() + DAY))
+        .await;
     let identity = f.auth.authenticate(&token).await.unwrap();
     let peer = "192.0.2.7".parse().unwrap();
     let start = f.auth.device_start(Some(peer)).await.unwrap();

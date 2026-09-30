@@ -143,6 +143,9 @@ impl From<StoreError> for ApiError {
             StoreError::NotFound => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
             }
+            StoreError::Lockout(lockout) => {
+                Self::new(StatusCode::CONFLICT, "account_lockout", lockout.message())
+            }
             StoreError::AlreadyExists => Self::new(
                 StatusCode::CONFLICT,
                 "application_name_collision",
