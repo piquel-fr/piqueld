@@ -68,6 +68,7 @@
               pkgs.pkg-config
               pkgs.rustPlatform.bindgenHook
             ];
+            buildInputs = [ pkgs.openssl ];
             DATABASE_URL = "sqlite::memory:";
             # Rust validation runs outside Nix; package builds only produce the
             # requested binaries.
@@ -247,6 +248,8 @@
                 curl
                 rustc
                 rustfmt
+                pkg-config
+                openssl
               ]
               ++ lib.optionals stdenv.isLinux [
                 cargo-deny
@@ -255,7 +258,6 @@
                 docker-client
                 cmake
                 lld
-                pkg-config
                 procps
                 util-linux
                 tailwindcss_4

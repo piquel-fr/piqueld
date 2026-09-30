@@ -13,7 +13,24 @@ use utoipa::{OpenApi, ToResponse};
         description = "piqueld control-plane API. Mutation responses identify durable operations; named volumes are retained on deletion.",
         license(name = "Apache-2.0", identifier = "Apache-2.0")
     ),
-    components(schemas(ErrorBody))
+    components(schemas(
+        ErrorBody,
+        piqueld_core::auth::User,
+        piqueld_core::auth::AuthStatus,
+        piqueld_core::auth::RegistrationStart,
+        piqueld_core::auth::Ceremony,
+        piqueld_core::auth::CeremonyFinish,
+        piqueld_core::auth::PasskeyView,
+        piqueld_core::auth::CredentialView,
+        piqueld_core::auth::InvitationView,
+        piqueld_core::auth::Directory,
+        piqueld_core::auth::Manage,
+        piqueld_core::auth::Managed,
+        piqueld_core::auth::DeviceStart,
+        piqueld_core::auth::DevicePoll,
+        piqueld_core::auth::DeviceApprove,
+        piqueld_core::auth::DeviceToken
+    ))
 )]
 struct ApiDoc;
 
@@ -66,6 +83,22 @@ pub(super) fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value 
         .as_object_mut()
         .expect("license is an object")
         .remove("identifier");
+    document["components"]["securitySchemes"] = serde_json::json!({
+        "bearerAuth": {"type":"http", "scheme":"bearer"},
+        "browserSession": {"type":"apiKey", "in":"cookie", "name":"piqueld_session"}
+    });
+    document["security"] = serde_json::json!([{"bearerAuth":[]},{"browserSession":[]}]);
+    if let Some(paths) = document["paths"].as_object_mut() {
+        for (path, item) in paths {
+            if let Some(operations) = item.as_object_mut() {
+                for operation in operations.values_mut() {
+                    if super::auth::is_public(path) {
+                        operation["security"] = serde_json::json!([]);
+                    }
+                }
+            }
+        }
+    }
     remove_nullable_parameters(&mut document);
     document
 }

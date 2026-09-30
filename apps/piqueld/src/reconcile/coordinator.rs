@@ -11,7 +11,9 @@ type ScanFailures = Arc<tokio::sync::Mutex<HashSet<(piqueld_core::ApplicationId,
 
 impl<D: DockerApi> Controller<D> {
     /// One event loop polls application futures and discovery concurrently. No
-    /// application holds the loop while waiting for Docker, SQLite, or a timer.
+    /// application holds the loop while waiting for Docker, `SQLite`, or a timer.
+    /// Failures are recorded inside each future, never in the loop body: a job
+    /// suspended while holding the writer or a failure set must keep being polled.
     /// # Panics
     /// Panics if the scan interval is zero.
     /// # Errors
@@ -28,7 +30,7 @@ impl<D: DockerApi> Controller<D> {
         let mut active = HashMap::new();
         let mut health_active = std::collections::HashSet::new();
         let mut health_jobs = FuturesUnordered::new();
-        let mut discovery: Option<BoxFuture<'_, Result<Discovered, StoreError>>> = None;
+        let mut discovery: Option<BoxFuture<'_, Option<Discovered>>> = None;
         let mut tick = tokio::time::interval(Duration::from_secs(1).min(interval));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut next_scan = tokio::time::Instant::now();
@@ -40,23 +42,9 @@ impl<D: DockerApi> Controller<D> {
                 if full {
                     next_scan = tokio::time::Instant::now() + interval;
                 }
-                let recover = !recovered;
                 discovery = Some(
-                    async move {
-                        if recover {
-                            self.store.interrupt_actions(None).await?;
-                            self.store.recover_interrupted().await?;
-                            self.store.recover_builds().await?;
-                        }
-                        if full {
-                            self.prune_history(finished_operation_days, event_days)
-                                .await?;
-                        }
-                        self.discover(full)
-                            .await
-                            .map(|applications| (full, applications))
-                    }
-                    .boxed(),
+                    self.discovery_pass(!recovered, full, finished_operation_days, event_days)
+                        .boxed(),
                 );
                 requested = false;
             }
@@ -66,8 +54,7 @@ impl<D: DockerApi> Controller<D> {
                 _=tick.tick()=>requested=true,
                 result=async { match discovery.as_mut() {Some(discovery)=>discovery.await,None=>std::future::pending().await} }=> {
                     discovery=None;
-                    match result {
-                        Ok((full,applications))=> {
+                    if let Some((full,applications))=result {
                             recovered=true;
                             let failures = ScanFailures::default();
                             for (application,operation_id) in applications {
@@ -83,7 +70,13 @@ impl<D: DockerApi> Controller<D> {
                                             let observed=self.docker.observe(&health_id).await.map_err(super::OperationError::from)?;
                                             self.store.record_health(&health_operation,&observed).await.map_err(super::OperationError::from)
                                         }.await;
-                                        (health_id,health_operation,application.generation,result,health_failures)
+                                        if let Err(error)=result {
+                                            if let Err(report_error)=self.record_scan_diagnostic(&health_id,&error.diagnostic(),&health_failures).await {
+                                                tracing::error!(application_id=%health_id,error=?report_error,"health diagnostic could not be persisted");
+                                            }
+                                            tracing::warn!(application_id=%health_id,operation_id=%health_operation,generation=application.generation,%error,"health reporting failed");
+                                        }
+                                        health_id
                                     }.instrument(span));
                                 }
 
@@ -96,31 +89,56 @@ impl<D: DockerApi> Controller<D> {
                                 active.insert(id.clone(),(operation_id,token.clone()));
                                 let scan_failures=Arc::clone(&failures);
                                 jobs.push(async move {
-                                    let result=Box::pin(self.scan_application(&application,&token,&scan_failures)).await;
-                                    (id,result)
+                                    if let Err(error)=Box::pin(self.scan_application(&application,&token,&scan_failures)).await {
+                                        let failure=super::OperationError::Journal(error);
+                                        self.store.report_diagnostic(&failure.diagnostic(),Some(&id)).await;
+                                    }
+                                    id
                                 });
                             }
-                        }
-                        Err(error)=>{
-                            let failure=super::OperationError::Journal(error);
-                            self.store.report_diagnostic(&failure.diagnostic(),None).await;
-                        },
                     }
                 }
-                Some((id,operation_id,generation,result,failures))=health_jobs.next(), if !health_jobs.is_empty()=> {
+                Some(id)=health_jobs.next(), if !health_jobs.is_empty()=> {
                     health_active.remove(&id);
-                    if let Err(error)=result {
-                        if let Err(report_error)=self.record_scan_diagnostic(&id,&error.diagnostic(),&failures).await {
-                            tracing::error!(application_id=%id,error=?report_error,"health diagnostic could not be persisted");
-                        }
-                        tracing::warn!(application_id=%id,%operation_id,generation,%error,"health reporting failed");
-                    }
                 }
-                Some((id,result))=jobs.next(), if !jobs.is_empty()=> {
+                Some(id)=jobs.next(), if !jobs.is_empty()=> {
                     active.remove(&id);
-                    if let Err(error)=result { let failure=super::OperationError::Journal(error); self.store.report_diagnostic(&failure.diagnostic(),Some(&id)).await; }
                     requested=true;
                 }
+            }
+        }
+    }
+
+    /// Recovers interrupted work on the first pass, prunes history on full
+    /// scans, and finds applications to process. Failures are reported here.
+    async fn discovery_pass(
+        &self,
+        recover: bool,
+        full: bool,
+        finished_operation_days: u64,
+        event_days: u64,
+    ) -> Option<Discovered> {
+        let result = async {
+            if recover {
+                self.store.interrupt_actions(None).await?;
+                self.store.recover_interrupted().await?;
+                self.store.recover_builds().await?;
+            }
+            if full {
+                self.prune_history(finished_operation_days, event_days)
+                    .await?;
+            }
+            self.discover(full).await
+        }
+        .await;
+        match result {
+            Ok(applications) => Some((full, applications)),
+            Err(error) => {
+                let failure = super::OperationError::Journal(error);
+                self.store
+                    .report_diagnostic(&failure.diagnostic(), None)
+                    .await;
+                None
             }
         }
     }

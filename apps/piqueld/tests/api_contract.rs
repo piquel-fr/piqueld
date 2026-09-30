@@ -3,7 +3,9 @@
 use async_trait::async_trait;
 use axum::{body::Body, http::Request, serve};
 use http_body_util::BodyExt;
-use piqueld::api::http::{ApiState, EmbeddedBundle, UiAssets, api_router, router, web_router};
+use piqueld::api::http::{
+    ApiState, Authenticator, EmbeddedBundle, UiAssets, api_router, router, web_router,
+};
 use piqueld::application::{BoundaryError, RuntimeBoundary};
 use piqueld::store::{Store, StoredApplication};
 use piqueld_client::{AcceptedOperation, ApplyApplicationRequest, Client};
@@ -17,6 +19,17 @@ use std::{collections::BTreeMap, future::IntoFuture, sync::Arc};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tower::ServiceExt;
+
+/// Admits every request, so contract tests exercise the API without signing in.
+/// Authentication itself is covered with the real passkey service below.
+#[derive(Clone)]
+struct FakeAuth;
+
+impl Authenticator for FakeAuth {
+    fn guard<S: Clone + Send + Sync + 'static>(self, router: axum::Router<S>) -> axum::Router<S> {
+        router
+    }
+}
 
 struct FakeRuntime {
     instance: InstanceId,
@@ -178,7 +191,7 @@ async fn typed_client_exercises_polling_lifecycle_over_tcp() {
         .await
         .expect("TCP listener binds");
     let address = listener.local_addr().expect("listener address is readable");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
     let client = Client::tcp(&format!("http://{address}/")).expect("valid client endpoint");
     let manifest = manifest();
 
@@ -264,7 +277,11 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
 async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     let temp = tempfile::tempdir().expect("temporary directory");
 
-    let application = web_router(state(&temp).await, UiAssets::Embedded(TEST_BUNDLE));
+    let application = web_router(
+        state(&temp).await,
+        UiAssets::Embedded(TEST_BUNDLE),
+        FakeAuth,
+    );
     assert_dashboard_routes(&application).await;
     assert_api_routes(&application).await;
     assert_api_only_and_ui_modes(&temp).await;
@@ -282,7 +299,7 @@ async fn compiled_dashboard_serves_assets_and_authorizes_inline_scripts() {
     let UiAssets::Embedded(bundle) = assets else {
         panic!("embedded-ui must resolve to the compiled bundle");
     };
-    let application = web_router(state(&temp).await, assets);
+    let application = web_router(state(&temp).await, assets, FakeAuth);
     let response = application
         .clone()
         .oneshot(request("/dashboard/"))
@@ -475,7 +492,7 @@ async fn assert_api_routes(application: &axum::Router) {
 }
 
 async fn assert_api_only_and_ui_modes(temp: &TempDir) {
-    let api_only = api_router(state(temp).await);
+    let api_only = api_router(state(temp).await, FakeAuth);
     let unix_root = response_text(
         api_only
             .clone()
@@ -507,7 +524,7 @@ async fn assert_api_only_and_ui_modes(temp: &TempDir) {
     assert_eq!(api_only_error.0, axum::http::StatusCode::NOT_FOUND);
     assert!(api_only_error.1.contains("endpoint_not_found"));
 
-    let disabled = web_router(state(temp).await, UiAssets::Disabled);
+    let disabled = web_router(state(temp).await, UiAssets::Disabled, FakeAuth);
     let disabled_root = response_text(
         disabled
             .clone()
@@ -537,7 +554,11 @@ fn request(uri: &str) -> Request<Body> {
 #[tokio::test]
 async fn dashboard_responses_carry_security_headers() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let application = web_router(state(&temp).await, UiAssets::Embedded(TEST_BUNDLE));
+    let application = web_router(
+        state(&temp).await,
+        UiAssets::Embedded(TEST_BUNDLE),
+        FakeAuth,
+    );
     let shell = application
         .clone()
         .oneshot(request("/dashboard/"))
@@ -634,7 +655,11 @@ async fn dashboard_responses_carry_security_headers() {
 #[tokio::test]
 async fn dashboard_cache_policy_tracks_content_hashing_and_shell_fallbacks() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let application = web_router(state(&temp).await, UiAssets::Embedded(TEST_BUNDLE));
+    let application = web_router(
+        state(&temp).await,
+        UiAssets::Embedded(TEST_BUNDLE),
+        FakeAuth,
+    );
 
     let hashed = application
         .clone()
@@ -873,10 +898,10 @@ async fn transport_failures_are_structured_safe_and_request_ids_pair() {
     let state = state(&temp).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let tcp_server = tokio::spawn(serve(listener, router(state.clone())).into_future());
+    let tcp_server = tokio::spawn(serve(listener, router(state.clone(), FakeAuth)).into_future());
     let socket = temp.path().join("api.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let unix_server = tokio::spawn(serve(listener, api_router(state)).into_future());
+    let unix_server = tokio::spawn(serve(listener, api_router(state, FakeAuth)).into_future());
 
     for target in [Target::Tcp(address), Target::Unix(&socket)] {
         target.assert_failures().await;
@@ -978,7 +1003,7 @@ async fn method_not_allowed_advertises_only_the_matched_route_methods() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
     let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
 
     // The Allow header advertises only the methods registered for the matched
     // route; Axum serves HEAD automatically for every GET route.
@@ -1031,7 +1056,7 @@ async fn manifest_validation_media_types_and_unknown_fields_are_rejected_safely(
     let temp = tempfile::tempdir().expect("temporary directory");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
     let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
 
     let invalid_manifest = r#"
 api_version = "piqueld.dev/v1alpha1"
@@ -1087,7 +1112,7 @@ async fn toml_save_exposes_summary_and_full_configuration() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
     let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
 
     let valid_toml = r#"
 api_version = "piqueld.dev/v1alpha1"
@@ -1154,7 +1179,7 @@ async fn accepts_foreign_authorities() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
     let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
 
     let rebinding = send_raw(
         Target::Tcp(address),
@@ -1241,7 +1266,7 @@ async fn served_openapi_document_matches_the_generated_snapshot_and_resolves_ref
     let temp = tempfile::tempdir().expect("temporary directory");
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
     let address = listener.local_addr().expect("address");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
 
     let document_response = send_raw(
         Target::Tcp(address),
@@ -1356,7 +1381,7 @@ async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
     let socket_dir = tempfile::tempdir().expect("socket directory");
     let socket_path = socket_dir.path().join("contract.sock");
     let listener = tokio::net::UnixListener::bind(&socket_path).expect("unix binds");
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
     let client = Client::unix(&socket_path);
 
     let status = client.system_status().await.expect("status over unix");
@@ -1376,7 +1401,7 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
     let temp = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let task = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let task = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
     let client = Client::tcp(&format!("http://{address}")).unwrap();
     let mut request = ApplyApplicationRequest {
         manifest: manifest(),
@@ -1462,7 +1487,7 @@ impl AcceptanceApi {
         let state = ApiState::new(Arc::clone(&store), runtime.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client = Client::tcp(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
-        let task = tokio::spawn(serve(listener, router(state)).into_future());
+        let task = tokio::spawn(serve(listener, router(state, FakeAuth)).into_future());
         Self {
             client,
             runtime,
@@ -2265,18 +2290,21 @@ async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
         path: "infra/app.toml".into(),
     });
     let saved = api.client.apply_application(&request).await.unwrap();
-    let response = router(ApiState::new(api.store.clone(), api.runtime.clone()))
-        .oneshot(
-            Request::builder()
-                .uri(format!(
-                    "/api/v1/applications/{}/manifest",
-                    saved.application_id
-                ))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = router(
+        ApiState::new(api.store.clone(), api.runtime.clone()),
+        FakeAuth,
+    )
+    .oneshot(
+        Request::builder()
+            .uri(format!(
+                "/api/v1/applications/{}/manifest",
+                saved.application_id
+            ))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["content-type"], "application/toml");
     assert_eq!(response.headers()["cache-control"], "no-store");
@@ -2303,7 +2331,7 @@ async fn routed_statuses_and_media_types_are_documented_in_openapi() {
     let temp = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
     let document = serde_json::to_value(piqueld::api::http::openapi_document()).unwrap();
     let cases = [
         (Method::GET, "/system/status", 200),
@@ -2378,7 +2406,7 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
     let temp = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(serve(listener, router(state(&temp).await)).into_future());
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
     let client = Client::tcp(&format!("http://{address}/")).unwrap();
     let app = create_and_inspect(&client, &manifest()).await;
     let logs = client
@@ -2432,15 +2460,18 @@ async fn readiness_distinguishes_engine_reachability_and_does_not_gate_saves() {
     assert!(
         matches!(readiness.swarm, piqueld_core::api::DependencyStatus::Failed { message } if message == "A compatible single-node Swarm manager is required")
     );
-    let response = router(ApiState::new(api.store.clone(), api.runtime.clone()))
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/system/readiness")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = router(
+        ApiState::new(api.store.clone(), api.runtime.clone()),
+        FakeAuth,
+    )
+    .oneshot(
+        Request::builder()
+            .uri("/api/v1/system/readiness")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
     assert_eq!(response.status(), 503);
     api.client
         .apply_application(&AcceptanceApi::request())
@@ -2479,7 +2510,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     assert_eq!(saved.generation, replay.generation);
     let id = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
     let direct = service.clone().application_detail(&id).await.unwrap();
-    let response = api_router(service.clone())
+    let response = api_router(service.clone(), FakeAuth)
         .oneshot(
             Request::builder()
                 .uri(format!("/api/v1/applications/{id}/detail"))
@@ -3294,7 +3325,7 @@ async fn field_edit_requires_an_explicit_value_and_revision() {
     let piqueld::api::MutationResponse::Saved(saved) = saved else {
         panic!("save receipt")
     };
-    let app = router(state);
+    let app = router(state, FakeAuth);
     for (query, body, status) in [
         ("?expected_generation=1", "{}", StatusCode::BAD_REQUEST),
         (
@@ -3456,7 +3487,10 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
     .await;
     let events = api.client.events(None, None, 100).await.unwrap().items;
     let after = events[events.len() - 2].id;
-    let router = router(ApiState::new(api.store.clone(), api.runtime.clone()));
+    let router = router(
+        ApiState::new(api.store.clone(), api.runtime.clone()),
+        FakeAuth,
+    );
     for limit in [0, 101] {
         let response = router
             .clone()
@@ -3503,4 +3537,177 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
         .await
         .unwrap();
     assert_eq!(response.status(), 410);
+}
+
+/// Every documented operation except the public sign-in endpoints must reject
+/// anonymous callers on both the website and Unix-socket routers.
+#[tokio::test]
+async fn every_documented_operation_requires_authentication() {
+    const PUBLIC: &[&str] = &[
+        "/api/v1/auth/status",
+        "/api/v1/auth/register/start",
+        "/api/v1/auth/register/finish",
+        "/api/v1/auth/login/start",
+        "/api/v1/auth/login/finish",
+        "/api/v1/auth/device/start",
+        "/api/v1/auth/device/poll",
+    ];
+    let temp = TempDir::new().unwrap();
+    let store = Arc::new(Store::open(temp.path().join("state.db")).await.unwrap());
+    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let instance = InstanceId::parse(store.instance_id().to_owned()).unwrap();
+    let state = ApiState::new(
+        Arc::clone(&store),
+        Arc::new(FakeRuntime {
+            instance,
+            unavailable: std::sync::atomic::AtomicBool::new(false),
+        }),
+    );
+    let document = piqueld::api::http::openapi_document();
+    let paths = document["paths"].as_object().unwrap();
+    let mut checked = 0;
+    for listener in [
+        web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth.clone()),
+        api_router(state.clone(), auth.clone()),
+    ] {
+        for (path, item) in paths {
+            if PUBLIC.contains(&path.as_str()) {
+                continue;
+            }
+            let uri = path
+                .split('/')
+                .map(|segment| {
+                    if segment.starts_with('{') {
+                        "placeholder"
+                    } else {
+                        segment
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            for method in ["get", "post", "put", "patch", "delete"] {
+                if item.get(method).is_none() {
+                    continue;
+                }
+                let method = method.to_ascii_uppercase();
+                let response = listener
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method.as_str())
+                            .uri(&uri)
+                            .header("content-type", "application/json")
+                            .header("x-request-id", "anonymous-contract")
+                            .body(Body::from("{}"))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "{method} {path} must require authentication"
+                );
+                assert_eq!(response.headers()["x-request-id"], "anonymous-contract");
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&body).unwrap();
+                assert_eq!(error.request_id, "anonymous-contract");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 60, "only {checked} operations were checked");
+}
+
+/// Authentication short circuits still use the common error correlation layers,
+/// including storage failures that must not attempt another database write.
+#[tokio::test]
+async fn authentication_errors_preserve_request_and_diagnostic_ids() {
+    use sqlx::Connection as _;
+
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let store = Store::open(temp.path().join("state.db")).await.unwrap();
+    let mut connection = sqlx::SqliteConnection::connect(&format!(
+        "sqlite:{}",
+        temp.path().join("state.db").display()
+    ))
+    .await
+    .unwrap();
+    // Leave the observability tables healthy, but break authentication reads.
+    sqlx::query("ALTER TABLE auth_credentials RENAME TO unavailable_credentials")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    // A diagnostic write would block behind this transaction. Storage failures
+    // must return promptly with log-only diagnostic IDs instead.
+    let transaction = connection.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    for website in [false, true] {
+        let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+        let listener = if website {
+            web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth)
+        } else {
+            api_router(state.clone(), auth)
+        };
+        for (method, path, bearer, origin, status, code) in [
+            (
+                "GET",
+                "/api/v1/system/status",
+                "invalid".to_owned(),
+                "",
+                401,
+                "authentication_required",
+            ),
+            (
+                "POST",
+                "/api/v1/auth/login/start",
+                String::new(),
+                "https://other.example",
+                403,
+                "origin_mismatch",
+            ),
+            (
+                "GET",
+                "/api/v1/auth/me",
+                "x".repeat(43),
+                "",
+                503,
+                "storage_unavailable",
+            ),
+        ] {
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                listener.clone().oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("authorization", format!("Bearer {bearer}"))
+                        .header("origin", origin)
+                        .header("x-request-id", "auth-correlation")
+                        .body(Body::empty())
+                        .unwrap(),
+                ),
+            )
+            .await
+            .expect("authentication errors must not wait for a diagnostic write")
+            .unwrap();
+            assert_eq!(response.status().as_u16(), status);
+            assert_eq!(response.headers()["x-request-id"], "auth-correlation");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error.code, code);
+            assert_eq!(error.request_id, "auth-correlation");
+            if status == 503 {
+                let id = error.details["diagnostic_id"].as_str().unwrap();
+                assert!(id.starts_with("diagnostic-"));
+                assert!(matches!(
+                    store.diagnostic(id).await,
+                    Err(piqueld::store::StoreError::NotFound)
+                ));
+            } else {
+                assert!(error.details.get("diagnostic_id").is_none());
+            }
+        }
+    }
+    transaction.rollback().await.unwrap();
 }

@@ -473,7 +473,7 @@ async fn git_build_runs_as_a_local_swarm_image() {
         std::sync::Arc::new(docker.clone()),
         InstanceId::parse("git-build-test").unwrap(),
         std::sync::Arc::new(tokio::sync::Notify::new()),
-        Duration::from_secs(120),
+        Duration::from_mins(2),
     );
     let target = runtime
         .prepare(&app, &piqueld_core::ResolutionSet::default())
@@ -484,7 +484,7 @@ async fn git_build_runs_as_a_local_swarm_image() {
     assert!(observed.networks[0].runtime_configuration_matches);
     docker.ensure_network(&target.networks[0]).await.unwrap();
     engine.ensure_service_eventually(&target.services[0]).await;
-    tokio::time::timeout(Duration::from_secs(60), async {
+    tokio::time::timeout(Duration::from_mins(1), async {
         loop {
             let observed = docker.observe(app.id()).await.unwrap();
             if observed

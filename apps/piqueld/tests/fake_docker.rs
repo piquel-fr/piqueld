@@ -2213,7 +2213,7 @@ async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
         controller
             .run(
                 Arc::new(tokio::sync::Notify::new()),
-                std::time::Duration::from_secs(60),
+                std::time::Duration::from_mins(1),
                 0,
                 0,
                 token,

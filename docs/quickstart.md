@@ -9,7 +9,7 @@ the engine can run a single-node Swarm.
 ```console
 just build
 mkdir -p -m 0700 /tmp/piqueld-dev-run
-just daemon --config examples/piqueld.toml
+just daemon-embedded --config examples/piqueld.toml
 ```
 
 The example keeps its state in `/tmp/piqueld-dev` and its Unix API socket at
@@ -21,11 +21,14 @@ developer.
 
 ## Inspect and operate
 
-In a second terminal:
+Open the link in `/tmp/piqueld-dev/setup-link` in your browser and create an
+account with a passkey. Then, in a second terminal:
 
 ```console
+just run --socket /tmp/piqueld-dev-run/piqueld.sock login
 just run --socket /tmp/piqueld-dev-run/piqueld.sock status
-just run --url http://127.0.0.1:7845 status
+just run --url http://localhost:7845 login
+just run --url http://localhost:7845 status
 just run --socket /tmp/piqueld-dev-run/piqueld.sock app plan \
   --file crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml
 just run --socket /tmp/piqueld-dev-run/piqueld.sock app apply \
@@ -50,7 +53,7 @@ just run --socket /tmp/piqueld-dev-run/piqueld.sock events --application <applic
 The development toolchain serves the dashboard through the running
 daemon, exactly like a deployment: run `just dev` instead of the commands
 above (`just dev` also prepares the runtime directory), give the first embedded build a moment to run Tailwind and Trunk, and
-open `http://127.0.0.1:7845/dashboard/` in a browser to inspect the overview,
+open `http://localhost:7845/dashboard/` in a browser to inspect the overview,
 application list, and detail routes alongside `piquelctl`; refresh after Rust
 or CSS changes. Any other daemon built with `--features embedded-ui` ships its
 own dashboard bundle inside the binary, as described in

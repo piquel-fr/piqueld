@@ -23,6 +23,8 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use crate::store::StoreError;
 
 mod applications;
+mod auth;
+pub use auth::Authenticator;
 mod builds;
 mod deployments;
 mod editing;
@@ -140,6 +142,9 @@ impl From<StoreError> for ApiError {
             ),
             StoreError::NotFound => {
                 Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
+            }
+            StoreError::Lockout(lockout) => {
+                Self::new(StatusCode::CONFLICT, "account_lockout", lockout.message())
             }
             StoreError::AlreadyExists => Self::new(
                 StatusCode::CONFLICT,
@@ -276,18 +281,18 @@ impl IntoResponse for ApiError {
 }
 
 /// Builds the TCP router, registering the dashboard when the binary embeds it.
-pub fn router(state: ApiState) -> Router {
-    web_router(state, UiAssets::resolve())
+pub fn router(state: ApiState, auth: impl Authenticator) -> Router {
+    web_router(state, UiAssets::resolve(), auth)
 }
 
 /// Builds the API-only router used by the Unix-socket client transport.
-pub fn api_router(state: ApiState) -> Router {
+pub fn api_router(state: ApiState, auth: impl Authenticator) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
-    finish_router(router.fallback(api_fallback), state, &openapi)
+    finish_router(router.fallback(api_fallback), state, &openapi, auth)
 }
 
 /// Builds the TCP router from the API, liveness, and optional UI boundaries.
-pub fn web_router(state: ApiState, ui_assets: UiAssets) -> Router {
+pub fn web_router(state: ApiState, ui_assets: UiAssets, auth: impl Authenticator) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
     let router = router.merge(health_router());
     let router = match ui_assets {
@@ -297,7 +302,7 @@ pub fn web_router(state: ApiState, ui_assets: UiAssets) -> Router {
             .route("/dashboard", get(ui::redirect))
             .fallback(move |request: Request| ui_fallback(bundle, request)),
     };
-    let router = finish_router(router, state, &openapi);
+    let router = finish_router(router, state, &openapi, auth);
     match ui_assets {
         UiAssets::Disabled => router,
         UiAssets::Embedded(_) => router.layer(middleware::from_fn(ui::security_headers)),
@@ -313,6 +318,7 @@ fn finish_router(
     router: Router<ApiState>,
     state: ApiState,
     openapi: &utoipa::openapi::OpenApi,
+    auth: impl Authenticator,
 ) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     // 405 responses must advertise exactly the methods each matched endpoint
@@ -323,7 +329,9 @@ fn finish_router(
         let allow_routes = Arc::clone(&allow_routes);
         async move { method_not_allowed(&allow_routes, matched.as_ref()) }
     });
-    router
+    // Authentication may reject requests without reaching a handler. Keep it
+    // inside the shared request tracing and error/diagnostic response layers.
+    auth.guard(router)
         .with_state(state.clone())
         .layer(Extension(Arc::new(openapi)))
         // The propagator stamps errors with their request ID, and the binder
@@ -352,6 +360,19 @@ fn finish_router(
 fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .merge(editing::router())
+        .routes(routes!(auth::status))
+        .routes(routes!(auth::me))
+        .routes(routes!(auth::register_start))
+        .routes(routes!(auth::register_finish))
+        .routes(routes!(auth::login_start))
+        .routes(routes!(auth::login_finish))
+        .routes(routes!(auth::logout))
+        .routes(routes!(auth::directory))
+        .routes(routes!(auth::manage))
+        .routes(routes!(auth::device_start))
+        .routes(routes!(auth::device_poll))
+        .routes(routes!(auth::device_inspect))
+        .routes(routes!(auth::device_approve))
         .routes(routes!(system::status))
         .routes(routes!(system::readiness))
         .routes(routes!(system::configuration))

@@ -1,5 +1,6 @@
 //! Safe, small operator command-line client for the Plan 06 piqueld API.
 
+mod auth;
 mod cli;
 mod commands;
 mod editing;
@@ -28,6 +29,10 @@ async fn main() -> ExitCode {
             });
         }
         profiles.resolve(&mut cli, &matches)?;
+        if matches!(cli.command, cli::Command::Login) {
+            let client = commands::build_client(&cli)?;
+            return auth::login(&cli, &client, &mut console).await;
+        }
         run_with_timeout(&cli, &mut console).await
     }
     .await;

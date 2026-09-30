@@ -1,14 +1,17 @@
-//! SQLite persistence and atomic acceptance of validated application commands;
+//! `SQLite` persistence and atomic acceptance of validated application commands;
 //! Docker planning and execution belong to the controller.
 
 mod acceptance;
 mod application;
+mod auth;
 mod build;
 mod deployment;
 mod event;
 mod journal;
 mod notifications;
 mod observability;
+pub use auth::Lockout;
+pub(crate) use auth::{CredentialKind, NewCredential, NewPasskey, PasskeyOwner};
 pub(crate) use journal::JournalAction;
 mod operation;
 mod repository;
@@ -89,6 +92,9 @@ pub enum StoreError {
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,
+    /// The account change would leave nobody able to sign in.
+    #[error(transparent)]
+    Lockout(#[from] Lockout),
     /// Persisted state has inconsistent identity.
     #[error("stored application state is corrupt")]
     Corrupt,
@@ -112,6 +118,15 @@ pub enum StoreError {
 impl StoreError {
     fn database(source: sqlx::Error) -> Self {
         Self::DatabaseSource(source)
+    }
+
+    /// Classifies constraint violations on writes that name or reference rows.
+    fn constraint(source: sqlx::Error) -> Self {
+        match source.as_database_error() {
+            Some(error) if error.is_unique_violation() => Self::AlreadyExists,
+            Some(error) if error.is_foreign_key_violation() => Self::NotFound,
+            _ => Self::database(source),
+        }
     }
 
     pub(crate) fn corrupt(source: impl StdError + Send + Sync + 'static) -> Self {
@@ -207,7 +222,7 @@ pub struct ApplicationSummaryPage {
     pub next_cursor: Option<String>,
 }
 
-/// SQLite repository shared by the application service and controller.
+/// `SQLite` repository shared by the application service and controller.
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -357,7 +372,7 @@ impl Store {
     // Queue writers asynchronously before acquiring SQLite's single write lock.
     // Competing BEGIN requests otherwise occupy pool workers and can starve a
     // transaction under concurrent reconciliation.
-    pub(crate) async fn begin_immediate(
+    async fn begin_immediate(
         &self,
     ) -> Result<
         (
@@ -409,6 +424,17 @@ pub(crate) fn now_ms() -> i64 {
             Err(current) => last = current,
         }
     }
+}
+
+/// Returns the current Unix time in seconds, used by authentication records.
+/// Unlike `now_ms`, it advances no shared counter, so frequent authentication
+/// checks cannot push other timestamps ahead of the clock.
+pub(crate) fn now_secs() -> i64 {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    i64::try_from(secs).unwrap_or(i64::MAX)
 }
 
 fn new_id(prefix: &str) -> String {

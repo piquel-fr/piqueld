@@ -70,6 +70,14 @@ relied on that default stop pruning events after upgrading; set
 `retention.event_days = 30` (and optionally `retention.daemon_event_days`) to keep
 bounded history.
 
+`0007_authentication.sql` adds accounts, passkeys, hashed session/API
+credentials, invitations, and a durable initial-setup marker. Existing installations require first-account
+setup after upgrading; application data and running reconciliation are preserved.
+There is no anonymous API compatibility mode. See [authentication](authentication.md).
+Follow the [upgrade and rollback checklist](authentication.md#upgrading-an-existing-installation)
+before deployment. An older daemon rejects the migrated schema; rollback requires
+restoring the pre-upgrade data directory together with the old binary/configuration.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

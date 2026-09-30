@@ -60,7 +60,8 @@ async fn main() -> Result<()> {
     }
 
     let cancellation = CancellationToken::new();
-    let (state, controller) = ApplicationService::start(&config, cancellation.clone()).await?;
+    let (state, auth, controller) =
+        ApplicationService::start(&config, cancellation.clone()).await?;
     let ui_assets = UiAssets::resolve();
     log_ui_status(&ui_assets);
 
@@ -77,7 +78,7 @@ async fn main() -> Result<()> {
         .map(|listener| {
             spawn_tcp_api(
                 listener,
-                piqueld::api::http::web_router(state.clone(), ui_assets),
+                piqueld::api::http::web_router(state.clone(), ui_assets, auth.clone()),
                 cancellation.clone(),
             )
         })
@@ -92,7 +93,7 @@ async fn main() -> Result<()> {
             )
         })
         .collect();
-    let unix_api = spawn_unix_api(unix_listener, state, cancellation.clone());
+    let unix_api = spawn_unix_api(unix_listener, state, auth, cancellation.clone());
 
     piqueld::run_until_cancelled(cancellation).await?;
 
@@ -166,8 +167,11 @@ fn spawn_tcp_api(
     tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async move { shutdown.cancelled().await }),
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);
         // The grace period starts only once shutdown has been requested; a
@@ -194,12 +198,13 @@ fn spawn_tcp_api(
 fn spawn_unix_api(
     listener: UnixListener,
     state: ApiState,
+    auth: piqueld::auth::Auth,
     cancellation: CancellationToken,
 ) -> tokio::task::JoinHandle<Result<(), std::io::Error>> {
     tokio::spawn(async move {
         let shutdown = cancellation.clone();
         let serve = std::future::IntoFuture::into_future(
-            axum::serve(listener, piqueld::api::http::api_router(state))
+            axum::serve(listener, piqueld::api::http::api_router(state, auth))
                 .with_graceful_shutdown(async move { shutdown.cancelled().await }),
         );
         tokio::pin!(serve);

@@ -520,7 +520,6 @@ async fn application_limits_outside_server_range_are_rejected_before_transport()
 #[test]
 fn tcp_transport_accepts_remote_hosts_but_requires_an_http_origin() {
     for rejected in [
-        "https://127.0.0.1/",
         "http://user@localhost/",
         "http://:secret@localhost/",
         "http://:@localhost/",
@@ -549,6 +548,29 @@ fn tcp_transport_accepts_remote_hosts_but_requires_an_http_origin() {
         assert!(
             Client::tcp(accepted).is_ok(),
             "expected {accepted} to be accepted"
+        );
+    }
+}
+
+#[tokio::test]
+async fn remote_http_rejects_credentials_before_sending() {
+    let anonymous = Client::tcp("http://192.0.2.1:7845").unwrap();
+    let authenticated = anonymous.clone().with_bearer("secret").unwrap();
+    let errors = [
+        authenticated.system_status().await.unwrap_err(),
+        authenticated
+            .apply_application_toml_with_preconditions("name = 'test'", None, None, false, false)
+            .await
+            .unwrap_err(),
+        anonymous.auth_device_start().await.unwrap_err(),
+        anonymous
+            .auth_device_poll("device-secret")
+            .await
+            .unwrap_err(),
+    ];
+    for error in errors {
+        assert!(
+            matches!(error, ClientError::Endpoint { message } if message.contains("remote HTTP authentication"))
         );
     }
 }

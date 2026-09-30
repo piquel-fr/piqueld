@@ -19,10 +19,13 @@ thiserror.workspace = true
 url.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { workspace = true, features = ["Location", "Window"] }
+web-sys = { workspace = true, features = ["Event", "Location", "Window"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { workspace = true, features = ["rustls-tls"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 axum.workspace = true
