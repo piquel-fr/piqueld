@@ -44,7 +44,7 @@ async fn deploy(
     app: NormalizedApplication,
 ) -> ApplicationId {
     let (id, operation) = request_deployment(store, app).await;
-    tokio::time::timeout(Duration::from_secs(180), async {
+    tokio::time::timeout(Duration::from_mins(3), async {
         loop {
             controller.scan(&CancellationToken::new()).await.unwrap();
             let status = store.operation(&operation).await.unwrap();
@@ -298,7 +298,7 @@ impl Scenario {
                     .unwrap();
             },
             async {
-                tokio::time::timeout(Duration::from_secs(60), async {
+                tokio::time::timeout(Duration::from_mins(1), async {
                     while self
                         .store
                         .operation(&routed)
@@ -335,7 +335,7 @@ impl Scenario {
                 .await
                 .expect("private deployment proceeds while gateway writer is blocked");
                 drop(guard);
-                tokio::time::timeout(Duration::from_secs(60), async {
+                tokio::time::timeout(Duration::from_mins(1), async {
                     while self.store.operation(&routed).await.unwrap().state
                         != OperationState::Succeeded
                     {
@@ -679,7 +679,7 @@ impl Scenario {
             &self.first,
             &piqueld_core::ServiceName::parse("next").unwrap(),
         );
-        let container = tokio::time::timeout(Duration::from_secs(60), async {
+        let container = tokio::time::timeout(Duration::from_mins(1), async {
             loop {
                 let containers = self.gateway.docker.get("/containers/json").await.unwrap();
                 if let Some(container) = containers.as_array().unwrap().iter().find(|container| {

@@ -101,7 +101,7 @@ impl Scenario {
                 .unwrap()
         };
         for host in hosts {
-            let first = tokio::time::timeout(Duration::from_secs(60), async {
+            let first = tokio::time::timeout(Duration::from_mins(1), async {
                 loop {
                     if let Ok(response) = client()
                         .get(format!(

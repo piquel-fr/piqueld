@@ -313,7 +313,7 @@ impl Ingress {
         let journal = self.journal("ingress_pull_image", CADDY_IMAGE).await?;
         let result = async {
             journal.request().await?;
-            tokio::time::timeout(Duration::from_secs(180), async {
+            tokio::time::timeout(Duration::from_mins(3), async {
                 let mut pull = self.images.create_image(
                     Some(
                         CreateImageOptionsBuilder::default()

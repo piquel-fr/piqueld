@@ -604,7 +604,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let run = controller.run(
             Arc::new(tokio::sync::Notify::new()),
-            std::time::Duration::from_secs(60),
+            std::time::Duration::from_mins(1),
             0,
             0,
             cancellation.clone(),
