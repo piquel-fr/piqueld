@@ -23,6 +23,7 @@ pub trait Authenticator: Clone + Send + Sync + 'static {
 }
 
 impl Authenticator for Auth {
+    /// Installs the `authenticate` middleware and exposes `Auth` to handlers.
     fn guard<S: Clone + Send + Sync + 'static>(self, router: Router<S>) -> Router<S> {
         router
             .layer(middleware::from_fn_with_state(self.clone(), authenticate))
@@ -31,6 +32,8 @@ impl Authenticator for Auth {
 }
 
 impl From<AuthError> for ApiError {
+    /// Maps authentication failures. Passkey verification errors are logged
+    /// and reported as a plain 401 so clients learn nothing about the cause.
     fn from(error: AuthError) -> Self {
         match error {
             AuthError::Webauthn(ref source) => {
@@ -69,6 +72,11 @@ impl From<AuthError> for ApiError {
     }
 }
 
+/// Reads one cookie value from the `Cookie` header.
+///
+/// ```text
+/// "a=1; piqueld_session=abc" + "piqueld_session" -> Some("abc")
+/// ```
 fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get(header::COOKIE)?
@@ -80,6 +88,8 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
             (key == name).then_some(value)
         })
 }
+/// Returns whether an API path is reachable without credentials. Also used to
+/// clear `security` on these operations in the `OpenAPI` document.
 pub(super) fn is_public(path: &str) -> bool {
     matches!(
         path,
@@ -92,6 +102,16 @@ pub(super) fn is_public(path: &str) -> bool {
             | "/api/v1/auth/device/poll"
     )
 }
+/// Authentication middleware for API paths; other paths pass through.
+///
+/// 1. Throttles ceremony start endpoints per peer IP (429 with `Retry-After`).
+/// 2. Takes the credential from `Authorization: Bearer`, else the session cookie.
+/// 3. Blocks cross-site mutations: any mismatched `Origin` is rejected, and
+///    cookie-authenticated or bearer-less ceremony mutations must send the
+///    configured origin.
+/// 4. Inserts the resolved `Identity` as an extension. Invalid credentials on
+///    public routes are ignored; missing or invalid ones elsewhere yield 401.
+/// 5. Marks every API response `Cache-Control: no-store`.
 async fn authenticate(
     axum::extract::State(auth): axum::extract::State<Auth>,
     mut request: Request,
@@ -171,6 +191,8 @@ async fn authenticate(
     );
     response
 }
+/// Returns the user as JSON, setting a seven-day session cookie when a new
+/// session `token` was issued.
 fn session_response(auth: &Auth, user: User, token: Option<String>) -> Response {
     let mut response = Json(user).into_response();
     if let Some(token) = token {
@@ -183,10 +205,13 @@ fn session_response(auth: &Auth, user: User, token: Option<String>) -> Response 
     }
     response
 }
+/// Reads the ceremony binding cookie that ties a passkey finish request to the
+/// browser that started it; missing cookies are unauthorized.
 fn binding<'a>(auth: &Auth, headers: &'a HeaderMap) -> Result<&'a str, ApiError> {
     cookie(headers, &auth.cookie_name("piqueld_ceremony"))
         .ok_or_else(|| AuthError::Unauthorized.into())
 }
+/// Returns a passkey challenge and sets its five-minute ceremony binding cookie.
 fn challenge_response(auth: &Auth, ceremony: Ceremony, binding: &str) -> Response {
     let mut response = Json(ceremony).into_response();
     response.headers_mut().append(
@@ -198,14 +223,24 @@ fn challenge_response(auth: &Auth, ceremony: Ceremony, binding: &str) -> Respons
     response
 }
 
+/// Gets authentication status.
+///
+/// Public. Reports whether the first account exists and the website origin.
 #[utoipa::path(get,path="/api/v1/auth/status",operation_id="authStatus",responses((status=200,body=AuthStatus)))]
 pub(super) async fn status(Extension(auth): Extension<Auth>) -> Result<Json<AuthStatus>, ApiError> {
     Ok(Json(auth.status().await?))
 }
+/// Gets the signed-in user.
 #[utoipa::path(get,path="/api/v1/auth/me",operation_id="authMe",responses((status=200,body=User)))]
 pub(super) async fn me(Extension(identity): Extension<Identity>) -> Json<User> {
     Json(identity.user)
 }
+/// Starts passkey registration.
+///
+/// Public. Registers a new account by redeeming an invitation or setup secret,
+/// or, when signed in, adds a passkey to an existing account. Sets a short-lived
+/// ceremony cookie that the finish request must present. Rate limited per
+/// client address (429 with `Retry-After`).
 #[utoipa::path(post,path="/api/v1/auth/register/start",operation_id="authRegistrationStart",request_body=RegistrationStart,responses((status=200,body=Ceremony)))]
 pub(super) async fn register_start(
     Extension(auth): Extension<Auth>,
@@ -218,6 +253,11 @@ pub(super) async fn register_start(
         .await?;
     Ok(challenge_response(&auth, ceremony, &binding))
 }
+/// Finishes passkey registration.
+///
+/// Public. Verifies the passkey against the ceremony started in the same
+/// browser. New accounts are signed in with a session cookie; adding a passkey
+/// to an existing account is not.
 #[utoipa::path(post,path="/api/v1/auth/register/finish",operation_id="authRegistrationFinish",request_body=CeremonyFinish,responses((status=200,body=User)))]
 pub(super) async fn register_finish(
     Extension(auth): Extension<Auth>,
@@ -230,12 +270,20 @@ pub(super) async fn register_finish(
         .await?;
     Ok(session_response(&auth, user, token))
 }
+/// Starts a passkey sign-in.
+///
+/// Public. Usernameless: any discoverable passkey for this site may answer.
+/// Sets a short-lived ceremony cookie that the finish request must present.
+/// Rate limited per client address (429 with `Retry-After`).
 #[utoipa::path(post,path="/api/v1/auth/login/start",operation_id="authLoginStart",responses((status=200,body=Ceremony)))]
 pub(super) async fn login_start(Extension(auth): Extension<Auth>) -> Result<Response, ApiError> {
     let binding = Auth::secret()?;
     let ceremony = auth.login_start(&binding).await?;
     Ok(challenge_response(&auth, ceremony, &binding))
 }
+/// Finishes a passkey sign-in.
+///
+/// Public. Verifies the passkey and sets a seven-day session cookie.
 #[utoipa::path(post,path="/api/v1/auth/login/finish",operation_id="authLoginFinish",request_body=CeremonyFinish,responses((status=200,body=User)))]
 pub(super) async fn login_finish(
     Extension(auth): Extension<Auth>,
@@ -245,6 +293,9 @@ pub(super) async fn login_finish(
     let (user, token) = auth.login_finish(input, binding(&auth, &headers)?).await?;
     Ok(session_response(&auth, user, Some(token)))
 }
+/// Signs out.
+///
+/// Revokes the credential used for this request and clears the session cookie.
 #[utoipa::path(post,path="/api/v1/auth/logout",operation_id="authLogout",responses((status=200,body=Managed)))]
 pub(super) async fn logout(
     Extension(auth): Extension<Auth>,
@@ -257,12 +308,14 @@ pub(super) async fn logout(
     )
         .into_response())
 }
+/// Lists accounts, passkeys, credentials, and open invitations.
 #[utoipa::path(get,path="/api/v1/auth/directory",operation_id="authDirectory",responses((status=200,body=Directory)))]
 pub(super) async fn directory(
     Extension(auth): Extension<Auth>,
 ) -> Result<Json<Directory>, ApiError> {
     Ok(Json(auth.directory().await?))
 }
+/// Applies one account management action as the signed-in user.
 #[utoipa::path(post,path="/api/v1/auth/manage",operation_id="authManage",request_body=Manage,responses((status=200,body=Managed)))]
 pub(super) async fn manage(
     Extension(auth): Extension<Auth>,
@@ -271,6 +324,10 @@ pub(super) async fn manage(
 ) -> Result<Json<Managed>, ApiError> {
     Ok(Json(auth.manage(&identity.user.id, input).await?))
 }
+/// Starts a device sign-in for a command-line client.
+///
+/// Public. Returns a device code to poll with and a user code to approve in a
+/// signed-in browser. Rate limited per client address (429 with `Retry-After`).
 #[utoipa::path(post,path="/api/v1/auth/device/start",operation_id="authDeviceStart",responses((status=200,body=DeviceStart)))]
 pub(super) async fn device_start(
     Extension(auth): Extension<Auth>,
@@ -279,6 +336,12 @@ pub(super) async fn device_start(
     let requester = peer.map(|Extension(ConnectInfo(peer))| peer.ip());
     Ok(Json(auth.device_start(requester).await?))
 }
+/// Polls a device sign-in.
+///
+/// Public. Poll at most every five seconds: the status is
+/// `authorization_pending` until approval, `slow_down` when polled too fast, and
+/// `complete` with a 30-day token exactly once after approval. Expired or unknown
+/// codes fail with 401.
 #[utoipa::path(post,path="/api/v1/auth/device/poll",operation_id="authDevicePoll",request_body=DevicePoll,responses((status=200,body=DeviceToken)))]
 pub(super) async fn device_poll(
     Extension(auth): Extension<Auth>,
@@ -286,6 +349,10 @@ pub(super) async fn device_poll(
 ) -> Result<Json<DeviceToken>, ApiError> {
     Ok(Json(auth.device_poll(&input.device_code).await?))
 }
+/// Inspects a pending device sign-in.
+///
+/// Shows the requesting address and remaining lifetime so the user can confirm
+/// the request before approving it.
 #[utoipa::path(post,path="/api/v1/auth/device/inspect",operation_id="authDeviceInspect",request_body=DeviceApprove,responses((status=200,body=DeviceRequest)))]
 pub(super) async fn device_inspect(
     Extension(auth): Extension<Auth>,
@@ -293,6 +360,9 @@ pub(super) async fn device_inspect(
 ) -> Result<Json<DeviceRequest>, ApiError> {
     Ok(Json(auth.device_inspect(&input.user_code).await?))
 }
+/// Approves a pending device sign-in.
+///
+/// The device's next poll receives a token for the signed-in user.
 #[utoipa::path(post,path="/api/v1/auth/device/approve",operation_id="authDeviceApprove",request_body=DeviceApprove,responses((status=200,body=Managed)))]
 pub(super) async fn device_approve(
     Extension(auth): Extension<Auth>,

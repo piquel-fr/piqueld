@@ -86,6 +86,8 @@ pub struct ServiceForm {
     pub memory: String,
 }
 impl From<&Service> for ServiceForm {
+    /// Seeds a draft from saved configuration. Fields for the unused source or
+    /// health check kind get editable defaults (branch `main`, port `8080`, …).
     fn from(service: &Service) -> Self {
         let mut form = Self {
             source_kind: "image".into(),

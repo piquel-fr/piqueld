@@ -6,6 +6,10 @@ use super::{
 
 impl BollardDocker {
     /// Builds the Docker label filter selecting one application's resources.
+    ///
+    /// ```text
+    /// app-notes → {"label": ["<APPLICATION_LABEL>=app-notes"]}
+    /// ```
     pub(super) fn application_label_filter(
         application: &ApplicationId,
     ) -> HashMap<String, Vec<String>> {
@@ -30,6 +34,12 @@ impl BollardDocker {
     ///
     /// Resource names are truncated for Docker, so ownership labels remain the
     /// authoritative fallback when the readable name prefix is ambiguous.
+    ///
+    /// 1. Labelled for `app`: relevant.
+    /// 2. Labelled for another valid application and named canonically for
+    ///    that owner (but not for `app`): not relevant.
+    /// 3. Otherwise: relevant when the name carries `app`'s readable prefix,
+    ///    so unlabelled look-alikes surface as conflicts instead of vanishing.
     pub(super) fn relevant(
         name: &str,
         labels: &BTreeMap<String, String>,
@@ -137,6 +147,11 @@ impl BollardDocker {
     }
 
     /// Returns whether an image reference contains a complete SHA-256 digest.
+    ///
+    /// ```text
+    /// repo@sha256:<64 lowercase hex> → true
+    /// repo@sha256:ABC…, repo:tag     → false
+    /// ```
     pub(super) fn valid_digest(value: &str) -> bool {
         value.rsplit_once("@sha256:").is_some_and(|(_, d)| {
             d.len() == 64
@@ -148,6 +163,7 @@ impl BollardDocker {
 
 #[async_trait::async_trait]
 impl ImageSource for Docker {
+    /// Inspects the local image; a 404 means the reference was never pulled.
     async fn repo_digests(&self, reference: &str) -> Result<Option<Vec<String>>, DockerError> {
         match self.inspect_image(reference).await {
             Ok(image) => Ok(Some(image.repo_digests.unwrap_or_default())),
@@ -158,6 +174,7 @@ impl ImageSource for Docker {
         }
     }
 
+    /// Pulls through the Engine, draining and discarding the progress stream.
     async fn pull(&self, reference: &str) -> Result<(), DockerError> {
         self.create_image(
             Some(

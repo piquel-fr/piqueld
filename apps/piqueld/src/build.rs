@@ -21,6 +21,15 @@ impl BuildLog {
         self.store.append_build_log(self.id, bytes, stream).await
     }
     /// Keeps an incomplete UTF-8 suffix for the next read without rejecting binary output.
+    ///
+    /// Returns how many leading bytes can be flushed now: everything except a
+    /// trailing, possibly incomplete multi-byte character. Invalid bytes elsewhere
+    /// are flushed as-is.
+    ///
+    /// ```text
+    /// b"ok\xe2\x82"      -> 2  (the partial `€` waits for more bytes)
+    /// b"\xffok\xe2\x82"  -> 3
+    /// ```
     pub(crate) fn complete_prefix(bytes: &[u8]) -> usize {
         let mut end = 0;
         for chunk in bytes.utf8_chunks() {
@@ -33,22 +42,33 @@ impl BuildLog {
         }
         end
     }
+    /// Records the resolved Git commit on the build.
     pub(crate) async fn commit(&self, commit: &str) -> Result<(), StoreError> {
         self.store.build_commit(self.id, commit).await
     }
 }
 
+/// A persisted build record that is always given a terminal state.
+///
+/// Call [`BuildAttempt::finish`] on completion. If the attempt is dropped first
+/// (e.g. the preparation future is cancelled) or finishing fails, `Drop` records
+/// the outcome in the background.
 pub(crate) struct BuildAttempt {
     pub(crate) log: BuildLog,
     completion: Completion,
 }
 
+/// How far a build's terminal state has been persisted.
 enum Completion {
+    /// The build has not finished; dropping it records `Interrupted`.
     Running,
+    /// A terminal state was chosen but its write has not succeeded yet.
     Pending(BuildState, Option<String>),
+    /// The terminal state is stored; nothing is left to record.
     Persisted,
 }
 impl Completion {
+    /// Returns the terminal state `Drop` still needs to persist, if any.
     fn retry(self) -> Option<(BuildState, Option<String>)> {
         match self {
             Self::Running => Some((BuildState::Interrupted, None)),
@@ -58,6 +78,7 @@ impl Completion {
     }
 }
 impl BuildAttempt {
+    /// Creates a running build record for one service of an operation.
     pub(crate) async fn start(
         store: Arc<Store>,
         application: &ApplicationId,
@@ -73,6 +94,7 @@ impl BuildAttempt {
             completion: Completion::Running,
         })
     }
+    /// Persists the terminal state and, on success, the built image ID.
     pub(crate) async fn finish(
         mut self,
         state: BuildState,
@@ -89,6 +111,8 @@ impl BuildAttempt {
     }
 }
 impl Drop for BuildAttempt {
+    /// Spawns a best-effort write of any unpersisted terminal state. If that also
+    /// fails, startup recovery marks the build interrupted.
     fn drop(&mut self) {
         let Some((state, image)) =
             std::mem::replace(&mut self.completion, Completion::Persisted).retry()

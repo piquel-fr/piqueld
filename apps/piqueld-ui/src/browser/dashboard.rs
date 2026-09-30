@@ -6,6 +6,7 @@ use leptos_router::A;
 use piqueld_client::system::DependencyStatus;
 use std::rc::Rc;
 
+/// Sidebar with the brand link, dashboard navigation and sign-out button.
 pub(super) fn dashboard_header() -> View {
     view! {
         <aside class="sidebar">
@@ -36,6 +37,8 @@ pub(super) fn dashboard_header() -> View {
     .into_view()
 }
 
+/// Overview page: application counts by health, system readiness and the
+/// newest deployments, all read from the shared dashboard signals.
 #[component]
 pub(super) fn OverviewPage() -> impl IntoView {
     let signals = dashboard_context().signals;
@@ -86,6 +89,8 @@ pub(super) fn OverviewPage() -> impl IntoView {
     }
 }
 
+/// Daemon connectivity and dependency readiness cards (database, Docker, Swarm,
+/// ingress), with a button that triggers a manual dashboard refresh.
 #[component]
 pub(super) fn ReadinessPanel() -> impl IntoView {
     let context = dashboard_context();
@@ -131,6 +136,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
     }
 }
 
+/// Readiness card for the browser's connection to the daemon itself.
 fn connection_readiness(state: ConnectionState) -> View {
     let (visual_state, message) = match state {
         ConnectionState::Loading => ("pending", "Waiting for the daemon"),
@@ -146,6 +152,7 @@ fn connection_readiness(state: ConnectionState) -> View {
     )
 }
 
+/// Readiness card for one daemon dependency.
 fn dependency_readiness(name: &'static str, status: DependencyStatus) -> View {
     let (state, label, message) = match status {
         DependencyStatus::Ready => ("ready", "Ready", "Available".to_owned()),
@@ -154,6 +161,7 @@ fn dependency_readiness(name: &'static str, status: DependencyStatus) -> View {
     readiness_card(name, state, label, &message)
 }
 
+/// One readiness card; `state` (`ready`, `pending`, `failed`) drives its `data-state` styling.
 fn readiness_card(
     name: &'static str,
     state: &'static str,
@@ -175,6 +183,8 @@ fn readiness_card(
     .into_view()
 }
 
+/// Application directory linking to each application's detail page, with
+/// loading/empty states and recent deployments.
 #[component]
 pub(super) fn ApplicationsPage() -> impl IntoView {
     let signals = dashboard_context().signals;
@@ -228,6 +238,8 @@ pub(super) fn ApplicationsPage() -> impl IntoView {
     }
 }
 
+/// The three newest deployments across all loaded applications, plus
+/// per-application deployment errors and an incomplete-list warning.
 /// Three snapshots per application are sufficient to find the three newest overall.
 #[component]
 fn RecentDeployments() -> impl IntoView {
@@ -318,6 +330,7 @@ fn RecentDeployments() -> impl IntoView {
     }
 }
 
+/// Table row linking to the deployment on its application page.
 #[component]
 fn RecentDeployment(name: String, deployment: piqueld_client::DeploymentView) -> impl IntoView {
     let op = deployment.operation;

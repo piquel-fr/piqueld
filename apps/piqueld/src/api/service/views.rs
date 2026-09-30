@@ -9,6 +9,7 @@ use piqueld_core::{
     resource::{Convergence, ObservedService, TaskDiagnostic, TaskState},
 };
 
+/// Projects stored intent into its API view, adding the spec hash.
 pub(super) fn application_view(stored: StoredApplication) -> ApplicationView {
     ApplicationView {
         generation: stored.generation,
@@ -21,6 +22,7 @@ pub(super) fn application_view(stored: StoredApplication) -> ApplicationView {
     }
 }
 
+/// Projects persisted application status into its API view.
 pub(super) fn status_view(status: ApplicationStatus) -> ApplicationStatusView {
     ApplicationStatusView {
         application_id: status.application_id.to_string(),
@@ -31,9 +33,16 @@ pub(super) fn status_view(status: ApplicationStatus) -> ApplicationStatusView {
     }
 }
 
+/// Upper bound on diagnostics in one application detail response.
 const MAX_DETAIL_DIAGNOSTICS: usize = 24;
+/// Upper bound on diagnostics reported for a single service.
 const MAX_SERVICE_DIAGNOSTICS: usize = 8;
 
+/// Joins each resolved (desired) service with its runtime observation.
+///
+/// A desired service missing from the runtime is reported as `Failed` with a
+/// `service_missing` diagnostic only when `reconciled` is true (the application
+/// is `Ready` and observation succeeded); otherwise it is still `Updating`.
 pub(super) fn observed_view(
     stored: &StoredApplication,
     observed: &ObservedApplication,
@@ -101,6 +110,8 @@ pub(super) fn observed_view(
     }
 }
 
+/// Counts desired, running tasks that are healthy. With a healthcheck the task
+/// must report healthy; without one, it only must not report unhealthy.
 fn healthy_replicas(service: &ObservedService) -> u16 {
     u16::try_from(
         service
@@ -120,6 +131,9 @@ fn healthy_replicas(service: &ObservedService) -> u16 {
     .unwrap_or(u16::MAX)
 }
 
+/// Summarizes a service's problems: a convergence diagnostic when degraded or
+/// failed, then failures of currently desired tasks (historical tasks are
+/// ignored). Capped at `MAX_SERVICE_DIAGNOSTICS`.
 fn service_diagnostics(service: &ObservedService) -> Vec<DiagnosticView> {
     let mut diagnostics = Vec::new();
     if matches!(
@@ -159,6 +173,9 @@ fn service_diagnostics(service: &ObservedService) -> Vec<DiagnosticView> {
     diagnostics
 }
 
+/// Collects detail-page diagnostics in priority order: status message, latest
+/// operation error, then per-service diagnostics. Capped at
+/// `MAX_DETAIL_DIAGNOSTICS`.
 pub(super) fn detail_diagnostics(
     status: &ApplicationStatusView,
     observed: &ObservedApplicationView,

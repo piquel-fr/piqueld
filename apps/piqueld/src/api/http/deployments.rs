@@ -14,9 +14,16 @@ use piqueld_core::{
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in=Query)]
 pub(super) struct HistoryQuery {
+    /// `next_cursor` from a previous page.
     cursor: Option<String>,
 }
 
+/// Deploys the saved configuration.
+///
+/// Returns 202 with the accepted durable operation. Requires
+/// `expected_generation` unless `force=true`; a stale generation fails with 409.
+/// Repeating a request with the same `Idempotency-Key` returns the original
+/// response.
 #[utoipa::path(post,path="/api/v1/applications/{id}/deploy",operation_id="deployApplication",
     params(("id"=String,Path),super::applications::GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
     responses((status=202,description="Deployment accepted",body=Envelope<AcceptedOperation>),
@@ -44,6 +51,9 @@ pub(super) async fn deploy(
     .await
 }
 
+/// Lists deployments of an application, newest first.
+///
+/// Returns three deployment snapshots per page; follow `next_cursor` for older ones.
 #[utoipa::path(get,path="/api/v1/applications/{id}/deployments",operation_id="listDeployments",
     params(("id"=String,Path),HistoryQuery),
     responses((status=200,description="Deployment snapshots, newest first (three per page)",body=Envelope<Page<DeploymentView>>),
@@ -65,6 +75,10 @@ pub(super) async fn list(
         .await?))
 }
 
+/// Lists attempts of one deployment, newest first.
+///
+/// Returns up to 100 retained attempt outcomes per page. Deployments owned by
+/// another application are reported as not found.
 #[utoipa::path(get,path="/api/v1/applications/{id}/deployments/{deployment}/attempts",operation_id="listDeploymentAttempts",
     params(("id"=String,Path),("deployment"=String,Path),HistoryQuery),
     responses((status=200,description="Retained attempt outcomes, newest first (100 per page)",body=Envelope<Page<Operation>>),

@@ -34,6 +34,7 @@ pub enum ResourceKind {
 }
 
 impl ResourceKind {
+    /// Kind segment hashed into, and shown in, generated Docker names.
     fn token(self) -> &'static str {
         match self {
             Self::Network => "network",
@@ -44,6 +45,14 @@ impl ResourceKind {
 }
 
 /// Produces a stable, collision-resistant Docker name no longer than 63 bytes.
+///
+/// The readable part may be truncated; uniqueness comes from the digest suffix
+/// over the full application ID, kind, and logical name.
+///
+/// ```text
+/// (01jz8r7b4w-test, Service, Some("web")) -> piqueld-01jz8r7b4w-test-service-web-<12 hex>
+/// (01jz8r7b4w-test, Network, None)        -> piqueld-01jz8r7b4w-test-network-<12 hex>
+/// ```
 #[must_use]
 pub fn docker_resource_name(
     id: &ApplicationId,
@@ -80,6 +89,12 @@ pub fn docker_resource_readable_prefix(id: &ApplicationId) -> String {
     format!("piqueld-{head}-")
 }
 
+/// Formats `{prefix}-{readable head}-{digest}` within `limit` bytes.
+///
+/// The digest is the first `NAME_SUFFIX_LEN` hex characters of SHA-256 over the raw
+/// parts joined by NUL, so distinct inputs stay distinct even when sanitizing or
+/// truncating the readable head makes them look alike. Trailing hyphens left by
+/// truncation are trimmed.
 fn bounded_name(prefix: &str, parts: &[&str], limit: usize) -> String {
     let identity = parts.join("\0");
     let suffix = format!("{:x}", Sha256::digest(identity.as_bytes()));
@@ -98,6 +113,12 @@ fn bounded_name(prefix: &str, parts: &[&str], limit: usize) -> String {
     format!("{prefix}-{head}-{suffix}")
 }
 
+/// Lowercases ASCII alphanumerics and collapses every other run of characters into
+/// one hyphen, trimming hyphens at both ends.
+///
+/// ```text
+/// "My_App--v2!" -> "my-app-v2"
+/// ```
 fn sanitize(value: &str) -> String {
     let mut output = String::new();
     for c in value.chars() {

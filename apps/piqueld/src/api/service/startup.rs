@@ -22,6 +22,15 @@ impl ApplicationService {
     /// Cancelling the supplied token stops both workers; the returned task must
     /// be joined before releasing the lock. Caddy keeps serving after normal shutdown.
     /// A controller failure cancels the token so all transports shut down together.
+    ///
+    /// Steps, in order:
+    /// 1. Open the store and initialize authentication.
+    /// 2. Reserve the website's hostname so applications cannot route it.
+    /// 3. Connect Docker, interrupt stale actions, and ensure a Swarm manager
+    ///    (journaled as an `ensure_swarm` action).
+    /// 4. Build the ingress, reconciliation controller, and service.
+    /// 5. Spawn one task joining reconciliation, ingress, notification
+    ///    observation, and webhook delivery.
     /// # Errors
     /// Returns contextual storage, Docker connection, or Swarm initialization errors.
     pub async fn start(
@@ -52,6 +61,7 @@ impl ApplicationService {
             BollardDocker::connect(&config.docker.socket)
                 .context("failed to connect to Docker Engine")?,
         );
+        // Actions left open by a previous process can never finish; close them first.
         store.interrupt_actions(None).await?;
         let bootstrap = store.begin_action(None, "ensure_swarm", None).await?;
         store.action_request(&bootstrap, 1).await?;
@@ -72,6 +82,7 @@ impl ApplicationService {
             .await?;
         result.context("failed to establish single-node Docker Swarm readiness")?;
         store.configure_deliveries().await?;
+        // Webhooks never follow redirects, so a target cannot bounce requests elsewhere.
         let webhook_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())

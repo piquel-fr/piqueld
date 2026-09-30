@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use utoipa::ToSchema;
 
+// Declares one `{ "value": ... }` request body per field type used by the field edit
+// endpoints. `deserialize_with` makes `value` required even when its type is `Option`,
+// so clients must send an explicit `null` to clear a setting.
 macro_rules! value_request {
     ($($name:ident: $ty:ty;)*) => {$ (
         #[doc = concat!("Typed replacement value for `", stringify!($name), "`.")]
@@ -196,6 +199,10 @@ impl ApplicationEdit {
     }
 
     /// Edits input in memory. The caller must validate the resulting manifest before saving.
+    ///
+    /// Removing a service also drops its public routes, and renaming a service
+    /// repoints routes that referenced the old name, so routes never dangle.
+    /// Removing a volume leaves mounts in place for validation to reject.
     /// # Errors
     /// Rejects missing/duplicate resources and incompatible nested fields.
     pub fn apply(self, manifest: &mut ApplicationManifest) -> Result<(), EditError> {
@@ -282,6 +289,7 @@ impl ApplicationEdit {
         }
         Ok(())
     }
+    /// Returns the connected manifest repository, or `Incompatible` when none is set.
     fn repository(
         manifest: &mut ApplicationManifest,
     ) -> Result<&mut RepositoryManifest, EditError> {
@@ -295,6 +303,9 @@ impl ApplicationEdit {
     }
 }
 impl ServiceEdit {
+    /// Applies this edit to one service in memory. Nested Git, build, and health
+    /// settings require the matching variant to already be selected; clearing the
+    /// last resource limit removes the `resources` block entirely.
     fn apply(self, service: &mut Service) -> Result<(), EditError> {
         match self {
             Self::Name(value) => service.name = value,
@@ -394,12 +405,14 @@ impl ServiceEdit {
         }
         Ok(())
     }
+    /// Returns the resource limits, inserting an empty block if none exist.
     fn resources(service: &mut Service) -> &mut ResourceLimits {
         service.resources.get_or_insert(ResourceLimits {
             cpu_millis: None,
             memory_bytes: None,
         })
     }
+    /// Replaces the mount with the same container target, or appends a new one.
     fn set_mount(service: &mut Service, value: Mount) {
         if let Some(mount) = service.mounts.iter_mut().find(|m| m.target == value.target) {
             *mount = value;
@@ -407,6 +420,7 @@ impl ServiceEdit {
             service.mounts.push(value);
         }
     }
+    /// Removes the mount at `target`, failing with `NotFound` if absent.
     fn remove_mount(service: &mut Service, target: String) -> Result<(), EditError> {
         let index = service
             .mounts
@@ -419,6 +433,7 @@ impl ServiceEdit {
         service.mounts.remove(index);
         Ok(())
     }
+    /// Returns the Git repository of a Git source; image sources are incompatible.
     fn git(service: &mut Service) -> Result<&mut GitRepository, EditError> {
         match &mut service.source {
             Source::Git { repository, .. } => Ok(repository),
@@ -427,6 +442,7 @@ impl ServiceEdit {
             )),
         }
     }
+    /// Returns the build settings of a Git source; image sources are incompatible.
     fn build(service: &mut Service) -> Result<&mut Build, EditError> {
         match &mut service.source {
             Source::Git { build, .. } => Ok(build),
@@ -435,11 +451,14 @@ impl ServiceEdit {
             )),
         }
     }
+    /// Returns the configured health check, failing when none is set.
     fn health(service: &mut Service) -> Result<&mut HealthCheck, EditError> {
         service.healthcheck.as_mut().ok_or(EditError::Incompatible(
             "configure a health check before editing its settings",
         ))
     }
+    /// Drops `resources` once neither CPU nor memory is limited, since validation
+    /// rejects an empty limits block.
     fn clear_empty_resources(service: &mut Service) {
         if service
             .resources

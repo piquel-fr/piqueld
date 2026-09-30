@@ -6,6 +6,10 @@ use leptos::{
 };
 use piqueld_client::{Route, edit::ApplicationEdit};
 
+/// Public route editor. Rows are drafted as `(hostname, service, port)` text and
+/// re-synced from saved configuration only while there are no local edits. Saving
+/// validates ports and replaces all routes. Also lists this application's deployed
+/// routes and their ingress state from the dashboard readiness signal.
 #[component]
 pub(super) fn RouteSettings() -> impl IntoView {
     let context = editor();

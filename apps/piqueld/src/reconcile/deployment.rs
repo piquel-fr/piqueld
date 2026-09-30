@@ -3,6 +3,14 @@ use super::{Controller, DockerApi, Operation, OperationError};
 use piqueld_core::NormalizedApplication;
 
 impl<D: DockerApi> Controller<D> {
+    /// Resolves the manifest an operation should deploy.
+    ///
+    /// Operations without a captured deployment input use `current`. A fetched
+    /// input is reused so retries never re-read a moving branch. Otherwise, when
+    /// the application is repository-backed, the repository is cloned and the
+    /// manifest file (at most 2 MiB; `.json` parsed as JSON, anything else as
+    /// TOML) is validated, required to keep the application name, and persisted
+    /// with its commit. Inputs without repository backing are marked fetched as-is.
     pub(super) async fn deployment_manifest(
         &self,
         operation: &Operation,

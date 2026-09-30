@@ -109,6 +109,10 @@ impl ApplicationService {
         })
     }
     /// Previews validated intent without pulling images or saving configuration.
+    ///
+    /// Checks the same generation and identity preconditions as apply, builds a
+    /// runtime plan against current observation, and diffs the manifest against
+    /// the latest deployment's captured input (no baseline after a delete).
     /// # Errors
     /// Returns precondition, storage, or runtime errors.
     /// # Panics
@@ -131,6 +135,7 @@ impl ApplicationService {
         {
             return Err(StoreError::IdentityConflict.into());
         }
+        // New applications are previewed under a placeholder ID.
         let id = current.as_ref().map_or_else(
             || ApplicationId::parse("preview-application").expect("valid preview ID"),
             |app| app.application.id().clone(),
@@ -164,6 +169,12 @@ impl ApplicationService {
             plan,
         })
     }
+    /// Plans the runtime changes for `app` against the current observation.
+    ///
+    /// Images are not resolved, so the desired state is only compiled when no
+    /// references need resolution; otherwise the plan lists them as unresolved.
+    /// New applications still require a reachable runtime. Configuration values
+    /// are redacted from the returned plan.
     async fn preview_plan(
         &self,
         app: &NormalizedApplication,

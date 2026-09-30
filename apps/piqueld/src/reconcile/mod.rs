@@ -19,10 +19,15 @@ use tokio_util::sync::CancellationToken;
 
 /// Executes durable operations against `Docker` and `SQLite`.
 pub struct Controller<D> {
+    /// Docker client with concurrency limits shared by API observation and preview.
     docker: Arc<crate::docker::LimitedDocker<D>>,
+    /// Serializes every Docker mutation across applications, including active-target
+    /// repair, so each journaled request is checked against the latest operation.
     mutations: tokio::sync::Mutex<()>,
+    /// Deadline for resolving images, building sources, and fetching manifests.
     prepare_timeout: Duration,
     store: Arc<Store>,
+    /// Managed ingress; without it, routes are staged and acknowledged directly.
     ingress: Option<Arc<crate::ingress::Ingress>>,
     retry: RetryPolicy,
 }
@@ -48,6 +53,7 @@ impl<D> Controller<D> {
         self
     }
 
+    /// Whether route intent should be projected onto runtime networks.
     fn ingress_enabled(&self) -> bool {
         self.ingress.as_ref().is_some_and(|ingress| ingress.enabled)
     }
@@ -150,12 +156,15 @@ impl<D: DockerApi> Controller<D> {
     }
 }
 
+/// Whether the plan carries a diagnostic with the given stable code.
 fn has_diagnostic(plan: &piqueld_core::Plan, code: &str) -> bool {
     plan.diagnostics
         .iter()
         .any(|diagnostic| diagnostic.code == code)
 }
 
+/// Classifies a blocked plan by its first recognized blocking diagnostic, in
+/// priority order: ownership, immutable configuration, then failed service update.
 pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
     if has_diagnostic(plan, codes::UNOWNED_NAME_COLLISION) {
         OperationError::OwnershipConflict
@@ -168,6 +177,8 @@ pub(super) fn blocked_plan_error(plan: &piqueld_core::Plan) -> OperationError {
     }
 }
 
+/// Human-readable application status for a blocked plan, using the same priority
+/// order as `blocked_plan_error`.
 pub(super) fn blocked_plan_message(plan: &piqueld_core::Plan) -> &'static str {
     if has_diagnostic(plan, codes::UNOWNED_NAME_COLLISION) {
         "runtime reconciliation is blocked by an ownership conflict"

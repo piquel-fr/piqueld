@@ -74,6 +74,7 @@ pub struct ValidatedMount {
 }
 
 impl ValidationErrors {
+    /// Wraps a typed name parse failure as a single `NAME_INVALID` error at `path`.
     fn invalid_name(path: impl Into<String>, source: impl std::fmt::Display) -> Self {
         Self(vec![ValidationError {
             code: crate::codes::NAME_INVALID.into(),
@@ -84,6 +85,7 @@ impl ValidationErrors {
 }
 
 impl ValidatedMetadata {
+    /// Parses the application name into its typed form.
     pub(super) fn from_input(value: input::Metadata) -> Result<Self, ValidationErrors> {
         Ok(Self {
             name: ApplicationName::parse(value.name)
@@ -93,6 +95,10 @@ impl ValidatedMetadata {
 }
 
 impl ValidatedSpec {
+    /// Converts semantically validated input into typed domain values.
+    ///
+    /// Runs after `ApplicationManifest::validate` has accepted the input, so
+    /// failures here are a backstop; the first failing field is returned.
     pub(super) fn from_input(value: input::ApplicationSpec) -> Result<Self, ValidationErrors> {
         Ok(Self {
             routes: value
@@ -137,6 +143,7 @@ impl ValidatedSpec {
         })
     }
 
+    /// Converts back to the editable input shape used for export.
     pub(super) fn to_input(&self) -> input::ApplicationSpec {
         input::ApplicationSpec {
             routes: self
@@ -162,6 +169,7 @@ impl ValidatedSpec {
 }
 
 impl ValidatedService {
+    /// Parses the service and mount volume names; `index` locates error paths.
     fn from_input(value: input::Service, index: usize) -> Result<Self, ValidationErrors> {
         Ok(Self {
             name: ServiceName::parse(value.name).map_err(|source| {
@@ -195,6 +203,7 @@ impl ValidatedService {
         })
     }
 
+    /// Converts back to the editable input shape used for export.
     fn to_input(&self) -> input::Service {
         input::Service {
             name: self.name.to_string(),

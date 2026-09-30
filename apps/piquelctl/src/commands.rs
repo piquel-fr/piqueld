@@ -1,3 +1,4 @@
+//! Connected command implementations plus shared application lookup and operation waiting.
 use crate::{
     cli::{
         AppCommand, ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs,
@@ -27,6 +28,8 @@ use tokio::time;
 
 use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
 
+/// Dispatches every connected command. `login` and `profiles` never reach here:
+/// `main` handles them before the timeout supervisor starts.
 pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     match &cli.command {
         Command::Login => unreachable!("login has its own interactive deadline"),
@@ -57,6 +60,7 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
     }
 }
 
+/// Dispatches `piquelctl app` subcommands.
 async fn app(
     cli: &Cli,
     client: &Client,
@@ -118,6 +122,7 @@ async fn app(
     }
 }
 
+/// Emits one page of build attempts, optionally filtered by application.
 async fn builds(
     console: &mut Console,
     client: &Client,
@@ -127,6 +132,8 @@ async fn builds(
     console.emit(&client.builds(application, cursor).await?)
 }
 
+/// Emits one page of build output, then warns about expired or truncated output
+/// and hints the `--before` offset for the previous page.
 async fn build_logs(
     console: &mut Console,
     client: &Client,
@@ -147,6 +154,10 @@ async fn build_logs(
     Ok(())
 }
 
+/// Builds the API client from resolved connection settings: TCP for `--url`, else the
+/// Unix socket (default path if unset), plus insecure-HTTP opt-in, saved or
+/// `PIQUELD_TOKEN` credentials, the per-request timeout, and a fresh request ID.
+/// Fails on invalid endpoint input before any request is sent.
 pub(crate) fn build_client(cli: &Cli) -> Result<Client> {
     let client = if let Some(url) = &cli.url {
         Client::tcp(url).map_err(CliError::from)?
@@ -168,6 +179,7 @@ pub(crate) fn build_client(cli: &Cli) -> Result<Client> {
         .with_request_id(uuid::Uuid::now_v7().to_string()))
 }
 
+/// Reports daemon status together with the transport that was used.
 async fn status(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     let status = client.system_status().await?;
     console.emit(&StatusReport {
@@ -176,6 +188,9 @@ async fn status(cli: &Cli, client: &Client, console: &mut Console) -> Result<()>
     })
 }
 
+/// Lists every application with its status. Statuses are fetched with up to 8
+/// requests in flight while preserving list order; a failed status fetch becomes
+/// a per-application warning and an `unavailable` row instead of failing the list.
 async fn list(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     let applications = all_applications(client).await?;
     let mut statuses =
@@ -214,6 +229,7 @@ async fn list(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     })
 }
 
+/// Shows one application and its status, warning with any status message.
 async fn show(console: &mut Console, client: &Client, name_or_id: &str) -> Result<()> {
     let application = resolve_application(client, name_or_id).await?;
     let status = client
@@ -229,6 +245,7 @@ async fn show(console: &mut Console, client: &Client, name_or_id: &str) -> Resul
     Ok(())
 }
 
+/// Emits a bounded snapshot of runtime logs, warning when the daemon truncated it.
 async fn logs(
     console: &mut Console,
     client: &Client,
@@ -256,6 +273,8 @@ pub(crate) async fn validate(console: &mut Console, file: &Path) -> Result<()> {
     })
 }
 
+/// Previews a manifest. A blocked plan is still printed, then fails with a
+/// conflict error that repeats the blocking diagnostics.
 async fn plan_command(console: &mut Console, client: &Client, args: &ManifestArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
     let plan = client
@@ -268,6 +287,11 @@ async fn plan_command(console: &mut Console, client: &Client, args: &ManifestArg
     Ok(())
 }
 
+/// Saves a TOML manifest, optionally deploying it:
+/// 1. Reads the manifest and finds any existing application with the same name.
+/// 2. Confirms, then saves with preconditions: the expected generation (defaulting to
+///    the current one, or `0` for a new application) and the existing ID, unless `--force`.
+/// 3. If a deployment was accepted and `--no-wait` is unset, waits for it to finish.
 async fn apply(cli: &Cli, client: &Client, console: &mut Console, args: &ApplyArgs) -> Result<()> {
     let manifest = read_manifest(&args.file).await?;
     let name = manifest_name(&manifest, &args.file)?;
@@ -311,6 +335,9 @@ async fn apply(cli: &Cli, client: &Client, console: &mut Console, args: &ApplyAr
     })
 }
 
+/// Confirms and deletes an application (named volumes are retained), guarded by
+/// the expected generation unless `--force`. Waits until the application is gone
+/// unless `--no-wait`.
 async fn delete(
     cli: &Cli,
     client: &Client,
@@ -357,6 +384,7 @@ async fn delete(
     console.emit(&DeletionReport::completed(&accepted))
 }
 
+/// Shows one operation, polling until it reaches a terminal state unless `--no-wait`.
 async fn operation(console: &mut Console, client: &Client, args: &OperationArgs) -> Result<()> {
     let operation = if args.no_wait {
         client.operation(&args.operation_id).await?
@@ -370,6 +398,7 @@ async fn operation(console: &mut Console, client: &Client, args: &OperationArgs)
     Ok(())
 }
 
+/// Collects every application summary across all pages.
 async fn all_applications(client: &Client) -> Result<Vec<ApplicationSummary>> {
     fold_applications(client, Vec::new(), |applications, application| {
         applications.push(application);
@@ -377,6 +406,8 @@ async fn all_applications(client: &Client) -> Result<Vec<ApplicationSummary>> {
     .await
 }
 
+/// Walks every page of the application list, folding each summary into `value`.
+/// Fails if the daemon repeats a cursor, which would otherwise loop forever.
 async fn fold_applications<T>(
     client: &Client,
     mut value: T,
@@ -408,6 +439,7 @@ async fn fold_applications<T>(
     }
 }
 
+/// Finds the application with exactly this name. More than one match is a conflict.
 async fn find_by_name(client: &Client, name: &str) -> Result<Option<ApplicationSummary>> {
     let matches = fold_applications(client, Vec::new(), |matches, application| {
         if application.name == name {
@@ -425,6 +457,8 @@ async fn find_by_name(client: &Client, name: &str) -> Result<Option<ApplicationS
     }
 }
 
+/// Loads an application from a name or ID. Values shaped like an ID are tried as an
+/// ID first and fall back to a name lookup on 404, since a name can look like an ID.
 pub(crate) async fn resolve_application(
     client: &Client,
     name_or_id: &str,
@@ -447,6 +481,8 @@ pub(crate) async fn resolve_application(
     Ok(client.application(summary.id.as_str()).await?)
 }
 
+/// Polls an operation every `POLL_INTERVAL` with a progress task until it is
+/// terminal. Returns an `ErrorKind::Operation` error unless it succeeded or was superseded.
 pub(crate) async fn wait_for_operation(
     console: &mut Console,
     client: &Client,
@@ -467,6 +503,8 @@ pub(crate) async fn wait_for_operation(
     }
 }
 
+/// Accepts `Succeeded` and `Superseded` terminal states; any other state becomes an
+/// operation error whose details carry the full operation for the error report.
 fn finish_operation(operation: Operation) -> Result<Operation> {
     if matches!(
         operation.state,
@@ -480,6 +518,9 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
     }
 }
 
+/// Shared `app reconcile` / `app deploy` flow. Reconcile repairs the latest saved
+/// intent (generation check optional); deploy re-resolves sources and always sends an
+/// expected generation, defaulting to the current one. Waits unless `--no-wait`.
 async fn reconcile_or_deploy(
     cli: &Cli,
     client: &Client,
@@ -530,6 +571,9 @@ async fn reconcile_or_deploy(
     })
 }
 
+/// Polls until the application returns 404, which is the success condition.
+/// Meanwhile tracks the delete operation for progress and fails early if it ends
+/// unsuccessfully. A 404 for the operation itself is tolerated.
 async fn wait_for_deletion(
     console: &mut Console,
     client: &Client,
@@ -567,8 +611,14 @@ async fn wait_for_deletion(
     }
 }
 
+/// Maps operations onto progress-task messages and outcomes.
 struct OperationProgress;
 impl OperationProgress {
+    /// One-line progress text.
+    ///
+    /// ```text
+    /// running, phase "pulling_images", resource "web"  →  running · Pulling images · web
+    /// ```
     fn message(operation: &Operation) -> String {
         let mut phase = operation.phase.as_deref().unwrap_or("").replace('_', " ");
         if let Some(first) = phase.get_mut(..1) {
@@ -583,6 +633,7 @@ impl OperationProgress {
                 .map_or_else(String::new, |r| format!(" · {r}"))
         )
     }
+    /// Superseded operations are shown as skipped rather than failed.
     fn outcome(operation: &Operation) -> TaskOutcome {
         match operation.state {
             OperationState::Succeeded => TaskOutcome::Succeeded,

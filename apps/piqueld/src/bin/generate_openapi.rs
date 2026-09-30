@@ -14,26 +14,38 @@ use std::{
     process::{Command, Stdio},
 };
 
+/// Client generation settings read from `tools/client-codegen/config.json`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {
     replacements: Vec<Replacement>,
 }
 
+/// Maps an `OpenAPI` component schema onto an existing Rust type, so the client
+/// reuses `piqueld-core` types instead of generating duplicates.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Replacement {
+    /// Component schema name in the `OpenAPI` document.
     schema: String,
+    /// Type name Progenitor would otherwise generate for the schema.
     name: String,
+    /// Fully qualified Rust type used in its place.
     rust_type: String,
 }
 
 /// Runs both stages before updating either checked-in artifact.
 struct Generator {
+    /// Repository root that artifact paths are relative to.
     root: PathBuf,
 }
 
 impl Generator {
+    /// Renders the `OpenAPI` document and generated client, then writes both, or
+    /// with `check` compares them against the checked-in files and fails listing
+    /// any that are stale or missing.
+    ///
+    /// Every path must live under `/api/`.
     fn run(&self, check: bool) -> Result<()> {
         let document = openapi_document();
         let paths = document
@@ -91,6 +103,11 @@ impl Generator {
         Ok(())
     }
 
+    /// Generates the Progenitor client source for `crates/piqueld-client`.
+    ///
+    /// The client wraps `crate::client::ClientState`, applies the configured type
+    /// replacements, routes response decoding through `crate::client::decode_response`,
+    /// and is formatted with the repository's `rustfmt` configuration.
     fn generate_client(&self, mut document: Value, config: &Config) -> Result<String> {
         Self::prepare_client_document(&mut document, config)?;
         let spec = serde_json::from_value(document).context("parse OpenAPI 3.0 document")?;
@@ -126,6 +143,7 @@ impl Generator {
         ))
     }
 
+    /// Formats Rust source through `rustfmt` over stdin and stdout.
     fn rustfmt(&self, source: &str) -> Result<String> {
         let mut child = Command::new("rustfmt")
             .args(["--edition", "2024", "--emit", "stdout", "--config-path"])
@@ -150,6 +168,16 @@ impl Generator {
         String::from_utf8(output.stdout).context("rustfmt returned non-UTF-8 output")
     }
 
+    /// Simplifies the document into the subset Progenitor handles well.
+    ///
+    /// 1. Drops the readiness endpoint's 403 response, which Progenitor cannot
+    ///    type alongside its readiness-body 503.
+    /// 2. Keeps only the `application/json` request body when several are offered.
+    /// 3. Strips parameter constraints Progenitor cannot express (`nullable`, string
+    ///    length and pattern, numeric bounds), mapping non-negative `int32`/`int64`
+    ///    parameters to `uint32`/`uint64`.
+    /// 4. Drops every component schema except the replaced ones, which must exist,
+    ///    so shared models always come from `piqueld-core`.
     fn prepare_client_document(document: &mut Value, config: &Config) -> Result<()> {
         let paths = document
             .get_mut("paths")

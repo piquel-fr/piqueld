@@ -1,6 +1,8 @@
 //! Typed diagnostic policy; wire strings are decoded only at storage/API boundaries.
 use super::{Diagnostic, EventScope};
 
+// Declares `DiagnosticCode` with a wire string per variant, generating matching
+// `as_str` and `parse` so the two mappings cannot drift apart.
 macro_rules! diagnostic_codes {
     ($($(#[$meta:meta])* $variant:ident => $wire:literal),+ $(,)?) => {
         /// Failure classifications produced by this daemon.
@@ -88,14 +90,19 @@ diagnostic_codes! {
     IngressUnavailable => "ingress_unavailable",
 }
 
+/// Default guidance for failures that need operator investigation.
 const INSPECT_DIAGNOSTIC: &str =
     "Inspect the diagnostic and related events; resolve the cause before retrying.";
+/// Guidance for transient failures that reconciliation retries on its own.
 const AUTOMATIC_RETRY: &str =
     "Reconciliation will retry. Inspect the affected resource if the failure persists.";
 
 impl DiagnosticCode {
-    // Every classification must explicitly select ownership, retryability and guidance.
-    // Adding a variant cannot silently inherit application retention or retry policy.
+    /// Returns `(retention scope, retryable, next action)` for this classification.
+    ///
+    /// Every classification must explicitly select ownership, retryability and guidance.
+    /// The match is exhaustive, so adding a variant cannot silently inherit application
+    /// retention or retry policy.
     const fn policy(self) -> (EventScope, bool, &'static str) {
         use EventScope::{Application, Daemon};
         match self {

@@ -70,6 +70,10 @@ impl DaemonConfig {
         Ok(config)
     }
 
+    /// Checks cross-field and range invariants that serde cannot express:
+    /// notification settings, non-zero ports, distinct absolute state directories,
+    /// the public origin, the Docker socket path, `server.allowed_hosts` DNS
+    /// hostname syntax, and timeout and build-log bounds.
     fn validate(&self) -> Result<(), ConfigError> {
         self.notifications.validate()?;
         if self
@@ -187,6 +191,7 @@ impl Default for BuildHistoryConfig {
     }
 }
 
+/// Rejects relative paths, naming the offending setting in the error.
 fn absolute_directory(name: &str, path: &Path) -> Result<(), ConfigError> {
     if path.is_absolute() {
         Ok(())
@@ -197,6 +202,7 @@ fn absolute_directory(name: &str, path: &Path) -> Result<(), ConfigError> {
     }
 }
 
+/// Requires an absolute path that ends in a file name (not `/` or `..`).
 fn absolute_file(name: &str, path: &Path) -> Result<(), ConfigError> {
     absolute_directory(name, path)?;
     if path.file_name().is_some() {
@@ -399,6 +405,9 @@ mod tests;
 
 impl DaemonConfig {
     /// Projects effective settings into the read-only public dashboard response.
+    ///
+    /// Settings are grouped by section and rendered as display strings, e.g.
+    /// `Server` -> `HTTP port` -> `7845`. Secrets such as webhook URLs are omitted.
     #[must_use]
     pub fn view(&self) -> piqueld_core::api::HostConfiguration {
         let mut groups: std::collections::BTreeMap<
@@ -489,6 +498,8 @@ impl DaemonConfig {
         groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
     }
+    /// Builds the `Observability` group, listing notification destinations by name
+    /// only so webhook URLs never reach the dashboard.
     fn observability_view(&self) -> std::collections::BTreeMap<String, String> {
         std::collections::BTreeMap::from([
             (

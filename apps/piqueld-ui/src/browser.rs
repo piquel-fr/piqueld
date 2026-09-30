@@ -33,6 +33,9 @@ use std::{
 };
 use web_sys::window as browser_window;
 
+/// One application in the dashboard list, with its status and deployment
+/// history fetched alongside; per-application failures are kept as messages
+/// so one broken application does not fail the whole refresh.
 #[derive(Clone, Debug)]
 struct ApplicationRow {
     application: ApplicationSummary,
@@ -42,20 +45,25 @@ struct ApplicationRow {
     deployment_error: Option<String>,
 }
 
+/// Everything one successful refresh loaded, applied to `DashboardSignals` at once.
 #[derive(Clone, Debug)]
 struct DashboardSnapshot {
     system: SystemStatus,
     readiness: Result<ReadinessStatus, String>,
     applications: Vec<ApplicationRow>,
+    /// Pagination stopped before the application list was proven complete.
     incomplete: bool,
 }
 
+/// A refresh failure, split by whether the daemon was reachable at all.
 #[derive(Clone, Debug)]
 struct LoadFailure {
+    /// The request failed at the transport level rather than with an API error.
     unreachable: bool,
     message: String,
 }
 
+/// Reactive state shared by every dashboard route, written by the refresh loop.
 #[derive(Clone, Copy)]
 struct DashboardSignals {
     system: RwSignal<Option<SystemStatus>>,
@@ -70,11 +78,13 @@ struct DashboardSignals {
     selected_id: RwSignal<Option<String>>,
     detail: RwSignal<Option<ApplicationDetailView>>,
     detail_loading: RwSignal<bool>,
+    /// Generation counter; detail responses from older requests are discarded.
     detail_request: RwSignal<u64>,
     detail_error: RwSignal<Option<String>>,
 }
 
 impl DashboardSignals {
+    /// Creates every signal in its initial loading state.
     fn new() -> Self {
         Self {
             system: create_rw_signal(None),
@@ -95,8 +105,10 @@ impl DashboardSignals {
     }
 }
 
+/// Callback that requests an immediate (manual) dashboard refresh.
 type Refresh = Rc<dyn Fn()>;
 
+/// Context provided by `DashboardLayout` to all nested dashboard routes.
 #[derive(Clone)]
 struct DashboardContext {
     signals: DashboardSignals,
@@ -109,6 +121,9 @@ pub fn mount() {
     mount_to_body(|| view! { <auth::Gate /> });
 }
 
+/// Root router. Dashboard pages are served both at `/` and under `/dashboard`,
+/// each behind `auth::ProtectedDashboardLayout`. Also installs log preferences
+/// and the unsaved-changes history guard.
 #[component]
 fn App() -> impl IntoView {
     logs::LogPreferences::provide();
@@ -160,11 +175,14 @@ fn App() -> impl IntoView {
     }
 }
 
+/// Redirects `/dashboard` to the canonical `/dashboard/` overview.
 #[component]
 fn DashboardRedirect() -> impl IntoView {
     view! { <Redirect path="/dashboard/" /> }
 }
 
+/// Catch-all under `/dashboard`: an empty remainder renders the overview,
+/// anything else renders the not-found page.
 #[component]
 fn DashboardRouteFallback() -> impl IntoView {
     let params = use_params_map();
@@ -177,6 +195,9 @@ fn DashboardRouteFallback() -> impl IntoView {
     }
 }
 
+/// Shared shell for authenticated dashboard pages. Provides `DashboardContext`,
+/// starts an immediate refresh plus a background poll loop (paused while the tab
+/// is hidden), and renders the header, refresh error, stale notice and the routed page.
 #[component]
 fn DashboardLayout() -> impl IntoView {
     let signals = DashboardSignals::new();
@@ -226,10 +247,16 @@ fn DashboardLayout() -> impl IntoView {
     }
 }
 
+/// Returns the context provided by `DashboardLayout`.
+///
+/// Panics when called outside a dashboard route.
 fn dashboard_context() -> DashboardContext {
     leptos::use_context().expect("dashboard routes are descendants of DashboardLayout")
 }
 
+/// Route wrapper for `/applications/:id[/services/:service]`. Loads the selected
+/// application's detail into the shared signals when the ID changes, and keys
+/// `management::ApplicationPage` on the route so it remounts on navigation.
 #[component]
 fn ApplicationDetailPage() -> impl IntoView {
     let context = dashboard_context();
@@ -268,6 +295,7 @@ fn ApplicationDetailPage() -> impl IntoView {
     }
 }
 
+/// Static "page not found" panel with a link back to the overview.
 #[component]
 fn NotFoundPage() -> impl IntoView {
     view! {
@@ -290,6 +318,7 @@ fn NotFoundPage() -> impl IntoView {
     }
 }
 
+/// Alert shown while the last refresh failed, titled by whether the daemon was unreachable.
 fn refresh_error(context: &DashboardContext) -> View {
     let signals = context.signals;
     view! {
@@ -320,6 +349,7 @@ fn refresh_error(context: &DashboardContext) -> View {
     .into_view()
 }
 
+/// Notice shown when the dashboard is displaying data from an earlier refresh.
 fn stale_notice(signals: DashboardSignals) -> View {
     view! {
         {move || {
@@ -339,6 +369,11 @@ fn stale_notice(signals: DashboardSignals) -> View {
     .into_view()
 }
 
+/// Starts one dashboard refresh if `PollController` grants the single in-flight slot.
+/// `manual` refreshes are queued even while hidden or busy and rerun once the current
+/// request finishes. On success all dashboard signals are replaced and the selected
+/// application's detail is reloaded (or cleared if it disappeared); on failure the
+/// previous data is kept and marked stale.
 fn start_refresh(
     client: Client,
     signals: DashboardSignals,
@@ -420,6 +455,8 @@ fn start_refresh(
     });
 }
 
+/// Fetches detail for application `id`, ignoring the response if a newer request
+/// started or the selection changed meanwhile.
 fn load_detail(client: Client, signals: DashboardSignals, id: String) {
     let request = signals.detail_request.get_untracked().wrapping_add(1);
     signals.detail_request.set(request);
@@ -440,6 +477,8 @@ fn load_detail(client: Client, signals: DashboardSignals, id: String) {
     });
 }
 
+/// Background loop that triggers a refresh after each `PollController` delay
+/// until `active` is cleared by the layout's cleanup.
 fn spawn_poll_loop(
     client: Client,
     signals: DashboardSignals,
@@ -459,6 +498,10 @@ fn spawn_poll_loop(
     });
 }
 
+/// Loads system status, readiness and every application page (bounded by
+/// `MAX_PAGES`), fetching each application's status and deployments concurrently.
+/// Only system status and listing failures abort; readiness and per-application
+/// errors are recorded in the snapshot.
 async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailure> {
     let system = client
         .system_status()
@@ -521,6 +564,7 @@ async fn fetch_snapshot(client: &Client) -> Result<DashboardSnapshot, LoadFailur
     })
 }
 
+/// Classifies a client error as unreachable (transport) or failed.
 fn load_failure(error: &ClientError) -> LoadFailure {
     LoadFailure {
         unreachable: matches!(error, ClientError::Transport { .. }),
@@ -528,6 +572,7 @@ fn load_failure(error: &ClientError) -> LoadFailure {
     }
 }
 
+/// User-facing message for a client error.
 fn client_error_message(error: &ClientError) -> String {
     match error {
         ClientError::Endpoint { message } => {
@@ -541,12 +586,14 @@ fn client_error_message(error: &ClientError) -> String {
     }
 }
 
+/// Returns whether the browser tab is currently hidden.
 fn document_hidden() -> bool {
     browser_window()
         .and_then(|window| window.document())
         .is_some_and(|document| document.hidden())
 }
 
+/// Header label for a connection state.
 fn connection_label(state: ConnectionState) -> &'static str {
     match state {
         ConnectionState::Loading => "Checking…",
@@ -556,6 +603,7 @@ fn connection_label(state: ConnectionState) -> &'static str {
     }
 }
 
+/// Health badge for a row; missing or failed status reads show as pending.
 fn row_health(row: &ApplicationRow) -> ApplicationHealth {
     row.status_error.as_ref().map_or_else(
         || {
@@ -569,6 +617,7 @@ fn row_health(row: &ApplicationRow) -> ApplicationHealth {
     )
 }
 
+/// Tailwind badge classes for a health category.
 fn health_class(health: ApplicationHealth) -> &'static str {
     match health {
         ApplicationHealth::Converged => {

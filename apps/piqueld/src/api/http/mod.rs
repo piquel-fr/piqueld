@@ -44,7 +44,9 @@ use crate::application::BoundaryError;
 pub use openapi::openapi_document;
 pub use ui::{EmbeddedBundle, UiAssets};
 
+/// Media type for JSON request and response bodies.
 const JSON: &str = "application/json";
+/// Media type accepted for raw TOML manifest uploads.
 const TOML: &str = "application/toml";
 
 /// Upper bound for one API request body. The CLI's manifest preflight limit
@@ -52,17 +54,28 @@ const TOML: &str = "application/toml";
 /// locally accepted manifest would fail server-side with 413.
 const REQUEST_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 
+/// Handler failure rendered as a structured JSON `ErrorBody` response.
+///
+/// Every domain error converts into this type, so handlers can use `?` and
+/// still produce a stable machine-readable `code` plus a sanitized message.
 #[derive(Debug)]
 struct ApiError {
     status: StatusCode,
+    /// Stable machine-readable error code, e.g. `generation_conflict`.
     code: &'static str,
+    /// Sanitized, user-facing explanation.
     message: &'static str,
+    /// Extra structured context; `null` when there is none.
     details: Value,
+    /// `Allow` header value, only set for 405 responses.
     allow: Option<String>,
+    /// Diagnostic attached as a response extension so `bind_error_request_id`
+    /// can record it instead of synthesizing a generic one.
     diagnostic: Option<Box<piqueld_core::observability::Diagnostic>>,
 }
 
 impl ApiError {
+    /// Creates an error without details, `Allow` header, or diagnostic.
     fn new(status: StatusCode, code: &'static str, message: &'static str) -> Self {
         Self {
             status,
@@ -73,11 +86,14 @@ impl ApiError {
             diagnostic: None,
         }
     }
+    /// Attaches structured `details` to the error body.
     fn details(mut self, details: Value) -> Self {
         self.details = details;
         self
     }
 
+    /// Logs storage failures that indicate a server-side fault. Expected client
+    /// errors (conflicts, not found, validation) are deliberately not logged.
     fn log_storage_error(error: &StoreError) {
         if matches!(
             error,
@@ -97,6 +113,8 @@ impl ApiError {
 
 impl ApiError {
     /// Maps secret lifecycle failures selected by `From<StoreError>`.
+    ///
+    /// Panics if given a non-secret variant; callers must pre-filter.
     fn from_secret_error(error: StoreError) -> Self {
         match error {
             StoreError::SecretVersionConflict { expected, actual } => Self::new(
@@ -147,6 +165,8 @@ impl ApiError {
 }
 
 impl From<StoreError> for ApiError {
+    /// Classifies storage failures into HTTP status codes and stable error
+    /// codes, logging server-side faults first.
     fn from(value: StoreError) -> Self {
         Self::log_storage_error(&value);
         match value {
@@ -241,6 +261,7 @@ impl From<StoreError> for ApiError {
 }
 
 impl From<piqueld_core::edit::EditError> for ApiError {
+    /// Maps field-edit failures, exposing the edit reason in `details.reason`.
     fn from(error: piqueld_core::edit::EditError) -> Self {
         use piqueld_core::edit::EditError;
         let (status, code) = match &error {
@@ -254,6 +275,8 @@ impl From<piqueld_core::edit::EditError> for ApiError {
 }
 
 impl From<BoundaryError> for ApiError {
+    /// Maps runtime, build, and compilation failures, always attaching the
+    /// boundary diagnostic so it is recorded with the request.
     fn from(value: BoundaryError) -> Self {
         let diagnostic = value.diagnostic();
         // Storage conversion handles its own logging, including expected client errors.
@@ -302,6 +325,9 @@ impl From<ApplicationIdError> for ApiError {
 }
 
 impl From<piqueld_core::ValidationErrors> for ApiError {
+    /// Reports pure decode failures as `toml_malformed` (400) and semantic
+    /// validation failures as `manifest_validation_failed` (422) with the
+    /// individual errors in `details.errors`.
     fn from(errors: piqueld_core::ValidationErrors) -> Self {
         if errors
             .0
@@ -326,6 +352,8 @@ impl From<piqueld_core::ValidationErrors> for ApiError {
 }
 
 impl IntoResponse for ApiError {
+    /// Renders the JSON error body. The placeholder `request_id` is replaced
+    /// with the real one by `bind_error_request_id`.
     fn into_response(self) -> Response {
         let body = ErrorBody {
             code: self.code.into(),
@@ -362,7 +390,8 @@ pub fn api_router(state: ApiState, auth: impl Authenticator) -> Router {
     finish_router(router.fallback(api_fallback), state, &openapi, auth, None)
 }
 
-/// Builds the TCP router from the API, liveness, and optional UI boundaries.
+/// Builds the TCP router from the API, liveness, and optional UI boundaries,
+/// trusting only localhost and literal IP hosts.
 pub fn web_router(state: ApiState, ui_assets: UiAssets, auth: impl Authenticator) -> Router {
     web_router_with_hosts(state, ui_assets, auth, Vec::new())
 }
@@ -402,6 +431,12 @@ pub fn health_router() -> Router<ApiState> {
     Router::<ApiState>::new().route("/health", get(system::health))
 }
 
+/// Wraps a route set with the layers shared by every transport.
+///
+/// Layers, innermost first: browser trust policy (TCP only, when
+/// `browser_policy` is set), authentication guard, state and `OpenAPI` 3.0
+/// document extension, request ID propagation, error request ID binding and
+/// diagnostic recording, request ID generation, body size limit, and tracing.
 fn finish_router(
     router: Router<ApiState>,
     state: ApiState,
@@ -501,6 +536,18 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(secrets::put, secrets::delete))
 }
 
+/// Middleware that runs the request inside a `request_context` span and
+/// post-processes JSON error responses.
+///
+/// 1. Extracts the application ID from `/api/v1/applications/{id}` routes.
+/// 2. Runs the inner handler.
+/// 3. For 4xx/5xx JSON `ErrorBody` responses, rewrites `request_id` to the
+///    `x-request-id` value.
+/// 4. For 5xx responses (except `configuration_unavailable`), records a
+///    diagnostic (the handler's, or a synthesized one) and exposes its ID as
+///    `details.diagnostic_id`.
+///
+/// Non-error and non-JSON responses pass through untouched.
 async fn bind_error_request_id(
     axum::extract::State(state): axum::extract::State<ApiState>,
     matched: Option<MatchedPath>,
@@ -587,6 +634,8 @@ async fn bind_error_request_id(
     Response::from_parts(parts, Body::from(bytes))
 }
 
+/// Fallback when the dashboard is embedded: API paths get JSON 404s,
+/// `/dashboard/*` is served from the bundle, anything else is a plain 404.
 async fn ui_fallback(bundle: &'static EmbeddedBundle, request: Request) -> Response {
     if ui::is_api_path(request.uri().path()) {
         return api_fallback(request).await;
@@ -597,6 +646,8 @@ async fn ui_fallback(bundle: &'static EmbeddedBundle, request: Request) -> Respo
     ui::not_found()
 }
 
+/// Fallback for unmatched routes: JSON `endpoint_not_found` for API paths,
+/// plain 404 otherwise.
 async fn api_fallback(request: Request) -> Response {
     if ui::is_api_path(request.uri().path()) {
         return ApiError::new(
@@ -608,6 +659,8 @@ async fn api_fallback(request: Request) -> Response {
     }
     ui::not_found()
 }
+/// Builds the 405 response for a route that exists but not for this method.
+/// `/health` is special-cased because it is not in the `OpenAPI` document.
 fn method_not_allowed(allow_routes: &AllowRoutes, matched: Option<&MatchedPath>) -> ApiError {
     let mut error = ApiError::new(
         StatusCode::METHOD_NOT_ALLOWED,
@@ -629,6 +682,11 @@ fn method_not_allowed(allow_routes: &AllowRoutes, matched: Option<&MatchedPath>)
 struct AllowRoutes(HashMap<String, String>);
 
 impl AllowRoutes {
+    /// Indexes the `Allow` value for every documented path template.
+    ///
+    /// ```text
+    /// "/api/v1/applications/{id}" -> "GET, HEAD, DELETE"
+    /// ```
     fn build(document: &utoipa::openapi::OpenApi) -> Arc<Self> {
         let mut routes = HashMap::new();
         for (path, item) in &document.paths.paths {
@@ -640,6 +698,8 @@ impl AllowRoutes {
         Arc::new(Self(routes))
     }
 
+    /// Lists the methods one path item registers. `GET` implies `HEAD`
+    /// because Axum answers `HEAD` for every `GET` route.
     fn path_methods(item: &utoipa::openapi::path::PathItem) -> Vec<&'static str> {
         let mut methods = Vec::new();
         if item.get.is_some() {
@@ -665,18 +725,28 @@ impl AllowRoutes {
     }
 }
 
+/// Wraps `data` in the `{"data": ...}` envelope with 200 OK.
 fn ok<T: Serialize>(data: T) -> impl IntoResponse {
     (StatusCode::OK, axum::Json(Envelope { data }))
 }
+/// Wraps `data` in the `{"data": ...}` envelope with 202 Accepted.
 fn accepted<T: Serialize>(data: T) -> Response {
     (StatusCode::ACCEPTED, axum::Json(Envelope { data })).into_response()
 }
+/// Returns the media type from `Content-Type`, without parameters.
+///
+/// ```text
+/// "application/json; charset=utf-8" -> "application/json"
+/// ```
 fn content_type(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("content-type")
         .and_then(|value| value.to_str().ok())
         .map(|v| v.split(';').next().unwrap_or(v).trim())
 }
+/// Strictly decodes a JSON body, rejecting trailing data. The failing field
+/// path is only logged at debug level (sanitized); clients get a generic
+/// `json_malformed` error.
 fn decode_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, ApiError> {
     let malformed = || {
         ApiError::new(
@@ -695,6 +765,16 @@ fn decode_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, ApiError>
     Ok(value)
 }
 
+/// Decodes and validates a manifest upload in either supported encoding.
+///
+/// Returns the validated application plus optional `expected_generation` and
+/// `expected_application_id` preconditions:
+/// - JSON: an `ApplyApplicationRequest` carrying the preconditions as fields.
+/// - TOML (`application/toml` or `text/toml`): the raw manifest, with
+///   preconditions in the single-valued `x-expected-generation` and
+///   `x-expected-application-id` headers.
+///
+/// Any other content type fails with 415.
 fn parse_manifest(
     headers: &HeaderMap,
     body: &[u8],
@@ -764,6 +844,8 @@ fn parse_manifest(
 }
 
 impl From<ApplicationError> for ApiError {
+    /// Maps application service failures, delegating storage and runtime
+    /// errors to their dedicated conversions.
     fn from(error: ApplicationError) -> Self {
         match error {
             ApplicationError::PreconditionRequired => Self::new(
@@ -806,6 +888,8 @@ impl From<ApplicationError> for ApiError {
     }
 }
 
+/// Reads an optional single-valued header; repeated or non-ASCII values are
+/// rejected with `header_invalid`.
 fn optional_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, ApiError> {
     if headers.get_all(name).iter().count() > 1 {
         return Err(ApiError::new(
@@ -856,7 +940,8 @@ pub fn metrics_router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-/// Keeps Axum path decoding failures inside the API's structured error contract.
+/// Path extractor that keeps Axum path decoding failures inside the API's
+/// structured error contract, rejecting with a 400 `path_invalid` error.
 struct ApiPath<T>(T);
 
 impl<S, T> axum::extract::FromRequestParts<S> for ApiPath<T>

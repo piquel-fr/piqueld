@@ -21,12 +21,15 @@ use std::{
 };
 
 type Writer = Box<dyn Write + Send>;
+/// Stderr shared between the console and progress tasks.
 type SharedWriter = Arc<Mutex<Writer>>;
 
 /// One result event, with independently typed machine data and human rendering.
 pub(crate) trait Report {
+    /// Machine schema written by `--json`.
     type Json: Serialize + ?Sized;
     fn json(&self) -> &Self::Json;
+    /// Human rendering on stdout; values must go through the escaping writer.
     fn render_human(&self, output: &mut HumanWriter<'_>) -> io::Result<()>;
 }
 
@@ -35,6 +38,7 @@ pub(crate) trait DiagnosticReport {
     fn render(&self, output: &mut HumanWriter<'_>) -> io::Result<()>;
 }
 
+/// Destination for results, chosen once from `--json` and `--quiet`.
 enum ResultChannel {
     Human(Writer),
     Json(Writer),
@@ -45,11 +49,14 @@ enum ResultChannel {
 pub(crate) struct Console {
     result: ResultChannel,
     stderr: SharedWriter,
+    /// Whether info messages are shown (off in quiet mode).
     info: bool,
     progress: ProgressOutput,
 }
 
 impl Console {
+    /// Real stdout/stderr console. Progress animates only when stderr is a
+    /// terminal with a non-`dumb` `TERM`; JSON output bypasses ANSI stripping.
     pub(crate) fn new(cli: &Cli) -> Self {
         let terminal =
             io::stderr().is_terminal() && std::env::var("TERM").is_ok_and(|term| term != "dumb");
@@ -67,6 +74,7 @@ impl Console {
         )
     }
 
+    /// Builds a console over arbitrary writers; `new` and tests share this.
     fn with_writers(
         json: bool,
         quiet: bool,
@@ -133,14 +141,18 @@ impl Console {
         let _ = self.diagnostic(report);
     }
 
+    /// Writes a diagnostic report to stderr as one event.
     fn diagnostic(&mut self, report: &impl DiagnosticReport) -> Result<()> {
         self.write_stderr(|out| report.render(out))
     }
 
+    /// Writes a labelled one-line message, e.g. `Warning: ...`, to stderr.
     fn message(&mut self, role: &'static str, message: impl fmt::Display) -> Result<()> {
         self.write_stderr(|out| out.label(role, message))
     }
 
+    /// Renders one stderr event under the stderr lock with progress rows suspended,
+    /// then flushes so the event is visible before returning.
     fn write_stderr(
         &mut self,
         render: impl FnOnce(&mut HumanWriter<'_>) -> io::Result<()>,
@@ -189,10 +201,12 @@ impl<'a> HumanWriter<'a> {
         Self { writer }
     }
 
+    /// Writes an escaped value without a newline.
     pub(crate) fn value(&mut self, value: impl fmt::Display) -> io::Result<()> {
         write!(self.writer, "{}", Escaped(value))
     }
 
+    /// Writes an escaped value followed by a newline.
     pub(crate) fn line(&mut self, value: impl fmt::Display) -> io::Result<()> {
         self.value(value)?;
         writeln!(self.writer)
@@ -202,15 +216,23 @@ impl<'a> HumanWriter<'a> {
         writeln!(self.writer)
     }
 
+    /// Writes a bold cyan `Label:` prefix and an escaped value line.
     pub(crate) fn label(&mut self, label: &str, value: impl fmt::Display) -> io::Result<()> {
         write!(self.writer, "\x1b[1;36m{}:\x1b[0m ", Escaped(label))?;
         self.line(value)
     }
 
+    /// Writes a bold heading line.
     pub(crate) fn heading(&mut self, heading: &str) -> io::Result<()> {
         writeln!(self.writer, "\x1b[1m{}\x1b[0m", Escaped(heading))
     }
 
+    /// Writes one plan change line, colored by marker: `+` green, `-` red, anything
+    /// else (`~`) yellow.
+    ///
+    /// ```text
+    ///   ~ services.web.replicas   1 → 3
+    /// ```
     pub(crate) fn change(&mut self, marker: char, field: &str, value: &str) -> io::Result<()> {
         let color = match marker {
             '+' => 32,
@@ -225,6 +247,8 @@ impl<'a> HumanWriter<'a> {
         self.line(value)
     }
 
+    /// Writes captured log text, keeping newlines and tabs but escaping every other
+    /// control character so logs cannot drive the terminal.
     pub(crate) fn log_text(&mut self, text: &str) -> io::Result<()> {
         for character in text.chars() {
             if character.is_control() && !matches!(character, '\n' | '\t') {

@@ -1,12 +1,15 @@
 //! Reserve cleanup under the writer lock, then release it before Docker I/O.
 use super::{ApplicationId, NormalizedApplication, Store, StoreError};
 
+/// A reserved secret deletion: its token and the Swarm secret names to remove.
 pub(crate) struct SecretDeletion {
+    /// Token stored in `application_secrets.deletion_id`; completion requires it.
     pub(crate) id: String,
     pub(crate) versions: Vec<String>,
 }
 
 impl Store {
+    /// Rejects a manifest that references a secret currently being deleted.
     pub(crate) async fn check_secret_references(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         app: &NormalizedApplication,
@@ -23,6 +26,7 @@ impl Store {
         Ok(())
     }
 
+    /// Whether any service in `app` mounts the named secret.
     fn references_secret(app: &NormalizedApplication, name: &str) -> bool {
         app.spec()
             .services
@@ -30,6 +34,11 @@ impl Store {
             .any(|s| s.secrets.iter().any(|s| s.name == name))
     }
 
+    /// Reserves a secret for deletion and returns the runtime versions to remove.
+    /// A new deletion is refused (`SecretReferenced`) while the saved
+    /// configuration, the latest deployment's manifest or pins, or the active
+    /// runtime target still use the secret. Resuming an existing reservation
+    /// skips those checks and reuses its token.
     pub(crate) async fn begin_secret_deletion(
         &self,
         application: &ApplicationId,
@@ -94,6 +103,8 @@ impl Store {
         })
     }
 
+    /// Deletes the secret, its versions and pins after runtime cleanup succeeded,
+    /// recording `secret_deleted`. A no-op if the reservation token no longer matches.
     pub(crate) async fn finish_secret_deletion(
         &self,
         application: &ApplicationId,

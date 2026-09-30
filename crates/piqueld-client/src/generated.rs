@@ -101,8 +101,16 @@ impl ClientInfo<crate::client::ClientState> for Client {
 impl ClientHooks<crate::client::ClientState> for &Client {}
 #[allow(clippy::all)]
 impl Client {
-    /*Sends a `GET` request to `/api/v1/analytics/deployments`
+    /*Gets deployment analytics for a time window
 
+    Aggregates deployment outcomes; the window defaults to the last 30 days.
+
+    Sends a `GET` request to `/api/v1/analytics/deployments`
+
+    Arguments:
+    - `application_id`: Only include deployments of this application.
+    - `since_ms`: Inclusive Unix millisecond lower bound; defaults to 30 days before `until_ms`.
+    - `until_ms`: Inclusive Unix millisecond upper bound; defaults to now.
     */
     pub async fn deployment_analytics<'a>(
         &'a self,
@@ -162,6 +170,9 @@ impl Client {
 
     Sends a `GET` request to `/api/v1/applications`
 
+    Arguments:
+    - `cursor`: `next_cursor` from a previous page.
+    - `limit`: Page size.
     */
     pub async fn list_applications<'a>(
         &'a self,
@@ -217,7 +228,12 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/applications`
+    /*Creates an empty application
+
+    The body holds only the name, which must not already be in use (409
+    otherwise). Pass `deploy=true` to also deploy it (202 instead of 200).
+
+    Sends a `POST` request to `/api/v1/applications`
 
     */
     pub async fn create_application<'a>(
@@ -596,7 +612,14 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/applications/{id}/deploy`
+    /*Deploys the saved configuration
+
+    Returns 202 with the accepted durable operation. Requires
+    `expected_generation` unless `force=true`; a stale generation fails with 409.
+    Repeating a request with the same `Idempotency-Key` returns the original
+    response.
+
+    Sends a `POST` request to `/api/v1/applications/{id}/deploy`
 
     Arguments:
     - `id`
@@ -672,8 +695,15 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/applications/{id}/deployments`
+    /*Lists deployments of an application, newest first
 
+    Returns three deployment snapshots per page; follow `next_cursor` for older ones.
+
+    Sends a `GET` request to `/api/v1/applications/{id}/deployments`
+
+    Arguments:
+    - `id`
+    - `cursor`: `next_cursor` from a previous page.
     */
     pub async fn list_deployments<'a>(
         &'a self,
@@ -730,8 +760,17 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/applications/{id}/deployments/{deployment}/attempts`
+    /*Lists attempts of one deployment, newest first
 
+    Returns up to 100 retained attempt outcomes per page. Deployments owned by
+    another application are reported as not found.
+
+    Sends a `GET` request to `/api/v1/applications/{id}/deployments/{deployment}/attempts`
+
+    Arguments:
+    - `id`
+    - `deployment`
+    - `cursor`: `next_cursor` from a previous page.
     */
     pub async fn list_deployment_attempts<'a>(
         &'a self,
@@ -852,8 +891,19 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/applications/{id}/logs`
+    /*Gets recent container output for an application
 
+    Output can be narrowed to one service and one stream. Out-of-range `tail` or
+    `since_seconds` values fail with 400 `logs_query_invalid`.
+
+    Sends a `GET` request to `/api/v1/applications/{id}/logs`
+
+    Arguments:
+    - `id`
+    - `service`: Only include output from this service (1–63 characters); all services when omitted.
+    - `since_seconds`: Only include output from this many seconds ago onward.
+    - `stream`: Only include this output stream; merged output when omitted.
+    - `tail`: Maximum number of recent lines per service.
     */
     pub async fn application_logs<'a>(
         &'a self,
@@ -920,7 +970,9 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Download only saved configuration; runtime availability is irrelevant
+    /*Downloads the saved configuration as a TOML manifest
+
+    Reads only saved configuration, so it works while the runtime is unavailable.
 
     Sends a `GET` request to `/api/v1/applications/{id}/manifest`
 
@@ -1060,7 +1112,14 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/applications/{id}/reconcile`
+    /*Reconciles an application
+
+    Returns 202 with a durable operation that repairs the runtime to match the
+    accepted configuration. Unlike other mutations, `expected_generation` is
+    optional. Repeating a request with the same `Idempotency-Key` returns the
+    original response.
+
+    Sends a `POST` request to `/api/v1/applications/{id}/reconcile`
 
     Arguments:
     - `id`
@@ -1136,7 +1195,13 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/applications/{id}/rename`
+    /*Renames an application
+
+    Changes only the user-facing name, without redeploying. The inspected
+    `expected_generation` goes in the JSON body; the new name must not already be
+    in use, even with `force=true`.
+
+    Sends a `POST` request to `/api/v1/applications/{id}/rename`
 
     Arguments:
     - `id`
@@ -1301,7 +1366,12 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `DELETE` request to `/api/v1/applications/{id}/repository`
+    /*Disconnects the manifest repository
+
+    The saved configuration becomes directly editable. Same query options,
+    idempotency, and 200/202 responses as the other editing endpoints.
+
+    Sends a `DELETE` request to `/api/v1/applications/{id}/repository`
 
     Arguments:
     - `id`
@@ -1844,7 +1914,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/applications/{id}/secrets`
+    /*Lists an application's secrets
+
+    Returns metadata only; secret values are write-only and never returned.
+
+    Sends a `GET` request to `/api/v1/applications/{id}/secrets`
 
     */
     pub async fn application_secrets<'a>(
@@ -1895,7 +1969,14 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `PUT` request to `/api/v1/applications/{id}/secrets/{name}`
+    /*Creates or replaces a secret value
+
+    The body is the raw value (`application/octet-stream`, 1–512000 bytes).
+    `X-Expected-Generation` must be 0 to create a secret, or its current
+    generation to replace it; a mismatch fails with 409. Running services keep
+    their value until the next deployment. The response carries metadata only.
+
+    Sends a `PUT` request to `/api/v1/applications/{id}/secrets/{name}`
 
     */
     pub async fn put_application_secret<'a, B: Into<reqwest::Body>>(
@@ -1965,7 +2046,12 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `DELETE` request to `/api/v1/applications/{id}/secrets/{name}`
+    /*Deletes a secret
+
+    Fails with 409 while the configuration or a deployment still references it.
+    If cleanup is interrupted, retrying the deletion finishes it.
+
+    Sends a `DELETE` request to `/api/v1/applications/{id}/secrets/{name}`
 
     */
     pub async fn delete_application_secret<'a>(
@@ -2119,7 +2205,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `DELETE` request to `/api/v1/applications/{id}/services/{service}`
+    /*Removes a service from the saved configuration
+
+    Pass `deploy=true` to also deploy the result (202 instead of 200).
+
+    Sends a `DELETE` request to `/api/v1/applications/{id}/services/{service}`
 
     Arguments:
     - `id`
@@ -2588,7 +2678,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `DELETE` request to `/api/v1/applications/{id}/services/{service}/environment/{key}`
+    /*Removes an environment variable from a service
+
+    Pass `deploy=true` to also deploy the result (202 instead of 200).
+
+    Sends a `DELETE` request to `/api/v1/applications/{id}/services/{service}/environment/{key}`
 
     Arguments:
     - `id`
@@ -5200,7 +5294,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `DELETE` request to `/api/v1/applications/{id}/volumes/{volume}`
+    /*Removes a named volume from the saved configuration
+
+    Pass `deploy=true` to also deploy the result (202 instead of 200).
+
+    Sends a `DELETE` request to `/api/v1/applications/{id}/volumes/{volume}`
 
     Arguments:
     - `id`
@@ -5286,7 +5384,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/auth/device/approve`
+    /*Approves a pending device sign-in
+
+    The device's next poll receives a token for the signed-in user.
+
+    Sends a `POST` request to `/api/v1/auth/device/approve`
 
     */
     pub async fn auth_device_approve<'a>(
@@ -5326,7 +5428,12 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/auth/device/inspect`
+    /*Inspects a pending device sign-in
+
+    Shows the requesting address and remaining lifetime so the user can confirm
+    the request before approving it.
+
+    Sends a `POST` request to `/api/v1/auth/device/inspect`
 
     */
     pub async fn auth_device_inspect<'a>(
@@ -5366,7 +5473,14 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/auth/device/poll`
+    /*Polls a device sign-in
+
+    Public. Poll at most every five seconds: the status is
+    `authorization_pending` until approval, `slow_down` when polled too fast, and
+    `complete` with a 30-day token exactly once after approval. Expired or unknown
+    codes fail with 401.
+
+    Sends a `POST` request to `/api/v1/auth/device/poll`
 
     */
     pub async fn auth_device_poll<'a>(
@@ -5406,7 +5520,12 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/auth/device/start`
+    /*Starts a device sign-in for a command-line client
+
+    Public. Returns a device code to poll with and a user code to approve in a
+    signed-in browser. Rate limited per client address (429 with `Retry-After`).
+
+    Sends a `POST` request to `/api/v1/auth/device/start`
 
     */
     pub async fn auth_device_start<'a>(
@@ -5444,7 +5563,9 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/auth/directory`
+    /*Lists accounts, passkeys, credentials, and open invitations
+
+    Sends a `GET` request to `/api/v1/auth/directory`
 
     */
     pub async fn auth_directory<'a>(
@@ -5482,7 +5603,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/auth/login/finish`
+    /*Finishes a passkey sign-in
+
+    Public. Verifies the passkey and sets a seven-day session cookie.
+
+    Sends a `POST` request to `/api/v1/auth/login/finish`
 
     */
     pub async fn auth_login_finish<'a>(
@@ -5521,7 +5646,13 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/auth/login/start`
+    /*Starts a passkey sign-in
+
+    Public. Usernameless: any discoverable passkey for this site may answer.
+    Sets a short-lived ceremony cookie that the finish request must present.
+    Rate limited per client address (429 with `Retry-After`).
+
+    Sends a `POST` request to `/api/v1/auth/login/start`
 
     */
     pub async fn auth_login_start<'a>(
@@ -5559,7 +5690,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/auth/logout`
+    /*Signs out
+
+    Revokes the credential used for this request and clears the session cookie.
+
+    Sends a `POST` request to `/api/v1/auth/logout`
 
     */
     pub async fn auth_logout<'a>(
@@ -5597,7 +5732,9 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/auth/manage`
+    /*Applies one account management action as the signed-in user
+
+    Sends a `POST` request to `/api/v1/auth/manage`
 
     */
     pub async fn auth_manage<'a>(
@@ -5637,7 +5774,9 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/auth/me`
+    /*Gets the signed-in user
+
+    Sends a `GET` request to `/api/v1/auth/me`
 
     */
     pub async fn auth_me<'a>(
@@ -5674,7 +5813,13 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/auth/register/finish`
+    /*Finishes passkey registration
+
+    Public. Verifies the passkey against the ceremony started in the same
+    browser. New accounts are signed in with a session cookie; adding a passkey
+    to an existing account is not.
+
+    Sends a `POST` request to `/api/v1/auth/register/finish`
 
     */
     pub async fn auth_registration_finish<'a>(
@@ -5713,7 +5858,14 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/auth/register/start`
+    /*Starts passkey registration
+
+    Public. Registers a new account by redeeming an invitation or setup secret,
+    or, when signed in, adds a passkey to an existing account. Sets a short-lived
+    ceremony cookie that the finish request must present. Rate limited per
+    client address (429 with `Retry-After`).
+
+    Sends a `POST` request to `/api/v1/auth/register/start`
 
     */
     pub async fn auth_registration_start<'a>(
@@ -5753,7 +5905,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/auth/status`
+    /*Gets authentication status
+
+    Public. Reports whether the first account exists and the website origin.
+
+    Sends a `GET` request to `/api/v1/auth/status`
 
     */
     pub async fn auth_status<'a>(
@@ -5791,8 +5947,17 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/builds`
+    /*Lists Git source builds, newest first
 
+    Optionally filtered to one application. Follow `next_cursor` to load older
+    builds.
+
+    Sends a `GET` request to `/api/v1/builds`
+
+    Arguments:
+    - `application_id`: Only include builds for this application.
+    - `cursor`: `next_cursor` from a previous page.
+    - `limit`: Page size; defaults to 50.
     */
     pub async fn list_builds<'a>(
         &'a self,
@@ -5848,8 +6013,17 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/builds/{id}/logs`
+    /*Gets captured output for one build
 
+    Returns the newest bounded page of output in chronological order. Pass the
+    page's `previous_offset` as `before` to load older output.
+
+    Sends a `GET` request to `/api/v1/builds/{id}/logs`
+
+    Arguments:
+    - `id`
+    - `before`: `previous_offset` from a previous page, to load older output.
+    - `stream`: Only include this output stream.
     */
     pub async fn build_logs<'a>(
         &'a self,
@@ -5906,7 +6080,12 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/diagnostics/{id}`
+    /*Gets a recorded diagnostic
+
+    Server errors expose this ID as `details.diagnostic_id`; the response is the
+    event that recorded the failure, with its context.
+
+    Sends a `GET` request to `/api/v1/diagnostics/{id}`
 
     */
     pub async fn get_diagnostic<'a>(
@@ -5957,8 +6136,26 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/events`
+    /*Lists structured events
 
+    Oldest first unless `descending=true`. Follow `next_cursor` to load more.
+
+    Sends a `GET` request to `/api/v1/events`
+
+    Arguments:
+    - `action_id`: Only include events of this runtime action.
+    - `application_id`: Only include events about this application.
+    - `attempt`: Only include events of this operation attempt.
+    - `cursor`: `next_cursor` from a previous page; for streams, the event ID to resume after.
+    - `descending`: Return newest events first; streams only support oldest first.
+    - `error_code`: Only include failures with this error code.
+    - `errors_only`: Only include diagnostic (failure) events.
+    - `kind`: Only include events of this kind.
+    - `limit`: Page size (defaults to 50), or stream batch size (defaults to 100).
+    - `operation_id`: Only include events of this operation.
+    - `scope`: Only include application-owned or daemon-owned history.
+    - `since_ms`: Inclusive Unix millisecond lower bound.
+    - `until_ms`: Inclusive Unix millisecond upper bound.
     */
     pub async fn list_events<'a>(
         &'a self,
@@ -6044,8 +6241,32 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/events/stream`
+    /*Streams structured events as server-sent events
 
+    Events arrive oldest first, resuming after the `Last-Event-ID` header or
+    `cursor` (from the beginning when both are absent). Invalid cursors fail with
+    400 and pruned history with 410 before the stream opens. The stream emits:
+    - `event` messages with `id: v1:<event-id>` for each matching event;
+    - ID-only messages that advance the resume position past filtered-out events;
+    - a final `history_expired` or `stream_error` message, after which the
+      stream ends and history must be reloaded before reconnecting.
+
+    Sends a `GET` request to `/api/v1/events/stream`
+
+    Arguments:
+    - `action_id`: Only include events of this runtime action.
+    - `application_id`: Only include events about this application.
+    - `attempt`: Only include events of this operation attempt.
+    - `cursor`: `next_cursor` from a previous page; for streams, the event ID to resume after.
+    - `descending`: Return newest events first; streams only support oldest first.
+    - `error_code`: Only include failures with this error code.
+    - `errors_only`: Only include diagnostic (failure) events.
+    - `kind`: Only include events of this kind.
+    - `limit`: Page size (defaults to 50), or stream batch size (defaults to 100).
+    - `operation_id`: Only include events of this operation.
+    - `scope`: Only include application-owned or daemon-owned history.
+    - `since_ms`: Inclusive Unix millisecond lower bound.
+    - `until_ms`: Inclusive Unix millisecond upper bound.
     */
     pub async fn stream_events<'a>(
         &'a self,
@@ -6127,8 +6348,15 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/notifications/deliveries`
+    /*Lists webhook notification deliveries
 
+    Follow `next_cursor` to load more deliveries.
+
+    Sends a `GET` request to `/api/v1/notifications/deliveries`
+
+    Arguments:
+    - `cursor`: `next_cursor` from a previous page.
+    - `limit`: Page size; defaults to 50.
     */
     pub async fn notification_deliveries<'a>(
         &'a self,
@@ -6181,7 +6409,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `POST` request to `/api/v1/notifications/deliveries/{id}/retry`
+    /*Retries a webhook notification delivery
+
+    Schedules another attempt using the current destination configuration.
+
+    Sends a `POST` request to `/api/v1/notifications/deliveries/{id}/retry`
 
     */
     pub async fn retry_notification_delivery<'a>(
@@ -6320,7 +6552,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/system/configuration`
+    /*Gets the effective read-only host configuration
+
+    Returns 503 when the daemon has no effective configuration to report.
+
+    Sends a `GET` request to `/api/v1/system/configuration`
 
     */
     pub async fn system_configuration<'a>(
@@ -6363,7 +6599,13 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/system/readiness`
+    /*Checks whether deployment dependencies are ready
+
+    Probes the database, Docker Engine, and the Swarm manager with bounded
+    timeouts, and reports ingress status. The same body is returned in both
+    cases; only the status code differs (200 when ready, 503 otherwise).
+
+    Sends a `GET` request to `/api/v1/system/readiness`
 
     */
     pub async fn system_readiness<'a>(
@@ -6403,7 +6645,12 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Sends a `GET` request to `/api/v1/system/resources`
+    /*Gets daemon resource usage
+
+    Reports process, database, disk, retained history, and queue statistics.
+    Measurements the host cannot provide are omitted rather than reported as zero.
+
+    Sends a `GET` request to `/api/v1/system/resources`
 
     */
     pub async fn system_resources<'a>(
@@ -6446,7 +6693,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Recovers from a lost master key by discarding every application's stored values
+    /*Recovers from a lost secret master key
+
+    Discards stored secret values for all applications; metadata and running
+    services are kept. Fails with 409 while the current key still works. The next
+    value write generates a new key.
 
     Sends a `POST` request to `/api/v1/system/secrets/recover-key`
 

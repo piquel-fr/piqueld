@@ -7,6 +7,13 @@ use super::{
 pub(super) type SecretValues = Vec<(String, zeroize::Zeroizing<Vec<u8>>)>;
 
 impl<D: DockerApi> Controller<D> {
+    /// Executes one planned action inside its own journal entry.
+    ///
+    /// Records the operation phase, opens the action, then either runs a runtime
+    /// mutation with retries (after decrypting any service secrets) or waits for a
+    /// service to converge or disappear. Non-mutating actions such as volume
+    /// retention succeed immediately. The action is closed with the outcome before
+    /// returning, and successful mutations emit a `resource_mutated` event.
     #[tracing::instrument(skip_all, fields(action = action.kind.name(), resource = action.kind.resource_name()))]
     pub(super) async fn execute_action(
         &self,
@@ -77,6 +84,7 @@ impl<D: DockerApi> Controller<D> {
         }
         result
     }
+
     /// Decrypts a service's pinned secret versions before any Docker request, so key
     /// failures are classified as secret storage rather than runtime failures.
     pub(super) async fn service_secrets(
@@ -105,6 +113,9 @@ impl<D: DockerApi> Controller<D> {
         Ok(values)
     }
 
+    /// Issues the single Docker request for a mutating action. Non-removal actions
+    /// first verify the supported swarm topology, and `EnsureService` first
+    /// ensures each pinned secret so the service can reference it.
     pub(super) async fn mutate_action(
         &self,
         kind: &ActionKind,
@@ -134,6 +145,11 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
+    /// Labels that mark Docker resources as managed by this instance and application.
+    ///
+    /// ```text
+    /// {MANAGED_LABEL: "true", INSTANCE_LABEL: <store instance id>, APPLICATION_LABEL: <app id>}
+    /// ```
     pub(super) fn ownership_labels(
         &self,
         id: &piqueld_core::ApplicationId,
@@ -147,6 +163,14 @@ impl<D: DockerApi> Controller<D> {
             (super::APPLICATION_LABEL.into(), id.to_string()),
         ])
     }
+
+    /// Runs a journaled Docker request with exponential backoff.
+    ///
+    /// Each attempt re-checks that the operation is still current, both before and
+    /// after taking the global mutation lock, and records the request attempt in the
+    /// journal. Ownership, configuration, swarm, and validation errors are terminal;
+    /// other errors are journaled as retries until attempts run out. Cancellation
+    /// interrupts the backoff sleep.
     pub(super) async fn retry<F, Fut>(
         &self,
         operation: &Operation,
@@ -208,6 +232,10 @@ impl<D: DockerApi> Controller<D> {
             "execute retryable Docker operation",
         ))
     }
+
+    /// Polls observations every 250ms until the named service has converged (or,
+    /// with `removed`, no longer exists). A `Failed` convergence ends the wait with
+    /// `ServiceUpdateFailed`; the deadline yields `ConvergenceTimeout`.
     pub(super) async fn wait_service(
         &self,
         operation: &Operation,
@@ -264,6 +292,9 @@ impl<D: DockerApi> Controller<D> {
         result
     }
 
+    /// Retry loop behind `observe_with_retry`. The journal action is opened lazily
+    /// on the first failure, so successful observations leave no journal trace.
+    /// Backoff is clamped to the time remaining before the deadline.
     async fn observe_attempts(
         &self,
         operation: &Operation,

@@ -16,8 +16,11 @@ use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use webauthn_rs_core::WebauthnCore;
 
+/// One day in seconds, the unit for credential and invitation lifetimes.
 const DAY: i64 = 86_400;
+/// Seconds a started passkey ceremony stays redeemable.
 const CEREMONY_LIFETIME: i64 = 300;
+/// Capacity of each in-memory pending map (ceremonies and device logins).
 const MAX_PENDING: usize = 1024;
 
 /// Authentication failure with internal diagnostics retained for logging.
@@ -50,18 +53,27 @@ type Result<T> = std::result::Result<T, AuthError>;
 /// Shared authentication service, using the control plane's `SQLite` database.
 #[derive(Clone)]
 pub struct Auth(Arc<Inner>);
+/// Shared state behind [`Auth`]. Pending ceremonies and device logins live only
+/// in memory, so a restart cancels them.
 struct Inner {
     store: crate::store::Store,
     webauthn: WebauthnCore,
+    /// Serialized public origin, e.g. `https://piqueld.example.com`.
     origin: String,
+    /// Whether the origin is HTTPS, which enables `Secure` and `__Host-` cookies.
     secure: bool,
+    /// Pending passkey ceremonies keyed by their random ceremony ID.
     ceremonies: Mutex<HashMap<String, ceremonies::Pending>>,
+    /// Pending CLI device logins keyed by the hash of their device code.
     devices: Mutex<HashMap<String, sessions::Device>>,
     throttle: Mutex<throttle::Throttle>,
 }
 
 impl Auth {
     /// Initializes authentication and reports where to retrieve first-account setup.
+    ///
+    /// The setup link is written to `setup-link` in the data directory while no
+    /// account exists.
     /// # Errors
     /// Returns configuration, database, or setup-file errors.
     pub async fn initialize(
@@ -105,6 +117,16 @@ impl Auth {
     }
 
     /// Validates the canonical origin used for `WebAuthn`, links, and CSRF checks.
+    ///
+    /// The URL must be a bare origin with a DNS hostname: no credentials, path,
+    /// query, or fragment.
+    ///
+    /// ```text
+    /// https://piqueld.example.com   accepted
+    /// http://localhost:8080         accepted (development)
+    /// https://10.0.0.1              rejected (no DNS hostname)
+    /// https://example.com/piqueld   rejected (path)
+    /// ```
     /// # Errors
     /// Requires HTTPS, except for HTTP localhost development.
     pub fn validate_origin(value: &str) -> Result<url::Url> {
@@ -159,6 +181,8 @@ impl Auth {
         Ok(())
     }
 
+    /// Charges one public ceremony or device start against the peer's throttle
+    /// window, failing with [`AuthError::Busy`] once exhausted.
     pub(crate) async fn admit_start(&self, peer: Option<std::net::IpAddr>) -> Result<()> {
         self.0
             .throttle
@@ -166,14 +190,18 @@ impl Auth {
             .await
             .admit(peer, std::time::Instant::now())
     }
+    /// Generates 32 random bytes as unpadded URL-safe base64 (43 characters).
     pub(crate) fn secret() -> Result<String> {
         let mut bytes = [0_u8; 32];
         getrandom::fill(&mut bytes).map_err(|error| AuthError::Random(error.to_string()))?;
         Ok(URL_SAFE_NO_PAD.encode(bytes))
     }
+    /// Hashes a secret with SHA-256 for storage and lookup; raw secrets are never
+    /// persisted.
     fn hash(value: &str) -> String {
         URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
     }
+    /// Generates a time-ordered UUID v7 for new records.
     fn id() -> String {
         uuid::Uuid::now_v7().to_string()
     }
@@ -206,6 +234,11 @@ impl Auth {
             name.to_owned()
         }
     }
+    /// Builds a strict, `HttpOnly` `Set-Cookie` value that expires after `age` seconds.
+    ///
+    /// ```text
+    /// __Host-piqueld_session=<secret>; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800; Secure
+    /// ```
     pub(crate) fn cookie(&self, name: &str, secret: &str, age: i64) -> String {
         format!(
             "{}={secret}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}{}",
@@ -213,12 +246,14 @@ impl Auth {
             if self.0.secure { "; Secure" } else { "" }
         )
     }
+    /// Reports whether the first account exists and which public origin is in use.
     pub(crate) async fn status(&self) -> Result<AuthStatus> {
         Ok(AuthStatus {
             initialized: self.0.store.auth_initialized().await?,
             public_url: self.0.origin.clone(),
         })
     }
+    /// Loads a user, treating a missing account as unauthorized.
     async fn user(&self, id: &str) -> Result<User> {
         self.0
             .store
@@ -226,6 +261,7 @@ impl Auth {
             .await?
             .ok_or(AuthError::Unauthorized)
     }
+    /// Enforces username charset and length limits and the display name byte limit.
     fn validate_profile(username: &str, display_name: &str) -> Result<()> {
         if username.is_empty()
             || username.len() > 64
@@ -240,6 +276,7 @@ impl Auth {
         }
         Ok(())
     }
+    /// Checks whether an invitation secret matches a live, unused invitation.
     async fn invitation_valid(&self, secret: &str) -> Result<bool> {
         Ok(self.0.store.invitation_valid(&Self::hash(secret)).await?)
     }

@@ -93,6 +93,14 @@ impl ApplicationService {
     /// HELP/TYPE metadata. Unavailable OS measurements are omitted. Collection
     /// uses the same cache as the daemon status page; this does not contact or
     /// manage Prometheus, retain samples, or export application logs/events.
+    ///
+    /// Names ending in `_total` are counters; everything else is a gauge:
+    ///
+    /// ```text
+    /// # HELP piqueld_uptime_seconds Daemon process uptime
+    /// # TYPE piqueld_uptime_seconds gauge
+    /// piqueld_uptime_seconds 3600
+    /// ```
     /// # Errors
     /// Returns collection failures instead of publishing misleading zero values.
     pub async fn prometheus_metrics(&self) -> Result<String, ApplicationError> {

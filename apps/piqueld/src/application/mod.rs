@@ -34,6 +34,9 @@ pub enum BoundaryError {
 #[async_trait]
 pub trait RuntimeBoundary: Send + Sync + 'static {
     /// Reads recent workload logs from Docker.
+    ///
+    /// `service` narrows to one service, `tail` caps the returned lines, `since` is a
+    /// look-back window in seconds, and `stream` optionally filters stdout or stderr.
     async fn logs(
         &self,
         id: &ApplicationId,
@@ -49,6 +52,9 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     }
 
     /// Removes the supplied versions after logical-reference checks succeed.
+    ///
+    /// The default implementation only accepts an empty list so adapters without
+    /// secret support fail closed.
     async fn remove_secrets(
         &self,
         _application: &ApplicationId,

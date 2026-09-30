@@ -4,6 +4,7 @@ use crate::state::ApplicationHealth;
 use leptos::{CollectView, IntoView, Show, SignalGet, View, component, view};
 use piqueld_client::{ApplicationDetailView, Client, DiagnosticView, ObservedServiceView};
 
+/// Which part of the application's runtime detail to render.
 #[derive(Clone, Copy)]
 pub(super) enum RuntimeSection {
     Overview,
@@ -11,6 +12,8 @@ pub(super) enum RuntimeSection {
     Diagnostics,
 }
 
+/// Renders one section of the selected application's runtime detail from the
+/// shared dashboard signals, with loading/error states and a retry button.
 #[component]
 pub(super) fn RuntimeDetails(section: RuntimeSection) -> impl IntoView {
     let dashboard = dashboard_context();
@@ -43,6 +46,8 @@ pub(super) fn RuntimeDetails(section: RuntimeSection) -> impl IntoView {
     }
 }
 
+/// Loaded detail: a stale-data warning if the last detail refresh failed, the
+/// section content, and a button that reloads only this application's detail.
 fn detail_view(
     detail: &ApplicationDetailView,
     signals: DashboardSignals,
@@ -93,6 +98,7 @@ fn detail_view(
 }
 
 impl RuntimeSection {
+    /// Renders this section: overview facts, observed services, or diagnostics.
     fn render(self, detail: &ApplicationDetailView) -> View {
         let app = detail.application.application.clone();
         let status = detail.status.clone();
@@ -171,6 +177,7 @@ impl RuntimeSection {
     }
 }
 
+/// List item for one observed service: image, health, replica counts and diagnostics.
 fn observed_service_view(service: &ObservedServiceView) -> View {
     let health = ApplicationHealth::from_convergence(&service.convergence);
     let image = service
@@ -201,6 +208,7 @@ fn observed_service_view(service: &ObservedServiceView) -> View {
     .into_view()
 }
 
+/// List item for one diagnostic code and message.
 fn diagnostic_view(diagnostic: &DiagnosticView) -> View {
     view! {
         <li class="flex gap-3 rounded-md bg-surface-muted p-2">

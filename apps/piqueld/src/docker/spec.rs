@@ -8,7 +8,8 @@ use super::{
 };
 
 impl BollardDocker {
-    /// Resolves immutable Docker secret IDs into the service specification.
+    /// Builds the service specification pinned to `node_id`, resolving each
+    /// pinned secret into its immutable Docker secret ID reference.
     pub(super) async fn service_spec_with_secrets(
         &self,
         desired: &DesiredService,
@@ -102,12 +103,21 @@ impl BollardDocker {
         })
     }
 
-    /// Keep local images and volumes on the daemon's node even if another node joins.
+    /// Returns the constraint pinning tasks to `node_id`, which keeps local images
+    /// and volumes on the daemon's node even if another node joins.
     pub(super) fn placement_constraint(node_id: &str) -> String {
         format!("node.id == {node_id}")
     }
 
     /// Converts a core health check into Docker's health-check representation.
+    ///
+    /// Both variants run as a direct `CMD` vector; HTTP checks become the
+    /// equivalent `wget` probe via `HealthCheck::execution`.
+    ///
+    /// ```text
+    /// Http { port: 8080, path: "/health", timeout_seconds: 3, .. }
+    ///   → ["CMD","wget","-q","-T","3","-O","/dev/null","http://127.0.0.1:8080/health"]
+    /// ```
     pub(super) fn health_config(health_check: &HealthCheck) -> HealthConfig {
         let execution = health_check.execution();
         HealthConfig {
@@ -123,6 +133,8 @@ impl BollardDocker {
         }
     }
 
+    /// Converts core resource limits into Docker task limits, leaving
+    /// reservations unset. Fails when the memory limit exceeds `i64::MAX`.
     pub(super) fn task_resources(
         resources: Option<&ResourceLimits>,
     ) -> Result<Option<TaskSpecResources>, DockerError> {
@@ -146,6 +158,8 @@ impl BollardDocker {
         }))
     }
 
+    /// Returns the rollout policy: one task at a time, start the replacement
+    /// first, and pause on failure after the monitor window.
     pub(super) fn update_config() -> ServiceSpecUpdateConfig {
         ServiceSpecUpdateConfig {
             parallelism: Some(1),
@@ -157,10 +171,12 @@ impl BollardDocker {
         }
     }
 
+    /// Converts whole seconds into Docker's nanosecond durations.
     pub(super) fn seconds_to_nanoseconds(seconds: u32) -> i64 {
         i64::from(seconds) * NANOSECONDS_PER_SECOND
     }
 
+    /// Maps an empty list to `None` so the image's defaults stay in effect.
     pub(super) fn nonempty(values: &[String]) -> Option<Vec<String>> {
         (!values.is_empty()).then(|| values.to_vec())
     }

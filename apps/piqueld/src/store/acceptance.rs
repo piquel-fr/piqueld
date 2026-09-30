@@ -13,6 +13,15 @@ impl Store {
     /// the application must be absent, and `None` omits the revision check.
     /// `request_id` is a validated caller-supplied idempotency key, distinct from
     /// the server-generated operation ID (rename does not create an operation).
+    ///
+    /// 1. Returns the stored response when `request_id` replays an identical request.
+    /// 2. With `force`, drops the generation and identity preconditions.
+    /// 3. Loads the current application and latest operation, refusing manifest
+    ///    changes to repository-managed applications.
+    /// 4. Executes the mutation, stores the replay receipt for 24 hours, and
+    ///    commits through hostname reservation checks.
+    ///
+    /// The returned flag asks the controller to wake up; replays never wake it.
     pub(crate) async fn accept(
         &self,
         mut mutation: Mutation,
@@ -63,6 +72,8 @@ impl Store {
         Ok((response, wake))
     }
 
+    /// Hashes the full request (mutation, precondition, and `force`) so a reused
+    /// request ID can be told apart from an exact retry.
     fn mutation_fingerprint(
         mutation: &Mutation,
         expected_generation: Option<u64>,
@@ -77,6 +88,8 @@ impl Store {
         ))
     }
 
+    /// Returns the stored response for an unexpired receipt with a matching
+    /// fingerprint, `ReplayConflict` for a mismatched one, or `None` without a receipt.
     async fn replay_on(
         connection: &mut SqliteConnection,
         request_id: Option<&str>,
@@ -98,6 +111,9 @@ impl Store {
             .transpose()
     }
 
+    /// Checks the revision precondition, then dispatches the mutation to its
+    /// transactional handler. Returns the API response and whether the
+    /// controller has new work.
     async fn execute_mutation(
         tx: &mut Transaction<'_, Sqlite>,
         mutation: Mutation,
@@ -187,6 +203,9 @@ impl Store {
         })
     }
 
+    /// Compares `expected_generation` against the current application revision.
+    /// An absent application counts as revision zero, except that repeating a
+    /// delete compares against the pending delete operation's revision.
     fn check_mutation_generation(
         mutation: &Mutation,
         current: Option<&StoredApplication>,
@@ -207,6 +226,11 @@ impl Store {
         Self::check_generation(expected_generation, actual)
     }
 
+    /// Applies a single field edit to the saved manifest, revalidates it, and
+    /// saves it (renames go through `rename_on`), optionally starting a deployment.
+    /// Repository-managed applications only accept repository settings; applications
+    /// being deleted are `Busy`. Records an `application_edited` event naming the
+    /// edited field and resource.
     async fn accept_edit(
         tx: &mut Transaction<'_, Sqlite>,
         current: StoredApplication,
@@ -270,6 +294,8 @@ impl Store {
         Ok((MutationResponse::Saved(saved), deploy))
     }
 
+    /// When `deploy` is set, starts a deployment of the just-saved configuration
+    /// and records its operation ID on `saved`.
     async fn deploy_saved(
         tx: &mut Transaction<'_, Sqlite>,
         application: &piqueld_core::NormalizedApplication,
@@ -285,6 +311,9 @@ impl Store {
         Ok(())
     }
 
+    /// Resolves the ID for a save by name: the existing application's ID,
+    /// or a freshly generated one. Fails with `IdentityConflict` when the caller
+    /// expected an ID that the name no longer selects.
     fn application_identity(
         current: Option<&StoredApplication>,
         expected: Option<&str>,
@@ -299,6 +328,8 @@ impl Store {
         ))
     }
 
+    /// Loads the live application targeted by a mutation (by name for save, by
+    /// ID otherwise) and that application's latest operation.
     async fn mutation_snapshot(
         tx: &mut Transaction<'_, Sqlite>,
         mutation: &Mutation,
@@ -328,6 +359,10 @@ impl Store {
         Ok((current, latest))
     }
 
+    /// Renames an idle application that is not repository-managed. A real name change bumps
+    /// the generation (and the resolved generation when it was current), updates
+    /// the latest operation's target name, and records an `application_renamed`
+    /// event. Never wakes the controller.
     async fn rename_on(
         tx: &mut Transaction<'_, Sqlite>,
         current: StoredApplication,
@@ -387,6 +422,7 @@ impl Store {
         ))
     }
 
+    /// Deletes expired idempotency receipts.
     pub(crate) async fn prune_receipts(&self) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
         let now = now_ms();

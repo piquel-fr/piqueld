@@ -7,6 +7,7 @@ use piqueld_core::{
 use sqlx::{Sqlite, SqliteConnection, SqliteExecutor, Transaction};
 use std::collections::BTreeMap;
 
+/// Routes the gateway serves, keyed by owning application in a stable order.
 pub(crate) type RoutingTable = BTreeMap<ApplicationId, Vec<ValidatedRoute>>;
 
 impl Store {
@@ -28,6 +29,8 @@ impl Store {
     /// Replaces the hostnames the installation serves itself. Routes may not
     /// claim them or their subdomains. Returns route hostnames saved before the
     /// reservation that now conflict; the gateway never publishes them.
+    /// Existing reservations are reported rather than rejected, so a newly
+    /// configured website hostname never fails daemon startup.
     pub(crate) async fn reserve_installation_hostnames(
         &self,
         hostnames: &[Hostname],
@@ -62,6 +65,7 @@ impl Store {
         Ok(conflicts)
     }
 
+    /// Loads the hostnames reserved for the installation itself.
     async fn installation_hostnames<'e>(
         executor: impl SqliteExecutor<'e>,
     ) -> Result<Vec<Hostname>, StoreError> {
@@ -74,6 +78,8 @@ impl Store {
             .collect()
     }
 
+    /// Routes the gateway last accepted for an application; empty when none were
+    /// ever acknowledged.
     pub(crate) async fn applied_routes(
         &self,
         id: &ApplicationId,
@@ -93,6 +99,8 @@ impl Store {
             .map(Option::unwrap_or_default)
     }
 
+    /// Whether the application has desired or applied routes, i.e. whether the
+    /// gateway may still hold state for it.
     pub(crate) async fn has_routes(&self, id: &ApplicationId) -> Result<bool, StoreError> {
         let id = id.as_str();
         Ok(sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM application_routes WHERE application_id=?1 AND (json_array_length(desired_json)>0 OR json_array_length(applied_json)>0))",id)
@@ -101,6 +109,13 @@ impl Store {
 
     /// Recomputes reservations inside the transaction changing their source.
     /// Captured deployment inputs also reserve names while a newer save is pending.
+    ///
+    /// Collects every hostname the application could still serve (saved spec,
+    /// resolved spec, latest operation target and captured input, desired and
+    /// applied gateway routes), rejects any within an installation hostname, then
+    /// replaces the application's `hostname_reservations` rows. A unique
+    /// violation means another application owns the name and maps to
+    /// `StoreError::HostnameConflict`.
     async fn reserve_hostnames_on(
         connection: &mut SqliteConnection,
         application_id: &str,
@@ -155,6 +170,9 @@ impl Store {
 
     /// Persists a ready cutover, or withdraws removed hostnames while retaining
     /// existing destinations until their replacements are ready.
+    /// When `operation_id` is given, fails with `StoreError::IllegalTransition`
+    /// unless it is the application's latest operation and still running, so a
+    /// superseded deployment cannot publish stale routes.
     pub(crate) async fn stage_routes(
         &self,
         application_id: &ApplicationId,
@@ -222,6 +240,8 @@ impl Store {
         .collect()
     }
 
+    /// Records `table` as each application's applied routes, releasing
+    /// reservations for hostnames no longer served.
     /// Called only after this exact table is accepted (or the gateway is stopped).
     pub(crate) async fn acknowledge_routes(&self, table: &RoutingTable) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;

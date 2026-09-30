@@ -25,13 +25,19 @@ pub(crate) async fn validate_runtime_dir(path: &Path) -> io::Result<()> {
     DirectoryKind::Runtime.prepare(path).await
 }
 
+/// Which daemon directory is being checked; each has its own creation and
+/// permission policy.
 #[derive(Clone, Copy)]
 enum DirectoryKind {
+    /// Private persistent state; missing components are created.
     Data,
+    /// Service-manager-provided socket directory; must already exist and may
+    /// grant group access to the daemon's group.
     Runtime,
 }
 
 impl DirectoryKind {
+    /// Human-readable label used in error messages.
     fn name(self) -> &'static str {
         match self {
             Self::Data => "data",
@@ -39,6 +45,15 @@ impl DirectoryKind {
         }
     }
 
+    /// Walks `path` one component at a time from the root, so no ancestor can be
+    /// swapped for a symlink or attacker-controlled directory.
+    ///
+    /// 1. Rejects empty, `/`, `.`, and `..` paths.
+    /// 2. Requires each component to be a real directory (never a symlink),
+    ///    creating missing ones with mode `0700` for [`Self::Data`] only.
+    /// 3. Requires each ancestor to be owned by root or the daemon and not
+    ///    writable by others unless sticky.
+    /// 4. Checks the final directory with `validate_final`.
     async fn prepare(self, path: &Path) -> io::Result<()> {
         let name = self.name();
         if path.as_os_str().is_empty() || path == Path::new("/") {
@@ -124,6 +139,10 @@ impl DirectoryKind {
         Ok(())
     }
 
+    /// Checks the target directory itself: owned by the effective UID with full
+    /// owner access. Data directories must grant nothing to group or other; runtime
+    /// directories may grant group read/execute only when owned by the daemon's
+    /// effective group.
     fn validate_final(
         self,
         path: &Path,
@@ -189,6 +208,10 @@ impl DirectoryKind {
     }
 }
 
+/// Whether other users are unable to rename or replace entries in an ancestor.
+///
+/// The owner must be root or the daemon, and the directory must either deny
+/// group/other write or be sticky (like `/tmp`).
 fn protected_ancestor(mode: u32, owner_uid: u32, daemon_uid: u32) -> bool {
     let trusted_owner = owner_uid == 0 || owner_uid == daemon_uid;
     let sticky = mode & 0o1000 != 0;
@@ -245,6 +268,7 @@ mod tests {
 /// the lock when the last handle closes, including after a crash.
 #[derive(Debug)]
 pub struct DirectoryLock {
+    /// Open handle carrying the lock; dropping it releases the lock.
     _directory: File,
 }
 

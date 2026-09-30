@@ -7,6 +7,11 @@ use super::{
 use sqlx::{Sqlite, Transaction};
 
 impl Store {
+    /// Parses an opaque application page cursor into the last ID already returned.
+    ///
+    /// ```text
+    /// "v1:app-0192f1c0..." -> Some(ApplicationId("app-0192f1c0..."))
+    /// ```
     fn application_cursor(cursor: Option<&str>) -> Result<Option<ApplicationId>, StoreError> {
         cursor
             .map(|value| {
@@ -31,6 +36,8 @@ impl Store {
         Ok(())
     }
 
+    /// Reads a live application's current generation (zero when absent) and
+    /// checks it against the caller's optional precondition.
     pub(super) async fn generation_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
@@ -67,6 +74,11 @@ impl Store {
         Ok(result)
     }
 
+    /// Transactional body of `save_application`: upserts intent with the next
+    /// generation, supersedes pending work with a new apply operation carrying
+    /// the optional prepared target, and marks the application `pending`.
+    /// Refuses manifests that reference secrets being deleted, and applications
+    /// with pending deletion intent (`IllegalTransition`).
     pub(crate) async fn save_application_on(
         tx: &mut Transaction<'_, Sqlite>,
         app: &NormalizedApplication,
@@ -136,6 +148,9 @@ impl Store {
         Ok(result)
     }
 
+    /// Transactional body of `request_delete`: sets deletion intent, bumps the
+    /// generation, creates a delete operation, and marks the application `deleting`.
+    /// Returns `IllegalTransition` when deletion is already pending.
     pub(crate) async fn request_delete_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &ApplicationId,
@@ -167,6 +182,9 @@ impl Store {
         Ok(result)
     }
 
+    /// Transactional body of `request_deploy`: creates a deployment operation for
+    /// the saved configuration and marks the application `pending`. Returns
+    /// `NotFound` for absent applications and `IllegalTransition` while deleting.
     pub(crate) async fn request_deploy_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &ApplicationId,
@@ -230,6 +248,8 @@ impl Store {
     }
 
     /// Publishes a completely resolved target only while its operation is current.
+    /// Stores the target on the running, latest operation, applies any fetched
+    /// repository manifest to the application, and records `target_resolved`.
     /// # Errors
     /// Returns storage errors or `IllegalTransition` for obsolete preparation.
     pub async fn save_prepared(
@@ -249,6 +269,9 @@ impl Store {
     }
 
     /// Publishes the prepared target after ownership and configuration checks pass.
+    /// Copies the operation's target and generation onto the application as its
+    /// resolved state and marks the operation promoted, recording `target_promoted`
+    /// the first time.
     /// # Errors
     /// Returns a store error or `IllegalTransition` for obsolete work.
     pub async fn publish_prepared(&self, operation: &Operation) -> Result<(), StoreError> {

@@ -1,11 +1,16 @@
+//! Account, passkey, credential, and invitation administration.
 use super::{Auth, AuthError, CredentialKind, DAY, Result, now_secs};
 use piqueld_core::auth::{Directory, Manage, Managed};
 impl Auth {
+    /// Lists every user with their passkeys and credentials, plus open invitations.
     pub(crate) async fn directory(&self) -> Result<Directory> {
         Ok(self.0.store.auth_directory().await?)
     }
-    /// Applies one account change. The store refuses changes that would leave
-    /// nobody able to sign in.
+    /// Applies one account change on behalf of `actor` (a user ID) and logs it. The
+    /// store refuses changes that would leave nobody able to sign in.
+    ///
+    /// Invitations expire after a day and return a dashboard invite URL; API tokens
+    /// return their secret once. Both secrets are only stored hashed.
     pub(crate) async fn manage(&self, actor: &str, command: Manage) -> Result<Managed> {
         let store = &self.0.store;
         let mut result = Managed::default();

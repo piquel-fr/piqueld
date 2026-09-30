@@ -32,33 +32,49 @@ use piqueld_client::{
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
 
+/// State shared by every section of one application editor, provided as context.
 #[derive(Clone, Copy)]
 struct EditorContext {
     dashboard: StoredValue<super::DashboardContext>,
+    /// Last configuration known to be saved; drafts are compared against it.
     saved: RwSignal<ApplicationView>,
+    /// Keys of form groups whose draft differs from the saved value.
     dirty: RwSignal<BTreeSet<String>>,
+    /// A save or action request is in flight.
     busy: RwSignal<bool>,
+    /// A request failed in transit, so its outcome is unknown; blocks further
+    /// mutations until the page is reloaded.
     uncertain: RwSignal<bool>,
     error: RwSignal<Option<String>>,
+    /// Diagnostic linked from the current error, if the API reported one.
     diagnostic_id: RwSignal<Option<String>>,
+    /// Success message shown after a save.
     notice: RwSignal<String>,
+    /// Selected application tab label.
     tab: RwSignal<&'static str>,
 }
 impl EditorContext {
+    /// Saved configuration as an editable manifest.
     fn manifest(self) -> ApplicationManifest {
         self.saved
             .with_untracked(|saved| saved.application.to_manifest())
     }
+    /// Whether saves are currently disallowed.
     fn blocked(self) -> bool {
         self.busy.get() || self.uncertain.get()
     }
+    /// Whether deploy/delete actions are disallowed: also blocked by unsaved edits
+    /// or a pending deletion.
     fn action_blocked(self) -> bool {
         self.blocked() || !self.dirty.get().is_empty() || self.saved.get().delete_intent
     }
+    /// Replaces the editor error and clears any diagnostic link.
     fn set_error(self, error: Option<String>) {
         self.diagnostic_id.set(None);
         self.error.set(error);
     }
+    /// Shows a request failure. Transport failures mark the editor `uncertain`
+    /// because the server may or may not have applied the request.
     fn failure(self, error: &ClientError) {
         self.set_error(Some(client_error_message(error)));
         self.diagnostic_id.set(diagnostic_id(error));
@@ -67,6 +83,10 @@ impl EditorContext {
             self.set_error(Some("The request outcome is unknown. Reload saved configuration and deployment history before another action.".into()));
         }
     }
+    /// Applies `edit` to the saved manifest, validates it locally, then sends it
+    /// guarded by the saved generation. A transport failure is retried once with the
+    /// same request ID so the server can deduplicate it. On success the saved view is
+    /// updated locally, `on_saved` runs, and the dashboard refreshes.
     fn save(self, edit: ApplicationEdit, on_saved: Callback<ApplicationView>) {
         if self.blocked() {
             return;
@@ -126,6 +146,7 @@ impl EditorContext {
         });
     }
 }
+/// Returns the enclosing `EditorContext`.
 fn editor() -> EditorContext {
     use_context().expect("application editor context")
 }
@@ -141,9 +162,12 @@ fn diagnostic_id(error: &ClientError) -> Option<String> {
     }
 }
 
+/// Whether the request failed before a response was received.
 fn transport_failure(error: &ClientError) -> bool {
     matches!(error, ClientError::Transport { .. })
 }
+/// Client tagged with a fresh random request ID, used for mutations so a retried
+/// request is recognised as a replay rather than applied twice.
 fn mutation_client() -> Result<Client, String> {
     // Unlike randomUUID, getRandomValues is available on the supported plain
     // HTTP origins. Keep 128 bits of cryptographic entropy for replay identities.
@@ -160,6 +184,8 @@ fn mutation_client() -> Result<Client, String> {
         .collect::<String>();
     Ok(Client::browser().with_request_id(id))
 }
+/// Tracks whether `draft` differs from `baseline`, keeping `key` in the editor's
+/// dirty set accordingly and removing it when the owning view unmounts.
 fn dirty_group<T: Clone + PartialEq + 'static>(
     key: String,
     draft: RwSignal<T>,
@@ -183,6 +209,9 @@ fn dirty_group<T: Clone + PartialEq + 'static>(
         });
     });
 }
+/// "Create application" button and modal. Validates the name locally, creates an
+/// empty application (retrying once on transport failure), refreshes the
+/// dashboard and navigates to the new application.
 #[component]
 pub(super) fn CreateApplication() -> impl IntoView {
     let opened = create_rw_signal(false);
@@ -282,6 +311,8 @@ pub(super) fn CreateApplication() -> impl IntoView {
     }
 }
 
+/// Loads saved application `id` once and mounts `ApplicationEditor`, either for
+/// the whole application or for one `service`.
 #[component]
 pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoView {
     let is_service = service.is_some();
@@ -323,6 +354,9 @@ pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoV
     }
 }
 
+/// Provides `EditorContext`, guards navigation while edits are unsaved, and renders
+/// either a single service editor or the tabbed application editor. The initial
+/// tab comes from the `deployment` or `tab=services` query parameters.
 #[component]
 fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl IntoView {
     let context = EditorContext {
@@ -397,6 +431,8 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
     .into_view()
 }
 
+/// Danger-zone card that deletes the application (guarded by the saved
+/// generation) after confirmation, then returns to the application list.
 #[component]
 fn DeleteApplication() -> impl IntoView {
     let context = editor();
@@ -446,6 +482,7 @@ fn DeleteApplication() -> impl IntoView {
     }
 }
 
+/// `/settings` page: read-only daemon configuration grouped by section.
 #[component]
 pub(super) fn HostPage() -> impl IntoView {
     let settings = create_rw_signal(None);
@@ -494,6 +531,8 @@ pub(super) fn HostPage() -> impl IntoView {
     }
 }
 
+/// Save status, error with reload button and diagnostic link, and a conflict
+/// notice when the polled detail shows a newer generation than the editor's.
 #[component]
 fn EditorFeedback() -> impl IntoView {
     let context = editor();
@@ -550,6 +589,8 @@ fn EditorFeedback() -> impl IntoView {
     }
 }
 
+/// Source, services, routes and volumes tabs. Service, route and volume
+/// editing is disabled while the application is managed from a Git manifest.
 #[component]
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();

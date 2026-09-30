@@ -7,11 +7,16 @@ use leptos::*;
 use piqueld_client::{Build, BuildRecord, BuildState, Client, Source};
 use std::{cell::Cell, rc::Rc};
 
+/// `/builds` page: build history across all applications.
 #[component]
 pub(super) fn BuildsPage() -> impl IntoView {
     view! {<header class="application-heading"><div><p class="eyebrow">"HISTORY"</p><h2>"Builds"</h2></div></header><BuildHistory/>}
 }
 
+/// Build list, optionally scoped to one `application`. A 3-second loop refetches
+/// the first page on demand or while any build is running (skipped while the tab
+/// is hidden). Once older pages have been loaded, refreshed builds are merged by
+/// ID instead of replacing the list so the extra pages are kept.
 #[component]
 pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) -> impl IntoView {
     let records = create_rw_signal(Vec::<BuildRecord>::new());
@@ -99,6 +104,7 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
     </section>}
 }
 
+/// Expandable summary of one build; expanding shows metadata and mounts `BuildOutput`.
 #[component]
 fn BuildCard(record: Signal<BuildRecord>) -> impl IntoView {
     let opened = create_rw_signal(false);
@@ -134,7 +140,13 @@ fn BuildCard(record: Signal<BuildRecord>) -> impl IntoView {
     </article>}
 }
 
-/// Only mounted for an expanded build; the final successful fetch stops polling.
+/// Paged build log viewer. Only mounted for an expanded build; the final
+/// successful fetch stops polling.
+///
+/// A 1-second loop replaces the newest page on refresh, stream-filter changes,
+/// or every 30 seconds while the build runs, and prepends older pages on request
+/// (bumping `prepend_revision` so `LogViewer` keeps its scroll position).
+/// Responses for a stale stream filter are discarded and refetched.
 #[component]
 fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
     let chunks = create_rw_signal(Vec::<piqueld_client::BuildLogChunk>::new());
@@ -232,6 +244,7 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
     }
 }
 
+/// Lowercase state label, also used as the `data-state` styling hook.
 fn build_state(state: BuildState) -> &'static str {
     match state {
         BuildState::Running => "running",
@@ -241,6 +254,7 @@ fn build_state(state: BuildState) -> &'static str {
     }
 }
 
+/// Summary line time: duration and start for finished builds, start otherwise.
 fn build_summary_time(build: &BuildRecord) -> String {
     match build.finished_at_ms {
         Some(_) => format!(
@@ -252,6 +266,13 @@ fn build_summary_time(build: &BuildRecord) -> String {
     }
 }
 
+/// Human-readable build duration.
+///
+/// ```text
+/// 850 ms   -> "850 ms"
+/// 12340 ms -> "12.3 s"
+/// running  -> "In progress"
+/// ```
 fn build_duration(build: &BuildRecord) -> String {
     let Some(finished) = build.finished_at_ms else {
         return "In progress".into();
@@ -264,6 +285,7 @@ fn build_duration(build: &BuildRecord) -> String {
     }
 }
 
+/// Definition-list rows describing the image or Git source that was built.
 fn source_details(source: Source) -> View {
     match source {
         Source::Image { image } => view! {<dt>"Source"</dt><dd><code>{image}</code></dd>}.into_view(),
@@ -276,6 +298,7 @@ fn source_details(source: Source) -> View {
     }
 }
 
+/// Formats a byte count as `B` below 1 `KiB`, otherwise `KiB` with one decimal.
 fn format_bytes(bytes: i64) -> String {
     if bytes < 1_024 {
         format!("{bytes} B")

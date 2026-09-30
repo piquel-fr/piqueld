@@ -21,6 +21,14 @@ pub(crate) struct ConnectionSources {
     pub(crate) timeout: Source,
 }
 
+/// Where one connection setting came from, shown in diagnostics.
+///
+/// ```text
+/// built-in default
+/// flag --url
+/// environment variable PIQUELD_URL
+/// profile "prod" in /etc/piqueld/profiles.toml
+/// ```
 #[derive(Clone, Debug, Default)]
 pub(crate) enum Source {
     #[default]
@@ -46,21 +54,28 @@ impl fmt::Display for Source {
     }
 }
 
+/// Merged profiles files: a `[profiles.<name>]` table per named connection.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Profiles {
     profiles: BTreeMap<String, Profile>,
 }
+/// One named connection: exactly one of `socket` or `url`, plus an optional timeout.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Profile {
     socket: Option<PathBuf>,
     url: Option<String>,
+    /// Unparsed duration, validated with `parse_duration`.
     timeout: Option<String>,
+    /// File that defined this profile, filled in after parsing.
     #[serde(skip)]
     source: PathBuf,
 }
 impl Profiles {
+    /// Loads profiles. An explicit `--profiles-file` or `PIQUELD_PROFILES_FILE` must exist
+    /// and is used alone; otherwise `/etc/piqueld/profiles.toml` and then the user file
+    /// (`$XDG_CONFIG_HOME` or `$HOME/.config`) are merged, each optional.
     pub(crate) fn load(cli: &Cli) -> Result<Self> {
         let explicit_file = cli
             .profiles_file
@@ -88,6 +103,7 @@ impl Profiles {
     }
 
     /// Merge entire profiles before validating, so replacements never inherit fields.
+    /// Later files replace same-named profiles; `required` makes a missing file an error.
     fn load_files(files: impl IntoIterator<Item = (PathBuf, bool)>) -> Result<Self> {
         let mut result = Self::default();
         for (path, required) in files {
@@ -118,6 +134,7 @@ impl Profiles {
         Ok(result)
     }
 
+    /// Name and endpoint of each profile, sorted by name.
     pub(crate) fn summaries(&self) -> Vec<ProfileSummary<'_>> {
         self.profiles
             .iter()
@@ -128,6 +145,13 @@ impl Profiles {
             .collect()
     }
 
+    /// Applies the selected profile and environment to `cli`, recording each setting's
+    /// source. The profile is `--profile`, then `PIQUELD_PROFILE`, then `default` if present.
+    ///
+    /// Precedence, highest first:
+    /// - endpoint: `--socket`/`--url`, then `PIQUELD_SOCKET`/`PIQUELD_URL` (only one may be
+    ///   set), then the profile.
+    /// - timeout: `--timeout`, then `PIQUELD_TIMEOUT`, then the profile, then the default.
     pub(crate) fn resolve(&self, cli: &mut Cli, matches: &ArgMatches) -> Result<()> {
         let selected = cli
             .profile
@@ -197,6 +221,8 @@ impl Profiles {
         }
         Ok(())
     }
+    /// Parses one profiles file. Errors report only a line, column, and generic reason,
+    /// since source excerpts and offending values are not safe to print.
     fn parse_file(text: &str, path: &std::path::Path) -> Result<Self> {
         toml::from_str(text).map_err(|error: toml::de::Error| {
             // Neither source excerpts nor schema error values are safe to print.
@@ -214,6 +240,7 @@ impl Profiles {
                 .configuration(format!("profiles file {}", path.display()))
         })
     }
+    /// Input error tagged as a connection configuration problem.
     fn invalid(message: impl Into<String>) -> CliError {
         CliError::new(ErrorKind::Input, message)
             .configuration("connection configuration".to_owned())
@@ -221,6 +248,7 @@ impl Profiles {
 }
 
 impl Profile {
+    /// Checks transport exclusivity, URL syntax, and the timeout format.
     fn validate(&self) -> std::result::Result<(), String> {
         if self.socket.is_some() == self.url.is_some() {
             return Err("A connection profile must contain exactly one socket or URL".into());
@@ -234,6 +262,7 @@ impl Profile {
         Ok(())
     }
 
+    /// Socket path or URL, whichever is configured.
     fn endpoint(&self) -> std::borrow::Cow<'_, str> {
         if let Some(socket) = &self.socket {
             socket.to_string_lossy()

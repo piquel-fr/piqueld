@@ -160,6 +160,8 @@ impl crate::docker::DockerError {
     }
 
     /// Projects a safe public classification without consuming the cause.
+    /// Registry 4xx responses count as rejections, except 408 and 429, which are
+    /// transient resolution failures that may be retried.
     fn operation_classification(&self) -> OperationError {
         use OperationError as Failure;
         match self {
@@ -197,6 +199,8 @@ impl crate::docker::DockerError {
 }
 
 impl From<crate::store::StoreError> for OperationError {
+    /// Keeps secret and hostname failures distinct; every other storage error
+    /// is a journal failure.
     fn from(error: crate::store::StoreError) -> Self {
         match error {
             error @ crate::store::StoreError::SecretSource(_) => {
@@ -236,6 +240,10 @@ impl OperationError {
         )
     }
 
+    /// Builds a diagnostic with a fresh ID, then walks up to eight levels of the
+    /// source chain, adding only safe typed facts (Docker operation names, HTTP
+    /// statuses, I/O kinds, OS and database codes, command stages) as causes.
+    /// Error messages themselves are never copied, since they may contain secrets.
     fn diagnostic_from(
         code: DiagnosticCode,
         summary: String,
@@ -334,6 +342,9 @@ impl OperationError {
 }
 
 impl crate::application::BoundaryError {
+    /// Diagnoses a runtime-boundary failure journaled outside operation execution,
+    /// such as API-driven secret removal, using the same safe-cause rules.
+    /// Compilation failures list up to 16 resource errors as causes.
     pub(crate) fn diagnostic(&self) -> piqueld_core::observability::Diagnostic {
         let (code, summary) = match self {
             Self::Runtime(error) => {

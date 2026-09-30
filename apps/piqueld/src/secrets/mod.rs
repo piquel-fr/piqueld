@@ -40,12 +40,22 @@ impl KeyFailure {
     }
 }
 
+/// `XChaCha20-Poly1305` cipher keyed by the on-disk master key (`secrets.key`).
 pub(crate) struct SecretCipher(XChaCha20Poly1305);
+/// A stored secret value: a random 24-byte nonce and its authenticated ciphertext.
 pub(crate) struct Envelope {
     pub(crate) nonce: Vec<u8>,
     pub(crate) ciphertext: Vec<u8>,
 }
 impl SecretCipher {
+    /// Loads the master key, first generating one when the file is absent and the
+    /// database has no encrypted values yet (`bound` is false).
+    ///
+    /// A new key is written to a temporary file and installed without overwriting,
+    /// then the directory is synced. The key is opened without following symlinks
+    /// and must be a regular file owned by the daemon user with no group or other
+    /// access, holding exactly 32 bytes.
+    ///
     /// Called under the store writer lock; a key bound to the database is never regenerated.
     pub(crate) fn load(path: &Path, bound: bool) -> anyhow::Result<Self> {
         use anyhow::{Context, bail};
@@ -112,9 +122,16 @@ impl SecretCipher {
             .sync_all()
             .context("sync secret key directory")
     }
+    /// Associated data binding a ciphertext to its application, secret name, and
+    /// generation, so a value cannot be moved to another secret or version.
+    ///
+    /// ```text
+    /// piqueld-secret-v1\0<application>\0<name>\0<generation>
+    /// ```
     fn context(application: &str, name: &str, generation: i64) -> Vec<u8> {
         format!("piqueld-secret-v1\0{application}\0{name}\0{generation}").into_bytes()
     }
+    /// Encrypts one secret value under a fresh random nonce.
     pub(crate) fn encrypt(
         &self,
         application: &str,
@@ -139,6 +156,8 @@ impl SecretCipher {
             ciphertext,
         })
     }
+    /// Decrypts a value, returning [`KeyFailure::AuthenticationFailed`] when the key
+    /// or identity does not match. The plaintext is zeroized on drop.
     pub(crate) fn decrypt(
         &self,
         application: &str,

@@ -39,9 +39,17 @@ use std::{
 
 /// Docker represents health-check and Swarm policy durations in nanoseconds.
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
+/// Docker expresses CPU limits in billionths of a CPU (`NanoCPUs`).
+///
+/// ```text
+/// 250 millicores → 250_000_000 NanoCPUs
+/// ```
 const NANO_CPUS_PER_MILLICORE: i64 = 1_000_000;
+/// Delay Swarm waits before restarting an exited task.
 const RESTART_DELAY: i64 = 2 * NANOSECONDS_PER_SECOND;
+/// Time Swarm watches each updated task for failure before continuing a rollout.
 const UPDATE_MONITOR: i64 = 30 * NANOSECONDS_PER_SECOND;
+/// Consecutive failed health probes before a container is marked unhealthy.
 const HEALTH_RETRIES: i64 = 3;
 
 /// Concurrent per-service inspections performed during one observation.
@@ -55,7 +63,9 @@ const IMAGE_RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(100);
 #[derive(Clone)]
 /// A shared connection to the Docker Engine.
 pub struct BollardDocker {
+    /// Typed Bollard client used for most Engine requests.
     docker: Arc<Docker>,
+    /// Engine socket path, reused for raw service requests and `docker build`.
     socket: Arc<Path>,
 }
 
@@ -104,7 +114,9 @@ pub trait DockerApi: Send + Sync + 'static {
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError>;
     /// Pulls an image reference and returns its immutable repository digest.
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError>;
-    /// Builds local Docker inputs into an immutable image.
+    /// Builds local Docker inputs into an immutable image, streaming output
+    /// into `_log` when given. The default ignores the log and delegates to
+    /// [`DockerApi::build_image`].
     async fn build_image_recorded(
         &self,
         dockerfile: &Path,
@@ -114,6 +126,7 @@ pub trait DockerApi: Send + Sync + 'static {
         self.build_image(dockerfile, context).await
     }
     /// Provisions an immutable secret with the expected application ownership.
+    /// The default reports secrets as unsupported.
     async fn ensure_secret(
         &self,
         _name: &str,
@@ -123,6 +136,7 @@ pub trait DockerApi: Send + Sync + 'static {
         Err(DockerError::Unavailable("secret creation"))
     }
     /// Removes only secrets matching the expected application ownership.
+    /// The default succeeds for an empty list and is otherwise unsupported.
     async fn remove_secrets(
         &self,
         names: &[String],
@@ -190,6 +204,11 @@ pub trait ImageSource: Send + Sync {
 ///
 /// Returns the sanitized image-resolution error class when the engine fails,
 /// the pull never produces a matching digest, or the tag keeps flipping.
+///
+/// ```text
+/// ghcr.io/example/notes:1.4        → ghcr.io/example/notes@sha256:<64 hex>
+/// ghcr.io/example/notes@sha256:abc → the local repo digest equal to sha256:abc
+/// ```
 pub async fn resolve_image_digest(
     source: &(impl ImageSource + ?Sized),
     reference: &str,
@@ -201,6 +220,8 @@ pub async fn resolve_image_digest(
         let before = matching_repo_digests(source, reference, &repository).await?;
         source.pull(reference).await?;
         let after = matching_repo_digests(source, reference, &repository).await?;
+        // Digest-pinned references must resolve to exactly that digest; tags
+        // must resolve to a digest that was already present before the pull.
         let Some(digest) = after
             .iter()
             .find(|digest| {
@@ -228,6 +249,9 @@ pub async fn resolve_image_digest(
     Err(DockerError::ImageResolution("confirm stable image digest"))
 }
 
+/// Returns the locally recorded, well-formed repository digests of `reference`
+/// that belong to `repository`, ignoring digests of other repositories that
+/// share the same image ID.
 async fn matching_repo_digests(
     source: &(impl ImageSource + ?Sized),
     reference: &str,

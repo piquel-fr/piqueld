@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Final state printed on a task's completion line.
 #[derive(Clone, Copy)]
 pub(crate) enum TaskOutcome {
     Succeeded,
@@ -23,15 +24,21 @@ impl TaskOutcome {
     }
 }
 
+/// How progress is presented, chosen once per console.
 enum Backend {
+    /// Animated spinner rows on an interactive stderr.
     Terminal(MultiProgress),
+    /// One permanent line per start, change, and finish (logs, pipes, `TERM=dumb`).
     Plain,
+    /// Nothing is printed (quiet mode).
     Hidden,
 }
 
+/// Console-owned progress renderer; tasks keep their own reference to the output.
 pub(super) struct ProgressOutput {
     inner: Arc<Output>,
 }
+/// Progress backend plus the shared stderr writer used for permanent lines.
 struct Output {
     backend: Backend,
     writer: SharedWriter,
@@ -51,6 +58,8 @@ impl ProgressOutput {
         }
     }
 
+    /// Runs `event` with spinner rows hidden, so other stderr/stdout writes never
+    /// interleave with a redraw.
     pub(super) fn suspend<T>(&self, event: impl FnOnce() -> T) -> T {
         self.inner.suspend(event)
     }
@@ -62,6 +71,8 @@ impl ProgressOutput {
         }
     }
 
+    /// Starts a task: a ticking spinner on terminals, a `label: started` line in plain
+    /// mode, or nothing when hidden.
     pub(super) fn start(&self, label: &str) -> ProgressTask {
         let label = Escaped(label).to_string();
         let bar = match &self.inner.backend {
@@ -102,6 +113,7 @@ impl Output {
         }
     }
 
+    /// Prints a permanent `label: message` line (best effort, skipped when hidden).
     fn line(&self, label: &str, message: &str) {
         if matches!(self.backend, Backend::Hidden) {
             return;
@@ -127,6 +139,8 @@ pub(crate) struct ProgressTask {
 }
 
 impl ProgressTask {
+    /// Sets the task's current message; unchanged messages are skipped so plain
+    /// mode prints only transitions. No-op after finish or when hidden.
     pub(crate) fn update(&self, message: &str) {
         let mut task = self
             .state
@@ -147,6 +161,11 @@ impl ProgressTask {
         task.last = Some(message);
     }
 
+    /// Clears the spinner and prints the permanent completion line. Idempotent.
+    ///
+    /// ```text
+    /// op-123: succeeded · deleted [4s]
+    /// ```
     pub(crate) fn finish(&self, outcome: TaskOutcome, message: &str) {
         let mut task = self
             .state
@@ -171,11 +190,15 @@ impl ProgressTask {
     }
 }
 
+/// Shared state behind every clone of one `ProgressTask`.
 struct Task {
     output: Arc<Output>,
+    /// Escaped task label.
     label: String,
+    /// Spinner row, present only on the terminal backend.
     bar: Option<ProgressBar>,
     started: Instant,
+    /// Last escaped message, used to suppress duplicate updates.
     last: Option<String>,
     finished: bool,
 }

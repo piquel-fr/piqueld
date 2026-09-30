@@ -23,13 +23,16 @@ use tokio::net::UnixStream;
 #[derive(Debug, thiserror::Error)]
 #[error("{path}: HTTP {status}: {body}")]
 pub struct ResponseError {
+    /// Request path, such as `/containers/{name}/json`.
     path: String,
     /// Status returned by Docker Engine or Caddy.
     pub status: StatusCode,
+    /// Lossy UTF-8 response body, truncated to 2048 characters.
     body: String,
 }
 
 impl ResponseError {
+    /// Passes successful statuses and wraps any other status with its bounded body.
     fn check(path: &str, status: StatusCode, body: &[u8]) -> Result<(), Self> {
         if status.is_success() {
             return Ok(());
@@ -46,6 +49,7 @@ impl ResponseError {
 pub(super) struct Journaled<'a> {
     store: &'a crate::store::Store,
     action: JournalAction,
+    /// Number of requests committed so far; attempts are numbered from 1.
     requests: AtomicU32,
 }
 

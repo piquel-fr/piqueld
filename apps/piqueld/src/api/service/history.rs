@@ -56,6 +56,8 @@ impl ApplicationService {
         cursor: Option<&str>,
     ) -> Result<Page<Operation>, ApplicationError> {
         let operation = self.store.operation(deployment).await?;
+        // Hide other applications' operations, and reject operations that are
+        // not deployments (they have no captured manifest).
         if operation.application_id != *id {
             return Err(StoreError::NotFound.into());
         }
@@ -90,7 +92,9 @@ impl ApplicationService {
         Ok(self.store.builds(id, cursor, limit).await?)
     }
 
-    /// Reads a bounded page of persisted build output.
+    /// Reads the newest bounded page of persisted build output (chunks in
+    /// chronological order). `before` is the exclusive `previous_offset` cursor
+    /// of a previous page, for loading older output.
     /// # Errors
     /// Returns invalid query, absence, or storage errors.
     pub async fn build_logs(
@@ -113,6 +117,7 @@ impl ApplicationService {
         since_seconds: u32,
         stream: Option<LogStream>,
     ) -> Result<ApplicationLogs, ApplicationError> {
+        // Service names follow the 63-character DNS label limit.
         if !(1..=1000).contains(&tail)
             || !(1..=86400).contains(&since_seconds)
             || service.is_some_and(|name| name.is_empty() || name.len() > 63)

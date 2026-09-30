@@ -55,6 +55,7 @@ pub enum DockerError {
 }
 
 impl DockerError {
+    /// Builds a [`DockerError::UnavailableSource`] that keeps `source` for diagnostics.
     pub(crate) fn unavailable(
         operation: &'static str,
         source: impl std::error::Error + Send + Sync + 'static,
@@ -65,6 +66,7 @@ impl DockerError {
         }
     }
 
+    /// Builds an [`DockerError::ImageResolutionSource`] from a Bollard failure.
     pub(super) fn image_resolution(
         operation: &'static str,
         source: bollard::errors::Error,
@@ -72,6 +74,7 @@ impl DockerError {
         Self::ImageResolutionSource { operation, source }
     }
 
+    /// Builds a [`DockerError::RequestSource`] that keeps `source` for diagnostics.
     pub(super) fn request(
         operation: &'static str,
         source: impl std::error::Error + Send + Sync + 'static,

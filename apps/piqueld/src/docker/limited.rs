@@ -1,10 +1,11 @@
 //! Process-wide concurrency limits shared by reconciliation and API previews.
 //!
 //! Applications reconcile concurrently, so per-application limits alone would
-//! allow an unbounded number of Docker pulls and observations. This adapter puts
-//! those two limits around the shared Docker implementation (including test
-//! fakes). Mutations pass through unchanged: the controller serializes them.
-//! Cancelling a request drops its permit, allowing the next waiter to proceed.
+//! allow an unbounded number of Docker pulls, builds, and observations. This
+//! adapter puts those limits around the shared Docker implementation
+//! (including test fakes). Mutations pass through unchanged: the controller
+//! serializes them. Cancelling a request drops its permit, allowing the next
+//! waiter to proceed.
 use super::{DockerApi, DockerError, DockerTimeout, SwarmState};
 use async_trait::async_trait;
 use piqueld_core::{
@@ -13,13 +14,19 @@ use piqueld_core::{
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Semaphore;
 
+/// A [`DockerApi`] wrapper that bounds process-wide concurrent Docker work.
 pub(crate) struct LimitedDocker<D> {
+    /// The wrapped implementation that performs the actual requests.
     inner: Arc<D>,
+    /// Concurrent image resolutions (pulls).
     images: Semaphore,
+    /// Concurrent image builds.
     builds: Semaphore,
+    /// Concurrent observations and log reads.
     observations: Semaphore,
 }
 impl<D> LimitedDocker<D> {
+    /// Wraps `inner` with 2 image, 1 build, and 8 observation permits.
     pub(crate) fn new(inner: Arc<D>) -> Self {
         Self {
             inner,
@@ -72,6 +79,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     async fn ensure_swarm(&self, auto: bool) -> Result<SwarmState, DockerError> {
         self.inner.ensure_swarm(auto).await
     }
+    /// Waiting for an image permit counts against the resolution budget.
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {
         DockerTimeout::ImageResolution
             .run("resolve image", async {
@@ -106,6 +114,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         self.build_image_recorded(dockerfile, context, None).await
     }
+    /// Waiting for an observation permit counts against the request budget.
     async fn observe(&self, id: &ApplicationId) -> Result<ObservedApplication, DockerError> {
         DockerTimeout::Request
             .run("observe application", async {

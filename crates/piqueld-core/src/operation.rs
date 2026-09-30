@@ -80,6 +80,16 @@ impl OperationState {
     }
 
     /// Whether an operation can make the requested lifecycle transition.
+    ///
+    /// Staying in the same state is always allowed. `Running` may return to
+    /// `Requested` for a new attempt, and `Succeeded`, `Failed`, or `Cancelled`
+    /// may be requeued; `Superseded` is final.
+    ///
+    /// ```text
+    /// Requested -> Running | Cancelled | Superseded
+    /// Running   -> Requested | Succeeded | Failed | Cancelled | Superseded
+    /// Succeeded | Failed | Cancelled -> Requested
+    /// ```
     #[must_use]
     pub fn can_transition_to(self, next: Self) -> bool {
         self == next

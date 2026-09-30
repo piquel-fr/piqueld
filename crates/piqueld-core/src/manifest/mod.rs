@@ -91,6 +91,9 @@ impl ValidatedApplication {
     }
 }
 
+/// Sorts every order-insensitive collection (services by name, mounts,
+/// secrets, volumes, routes) so equivalent manifests serialize and hash
+/// identically. Process arguments and other ordered lists are untouched.
 fn normalize_spec(spec: &mut ValidatedSpec) {
     spec.services
         .sort_by(|left, right| left.name.cmp(&right.name));
@@ -203,6 +206,8 @@ impl NormalizedApplication {
     }
 }
 
+// Deserialization re-runs full manifest validation and normalization, so
+// stored or received JSON can never produce an unvalidated application.
 impl<'de> Deserialize<'de> for NormalizedApplication {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]

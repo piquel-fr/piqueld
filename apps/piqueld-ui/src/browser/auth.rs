@@ -31,9 +31,13 @@ export async function piqueldPasskey(optionsJSON, registration) {
 }
 "#)]
 extern "C" {
+    /// Runs a `WebAuthn` create (`registration`) or get ceremony from JSON options,
+    /// resolving to the credential JSON with binary fields base64url-encoded.
     #[wasm_bindgen(catch, js_name = piqueldPasskey)]
     fn passkey(options: &str, registration: bool) -> Result<js_sys::Promise, JsValue>;
 }
+/// Runs the browser half of a server-issued passkey ceremony and packages the
+/// credential for the matching `finish` endpoint.
 async fn complete(ceremony: Ceremony, registration: bool) -> Result<CeremonyFinish, String> {
     let options = serde_json::to_string(&ceremony.options).map_err(|e| e.to_string())?;
     let promise = passkey(&options, registration).map_err(js_error)?;
@@ -46,6 +50,7 @@ async fn complete(ceremony: Ceremony, registration: bool) -> Result<CeremonyFini
         credential: serde_json::from_str(&response).map_err(|e| e.to_string())?,
     })
 }
+/// Extracts a readable message from a thrown JavaScript value.
 fn js_error(error: JsValue) -> String {
     js_sys::Reflect::get(&error, &JsValue::from_str("message"))
         .ok()
@@ -53,6 +58,7 @@ fn js_error(error: JsValue) -> String {
         .or_else(|| error.as_string())
         .unwrap_or_else(|| "Passkey operation failed or was cancelled".into())
 }
+/// Registers a new passkey: start, browser ceremony, finish.
 async fn register(input: RegistrationStart) -> Result<(), String> {
     let client = Client::browser();
     let challenge = client
@@ -65,6 +71,7 @@ async fn register(input: RegistrationStart) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+/// Signs in with a passkey, returning the authenticated user.
 async fn sign_in() -> Result<User, String> {
     let client = Client::browser();
     let ceremony = client.auth_login_start().await.map_err(|e| e.to_string())?;
@@ -73,6 +80,7 @@ async fn sign_in() -> Result<User, String> {
         .await
         .map_err(|e| e.to_string())
 }
+/// Performs a full page navigation to `path`.
 fn navigate(path: &str) {
     if let Some(window) = web_sys::window() {
         let _ = window.location().set_href(path);
@@ -93,20 +101,24 @@ fn take_invitation() -> Option<String> {
     }
     Some(secret)
 }
+/// Reloads the current page.
 fn reload() {
     if let Some(window) = web_sys::window() {
         let _ = window.location().reload();
     }
 }
 
+/// Busy/error/success state shared by an auth form's actions.
 #[derive(Clone, Copy)]
 struct Feedback {
     busy: RwSignal<bool>,
     error: RwSignal<String>,
     message: RwSignal<String>,
+    /// Incremented after each successful action so views can refetch.
     revision: RwSignal<u32>,
 }
 impl Feedback {
+    /// Creates idle feedback state.
     fn new() -> Self {
         Self {
             busy: create_rw_signal(false),
@@ -115,6 +127,8 @@ impl Feedback {
             revision: create_rw_signal(0),
         }
     }
+    /// Runs `task` unless another action is in progress, showing its success
+    /// message or error. `try_*` setters tolerate the owning view being unmounted.
     fn run(self, task: impl std::future::Future<Output = Result<String, String>> + 'static) {
         if self.busy.get_untracked() {
             return;
@@ -135,6 +149,8 @@ impl Feedback {
             self.busy.try_set(false);
         });
     }
+    /// Sends an account management command and shows any one-time token or
+    /// invitation link it returns.
     fn manage(self, command: Manage) {
         self.run(async move {
             let result = Client::browser()
@@ -152,21 +168,29 @@ impl Feedback {
                 .unwrap_or_else(|| "Saved".into()))
         });
     }
+    /// Renders the current error and success message.
     fn view(self) -> impl IntoView {
         view! { <p role="alert">{move || self.error.get()}</p><pre class="auth-secret" aria-live="polite">{move || self.message.get()}</pre> }
     }
 }
 
+/// Session state owned by `Gate` and shared through context.
 #[derive(Clone, Copy)]
 struct AuthState {
+    /// The initial status and current-user requests have finished.
     loaded: RwSignal<bool>,
+    /// The daemon already has at least one account.
     initialized: RwSignal<bool>,
     current: RwSignal<Option<User>>,
     error: RwSignal<String>,
+    /// An API call reported that the established session is no longer valid.
     expired: RwSignal<bool>,
+    /// Invitation secret taken from the URL fragment at startup.
     invitation: StoredValue<Option<String>>,
 }
 impl AuthState {
+    /// View shown instead of the dashboard: connecting, a load error with retry,
+    /// or the sign-in page.
     fn pending(self) -> View {
         if !self.loaded.get() {
             return view! { <main class="dashboard-main"><p>"Connecting…"</p></main> }.into_view();
@@ -179,8 +203,10 @@ impl AuthState {
     }
 }
 
-/// Keep the router and route definitions mounted for the lifetime of the page.
-/// Only the route view changes when a browser session is established.
+/// Root component. Loads the auth status and current user, provides `AuthState`,
+/// and listens for the client's authentication-required event to show the
+/// session-expired overlay. The router and route definitions stay mounted for the
+/// lifetime of the page; only the route view changes when a session is established.
 #[component]
 pub(super) fn Gate() -> impl IntoView {
     let state = AuthState {
@@ -226,6 +252,8 @@ pub(super) fn Gate() -> impl IntoView {
     }
 }
 
+/// Modal overlay shown when the session expires; signing in again clears
+/// `expired` without remounting the dashboard.
 #[component]
 fn SessionExpired(state: AuthState) -> impl IntoView {
     let feedback = Feedback::new();
@@ -247,6 +275,7 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
     }
 }
 
+/// Renders `DashboardLayout` once a user is signed in, otherwise the pending/sign-in view.
 #[component]
 pub(super) fn ProtectedDashboardLayout() -> impl IntoView {
     let state = use_context::<AuthState>().expect("authentication gate");
@@ -260,12 +289,16 @@ pub(super) fn ProtectedDashboardLayout() -> impl IntoView {
     }
 }
 
+/// Standalone `/dashboard/auth` page (sign-in, registration, device approval).
 #[component]
 pub(super) fn AuthPage() -> impl IntoView {
     let state = use_context::<AuthState>().expect("authentication gate");
     move || state.pending()
 }
 
+/// Authentication page body. Chooses between invitation registration, first-run
+/// setup instructions, passkey sign-in, CLI device approval (`#device` fragment)
+/// and a signed-in landing view.
 #[component]
 fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) -> impl IntoView {
     let feedback = Feedback::new();
@@ -365,12 +398,19 @@ fn DeviceApproval(who: String) -> impl IntoView {
         <Logout/>
     }
 }
+/// Describes where a device request originated; `None` means the local socket.
 fn requester_label(requester: Option<&str>) -> String {
     requester.map_or_else(
         || "the daemon's local Unix socket".into(),
         |address| format!("network address {address}"),
     )
 }
+/// Coarse relative age of a device request.
+///
+/// ```text
+/// 30 -> "less than a minute ago"
+/// 150 -> "2 minutes ago"
+/// ```
 fn age_label(seconds: u32) -> String {
     match seconds / 60 {
         0 => "less than a minute ago".into(),
@@ -379,6 +419,7 @@ fn age_label(seconds: u32) -> String {
     }
 }
 
+/// Sign-out button; an already-invalid session (401) still counts as signed out.
 #[component]
 pub(super) fn Logout() -> impl IntoView {
     let feedback = Feedback::new();
@@ -392,6 +433,8 @@ pub(super) fn Logout() -> impl IntoView {
     })>"Sign out"</button><span role="alert">{move ||feedback.error.get()}</span> }
 }
 
+/// Account administration page. Loads the user directory (reloading after each
+/// successful action) and renders every account plus pending invitations.
 #[component]
 pub(super) fn AccountsPage() -> impl IntoView {
     let feedback = Feedback::new();
@@ -424,11 +467,14 @@ pub(super) fn AccountsPage() -> impl IntoView {
         </fieldset>
     }
 }
+/// Formats Unix seconds in the browser's locale.
 fn timestamp(seconds: i64) -> String {
     js_sys::Date::new(&JsValue::from_f64(seconds as f64 * 1000.0))
         .to_locale_string("default", &JsValue::UNDEFINED)
         .into()
 }
+/// Management card for one user: profile, passkeys, sessions and API tokens,
+/// token creation and account deletion.
 #[component]
 fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoView {
     let id = store_value(user.id.clone());

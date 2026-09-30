@@ -10,6 +10,8 @@ use serde::Serialize;
 use std::io;
 
 // Identity JSON is the common case; keep its implementation in one place.
+// `report!(Type, self, out, { ... })` implements `Report` with `Json = Self` and the
+// block as `render_human`.
 macro_rules! report {
     ($ty:ty, $this:ident, $out:ident, $body:block) => {
         impl Report for $ty {
@@ -20,6 +22,7 @@ macro_rules! report {
     };
 }
 
+/// Daemon status; JSON is the daemon's status, human output adds the transport used.
 pub(crate) struct StatusReport<'a> {
     pub(crate) status: &'a SystemStatus,
     pub(crate) transport: &'a str,
@@ -39,6 +42,7 @@ impl Report for StatusReport<'_> {
     }
 }
 
+/// Effective connection profiles, as a `NAME  ENDPOINT` table.
 #[derive(Serialize)]
 pub(crate) struct ProfilesReport<'a> {
     pub(crate) profiles: Vec<ProfileSummary<'a>>,
@@ -54,9 +58,11 @@ report!(ProfilesReport<'_>, self, out, {
     Ok(())
 });
 
+/// One `app list` row.
 #[derive(Serialize)]
 pub(crate) struct ApplicationRow {
     pub(crate) application: ApplicationSummary,
+    /// `None` when the status request failed (rendered as `unavailable`).
     pub(crate) status: Option<ApplicationStatusView>,
 }
 
@@ -79,6 +85,7 @@ report!(Page<ApplicationRow>, self, out, {
     Ok(())
 });
 
+/// `app show` result: configuration, intent and runtime state, and per-service sources.
 #[derive(Serialize)]
 pub(crate) struct ShowReport<'a> {
     pub(crate) application: &'a ApplicationView,
@@ -144,6 +151,7 @@ report!(ApplicationLogs, self, out, {
     Ok(())
 });
 
+// Build output is joined before cleaning, then printed as log text.
 report!(BuildLogPage, self, out, {
     // ANSI sequences can span capture chunks within this fetched page.
     let text = self
@@ -167,6 +175,7 @@ report!(Page<BuildRecord>, self, out, {
     Ok(())
 });
 
+/// Secret metadata list, flagging unreadable values and pending deletions.
 impl Report for Vec<SecretMetadata> {
     type Json = [SecretMetadata];
     fn json(&self) -> &Self::Json {
@@ -201,6 +210,7 @@ report!(SecretMetadata, self, out, {
     ))
 });
 
+/// Name of a deleted secret.
 #[derive(Serialize)]
 pub(crate) struct SecretDeletionReport<'a> {
     pub(crate) deleted: &'a str,
@@ -264,6 +274,7 @@ report!(AcceptedOperation, self, out, {
     ))
 });
 
+/// Save followed by an awaited deployment; renders like the finished operation.
 #[derive(Serialize)]
 pub(crate) struct SavedDeploymentReport<'a> {
     pub(crate) saved: &'a SavedApplication,
@@ -274,6 +285,7 @@ report!(SavedDeploymentReport<'_>, self, out, {
     self.operation.render_human(out)
 });
 
+/// Accepted reconcile/deploy followed by its awaited outcome; renders like the operation.
 #[derive(Serialize)]
 pub(crate) struct OperationOutcomeReport<'a> {
     pub(crate) accepted: &'a AcceptedOperation,
@@ -284,14 +296,17 @@ report!(OperationOutcomeReport<'_>, self, out, {
     self.operation.render_human(out)
 });
 
+/// Deletion result. `outcome` is present only after waiting; volumes are always retained.
 #[derive(Serialize)]
 pub(crate) struct DeletionReport<'a> {
     accepted: &'a AcceptedOperation,
+    /// `Some("deleted")` once the application is gone; omitted with `--no-wait`.
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<&'static str>,
     volumes_retained: bool,
 }
 impl<'a> DeletionReport<'a> {
+    /// Deletion accepted but not awaited.
     pub(crate) fn accepted(accepted: &'a AcceptedOperation) -> Self {
         Self {
             accepted,
@@ -299,6 +314,7 @@ impl<'a> DeletionReport<'a> {
             volumes_retained: true,
         }
     }
+    /// Deletion awaited until the application disappeared.
     pub(crate) fn completed(accepted: &'a AcceptedOperation) -> Self {
         Self {
             accepted,
@@ -344,6 +360,8 @@ impl Report for ManifestReport {
     }
 }
 
+// Plan rendering: manifest changes, an action summary with per-action risk and
+// reason, then diagnostics.
 report!(PlanView, self, out, {
     out.label("Application", &self.application_id)?;
     if self.identical {
@@ -425,11 +443,22 @@ report!(PlanView, self, out, {
     Ok(())
 });
 
+/// Human rendering of plan change values, which the daemon sends as JSON text.
 struct Configuration;
 impl Configuration {
+    /// Renders a change value, falling back to the raw text when it is not JSON.
     fn value(value: &str) -> String {
         serde_json::from_str(value).map_or_else(|_| value.to_owned(), |value| Self::render(&value))
     }
+    /// Flattens JSON into compact prose: empty values become `none`, image sources
+    /// are shortened, and object keys lose underscores.
+    ///
+    /// ```text
+    /// null / [] / {}                             →  none
+    /// {"type":"image","image":"nginx:1"}        →  image nginx:1
+    /// {"read_only":true,"volume":"data"}         →  read only: true, volume: data
+    /// ["a","b"]                                  →  a, b
+    /// ```
     fn render(value: &serde_json::Value) -> String {
         use serde_json::Value;
         match value {

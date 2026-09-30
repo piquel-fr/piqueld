@@ -18,6 +18,12 @@ use output::{Console, reports::ProfilesReport};
 use std::{process::ExitCode, time::Duration};
 use tokio::time::Instant;
 
+/// Parses arguments, then dispatches in three stages:
+/// 1. `profiles` is answered from loaded profile files without connecting.
+/// 2. Connection settings are resolved; `login` runs under its own device-flow deadline.
+/// 3. Every other command runs under the `--timeout` supervisor.
+///
+/// Errors are rendered to stderr and mapped to `ErrorKind` exit codes.
 #[tokio::main]
 async fn main() -> ExitCode {
     let matches = Cli::command().get_matches();
@@ -114,12 +120,15 @@ async fn run_with_timeout(cli: &Cli, console: &mut Console) -> Result<(), CliErr
     }
 }
 
+/// Adds `duration` to `start`, failing with an input error instead of panicking
+/// when the platform cannot represent the resulting instant.
 fn checked_deadline(start: Instant, duration: Duration) -> Result<Instant, CliError> {
     start
         .checked_add(duration)
         .ok_or_else(|| CliError::new(ErrorKind::Input, "timeout is too large"))
 }
 
+/// Whole-command timeout error, tagged so the report shows timeout sources and hints.
 fn timeout_error(timeout: Duration) -> CliError {
     CliError::new(
         ErrorKind::Unavailable,

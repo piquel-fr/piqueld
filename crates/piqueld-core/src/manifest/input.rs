@@ -127,6 +127,7 @@ pub struct Service {
     pub resources: Option<ResourceLimits>,
 }
 
+/// Serde default for `Service::replicas`.
 fn default_replicas() -> u16 {
     1
 }
@@ -176,6 +177,7 @@ pub enum Build {
     },
 }
 
+/// Serde default for the Docker build context: the repository root.
 fn default_build_context() -> String {
     ".".into()
 }
@@ -282,14 +284,17 @@ impl HealthCheck {
     }
 }
 
+/// Serde default for the HTTP health-check path.
 fn default_health_path() -> String {
     "/health".into()
 }
 
+/// Serde default health-check interval, in seconds.
 fn default_interval() -> u32 {
     10
 }
 
+/// Serde default health-check timeout, in seconds.
 fn default_timeout() -> u32 {
     3
 }

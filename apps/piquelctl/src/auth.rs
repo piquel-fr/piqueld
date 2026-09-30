@@ -16,21 +16,29 @@ use std::{
 /// Upper bound for one device login, regardless of the daemon's `expires_in`.
 const MAX_DEVICE_LOGIN_SECS: u64 = 15 * 60;
 
+/// Private per-user login store (`credentials.json`), keyed by daemon endpoint.
+/// Kept separate from profiles so shareable connection config never holds tokens.
 #[derive(Default, Serialize, Deserialize)]
 pub(crate) struct Credentials {
     endpoints: BTreeMap<String, Endpoint>,
 }
+/// Saved accounts for one daemon endpoint.
 #[derive(Default, Serialize, Deserialize)]
 struct Endpoint {
+    /// Account ID used when `--account` is not given; empty when none remain.
     selected: String,
+    /// Accounts keyed by stable user ID.
     accounts: BTreeMap<String, Account>,
 }
+/// One saved login: display username and its bearer token.
 #[derive(Serialize, Deserialize)]
 struct Account {
     username: String,
     token: String,
 }
 impl Credentials {
+    /// Credentials file location: `PIQUELD_CREDENTIALS_FILE`, else
+    /// `$XDG_CONFIG_HOME/piqueld/credentials.json`, else `$HOME/.config/piqueld/credentials.json`.
     fn path() -> Result<PathBuf> {
         if let Some(path) = std::env::var_os("PIQUELD_CREDENTIALS_FILE") {
             return Ok(path.into());
@@ -47,6 +55,13 @@ impl Credentials {
             })?;
         Ok(root.join("piqueld/credentials.json"))
     }
+    /// Endpoint key that scopes saved logins to one daemon.
+    ///
+    /// ```text
+    /// --url https://ops.example/  →  https://ops.example
+    /// --socket /tmp/p.sock        →  unix:/tmp/p.sock
+    /// (neither)                   →  unix:/run/piqueld/piqueld.sock
+    /// ```
     fn key(cli: &Cli) -> String {
         cli.url.as_ref().map_or_else(
             || {
@@ -61,9 +76,12 @@ impl Credentials {
             |url| url.trim_end_matches('/').to_owned(),
         )
     }
+    /// Reads the credentials file at its default location.
     fn read() -> Result<Self> {
         Self::read_at(&Self::path()?)
     }
+    /// Reads credentials from `path`; a missing file is an empty store. On Unix,
+    /// refuses files with any group or other permission bits so tokens are never silently exposed.
     fn read_at(path: &Path) -> Result<Self> {
         match std::fs::File::open(path) {
             Ok(file) => {
@@ -87,6 +105,8 @@ impl Credentials {
     }
     /// Lock a stable sidecar (never the atomically replaced credentials inode)
     /// across the whole read/modify/write. Network requests happen outside it.
+    /// The new contents are written to a synced temp file and renamed over `path`,
+    /// so readers never observe a partial file.
     fn update_at(path: &Path, update: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
         let parent = path
             .parent()
@@ -113,6 +133,8 @@ impl Credentials {
         file.persist(path).map_err(|e| e.error)?;
         Ok(())
     }
+    /// Removes account `id` under endpoint `key` only if it still holds `token`,
+    /// then reselects the first remaining account if the selected one is gone.
     fn remove(&mut self, key: &str, id: &str, token: &str) {
         if let Some(endpoint) = self.endpoints.get_mut(key) {
             // A login completed while remote revocation was in flight. Keep its
@@ -129,6 +151,9 @@ impl Credentials {
             }
         }
     }
+    /// Finds the active account for the CLI's endpoint: `--account` (matched by ID or
+    /// username) if given, else the endpoint's selected account. Returns `(id, account)`.
+    /// An explicit `--account` with no match is an error rather than an anonymous request.
     fn selected<'a>(&'a self, cli: &Cli) -> Result<Option<(&'a str, &'a Account)>> {
         let endpoint = self.endpoints.get(&Self::key(cli));
         let account = endpoint.and_then(|endpoint| {
@@ -147,6 +172,8 @@ impl Credentials {
         }
         Ok(account)
     }
+    /// Adds a bearer token to `client`: `PIQUELD_TOKEN` wins over the saved login.
+    /// `login` skips this, and without any token the client is returned unchanged.
     pub(crate) fn attach(cli: &Cli, client: Client) -> Result<Client> {
         if matches!(cli.command, Command::Login) {
             return Ok(client);
@@ -168,6 +195,7 @@ impl Credentials {
         })
     }
 }
+/// Authenticated account result, shared by `login` and `whoami`.
 pub(crate) struct AccountReport(pub User);
 impl Report for AccountReport {
     type Json = User;
@@ -178,6 +206,14 @@ impl Report for AccountReport {
         out.line(format_args!("{} ({})", self.0.username, self.0.id))
     }
 }
+/// Runs the browser device-code login:
+/// 1. Refuses when the daemon has no first account yet (that needs the setup link).
+/// 2. Starts a device login and prints the verification URL, code, and requester address.
+/// 3. Polls at the daemon's interval (backing off on `slow_down`) until complete.
+/// 4. Saves the token as the endpoint's selected account and emits it.
+///
+/// Bounded by the daemon's `expires_in` (capped at `MAX_DEVICE_LOGIN_SECS`) and Ctrl-C,
+/// not by `--timeout`, since approval waits on the operator.
 pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     let status = client.auth_status().await?;
     if !status.initialized {
@@ -248,6 +284,9 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
         signal=tokio::signal::ctrl_c()=>{signal?;Err(CliError::new(ErrorKind::Interrupted,"login cancelled"))},
     }
 }
+/// Revokes the current credential on the daemon, then drops its saved copy.
+/// A 401 counts as already revoked. With `PIQUELD_TOKEN` set, only the
+/// environment token is revoked and the credentials file is left untouched.
 pub(crate) async fn logout(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     let saved = if std::env::var_os("PIQUELD_TOKEN").is_none() {
         Credentials::read()?

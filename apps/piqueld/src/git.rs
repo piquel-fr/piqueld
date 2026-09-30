@@ -7,14 +7,23 @@ use tokio::process::Command;
 
 /// A private checkout pinned once, retained until preparation finishes.
 pub(crate) struct Checkout {
+    /// Temporary directory removed when the checkout is dropped.
     directory: tempfile::TempDir,
+    /// Full commit hash actually checked out.
     pub(crate) commit: String,
 }
 
 impl Checkout {
+    /// Clones and pins a repository without recording output.
     pub(crate) async fn clone(repository: &GitRepository) -> anyhow::Result<Self> {
         Self::clone_recorded(repository, None).await
     }
+    /// Clones the repository into a fresh temporary directory and checks out a
+    /// detached commit, streaming Git output into `log` when supplied.
+    ///
+    /// A pinned `commit` is fetched explicitly (the branch may no longer exist);
+    /// otherwise the tip of `branch` is used. The resolved `HEAD` must be a full
+    /// commit hash.
     async fn clone_recorded(
         repository: &GitRepository,
         log: Option<&crate::build::BuildLog>,
@@ -73,6 +82,8 @@ impl Checkout {
         Ok(Self { directory, commit })
     }
 
+    /// Builds a hardened `git` command: restricted transports, no interactive
+    /// prompts, hooks disabled, and killed if the future is dropped.
     fn command() -> Command {
         let mut command = Command::new("git");
         // Inherit host credentials while excluding executable transport helpers, even
@@ -87,10 +98,20 @@ impl Checkout {
         command
     }
 
+    /// Working tree root inside the temporary directory.
     pub(crate) fn root(&self) -> PathBuf {
         self.directory.path().join("repository")
     }
 
+    /// Resolves a manifest-relative path to an existing canonical path inside the
+    /// working tree. Symlinks are followed, so anything escaping the checkout or
+    /// pointing into `.git` is rejected.
+    ///
+    /// ```text
+    /// "./Dockerfile"       -> <checkout>/repository/Dockerfile
+    /// "../Dockerfile"      -> error (leaves the repository)
+    /// "link-to-etc/passwd" -> error (symlink escapes the checkout)
+    /// ```
     pub(crate) async fn path(&self, relative: &str) -> anyhow::Result<PathBuf> {
         if !valid_repository_path(relative) {
             bail!("path must remain within the repository root");
@@ -115,6 +136,9 @@ impl Checkout {
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
         Self::prepare_recorded(repository, build, docker, None).await
     }
+    /// Same as [`Checkout::prepare`], streaming Git and Docker output into `log`
+    /// and recording the resolved commit on it when supplied. Returns the commit and
+    /// built image ID; the checkout is removed once the build finishes.
     pub(crate) async fn prepare_recorded(
         repository: &GitRepository,
         build: &piqueld_core::manifest::Build,

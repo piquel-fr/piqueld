@@ -6,6 +6,8 @@ use serde_json::Value;
 use std::sync::Arc;
 use utoipa::{OpenApi, ToResponse};
 
+// Base document: API metadata plus schemas not reachable from any route.
+// Paths are merged in by `documented_router`.
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -42,6 +44,7 @@ use utoipa::{OpenApi, ToResponse};
 )]
 struct ApiDoc;
 
+/// Returns the path-less base document that `documented_router` extends.
 pub(super) fn base_document() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
 }
@@ -54,6 +57,7 @@ pub(super) fn base_document() -> utoipa::openapi::OpenApi {
 #[response(description = "Structured, sanitized error")]
 pub(super) struct ApiErrorResponse(ErrorBody);
 
+// Serves the precomputed `OpenAPI` 3.0 document installed by `finish_router`.
 #[utoipa::path(
     get,
     path = "/api/v1/openapi.json",
@@ -83,6 +87,12 @@ pub fn openapi_document() -> Value {
     openapi_30_document(&super::documented_router().into_openapi())
 }
 
+/// Serializes Utoipa's `OpenAPI` 3.1 output as the published 3.0.3 contract.
+///
+/// Besides schema downgrading, it drops the license `identifier` (3.1 only),
+/// declares bearer-token and session-cookie security for every operation,
+/// clears security on public endpoints (see `auth::is_public`), strips
+/// `nullable` from optional parameters, and documents the TCP 403 response.
 pub(super) fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value {
     let mut document = serde_json::to_value(document).expect("OpenAPI serialization cannot fail");
     convert_to_openapi_30(&mut document);
@@ -113,6 +123,17 @@ pub(super) fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value 
 }
 
 /// Converts Utoipa's JSON Schema output to its `OpenAPI` 3.0 equivalent.
+///
+/// Recursively rewrites nullability, since 3.0 has no `null` type:
+///
+/// ```text
+/// {"type": ["string", "null"]}              -> {"type": "string", "nullable": true}
+/// {"oneOf": [{"$ref": R}, {"type": "null"}]} -> {"oneOf": [{"$ref": R}, <nullable null enum>]}
+/// {"oneOf": [{inline}, {"type": "null"}]}   -> {inline..., "nullable": true}
+/// ```
+///
+/// References cannot carry `nullable` in 3.0 (siblings of `$ref` are ignored),
+/// so they keep a `oneOf` with a null-only alternative.
 fn convert_to_openapi_30(value: &mut Value) {
     match value {
         Value::Array(values) => {
@@ -181,7 +202,8 @@ fn convert_to_openapi_30(value: &mut Value) {
     }
 }
 
-/// Adds the TCP middleware error to every documented endpoint.
+/// Adds the 403 returned by the TCP browser trust middleware
+/// (`browser::BrowserPolicy`) to every documented operation.
 fn complete_http_contract(document: &mut Value) {
     let Some(paths) = document.get_mut("paths").and_then(Value::as_object_mut) else {
         return;
@@ -201,6 +223,7 @@ fn complete_http_contract(document: &mut Value) {
     }
 }
 
+/// Optional HTTP parameters are absent rather than represented as JSON null.
 fn remove_nullable_parameters(document: &mut Value) {
     let Some(paths) = document.get_mut("paths").and_then(Value::as_object_mut) else {
         return;

@@ -8,11 +8,18 @@ use super::{
     async_trait, resolve_image_digest, stream,
 };
 
+/// Inspections attempted before an incomplete network response is an error.
 const NETWORK_INSPECT_ATTEMPTS: usize = 10;
+/// Pause between incomplete network inspections.
 const NETWORK_INSPECT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl BollardDocker {
     /// Inspects networks and retains their ID-to-name mapping for services.
+    ///
+    /// Networks are listed by ownership label and by readable name prefix,
+    /// deduplicated, then fully inspected concurrently. Networks that vanish
+    /// mid-observation are skipped. The returned map covers every inspected
+    /// network, while the observations keep only those `relevant` to the app.
     async fn snapshot_networks(
         &self,
         application: &ApplicationId,
@@ -86,6 +93,10 @@ impl BollardDocker {
         Ok((networks, network_names))
     }
 
+    /// Lists volumes by ownership label and by readable name prefix,
+    /// deduplicated by name, and keeps those `relevant` to the application.
+    ///
+    /// Volumes are observed from the list responses without further inspection.
     async fn snapshot_volumes(
         &self,
         application: &ApplicationId,
@@ -138,6 +149,11 @@ impl BollardDocker {
         Ok(volumes)
     }
 
+    /// Lists services by ownership label and by readable name prefix, then
+    /// fully inspects each one concurrently.
+    ///
+    /// Returns the inspected services (skipping any that vanished) and the
+    /// names of every listed service, used to filter the task listing.
     async fn inspect_application_services(
         &self,
         application: &ApplicationId,
@@ -199,6 +215,13 @@ impl BollardDocker {
         Ok((raw_services, service_names))
     }
 
+    /// Observes the application's services together with their tasks.
+    ///
+    /// 1. Inspect candidate services and list all of their tasks at once.
+    /// 2. Read container health for running, health-checked tasks.
+    /// 3. Keep `relevant` services and convert each with its own tasks, checking
+    ///    placement against the local `node_id`.
+    /// 4. Replace network IDs in each service with names from `network_names`.
     async fn snapshot_services(
         &self,
         application: &ApplicationId,
@@ -275,6 +298,9 @@ impl BollardDocker {
 
     /// List responses can omit immutable network fields, so reconciliation
     /// decisions must use a complete inspection of the selected resource.
+    ///
+    /// Retries while the inspection lacks a driver or `attachable` flag, up to
+    /// `NETWORK_INSPECT_ATTEMPTS`. Returns `None` when the network is gone.
     async fn inspect_network_complete(
         &self,
         identifier: &str,
@@ -363,6 +389,9 @@ impl DockerApi for BollardDocker {
             )
             .await
     }
+    /// Accepts an existing single-node manager as `Ready`. An inactive node is
+    /// initialized (loopback-only) when `auto_initialize` is set, then
+    /// re-verified; any other node state is `NotManager`.
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError> {
         DockerTimeout::Request
             .run("ensure Docker Swarm", async {
@@ -411,6 +440,8 @@ impl DockerApi for BollardDocker {
         context: &std::path::Path,
         log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
+        // Builds shell out to the Docker CLI against the same socket and read
+        // the image ID Docker writes to `--iidfile`, e.g. `sha256:<64 hex>`.
         use anyhow::Context;
         let result = async {
             if !dockerfile.is_file() || !context.is_dir() {
@@ -478,6 +509,10 @@ impl DockerApi for BollardDocker {
             .await
     }
 
+    /// Creates the overlay network, or verifies an existing one with the same
+    /// name: foreign ownership, a wrong resource role, or a non-canonical name is
+    /// `OwnershipConflict`, and mismatched immutable settings are
+    /// `ConfigurationConflict`.
     async fn ensure_network(&self, desired: &DesiredNetwork) -> Result<(), DockerError> {
         DockerTimeout::Request
             .run("ensure network", async {
@@ -543,6 +578,8 @@ impl DockerApi for BollardDocker {
             .await
     }
 
+    /// Creates the local volume, or verifies an existing one with the same
+    /// name using the same ownership and configuration rules as networks.
     async fn ensure_volume(&self, desired: &DesiredVolume) -> Result<(), DockerError> {
         DockerTimeout::Request
             .run("ensure volume", async {
@@ -596,6 +633,16 @@ impl DockerApi for BollardDocker {
             .await
     }
 
+    /// Creates the service, or updates an owned one whose observed state no
+    /// longer matches `desired`.
+    ///
+    /// 1. Build the desired spec pinned to the local node, attaching owned secret
+    ///    references by ID.
+    /// 2. If a service with the name exists, inspect it completely, reject
+    ///    foreign ownership, and translate its network IDs to names.
+    /// 3. Return early when the observation already matches; otherwise update
+    ///    the inspected service ID at its inspected version. A service that
+    ///    vanished is recreated.
     async fn ensure_service(&self, desired: &DesiredService) -> Result<(), DockerError> {
         DockerTimeout::Request
             .run(
@@ -697,6 +744,8 @@ impl DockerApi for BollardDocker {
             .await
     }
 
+    /// Removes the service by its inspected ID after rechecking ownership and
+    /// canonical name. A missing service counts as removed.
     async fn remove_service(
         &self,
         name: &str,
@@ -737,6 +786,8 @@ impl DockerApi for BollardDocker {
             })
             .await
     }
+    /// Removes the private network by its inspected ID after rechecking
+    /// ownership, role, and canonical name. A missing network counts as removed.
     async fn remove_network(
         &self,
         name: &str,

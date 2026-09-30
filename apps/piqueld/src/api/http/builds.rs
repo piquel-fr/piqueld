@@ -14,12 +14,19 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in=Query)]
 pub(super) struct BuildQuery {
+    /// Only include builds for this application.
     application_id: Option<String>,
+    /// `next_cursor` from a previous page.
     cursor: Option<String>,
+    /// Page size; defaults to 50.
     #[param(minimum = 1, maximum = 100)]
     limit: Option<usize>,
 }
 
+/// Lists Git source builds, newest first.
+///
+/// Optionally filtered to one application. Follow `next_cursor` to load older
+/// builds.
 #[utoipa::path(get,path="/api/v1/builds",operation_id="listBuilds",params(BuildQuery),
     responses((status=200,description="Build history, newest first",body=Envelope<Page<BuildRecord>>),
     (status=400,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
@@ -48,9 +55,15 @@ pub(super) async fn list(
 #[serde(default, deny_unknown_fields)]
 #[into_params(parameter_in=Query)]
 pub(super) struct OutputQuery {
+    /// `previous_offset` from a previous page, to load older output.
     before: Option<i64>,
+    /// Only include this output stream.
     stream: Option<piqueld_core::api::LogStream>,
 }
+/// Gets captured output for one build.
+///
+/// Returns the newest bounded page of output in chronological order. Pass the
+/// page's `previous_offset` as `before` to load older output.
 #[utoipa::path(get,path="/api/v1/builds/{id}/logs",operation_id="buildLogs",params(("id"=i64,Path),OutputQuery), responses((status=200,description="Bounded build output",body=Envelope<BuildLogPage>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn logs(
     State(state): State<ApiState>,

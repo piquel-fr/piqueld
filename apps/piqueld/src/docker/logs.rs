@@ -16,6 +16,16 @@ use std::{
 };
 
 impl BollardDocker {
+    /// Reads a bounded, merged log window for one application's services.
+    ///
+    /// 1. Resolve the managed services (optionally a single logical service).
+    /// 2. List their tasks and read each task container's timestamped output,
+    ///    at most `tail + 1` lines per container since `since` seconds ago.
+    /// 3. Stop early past 256 tasks or about 1 MiB of accounted output.
+    /// 4. Sort by timestamp then task ID and keep the newest `tail` records.
+    ///
+    /// `truncated` is set whenever records were skipped: tasks without a
+    /// container or known service, vanished containers, or any limit hit.
     pub(super) async fn read_logs(
         &self,
         instance: &InstanceId,
@@ -70,6 +80,8 @@ impl BollardDocker {
                         .stderr(stream != Some(piqueld_core::api::LogStream::Stdout))
                         .timestamps(true)
                         .since(since)
+                        // One extra line reveals whether this container
+                        // alone already exceeds the requested tail.
                         .tail(&(u32::from(tail) + 1).to_string())
                         .build(),
                 ),
@@ -95,8 +107,12 @@ impl BollardDocker {
                     continue;
                 }
                 for line in item.to_string().lines() {
+                    // Docker prefixes each line with an RFC 3339 timestamp:
+                    // `2026-01-01T00:00:00.000000000Z message`.
                     let (timestamp, message) = line.split_once(' ').unwrap_or(("", line));
                     let message = LogRecord::clean_message(message);
+                    // Approximates the serialized record size, with 128
+                    // bytes of per-record overhead.
                     bytes = bytes.saturating_add(
                         message.len() + timestamp.len() + task_id.len() + service.len() + 128,
                     );
@@ -125,6 +141,8 @@ impl BollardDocker {
         Ok(result)
     }
 
+    /// Converts a look-back window in seconds into Docker's absolute `since`
+    /// Unix timestamp, saturating at `i32::MAX`.
     fn log_since(window: u32) -> i32 {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -134,6 +152,8 @@ impl BollardDocker {
         i32::try_from(timestamp).unwrap_or(i32::MAX)
     }
 
+    /// Maps service IDs to logical service names for the application's
+    /// managed services, filtered to `service` when one is requested.
     async fn log_services(
         &self,
         instance: &InstanceId,

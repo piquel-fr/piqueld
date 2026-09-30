@@ -1,3 +1,4 @@
+//! Metrics listener and webhook notification settings.
 use super::ConfigError;
 use piqueld_core::observability::NotificationCategory;
 use serde::Deserialize;
@@ -51,6 +52,9 @@ impl Default for NotificationConfig {
     }
 }
 impl NotificationConfig {
+    /// Checks timing bounds and that each destination has a unique name of
+    /// 1..=63 bytes and a URL using HTTPS (or HTTP on loopback) with a host and no
+    /// userinfo or fragment.
     pub(super) fn validate(&self) -> Result<(), ConfigError> {
         if self.failure_threshold_seconds > 86_400
             || !(1..=604_800).contains(&self.retry_window_seconds)
@@ -90,6 +94,7 @@ impl NotificationConfig {
         }
         Ok(())
     }
+    /// Whether notifications are on globally and for this category.
     pub(crate) fn category_enabled(&self, category: NotificationCategory) -> bool {
         self.enabled
             && match category {
@@ -100,6 +105,7 @@ impl NotificationConfig {
                 NotificationCategory::Recovery => self.recovery,
             }
     }
+    /// Lists the categories that would currently notify; empty when disabled.
     pub(crate) fn enabled_categories(&self) -> Vec<NotificationCategory> {
         [
             NotificationCategory::BuildFailures,
@@ -138,6 +144,7 @@ pub struct WebhookDestination {
     #[serde(default)]
     pub kind: WebhookKind,
 }
+/// Serde default that enables destinations unless configured otherwise.
 const fn enabled() -> bool {
     true
 }

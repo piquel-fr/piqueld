@@ -121,6 +121,8 @@ impl Mutation {
         }
     }
 
+    /// Normalizes under the `pending-application` placeholder ID; the store
+    /// replaces it with the real (existing or newly minted) ID on acceptance.
     fn pending_application(manifest: ValidatedApplication) -> NormalizedApplication {
         manifest
             .normalize(ApplicationId::parse("pending-application").expect("valid placeholder ID"))
@@ -138,9 +140,12 @@ impl Mutation {
 /// the database layer to know about the controller.
 #[derive(Clone)]
 pub struct ApplicationService {
+    /// Managed ingress state, reported by readiness and used by plan previews.
     ingress: Option<Arc<crate::ingress::Ingress>>,
+    /// Effective host settings exposed read-only; `None` unless attached at startup.
     configuration: Option<Arc<piqueld_core::api::HostConfiguration>>,
     store: Arc<Store>,
+    /// Docker/Swarm adapter used for runtime requests and reconciliation wakeups.
     runtime: Arc<dyn RuntimeBoundary>,
 }
 
@@ -212,6 +217,13 @@ impl ApplicationService {
     }
 
     /// Removes an unreferenced secret and all of its runtime versions.
+    ///
+    /// 1. Reserves the secret for deletion (checking generation and references).
+    /// 2. Journals a `remove_secrets` action and removes the Swarm secret versions.
+    /// 3. Records the action outcome, then deletes the stored rows.
+    ///
+    /// A failed runtime cleanup leaves the reservation in place, so retrying the
+    /// deletion resumes it (see `secret_deleting`).
     ///
     /// # Errors
     /// Returns when the secret is referenced or storage or runtime cleanup fails.
@@ -285,6 +297,7 @@ impl ApplicationService {
                 return Err(ApplicationError::PreconditionRequired);
             }
         }
+        // Request IDs are idempotency keys: 1–128 chars of `[A-Za-z0-9-_.:]`.
         if request_id.is_some_and(|id| {
             id.is_empty()
                 || id.len() > 128

@@ -3,6 +3,7 @@ use super::{ApplicationId, NormalizedApplication, Operation, Store, StoreError, 
 use piqueld_core::api::{DeploymentView, Page, SavedApplication};
 use sqlx::{Sqlite, Transaction};
 
+/// `deployments` row shared by the first-page and cursor page queries.
 struct DeploymentRow {
     id: String,
     manifest_json: String,
@@ -10,6 +11,11 @@ struct DeploymentRow {
 }
 
 impl Store {
+    /// Saves edited configuration with the next generation without creating an
+    /// operation, so nothing is deployed until requested. New applications start
+    /// as `not_deployed`. Returns `IllegalTransition` while deletion is pending,
+    /// `AlreadyExists` for a taken name, and `SecretDeleting` for manifests that
+    /// reference secrets being deleted.
     pub(super) async fn save_configuration_on(
         tx: &mut Transaction<'_, Sqlite>,
         app: &NormalizedApplication,
@@ -37,6 +43,8 @@ impl Store {
         })
     }
 
+    /// Snapshots the application's current manifest as the immutable input of
+    /// operation `id`. The deployment row shares the operation's ID.
     pub(super) async fn capture_deployment(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
@@ -58,6 +66,7 @@ impl Store {
         serde_json::from_str(&json).map_err(StoreError::corrupt)
     }
 
+    /// Loads operation `id` and records its current attempt outcome.
     pub(super) async fn record_deployment_attempt(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
@@ -66,6 +75,9 @@ impl Store {
         Self::save_deployment_attempt(tx, &op).await
     }
 
+    /// Upserts the outcome of the operation's current attempt in deployment
+    /// history, and stamps the deployment's first success time when it succeeded.
+    /// Operations without a deployment row (deletes) record nothing.
     pub(super) async fn save_deployment_attempt(
         tx: &mut Transaction<'_, Sqlite>,
         op: &Operation,

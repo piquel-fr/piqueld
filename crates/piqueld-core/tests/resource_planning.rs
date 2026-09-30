@@ -410,6 +410,20 @@ fn drift_fields_are_granular_for_command_and_arguments() {
 }
 
 #[test]
+fn unsupported_observed_healthcheck_is_healthcheck_drift() {
+    let app = application();
+    let mut desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    desired.services[0].healthcheck = None;
+    // Docker reports a health check that piqueld cannot represent.
+    let mut drifted = observed(&desired);
+    drifted.services[0].healthcheck_configured = true;
+    assert_eq!(
+        drifted.services[0].drift(&desired.services[0]),
+        ["healthcheck"]
+    );
+}
+
+#[test]
 fn obsolete_cleanup_is_gated_and_reports_deferred_diagnostics() {
     let app = application();
     let desired = compile_application(&app, instance(), &resolutions()).unwrap();

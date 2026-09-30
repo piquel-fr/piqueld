@@ -2,6 +2,16 @@
 
 // Validators stay with the owning type; the macro only supplies identical
 // construction, wire-format, and standard-trait implementations.
+//
+// Each invocation declares a `String` newtype plus a unit error type. The only way to
+// build the newtype is `parse` (also used by `Deserialize` and `FromStr`), so every
+// value in memory has passed `$validate`. Doc attributes on the newtype feed the
+// generated `OpenAPI` schema.
+//
+//     validated_string!(
+//         /// Docs for the newtype.
+//         Name, NameError, "error message", |value: &str| !value.is_empty()
+//     );
 macro_rules! validated_string {
     ($(#[$meta:meta])* $name:ident, $error:ident, $message:literal, $validate:expr) => {
         #[doc = concat!("Invalid `", stringify!($name), "` input.")]

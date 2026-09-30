@@ -7,17 +7,22 @@ use leptos::{
 };
 use std::collections::BTreeSet;
 
+/// The editor location to restore if the user cancels a back/forward navigation.
 #[derive(Clone)]
 struct GuardedLocation {
+    /// The editor's dirty form groups; navigation is only guarded while non-empty.
     dirty: RwSignal<BTreeSet<String>>,
     url: String,
     state: leptos::wasm_bindgen::JsValue,
 }
 
+/// App-wide `popstate` guard; holds the active editor's location while one is mounted.
 #[derive(Clone, Copy)]
 pub(in crate::browser) struct HistoryGuard(RwSignal<Option<GuardedLocation>>);
 impl HistoryGuard {
-    /// Window-targeted history events must be intercepted before the router's listener.
+    /// Installs the guard as context; must run before the router mounts because
+    /// window-targeted history events must be intercepted before the router's listener.
+    /// A cancelled `popstate` re-pushes the saved editor URL and history state.
     pub(in crate::browser) fn install() {
         let guard = Self(create_rw_signal(None::<GuardedLocation>));
         provide_context(guard);
@@ -40,6 +45,10 @@ impl HistoryGuard {
     }
 }
 
+/// Asks for confirmation before leaving an editor with unsaved edits, covering
+/// page unload (`beforeunload`), back/forward (via `HistoryGuard`), and link clicks
+/// (a capturing document `click` listener; `download` links are exempt).
+/// All listeners are removed when the editor unmounts.
 pub(super) fn guard_navigation(dirty: RwSignal<BTreeSet<String>>) {
     let listener = window_event_listener(ev::beforeunload, move |event| {
         if !dirty.get_untracked().is_empty() {

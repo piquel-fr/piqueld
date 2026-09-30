@@ -105,6 +105,8 @@ pub struct DaemonStats {
     pub failed_deliveries: i64,
 }
 
+// Declares a string-backed enum whose serde names, `as_str`, `parse`, and `Display`
+// all come from one `Variant => "wire"` list, keeping storage and API values in sync.
 macro_rules! notification_values {
     ($(#[$meta:meta])* $name:ident { $($(#[$variant_meta:meta])* $variant:ident => $value:literal),+ $(,)? }) => {
         $(#[$meta])*
