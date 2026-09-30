@@ -1,5 +1,14 @@
 use crate::{Client, ClientError, SecretMetadata, client::generated_result};
 impl Client {
+    /// Recovers from a lost master key by discarding every application's stored values.
+    /// # Errors
+    /// Returns an API error if the current key still works, or transport errors.
+    pub async fn recover_secret_key(&self) -> Result<crate::SecretKeyRecovery, ClientError> {
+        generated_result(self.generated.recover_secret_key().await)
+            .await
+            .map(|response| response.data)
+    }
+
     /// Lists metadata without retrieving secret values.
     /// # Errors
     /// Returns transport, decoding or API errors.

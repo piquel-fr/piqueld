@@ -13,6 +13,14 @@ pub enum OperationError {
     /// Secret values could not be decrypted with the configured master key.
     #[error("secret storage is unavailable")]
     SecretStorageUnavailable(#[source] crate::store::StoreError),
+    /// Logical names whose values must be replaced before a new deployment.
+    #[error(
+        "secret values unavailable: {names}; supply replacement values and start a new deployment"
+    )]
+    SecretUnavailable {
+        /// Logical names only, never values.
+        names: String,
+    },
     /// Repository input could not be located or decoded.
     #[error("{}", if *.not_found { "manifest not found" } else { "repository manifest is invalid or its application name does not match" })]
     ManifestInput {
@@ -92,6 +100,7 @@ impl OperationError {
             Self::Docker(error) => error.diagnostic_code(),
             Self::Journal(_) => DiagnosticCode::JournalUnavailable,
             Self::SecretStorageUnavailable(_) => DiagnosticCode::SecretStorageUnavailable,
+            Self::SecretUnavailable { .. } => DiagnosticCode::SecretUnavailable,
             Self::ManifestInput {
                 not_found: true, ..
             }
@@ -180,6 +189,9 @@ impl From<crate::store::StoreError> for OperationError {
         match error {
             error @ crate::store::StoreError::SecretSource(_) => {
                 Self::SecretStorageUnavailable(error)
+            }
+            crate::store::StoreError::SecretUnavailable { names } => {
+                Self::SecretUnavailable { names }
             }
             other => Self::Journal(other),
         }

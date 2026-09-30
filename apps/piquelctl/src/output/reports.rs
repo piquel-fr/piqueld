@@ -175,9 +175,14 @@ impl Report for Vec<SecretMetadata> {
     fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
         for secret in self {
             out.line(format_args!(
-                "{}  generation {}{}",
+                "{}  generation {}{}{}",
                 secret.name,
                 secret.generation,
+                if secret.unavailable {
+                    "  value unavailable; replace value and deploy"
+                } else {
+                    ""
+                },
                 if secret.deleting {
                     "  deletion pending; retry delete"
                 } else {
@@ -444,3 +449,14 @@ impl Configuration {
         }
     }
 }
+
+report!(piqueld_client::SecretKeyRecovery, self, out, {
+    out.line(format_args!(
+        "Secret key recovered: {} values discarded across {} secrets in {} applications.",
+        self.discarded_versions, self.affected_secrets, self.affected_applications,
+    ))?;
+    out.line(
+        "Running services keep their Docker secrets. Supply replacement values, then deploy.",
+    )?;
+    out.line("The next stored value generates a new key; back it up with the database.")
+});

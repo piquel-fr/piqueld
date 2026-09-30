@@ -496,4 +496,18 @@ pub struct SecretMetadata {
     /// Cleanup has started; retry deletion to finish it. Replacement is disabled.
     #[serde(default)]
     pub deleting: bool,
+    /// The current value was discarded by lost-key recovery; supply a new version.
+    #[serde(default)]
+    pub unavailable: bool,
+}
+
+/// Metadata-only result of lost-key recovery. Never rotates application credentials.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SecretKeyRecovery {
+    /// Applications whose stored values were discarded.
+    pub affected_applications: i64,
+    /// Logical secrets whose stored values were discarded.
+    pub affected_secrets: i64,
+    /// Stored versions discarded; already unavailable versions are excluded.
+    pub discarded_versions: i64,
 }

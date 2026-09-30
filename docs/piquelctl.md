@@ -372,3 +372,16 @@ real use. `--expected-generation` pins a write to inspected metadata; otherwise
 the CLI reads the current generation before confirming. `--json` returns only
 metadata. Replacement creates a new version for a later Deploy and does not
 change running deployments. Deletion refuses saved or runnable references.
+
+If the daemon's `secrets.key` is lost and no backup exists, recover by discarding
+stored values across ALL applications:
+
+```sh
+piquelctl secrets recover-key --yes
+```
+
+The command requires confirmation (`--yes` for automation), refuses while the
+current key still works, and reports affected application, secret and version
+counts. Running Docker services are left alone. `app secret APP list` marks
+discarded values as unavailable; set replacement values using the same names, then
+Deploy explicitly.

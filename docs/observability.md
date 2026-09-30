@@ -17,7 +17,9 @@ an API deletion (application-owned, without an operation) or application deletio
 A missing, unreadable or non-matching master key produces a daemon-scoped
 `secret_storage_unavailable` diagnostic whose causal fact names the key condition.
 Deployments decrypt values before their service request, so this failure is never
-reported as a Docker error.
+reported as a Docker error. Lost-key recovery records a daemon-scoped
+`secret_key_recovered` event with value counts, and `secret_values_discarded` in
+each affected application's history.
 
 An operation groups execution attempts; an attempt groups actions. Action events
 carry an action ID, operation ID, application ID, generation, attempt, phase,

@@ -102,6 +102,17 @@ impl ApiError {
                 "Secret changed since inspection; read its metadata and retry",
             )
             .details(json!({"expected_generation": expected, "actual_generation": actual})),
+            StoreError::SecretUnavailable { names } => Self::new(
+                StatusCode::CONFLICT,
+                "secret_unavailable",
+                "Supply replacement secret values and start a new deployment",
+            )
+            .details(json!({"names": names})),
+            StoreError::SecretKeyUsable => Self::new(
+                StatusCode::CONFLICT,
+                "secret_key_usable",
+                "The secret master key still works; recovery would discard values needlessly",
+            ),
             error @ StoreError::SecretSource(_) => {
                 let diagnostic = crate::operations::OperationError::from(error).diagnostic();
                 let mut error = Self::new(
@@ -139,6 +150,8 @@ impl From<StoreError> for ApiError {
             StoreError::Validation(errors) => errors.into(),
             StoreError::Edit(error) => error.into(),
             error @ (StoreError::SecretVersionConflict { .. }
+            | StoreError::SecretUnavailable { .. }
+            | StoreError::SecretKeyUsable
             | StoreError::SecretSource(_)
             | StoreError::SecretDeleting
             | StoreError::SecretQuota
@@ -430,6 +443,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(routes!(builds::list))
         .routes(routes!(builds::logs))
         .routes(routes!(operations::get))
+        .routes(routes!(secrets::recover_key))
         .routes(routes!(secrets::list))
         .routes(routes!(secrets::put, secrets::delete))
 }

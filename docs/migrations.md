@@ -80,6 +80,10 @@ master-key verifier. Existing ciphertext is authenticated on the first value
 write before binding the key. Failed cleanup remains reserved across restarts;
 retry deletion to finish it.
 
+Migration 0009 retains secret-version identities after lost-key recovery, marking
+discarded values unavailable without changing pins. Unavailable values are
+excluded from retained-value quotas.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

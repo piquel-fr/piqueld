@@ -115,3 +115,30 @@ impl SecretAction {
         Ok(bytes)
     }
 }
+
+/// Daemon-wide operations, distinct from application-scoped secret values.
+#[derive(Debug, Subcommand)]
+pub(crate) enum KeyAction {
+    /// Recover from a lost master key by discarding ALL stored values, for every application.
+    RecoverKey {
+        /// Confirm recovery without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+impl KeyAction {
+    pub(crate) async fn run(
+        &self,
+        cli: &Cli,
+        client: &Client,
+        console: &mut Console,
+    ) -> Result<()> {
+        let Self::RecoverKey { yes } = self;
+        let message = "Discard stored secret values for ALL applications? Running services keep their Docker secrets; replacement values and a new deploy are required. [y/N] ";
+        // Print scope even with --yes; the confirmation helper skips its prompt then.
+        console.warning(message.trim_end_matches(" [y/N] "))?;
+        confirm(console, cli.noninteractive, *yes, message).await?;
+        console.emit(&client.recover_secret_key().await?)
+    }
+}

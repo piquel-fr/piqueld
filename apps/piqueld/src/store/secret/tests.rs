@@ -374,3 +374,74 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
     );
     assert!(!directory.path().join("secrets.key").exists());
 }
+
+#[tokio::test]
+async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
+    let temp = tempfile::tempdir().unwrap();
+    let key = temp.path().join("secrets.key");
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let app = with_secret(&application());
+    let deployed = store.save_application(&app, None, None).await.unwrap();
+    store
+        .put_secret(app.id(), "token", 0, b"original".to_vec())
+        .await
+        .unwrap();
+    let pinned = store.pin_secrets(&deployed.id, &app).await.unwrap();
+    assert!(matches!(
+        store.recover_secret_key().await,
+        Err(StoreError::SecretKeyUsable)
+    ));
+    assert_eq!(
+        &*store
+            .secret_plaintext(app.id(), &pinned["token"])
+            .await
+            .unwrap(),
+        b"original"
+    );
+
+    std::fs::write(&key, [42; 32]).unwrap();
+    let recovery = store.recover_secret_key().await.unwrap();
+    assert_eq!(
+        (
+            recovery.affected_applications,
+            recovery.affected_secrets,
+            recovery.discarded_versions
+        ),
+        (1, 1, 1)
+    );
+    assert!(!key.exists());
+    let retired = std::fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.to_string_lossy().contains("secrets.key.retired-"))
+        .expect("the unusable key is kept aside");
+    assert_eq!(std::fs::read(retired).unwrap(), [42; 32]);
+    assert!(store.secrets(app.id()).await.unwrap()[0].unavailable);
+    assert!(matches!(
+        store.secret_plaintext(app.id(), &pinned["token"]).await,
+        Err(StoreError::SecretUnavailable { names }) if names == "token"
+    ));
+    assert!(matches!(
+        store.pin_secrets(&deployed.id, &app).await,
+        Err(StoreError::SecretUnavailable { .. })
+    ));
+
+    store
+        .put_secret(app.id(), "token", 1, b"replacement".to_vec())
+        .await
+        .unwrap();
+    assert!(key.exists(), "the first new value generates a key");
+    let redeployed = store.save_application(&app, None, None).await.unwrap();
+    let pins = store.pin_secrets(&redeployed.id, &app).await.unwrap();
+    assert_eq!(
+        &*store
+            .secret_plaintext(app.id(), &pins["token"])
+            .await
+            .unwrap(),
+        b"replacement"
+    );
+    assert!(matches!(
+        store.recover_secret_key().await,
+        Err(StoreError::SecretKeyUsable)
+    ));
+}

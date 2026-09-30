@@ -128,8 +128,8 @@ destinations, metrics exposure, diagnostic ownership and retention semantics.
 The first secret write creates `secrets.key` in `server.data_dir`, atomically and
 with mode 0600. It holds a 32-byte master key. Back up this key together with the
 database; losing it makes encrypted values unrecoverable. Once the database has
-accepted a secret, a missing key is never regenerated, even after all secrets are
-deleted. New writes authenticate a persistent key
+accepted a secret, a missing key is only regenerated after explicit lost-key
+recovery, even when all secrets are deleted. New writes authenticate a persistent key
 verifier; replacing the key with a different valid 32-byte file fails closed.
 On upgrade, all existing ciphertext is authenticated before creating the verifier.
 Restore the original key, owned by the daemon user with private permissions.
@@ -141,3 +141,19 @@ to application, logical name and version. The implementation uses
 [RustCrypto's existing AEAD implementation](https://docs.rs/chacha20poly1305/0.10.1/chacha20poly1305/).
 Docker receives values only when provisioning a service's immutable secret file
 versions. File mounts use Docker's read-only 0444 permissions inside the container.
+
+### Recovering from a lost key
+
+Restore `secrets.key` from backup whenever possible. If it cannot be recovered,
+`piquelctl secrets recover-key --yes` discards **all stored values for every
+application on the daemon**. It refuses while the current key still works.
+Names, generations, file references and deployment history remain; discarded
+versions are marked unavailable. Docker secrets and running services are left in
+place. An unusable key file is renamed to `secrets.key.retired-<ms>` rather than
+deleted, since it may match another database backup.
+
+Supply new values under the existing names, then explicitly Deploy. The first new
+value generates a fresh key. Deployments pinned to discarded values fail with
+`secret_unavailable` before changing running services. Recovery replaces the
+storage key, not the passwords or API tokens themselves, and is not a guarantee of
+secure erasure from existing backups. Back up the new key with the database.

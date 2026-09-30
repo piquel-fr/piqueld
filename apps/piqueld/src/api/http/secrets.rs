@@ -97,3 +97,13 @@ pub(super) async fn delete(
         .await?;
     Ok(ok(true))
 }
+
+/// Recovers from a lost master key by discarding every application's stored values.
+#[utoipa::path(post,path="/api/v1/system/secrets/recover-key",operation_id="recoverSecretKey",
+    responses((status=200,description="Values discarded; the next value write generates a new key",body=Envelope<piqueld_core::api::SecretKeyRecovery>),
+    (status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn recover_key(
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(ok(state.recover_secret_key().await?))
+}

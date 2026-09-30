@@ -261,12 +261,13 @@ and webhook delivery configuration.
 
 Application secret endpoints expose metadata only:
 
-- `GET /api/v1/applications/{id}/secrets` lists names, current generations, update times and `deleting` status.
+- `GET /api/v1/applications/{id}/secrets` lists names, current generations, update times, `deleting` and `unavailable` status.
   Its unpaginated metadata array is returned directly in `data`, without `items` or `next_cursor`.
 - `PUT /api/v1/applications/{id}/secrets/{name}` accepts an `application/octet-stream`
   value of 1–512000 bytes. `X-Expected-Generation: 0` creates; a current generation
   replaces. Each application supports at most 100 logical secrets, 1,000 retained
-  versions and 100 MiB of ciphertext. Exceeding the retained-version or byte quota
+  values and 100 MiB of ciphertext. Discarded unavailable versions do not consume
+  this value quota. Exceeding the retained-version or byte quota
   returns 409 `secret_quota_exceeded`; delete unused secrets to free space.
 - `DELETE` at the same path requires `X-Expected-Generation` and refuses references
   in saved configuration, the current runnable deployment, or the active target.
@@ -285,3 +286,14 @@ pins. Earlier ciphertext versions remain until logical-secret or application del
 Quota enforcement never evicts pinned versions. To retire a secret, save and deploy
 configuration without its references, then delete it. An existing database above
 the quota remains readable and deployable; new writes require freeing space.
+
+`POST /api/v1/system/secrets/recover-key` recovers from a lost or unusable master
+key by discarding stored values for **all applications**. It returns 409
+`secret_key_usable` while the current key still works. Discarded versions are
+marked unavailable; metadata, running Docker services and their secrets are
+preserved. Supplying replacement values creates new versions, and an explicit new
+deployment is required to adopt them. Deployments that need discarded values fail
+with `secret_unavailable` and the logical names. The response contains
+`affected_applications`, `affected_secrets` and `discarded_versions`; no key or
+secret value is returned. Repeating the request after a lost response returns
+`secret_key_usable`, because no stored value then needs the old key.

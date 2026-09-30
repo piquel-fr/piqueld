@@ -68,6 +68,8 @@ diagnostic_codes! {
     ManifestSerializationFailed => "manifest_serialization_failed",
     /// The secret master key is missing, unreadable, or does not match stored values.
     SecretStorageUnavailable => "secret_storage_unavailable",
+    /// Pinned secret values were discarded and need replacement.
+    SecretUnavailable => "secret_unavailable",
     /// A Docker request failed local validation.
     ValidationFailed => "validation_failed",
     /// The runtime plan cannot execute safely.
@@ -138,7 +140,12 @@ impl DiagnosticCode {
             Self::SecretStorageUnavailable => (
                 Daemon,
                 false,
-                "Restore the original secrets.key, owned by the daemon user with private permissions. Secret metadata remains readable.",
+                "Restore the original secrets.key, owned by the daemon user with private permissions. If it is lost, `piquelctl secrets recover-key` recovers by discarding stored values. Secret metadata remains readable.",
+            ),
+            Self::SecretUnavailable => (
+                Application,
+                false,
+                "Supply replacement values for the listed secrets, then start a new deployment.",
             ),
             Self::ManifestNotFound
             | Self::ManifestInvalid

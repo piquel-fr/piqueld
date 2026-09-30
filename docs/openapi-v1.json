@@ -3015,6 +3015,41 @@
         ],
         "type": "object"
       },
+      "Envelope_SecretKeyRecovery": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Metadata-only result of lost-key recovery. Never rotates application credentials.",
+            "properties": {
+              "affected_applications": {
+                "description": "Applications whose stored values were discarded.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "affected_secrets": {
+                "description": "Logical secrets whose stored values were discarded.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "discarded_versions": {
+                "description": "Stored versions discarded; already unavailable versions are excluded.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "affected_applications",
+              "affected_secrets",
+              "discarded_versions"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_SecretMetadata": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -3033,6 +3068,10 @@
               "name": {
                 "description": "Application-scoped logical name.",
                 "type": "string"
+              },
+              "unavailable": {
+                "description": "The current value was discarded by lost-key recovery; supply a new version.",
+                "type": "boolean"
               },
               "updated_at_ms": {
                 "description": "Last update time in Unix milliseconds.",
@@ -3109,6 +3148,10 @@
                 "name": {
                   "description": "Application-scoped logical name.",
                   "type": "string"
+                },
+                "unavailable": {
+                  "description": "The current value was discarded by lost-key recovery; supply a new version.",
+                  "type": "boolean"
                 },
                 "updated_at_ms": {
                   "description": "Last update time in Unix milliseconds.",
@@ -4402,6 +4445,32 @@
         ],
         "type": "object"
       },
+      "SecretKeyRecovery": {
+        "description": "Metadata-only result of lost-key recovery. Never rotates application credentials.",
+        "properties": {
+          "affected_applications": {
+            "description": "Applications whose stored values were discarded.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "affected_secrets": {
+            "description": "Logical secrets whose stored values were discarded.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "discarded_versions": {
+            "description": "Stored versions discarded; already unavailable versions are excluded.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "affected_applications",
+          "affected_secrets",
+          "discarded_versions"
+        ],
+        "type": "object"
+      },
       "SecretMetadata": {
         "description": "Metadata only: secret values are never returned.",
         "properties": {
@@ -4417,6 +4486,10 @@
           "name": {
             "description": "Application-scoped logical name.",
             "type": "string"
+          },
+          "unavailable": {
+            "description": "The current value was discarded by lost-key recovery; supply a new version.",
+            "type": "boolean"
           },
           "updated_at_ms": {
             "description": "Last update time in Unix milliseconds.",
@@ -14369,6 +14442,44 @@
             "description": "Structured, sanitized error"
           }
         }
+      }
+    },
+    "/api/v1/system/secrets/recover-key": {
+      "post": {
+        "operationId": "recoverSecretKey",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SecretKeyRecovery"
+                }
+              }
+            },
+            "description": "Values discarded; the next value write generates a new key"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Recovers from a lost master key by discarding every application's stored values."
       }
     },
     "/api/v1/system/status": {

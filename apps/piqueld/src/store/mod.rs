@@ -52,6 +52,17 @@ pub enum StoreError {
     /// Secret ciphertext or its master key could not be used.
     #[error("secret storage is unavailable")]
     SecretSource(#[source] anyhow::Error),
+    /// Required values were discarded during lost-key recovery.
+    #[error(
+        "secret values unavailable: {names}; supply replacement values and start a new deployment"
+    )]
+    SecretUnavailable {
+        /// Logical names only, never values.
+        names: String,
+    },
+    /// Lost-key recovery was requested, but the current key still works.
+    #[error("the secret master key still works; recovery would discard values needlessly")]
+    SecretKeyUsable,
     /// Saved configuration or a retained deployment still refers to the secret.
     #[error("secret is still referenced by application configuration or deployment")]
     SecretReferenced,

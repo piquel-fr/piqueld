@@ -50,6 +50,11 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// List effective connection profile names and endpoints without contacting a daemon.
     Profiles,
+    /// Manage the encryption key for all application secrets on this daemon.
+    Secrets {
+        #[command(subcommand)]
+        action: crate::secrets::KeyAction,
+    },
     /// Report daemon availability and version.
     Status,
     /// Create, inspect, edit, and deploy applications.

@@ -269,6 +269,11 @@
       "schema": "DeliveryState",
       "name": "DeliveryState",
       "rustType": "piqueld_core::observability::DeliveryState"
+    },
+    {
+      "schema": "Envelope_SecretKeyRecovery",
+      "name": "EnvelopeSecretKeyRecovery",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::SecretKeyRecovery>"
     }
   ]
 }

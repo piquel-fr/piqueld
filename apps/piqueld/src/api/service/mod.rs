@@ -183,6 +183,15 @@ impl ApplicationService {
         self
     }
 
+    /// Recovers from a lost master key by discarding every application's stored values.
+    /// # Errors
+    /// Returns an error if the current key still works, or storage errors.
+    pub async fn recover_secret_key(
+        &self,
+    ) -> Result<piqueld_core::api::SecretKeyRecovery, ApplicationError> {
+        Ok(self.store.recover_secret_key().await?)
+    }
+
     /// Lists secret metadata without exposing stored values.
     ///
     /// # Errors

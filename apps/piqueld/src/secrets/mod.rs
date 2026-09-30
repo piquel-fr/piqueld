@@ -97,6 +97,21 @@ impl SecretCipher {
             |_| anyhow::anyhow!("invalid secret key length"),
         )?))
     }
+    /// Moves an unusable key aside after its values were discarded, so the next value
+    /// write generates a fresh key. The file is kept rather than deleted: it may belong
+    /// to a different database backup. A missing key needs nothing.
+    pub(crate) fn retire(path: &Path, now_ms: i64) -> anyhow::Result<()> {
+        use anyhow::Context;
+        let mut retired = path.as_os_str().to_owned();
+        retired.push(format!(".retired-{now_ms}"));
+        match std::fs::rename(path, &retired) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            result => result.context("move unusable secret master key aside")?,
+        }
+        File::open(path.parent().context("locate secret key directory")?)?
+            .sync_all()
+            .context("sync secret key directory")
+    }
     fn context(application: &str, name: &str, generation: i64) -> Vec<u8> {
         format!("piqueld-secret-v1\0{application}\0{name}\0{generation}").into_bytes()
     }
