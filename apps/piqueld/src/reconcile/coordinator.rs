@@ -14,6 +14,8 @@ impl<D: DockerApi> Controller<D> {
     /// application holds the loop while waiting for Docker, `SQLite`, or a timer.
     /// Failures are recorded inside each future, never in the loop body: a job
     /// suspended while holding the writer or a failure set must keep being polled.
+    /// Process startup closes abandoned actions before any worker starts; this
+    /// loop runs beside ingress, whose daemon actions it must not interrupt.
     /// # Panics
     /// Panics if the scan interval is zero.
     /// # Errors
@@ -120,7 +122,6 @@ impl<D: DockerApi> Controller<D> {
     ) -> Option<Discovered> {
         let result = async {
             if recover {
-                self.store.interrupt_actions(None).await?;
                 self.store.recover_interrupted().await?;
                 self.store.recover_builds().await?;
             }
