@@ -24,8 +24,9 @@ each affected application's history.
 An operation groups execution attempts; an attempt groups actions. Action events
 carry an action ID, operation ID, application ID, generation, attempt, phase,
 resource, request/retry number, and completed duration where applicable. Source
-preparation and runtime mutations commit intent before executing. Each mutating
-request commits an `action_requested` event before calling Docker. Failure to
+preparation and runtime mutations, including managed ingress gateway changes,
+commit intent before executing. Each mutating request commits an
+`action_requested` event before calling Docker or Caddy. Failure to
 write the journal prevents that request. Retries retain diagnostic occurrences
 and their scheduled delay. Successful unchanged observation polls do not produce
 history.
@@ -150,9 +151,11 @@ enabled = true
 ```
 
 Build/deployment failures notify once until a successful operation clears that
-condition. Service degradation is observed at application health level. Dependency
-and service failures must remain continuously observed for the configured
-threshold; stale observations and process downtime do not count toward it.
+condition. Service degradation is observed at application health level. Docker,
+Swarm and managed ingress gateway health are dependency conditions under
+`daemon_failures`; deployments failing because a dependency is unavailable do not
+notify separately. Dependency and service failures must remain continuously
+observed for the configured threshold; stale observations and process downtime do not count toward it.
 Internal daemon errors notify immediately, grouped by stable failure code.
 Recovery notifications apply to observed dependencies/services and successful
 operations that clear an alerted condition. Internal error groups without a

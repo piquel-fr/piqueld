@@ -220,6 +220,18 @@ impl OperationError {
         Self::diagnostic_from(self.diagnostic_code(), self.message(), source)
     }
 
+    /// Diagnoses a failed gateway action without taking ownership of its error.
+    pub(crate) fn ingress_diagnostic(
+        error: &anyhow::Error,
+    ) -> piqueld_core::observability::Diagnostic {
+        Self::diagnostic_from(
+            DiagnosticCode::IngressUnavailable,
+            "managed ingress could not apply a gateway change; see ingress health and daemon logs"
+                .into(),
+            error.as_ref(),
+        )
+    }
+
     fn diagnostic_from(
         code: DiagnosticCode,
         summary: String,
@@ -255,6 +267,12 @@ impl OperationError {
             }
             if let Some(failure) = error.downcast_ref::<crate::secrets::KeyFailure>() {
                 diagnostic.causes.push(failure.fact().into());
+            }
+            if let Some(error) = error.downcast_ref::<crate::ingress::ResponseError>() {
+                diagnostic.causes.push(format!(
+                    "Ingress API returned HTTP status {}",
+                    error.status.as_u16()
+                ));
             }
             if let Some(error) = error.downcast_ref::<std::io::Error>() {
                 diagnostic

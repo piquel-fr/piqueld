@@ -33,12 +33,7 @@ impl Scenario {
 
     pub(super) async fn persistent_traffic_survives_reload(&self) {
         let _servers = self.traffic_backend();
-        let original = self
-            .gateway
-            .caddy
-            .json(Method::GET, "/config/", None)
-            .await
-            .unwrap();
+        let original = self.gateway.caddy.get("/config/").await.unwrap();
         let mut configuration = original.clone();
         for route in configuration["apps"]["http"]["servers"]["https"]["routes"]
             .as_array_mut()
@@ -51,7 +46,7 @@ impl Scenario {
         }
         self.gateway
             .caddy
-            .json(Method::POST, "/load", Some(&configuration))
+            .external(Method::POST, "/load", Some(&configuration))
             .await
             .unwrap();
         let root = tokio::fs::read(
@@ -105,7 +100,7 @@ impl Scenario {
                 ["X-Reload"] = serde_json::json!([revision.to_string()]);
             self.gateway
                 .caddy
-                .json(Method::POST, "/load", Some(&configuration))
+                .external(Method::POST, "/load", Some(&configuration))
                 .await
                 .unwrap();
             tokio::time::timeout(Duration::from_secs(3), async {
@@ -125,7 +120,7 @@ impl Scenario {
         }
         self.gateway
             .caddy
-            .json(Method::POST, "/load", Some(&original))
+            .external(Method::POST, "/load", Some(&original))
             .await
             .unwrap();
     }

@@ -70,6 +70,14 @@ Detailed causes and Caddy certificate diagnostics are logged by piqueld. Core
 readiness (`ready`) continues to describe database/Docker/Swarm; ingress has its own
 `enabled`, `healthy`, `message`, and `routes` fields under system readiness.
 
+Every gateway change (network, image pull, start, replacement, recovery, route
+reload, stop) is a daemon-scoped journal action with an `ingress_*` phase, so it
+appears in History with its outcome. Reconciliation passes that change nothing
+record no history. Health changes are recorded as `ingress_unavailable`
+diagnostics. With `daemon_failures` notifications enabled, a gateway that stays
+unhealthy past the failure threshold notifies, and its recovery follows; see
+[observability](observability.md).
+
 Deployed route status is separate from application health. A `ready` route means
 an HTTPS request from the daemon validated a publicly trusted certificate and reached
 this gateway at `/.well-known/piqueld-ingress`. This small reserved endpoint returns

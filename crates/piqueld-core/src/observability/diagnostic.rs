@@ -82,7 +82,7 @@ diagnostic_codes! {
     ServiceDegraded => "service_degraded",
     /// A route hostname is reserved by another application.
     HostnameConflict => "hostname_conflict",
-    /// The managed gateway could not apply a routing transition.
+    /// The managed ingress gateway is unavailable or could not apply a change.
     IngressUnavailable => "ingress_unavailable",
 }
 
@@ -101,6 +101,11 @@ impl DiagnosticCode {
                 Daemon,
                 true,
                 "Check Docker Engine availability. Reconciliation retries after connectivity recovers.",
+            ),
+            Self::IngressUnavailable => (
+                Daemon,
+                true,
+                "Check ingress health and daemon logs. Reconciliation reapplies routes from durable intent.",
             ),
             Self::JournalUnavailable | Self::StorageUnavailable => (
                 Daemon,
@@ -135,11 +140,6 @@ impl DiagnosticCode {
                 Application,
                 true,
                 "Inspect service health and resource capacity. Reconciliation will retry.",
-            ),
-            Self::IngressUnavailable => (
-                Application,
-                true,
-                "Check ingress health and daemon logs. Reconciliation reapplies routes from durable intent.",
             ),
             Self::HostnameConflict => (
                 Application,
@@ -218,6 +218,7 @@ mod tests {
             DiagnosticCode::SchemaMismatch,
             DiagnosticCode::InternalError,
             DiagnosticCode::ApplicationCompilationFailed,
+            DiagnosticCode::IngressUnavailable,
         ] {
             let diagnostic = Diagnostic::new("occurrence".into(), code, "failure".into());
             assert_eq!(diagnostic.scope, EventScope::Daemon, "{code:?}");

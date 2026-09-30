@@ -3,8 +3,12 @@
 //! `configuration`. Replacements keep the old container and configuration for
 //! recovery if startup fails. Disabling ingress removes the managed containers
 //! but keeps certificates and configuration on disk.
+//!
+//! Each change is one daemon-scoped journal action (`ingress_*` phases). Methods
+//! decide from reads before opening an action, so steady-state passes record no
+//! history. Helpers taking a [`Journaled`] run inside their caller's action.
 
-use super::{CADDY_IMAGE, Ingress};
+use super::{CADDY_IMAGE, Ingress, wire::Journaled};
 use crate::store::ingress::RoutingTable;
 use anyhow::{Context, Result, ensure};
 use futures_util::TryStreamExt;
@@ -54,22 +58,47 @@ impl Ingress {
     }
 
     pub(super) async fn stop_gateway(&self) -> Result<()> {
+        let mut existing = Vec::new();
         for name in [
-            &self.name,
-            &format!("{}-previous", self.name),
-            &format!("{}-next", self.name),
+            self.name.clone(),
+            format!("{}-previous", self.name),
+            format!("{}-next", self.name),
         ] {
-            self.remove_container(name).await?;
+            if self.named_container(&name).await?.is_some() {
+                existing.push(name);
+            }
         }
-        Ok(())
+        if existing.is_empty() {
+            return Ok(());
+        }
+        let journal = self.journal("ingress_stop_gateway", &self.name).await?;
+        let result = async {
+            for name in &existing {
+                self.remove_container(&journal, name).await?;
+            }
+            Ok(())
+        }
+        .await;
+        journal.finish(result).await
     }
 
-    async fn remove_container(&self, name: &str) -> Result<()> {
+    /// Removes a leftover container in its own action; used for best-effort cleanup.
+    async fn remove_stale_container(&self, name: &str) -> Result<()> {
+        if self.named_container(name).await?.is_none() {
+            return Ok(());
+        }
+        let journal = self.journal("ingress_remove_container", name).await?;
+        let result = self.remove_container(&journal, name).await;
+        journal.finish(result).await
+    }
+
+    async fn remove_container(&self, journal: &Journaled<'_>, name: &str) -> Result<()> {
         if let Some(container) = self.named_container(name).await? {
             // Removing the container also removes its restart policy. Persistent
             // data and config are host directories retained across disablement.
             self.docker
-                .json(
+                .send(
+                    journal,
                     Method::DELETE,
                     &format!(
                         "/containers/{}?force=true",
@@ -84,7 +113,7 @@ impl Ingress {
     }
 
     async fn check_version(&self) -> Result<()> {
-        let version = self.docker.json(Method::GET, "/version", None).await?;
+        let version = self.docker.get("/version").await?;
         let major = version["Version"]
             .as_str()
             .and_then(|v| v.split('.').next())
@@ -115,13 +144,17 @@ impl Ingress {
                 "gateway egress network configuration conflicts"
             );
         } else {
-            self.docker
-                .json(
+            let journal = self.journal("ingress_create_network", &self.name).await?;
+            let result = self
+                .docker
+                .send(
+                    &journal,
                     Method::POST,
                     "/networks/create",
                     Some(&json!({"Name":self.name,"Driver":"bridge","Labels":self.labels()})),
                 )
-                .await?;
+                .await;
+            journal.finish(result).await?;
         }
         Ok(())
     }
@@ -255,7 +288,31 @@ impl Ingress {
             .await?
             .is_none()
         {
-            use bollard::query_parameters::CreateImageOptionsBuilder;
+            self.pull_image().await?;
+        }
+        if current.as_ref().is_some_and(|container| {
+            container["Config"]["Labels"][CONFIGURATION_LABEL]
+                != spec["Labels"][CONFIGURATION_LABEL]
+        }) {
+            return self.replace_gateway(table, networks, &spec).await;
+        }
+        let journal = self.journal("ingress_start_gateway", &self.name).await?;
+        let result = async {
+            if current.is_none() {
+                self.create_container(&journal, &self.name, &spec).await?;
+            }
+            self.attach_networks(&journal, &self.name, networks).await?;
+            self.start_gateway(&journal, table).await
+        }
+        .await;
+        journal.finish(result).await
+    }
+
+    async fn pull_image(&self) -> Result<()> {
+        use bollard::query_parameters::CreateImageOptionsBuilder;
+        let journal = self.journal("ingress_pull_image", CADDY_IMAGE).await?;
+        let result = async {
+            journal.request().await?;
             tokio::time::timeout(Duration::from_secs(180), async {
                 let mut pull = self.images.create_image(
                     Some(
@@ -274,24 +331,21 @@ impl Ingress {
                 Ok::<_, anyhow::Error>(())
             })
             .await
-            .context("pull Caddy image timed out")??;
+            .context("pull Caddy image timed out")?
         }
-        if current.as_ref().is_some_and(|container| {
-            container["Config"]["Labels"][CONFIGURATION_LABEL]
-                != spec["Labels"][CONFIGURATION_LABEL]
-        }) {
-            return self.replace_gateway(table, networks, &spec).await;
-        }
-        if current.is_none() {
-            self.create_container(&self.name, &spec).await?;
-        }
-        self.attach_networks(&self.name, networks).await?;
-        self.start_gateway(table).await
+        .await;
+        journal.finish(result).await
     }
 
-    async fn create_container(&self, name: &str, spec: &Value) -> Result<()> {
+    async fn create_container(
+        &self,
+        journal: &Journaled<'_>,
+        name: &str,
+        spec: &Value,
+    ) -> Result<()> {
         self.docker
-            .json(
+            .send(
+                journal,
                 Method::POST,
                 &format!("/containers/create?name={name}"),
                 Some(spec),
@@ -327,17 +381,38 @@ impl Ingress {
                 "deferring gateway replacement until retained route networks are repaired or routes are withdrawn");
             return Ok(());
         }
+        let journal = self.journal("ingress_replace_gateway", &self.name).await?;
+        let result = self.cut_over(&journal, table, networks, spec).await;
+        journal.finish(result).await?;
+        if let Err(error) = self
+            .remove_stale_container(&format!("{}-previous", self.name))
+            .await
+        {
+            tracing::warn!(gateway=%self.name, error=%format!("{error:#}"),
+                "replaced gateway could not be removed; recovery retries the cleanup");
+        }
+        Ok(())
+    }
+
+    async fn cut_over(
+        &self,
+        journal: &Journaled<'_>,
+        table: &RoutingTable,
+        networks: &BTreeSet<String>,
+        spec: &Value,
+    ) -> Result<()> {
         let next = format!("{}-next", self.name);
         let previous = format!("{}-previous", self.name);
-        self.validate_replacement(&next, spec, table).await?;
-        self.create_container(&next, spec).await?;
-        self.attach_networks(&next, networks).await?;
+        self.validate_replacement(journal, &next, spec, table)
+            .await?;
+        self.create_container(journal, &next, spec).await?;
+        self.attach_networks(journal, &next, networks).await?;
         let configuration = if self
             .container()
             .await?
             .is_some_and(|container| container["State"]["Running"] == true)
         {
-            self.caddy.json(Method::GET, "/config/", None).await?
+            self.caddy.get("/config/").await?
         } else {
             let bytes = tokio::fs::read(self.directory.join("config/caddy/autosave.json")).await?;
             serde_json::from_slice(&bytes)?
@@ -347,34 +422,33 @@ impl Ingress {
         // All preparation above leaves the current listener untouched.
         let result = async {
             self.docker
-                .json(
+                .send(
+                    journal,
                     Method::POST,
                     &format!("/containers/{}/stop?t=10", self.name),
                     None,
                 )
                 .await?;
             // Docker cannot reliably rename a running overlay endpoint.
-            self.rename_container(&self.name, &previous).await?;
-            self.rename_container(&next, &self.name).await?;
-            self.start_gateway(table).await
+            self.rename_container(journal, &self.name, &previous)
+                .await?;
+            self.rename_container(journal, &next, &self.name).await?;
+            self.start_gateway(journal, table).await
         }
         .await;
         if let Err(error) = result {
-            self.recover_gateway().await.with_context(|| {
+            self.restore_gateway(journal).await.with_context(|| {
                 format!("gateway replacement failed ({error:#}); rollback also failed")
             })?;
             return Err(error.context("gateway replacement failed; previous gateway restored"));
         }
         tokio::fs::remove_file(self.rollback_path()).await?;
-        if let Err(error) = self.remove_container(&previous).await {
-            tracing::warn!(gateway=%self.name, error=%format!("{error:#}"),
-                "replaced gateway could not be removed; recovery retries the cleanup");
-        }
         Ok(())
     }
 
     async fn validate_replacement(
         &self,
+        journal: &Journaled<'_>,
         name: &str,
         spec: &Value,
         table: &RoutingTable,
@@ -390,14 +464,20 @@ impl Ingress {
         ]);
         validation["HostConfig"]["PortBindings"] = json!({});
         validation["HostConfig"]["RestartPolicy"] = json!({"Name":"no"});
-        self.remove_container(name).await?;
-        self.create_container(name, &validation).await?;
+        self.remove_container(journal, name).await?;
+        self.create_container(journal, name, &validation).await?;
         self.docker
-            .json(Method::POST, &format!("/containers/{name}/start"), None)
+            .send(
+                journal,
+                Method::POST,
+                &format!("/containers/{name}/start"),
+                None,
+            )
             .await?;
         let exited = self
             .docker
-            .json(
+            .send(
+                journal,
                 Method::POST,
                 &format!("/containers/{name}/wait?condition=not-running"),
                 None,
@@ -412,12 +492,13 @@ impl Ingress {
                 diagnostics.join("\n")
             );
         }
-        self.remove_container(name).await
+        self.remove_container(journal, name).await
     }
 
-    async fn rename_container(&self, from: &str, to: &str) -> Result<()> {
+    async fn rename_container(&self, journal: &Journaled<'_>, from: &str, to: &str) -> Result<()> {
         self.docker
-            .json(
+            .send(
+                journal,
                 Method::POST,
                 &format!("/containers/{from}/rename?name={to}"),
                 None,
@@ -426,19 +507,37 @@ impl Ingress {
         Ok(())
     }
 
+    /// Finishes or reverts a replacement interrupted by cancellation or a crash.
     pub(super) async fn recover_gateway(&self) -> Result<()> {
+        let previous = format!("{}-previous", self.name);
+        if self.named_container(&previous).await?.is_some()
+            && !tokio::fs::try_exists(self.rollback_path()).await?
+        {
+            // The replacement committed; only its cleanup was interrupted.
+            return self.remove_stale_container(&previous).await;
+        }
+        let next = format!("{}-next", self.name);
+        if self.named_container(&previous).await?.is_none()
+            && self.named_container(&next).await?.is_none()
+        {
+            return Ok(());
+        }
+        let journal = self.journal("ingress_recover_gateway", &self.name).await?;
+        let result = self.restore_gateway(&journal).await;
+        journal.finish(result).await
+    }
+
+    /// Restores the gateway that an unfinished replacement stopped.
+    async fn restore_gateway(&self, journal: &Journaled<'_>) -> Result<()> {
         let previous = format!("{}-previous", self.name);
         let next = format!("{}-next", self.name);
         if self.named_container(&previous).await?.is_some() {
-            if !tokio::fs::try_exists(self.rollback_path()).await? {
-                // The replacement committed; only its cleanup was interrupted.
-                return self.remove_container(&previous).await;
-            }
-            self.remove_container(&self.name).await?;
+            self.remove_container(journal, &self.name).await?;
             self.restore_configuration().await?;
-            self.rename_container(&previous, &self.name).await?;
-            self.start_container().await?;
-            self.remove_container(&next).await?;
+            self.rename_container(journal, &previous, &self.name)
+                .await?;
+            self.start_container(journal).await?;
+            self.remove_container(journal, &next).await?;
             tracing::warn!(gateway=%self.name, "restored gateway after interrupted replacement");
         } else if self.named_container(&next).await?.is_some() {
             // Cancellation may land between stopping the old container and
@@ -447,9 +546,9 @@ impl Ingress {
                 && container["State"]["Running"] != true
             {
                 // Before the first rename the old autosave is still untouched.
-                self.start_container().await?;
+                self.start_container(journal).await?;
             }
-            self.remove_container(&next).await?;
+            self.remove_container(journal, &next).await?;
         }
         Ok(())
     }
@@ -472,17 +571,18 @@ impl Ingress {
         Ok(())
     }
 
-    async fn start_gateway(&self, table: &RoutingTable) -> Result<()> {
+    async fn start_gateway(&self, journal: &Journaled<'_>, table: &RoutingTable) -> Result<()> {
         // A restarted gateway must never briefly resume routes that were removed
         // by deployments while ingress was disabled.
         self.write_configuration("autosave.json", &self.configuration(table))
             .await?;
-        self.start_container().await
+        self.start_container(journal).await
     }
 
-    async fn start_container(&self) -> Result<()> {
+    async fn start_container(&self, journal: &Journaled<'_>) -> Result<()> {
         self.docker
-            .json(
+            .send(
+                journal,
                 Method::POST,
                 &format!("/containers/{}/start", self.name),
                 None,
@@ -492,7 +592,7 @@ impl Ingress {
         // Wait for startup here instead of failing an otherwise healthy deployment.
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                match self.caddy.json(Method::GET, "/config/", None).await {
+                match self.caddy.get("/config/").await {
                     Ok(_) => return,
                     Err(error) => tracing::debug!(?error, "waiting for Caddy administration"),
                 }
@@ -559,70 +659,98 @@ impl Ingress {
         Ok(())
     }
 
-    async fn attach_networks(&self, name: &str, desired: &BTreeSet<String>) -> Result<()> {
+    async fn attach_networks(
+        &self,
+        journal: &Journaled<'_>,
+        name: &str,
+        desired: &BTreeSet<String>,
+    ) -> Result<()> {
         let container = self
             .named_container(name)
             .await?
             .context("gateway container disappeared")?;
-        for network in desired {
-            if container["NetworkSettings"]["Networks"]
-                .get(network)
-                .is_none()
-            {
-                self.docker
-                    .json(
-                        Method::POST,
-                        &format!("/networks/{network}/connect"),
-                        Some(&json!({"Container":name,"EndpointConfig":{"GwPriority":0}})),
-                    )
-                    .await?;
-            }
+        for network in Self::missing_networks(&container, desired) {
+            self.docker
+                .send(
+                    journal,
+                    Method::POST,
+                    &format!("/networks/{network}/connect"),
+                    Some(&json!({"Container":name,"EndpointConfig":{"GwPriority":0}})),
+                )
+                .await?;
         }
         Ok(())
     }
 
+    fn missing_networks<'a>(
+        container: &Value,
+        desired: &'a BTreeSet<String>,
+    ) -> impl Iterator<Item = &'a String> {
+        let attached = container["NetworkSettings"]["Networks"].clone();
+        desired
+            .iter()
+            .filter(move |network| attached.get(network.as_str()).is_none())
+    }
+
+    /// Converges attachments and routes; a matching gateway records no action.
     pub(super) async fn configure_gateway(
         &self,
         table: &RoutingTable,
         networks: &BTreeSet<String>,
     ) -> Result<()> {
-        self.attach_networks(&self.name, networks).await?;
-        let desired = self.configuration(table);
-        let current = self.caddy.json(Method::GET, "/config/", None).await?;
-        if current != desired {
-            self.caddy
-                .json(Method::POST, "/load", Some(&desired))
-                .await?;
-            tracing::info!(
-                applications = table.len(),
-                "applied ingress routing configuration"
-            );
-        }
         let container = self
             .container()
             .await?
             .context("gateway container disappeared")?;
+        let desired = self.configuration(table);
+        let reload = self.caddy.get("/config/").await? != desired;
         // Keep existing attachments for unavailable apps whose routes were retained.
         let retained: BTreeSet<_> = table
             .iter()
             .filter(|(_, routes)| !routes.is_empty())
             .map(|(id, _)| DockerNetworkName::for_ingress(id).to_string())
             .collect();
-        if let Some(attached) = container["NetworkSettings"]["Networks"].as_object() {
-            for network in attached
-                .keys()
-                .filter(|name| *name != &self.name && !retained.contains(*name))
-            {
+        let stale: Vec<String> = container["NetworkSettings"]["Networks"]
+            .as_object()
+            .into_iter()
+            .flat_map(|attached| attached.keys())
+            .filter(|name| *name != &self.name && !retained.contains(*name))
+            .cloned()
+            .collect();
+        if !reload
+            && stale.is_empty()
+            && Self::missing_networks(&container, networks)
+                .next()
+                .is_none()
+        {
+            return Ok(());
+        }
+        let journal = self.journal("ingress_configure_routes", &self.name).await?;
+        let result = async {
+            self.attach_networks(&journal, &self.name, networks).await?;
+            if reload {
+                self.caddy
+                    .send(&journal, Method::POST, "/load", Some(&desired))
+                    .await?;
+                tracing::info!(
+                    applications = table.len(),
+                    "applied ingress routing configuration"
+                );
+            }
+            for network in &stale {
                 self.docker
-                    .json(
+                    .send(
+                        &journal,
                         Method::POST,
                         &format!("/networks/{network}/disconnect"),
                         Some(&json!({"Container":self.name,"Force":false})),
                     )
                     .await?;
             }
+            Ok(())
         }
-        Ok(())
+        .await;
+        journal.finish(result).await
     }
 
     pub(super) async fn relay_logs(&self) -> Result<()> {
@@ -648,8 +776,7 @@ impl Ingress {
 
     async fn container_logs(&self, name: &str, query: &str) -> Result<Vec<String>> {
         let path = format!("/containers/{name}/logs?stdout=1&stderr=1&{query}");
-        let (status, bytes) = self.docker.request(Method::GET, &path, None).await?;
-        ensure!(status.is_success(), "Caddy diagnostics returned {status}");
+        let bytes = self.docker.read(&path).await?;
         let mut lines = Vec::new();
         let mut remaining = bytes.as_slice();
         while remaining.len() >= 8 {

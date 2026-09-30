@@ -9,12 +9,7 @@ impl Scenario {
     async fn configure_acme_test(&self) -> serde_json::Value {
         let hosts = ["http-acme.example.test", "alpn-acme.example.test"];
         // Docker's test-only ExtraHosts resolve challenges to the gateway itself.
-        let original = self
-            .gateway
-            .caddy
-            .json(Method::GET, "/config/", None)
-            .await
-            .unwrap();
+        let original = self.gateway.caddy.get("/config/").await.unwrap();
         let mut table = self.store.routing_table().await.unwrap();
         for host in hosts {
             let mut route = table[&self.first][0].clone();
@@ -35,7 +30,7 @@ impl Scenario {
             configuration["apps"]["http"]["servers"]["acme"].clone();
         self.gateway
             .caddy
-            .json(Method::POST, "/load", Some(&directory))
+            .external(Method::POST, "/load", Some(&directory))
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -64,14 +59,14 @@ impl Scenario {
         });
         self.gateway
             .caddy
-            .json(Method::POST, "/load", Some(&configuration))
+            .external(Method::POST, "/load", Some(&configuration))
             .await
             .unwrap();
         // CertMagic's maintenance ticker is created at process startup. Restart
         // from the saved test config so its accelerated renewal interval takes effect.
         self.gateway
             .docker
-            .json(
+            .external(
                 Method::POST,
                 &format!("/containers/{}/restart?t=1", self.gateway.name),
                 None,
@@ -164,7 +159,7 @@ impl Scenario {
         }
         self.gateway
             .caddy
-            .json(Method::POST, "/load", Some(&original))
+            .external(Method::POST, "/load", Some(&original))
             .await
             .unwrap();
     }

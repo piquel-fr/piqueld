@@ -179,6 +179,21 @@ impl Scenario {
     }
 
     async fn assert_public_routing(&self) {
+        // Deployment journaled the gateway start; a converged gateway records nothing.
+        let history = self.store.events(None, None, 100).await.unwrap().items;
+        assert!(history.iter().any(|event| event.kind == "action_succeeded"
+            && event.phase.as_deref() == Some("ingress_start_gateway")));
+        let retained = history.len();
+        self.gateway.synchronize().await.unwrap();
+        assert_eq!(
+            self.store
+                .events(None, None, 100)
+                .await
+                .unwrap()
+                .items
+                .len(),
+            retained
+        );
         let container = self.gateway.container().await.unwrap().unwrap();
         assert_eq!(
             container["HostConfig"]["PortBindings"]["443/tcp"][0]["HostPort"],
@@ -421,12 +436,7 @@ impl Scenario {
 
         // Simulate process termination after the old gateway was stopped. Recovery
         // uses Docker names and the persisted snapshot, not in-memory state.
-        let configuration = self
-            .gateway
-            .caddy
-            .json(Method::GET, "/config/", None)
-            .await
-            .unwrap();
+        let configuration = self.gateway.caddy.get("/config/").await.unwrap();
         tokio::fs::write(
             self.directory
                 .path()
@@ -438,7 +448,7 @@ impl Scenario {
         let previous = format!("{}-previous", self.gateway.name);
         self.gateway
             .docker
-            .json(
+            .external(
                 Method::POST,
                 &format!("/containers/{}/stop?t=1", self.gateway.name),
                 None,
@@ -447,7 +457,7 @@ impl Scenario {
             .unwrap();
         self.gateway
             .docker
-            .json(
+            .external(
                 Method::POST,
                 &format!("/containers/{}/rename?name={previous}", self.gateway.name),
                 None,
@@ -486,7 +496,7 @@ impl Scenario {
         let replaced = self.gateway.container().await.unwrap().unwrap()["Id"].clone();
         self.gateway
             .docker
-            .json(
+            .external(
                 Method::POST,
                 &format!("/containers/create?name={previous}"),
                 Some(&self.gateway.container_spec()),
@@ -573,7 +583,7 @@ impl Scenario {
         let network = piqueld_core::DockerNetworkName::for_ingress(&unavailable).to_string();
         self.gateway
             .docker
-            .json(
+            .external(
                 Method::POST,
                 "/networks/create",
                 Some(&json!({"Name":network,"Driver":"bridge"})),
@@ -628,7 +638,7 @@ impl Scenario {
         assert_eq!(self.body("one.example.test").await, "first backend");
         self.gateway
             .docker
-            .json(Method::DELETE, &format!("/networks/{network}"), None)
+            .external(Method::DELETE, &format!("/networks/{network}"), None)
             .await
             .unwrap();
         // Restore the controller's specification before testing ordinary reloads.
@@ -638,7 +648,7 @@ impl Scenario {
     async fn restart_without_daemon(&self) {
         self.gateway
             .docker
-            .json(
+            .external(
                 Method::POST,
                 &format!("/containers/{}/restart?t=1", self.gateway.name),
                 None,
@@ -669,12 +679,7 @@ impl Scenario {
         );
         let container = tokio::time::timeout(Duration::from_secs(60), async {
             loop {
-                let containers = self
-                    .gateway
-                    .docker
-                    .json(Method::GET, "/containers/json", None)
-                    .await
-                    .unwrap();
+                let containers = self.gateway.docker.get("/containers/json").await.unwrap();
                 if let Some(container) = containers.as_array().unwrap().iter().find(|container| {
                     container["Labels"]["com.docker.swarm.service.name"] == next_name.as_str()
                 }) {
@@ -715,7 +720,7 @@ impl Scenario {
         let exec = self
             .gateway
             .docker
-            .json(
+            .external(
                 Method::POST,
                 &format!("/containers/{container}/exec"),
                 Some(&json!({"Cmd":["touch","/tmp/ready"]})),
@@ -724,7 +729,7 @@ impl Scenario {
             .unwrap();
         self.gateway
             .docker
-            .json(
+            .external(
                 Method::POST,
                 &format!("/exec/{}/start", exec["Id"].as_str().unwrap()),
                 Some(&json!({"Detach":true})),

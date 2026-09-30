@@ -3,7 +3,7 @@ mod configuration;
 mod gateway;
 mod wire;
 
-use crate::store::Store;
+use crate::store::{Store, now_ms};
 use anyhow::{Context, Result};
 use futures_util::{StreamExt, stream};
 use piqueld_core::{
@@ -17,6 +17,7 @@ use std::{
 };
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
+pub use wire::ResponseError;
 use wire::UnixApi;
 
 /// Version released with piqueld; upgrades deliberately replace the gateway.
@@ -188,8 +189,18 @@ impl Ingress {
             Ok(())
         }
         .await;
+        let healthy = result.is_ok() && failures.is_empty();
+        // Health transitions become history, and sustained failures notify
+        // administrators, like other daemon dependencies.
+        if let Err(error) = self
+            .store
+            .observe_condition("ingress_unavailable", None, !healthy, now_ms(), 45_000)
+            .await
+        {
+            tracing::error!(error=?error, "ingress health observation could not be recorded");
+        }
         let mut health = self.health.write().await;
-        health.healthy = result.is_ok() && failures.is_empty();
+        health.healthy = healthy;
         health.message = match &result {
             Ok(()) if !failures.is_empty() => format!(
                 "Ingress degraded: {} application network(s) unavailable. See daemon logs for details.",
