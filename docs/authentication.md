@@ -199,3 +199,7 @@ with pending ceremonies and device requests.
 Never expose piqueld to the internet, including through a reverse proxy. These
 limits protect a trusted network from accidents, not a public endpoint from
 abuse. Pending ceremonies and device requests have fixed in-memory capacities.
+
+Browser authentication and CLI device-login coverage lives in the
+[Playwright browser suite](../tests/playwright/README.md), including session revocation and
+preservation of unsaved editor drafts during reauthentication.
