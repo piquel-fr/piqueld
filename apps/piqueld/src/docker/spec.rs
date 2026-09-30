@@ -8,12 +8,34 @@ use super::{
 };
 
 impl BollardDocker {
+    /// Resolves immutable Docker secret IDs into the service specification.
+    pub(super) async fn service_spec_with_secrets(
+        &self,
+        desired: &DesiredService,
+        node_id: &str,
+    ) -> Result<ServiceSpec, DockerError> {
+        let mut spec = Self::service_spec(desired, node_id)?;
+        if !desired.secrets.is_empty() {
+            spec.task_template
+                .as_mut()
+                .expect("task spec")
+                .container_spec
+                .as_mut()
+                .expect("container spec")
+                .secrets = Some(self.secret_references(desired).await?);
+        }
+        Ok(spec)
+    }
+
     /// Builds the complete Docker service specification from desired state.
-    pub(super) fn service_spec(desired: &DesiredService) -> Result<ServiceSpec, DockerError> {
+    pub(super) fn service_spec(
+        desired: &DesiredService,
+        node_id: &str,
+    ) -> Result<ServiceSpec, DockerError> {
         Ok(ServiceSpec {
             name: Some(desired.name.to_string()),
             labels: Some(desired.labels.clone().into_iter().collect()),
-            task_template: Some(Self::task_spec(desired)?),
+            task_template: Some(Self::task_spec(desired, node_id)?),
             mode: Some(ServiceSpecMode {
                 replicated: Some(ServiceSpecModeReplicated {
                     replicas: Some(i64::from(desired.replicas)),
@@ -25,9 +47,13 @@ impl BollardDocker {
         })
     }
 
-    /// Builds the container, network, resource, and restart portions of a service.
-    fn task_spec(desired: &DesiredService) -> Result<TaskSpec, DockerError> {
+    /// Builds the container, network, resource, placement, and restart portions of a service.
+    fn task_spec(desired: &DesiredService, node_id: &str) -> Result<TaskSpec, DockerError> {
         Ok(TaskSpec {
+            placement: Some(bollard::models::TaskSpecPlacement {
+                constraints: Some(vec![Self::placement_constraint(node_id)]),
+                ..Default::default()
+            }),
             container_spec: Some(TaskSpecContainerSpec {
                 image: Some(desired.image.to_string()),
                 command: BollardDocker::nonempty(&desired.command),
@@ -52,11 +78,7 @@ impl BollardDocker {
                         })
                         .collect(),
                 ),
-                health_check: desired
-                    .healthcheck
-                    .as_ref()
-                    .map(Self::health_config)
-                    .transpose()?,
+                health_check: desired.healthcheck.as_ref().map(Self::health_config),
                 ..Default::default()
             }),
             networks: Some(
@@ -80,50 +102,24 @@ impl BollardDocker {
         })
     }
 
+    /// Keep local images and volumes on the daemon's node even if another node joins.
+    pub(super) fn placement_constraint(node_id: &str) -> String {
+        format!("node.id == {node_id}")
+    }
+
     /// Converts a core health check into Docker's health-check representation.
-    pub(super) fn health_config(health_check: &HealthCheck) -> Result<HealthConfig, DockerError> {
-        match health_check {
-            HealthCheck::Command {
-                command,
-                interval_seconds,
-                timeout_seconds,
-            } => {
-                let test = std::iter::once("CMD".into())
-                    .chain(command.clone())
-                    .collect::<Vec<_>>();
-                if Self::observed_wget_health(&test, *interval_seconds, *timeout_seconds).is_some()
-                {
-                    return Err(DockerError::Validation("validate health check"));
-                }
-                Ok(HealthConfig {
-                    test: Some(test),
-                    interval: Some(BollardDocker::seconds_to_nanoseconds(*interval_seconds)),
-                    timeout: Some(BollardDocker::seconds_to_nanoseconds(*timeout_seconds)),
-                    retries: Some(HEALTH_RETRIES),
-                    ..Default::default()
-                })
-            }
-            HealthCheck::Http {
-                port,
-                path,
-                interval_seconds,
-                timeout_seconds,
-            } => Ok(HealthConfig {
-                test: Some(vec![
-                    "CMD".into(),
-                    "wget".into(),
-                    "-q".into(),
-                    "-T".into(),
-                    timeout_seconds.to_string(),
-                    "-O".into(),
-                    "/dev/null".into(),
-                    format!("http://127.0.0.1:{port}{path}"),
-                ]),
-                interval: Some(BollardDocker::seconds_to_nanoseconds(*interval_seconds)),
-                timeout: Some(BollardDocker::seconds_to_nanoseconds(*timeout_seconds)),
-                retries: Some(HEALTH_RETRIES),
-                ..Default::default()
-            }),
+    pub(super) fn health_config(health_check: &HealthCheck) -> HealthConfig {
+        let execution = health_check.execution();
+        HealthConfig {
+            test: Some(
+                std::iter::once("CMD".into())
+                    .chain(execution.command)
+                    .collect(),
+            ),
+            interval: Some(Self::seconds_to_nanoseconds(execution.interval_seconds)),
+            timeout: Some(Self::seconds_to_nanoseconds(execution.timeout_seconds)),
+            retries: Some(HEALTH_RETRIES),
+            ..Default::default()
         }
     }
 

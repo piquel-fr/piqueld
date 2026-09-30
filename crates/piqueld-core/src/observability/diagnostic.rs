@@ -50,6 +50,8 @@ diagnostic_codes! {
     DockerRequestFailed => "docker_request_failed",
     /// The runtime did not converge before its deadline.
     ConvergenceTimeout => "convergence_timeout",
+    /// Application preparation did not finish before its deadline.
+    PreparationTimeout => "preparation_timeout",
     /// Repository checkout or image build failed.
     GitBuildFailed => "git_build_failed",
     /// Docker paused a failed service update.
@@ -140,6 +142,11 @@ impl DiagnosticCode {
                 Application,
                 true,
                 "Inspect service health and resource capacity. Reconciliation will retry.",
+            ),
+            Self::PreparationTimeout => (
+                Application,
+                true,
+                "Check registry and build progress, or raise reconciliation.prepare_timeout_seconds. Reconciliation will retry.",
             ),
             Self::HostnameConflict => (
                 Application,
@@ -235,6 +242,7 @@ mod tests {
             (DiagnosticCode::ImageResolutionFailed, true),
             (DiagnosticCode::DockerRequestFailed, true),
             (DiagnosticCode::ConvergenceTimeout, true),
+            (DiagnosticCode::PreparationTimeout, true),
             (DiagnosticCode::IngressUnavailable, true),
             (DiagnosticCode::HostnameConflict, false),
             (DiagnosticCode::ImageResolutionRejected, false),

@@ -319,7 +319,7 @@ impl<D: DockerApi> Controller<D> {
             PlanRequest::Reconcile {
                 desired: tokio::select! {
                     ()=cancellation.cancelled()=>return Err(OperationError::Cancelled),
-                    result=tokio::time::timeout(self.prepare_timeout, self.prepare_target(operation,&application))=>result.map_err(|_| OperationError::ValidationFailed("preparation timed out"))??,
+                    result=tokio::time::timeout(self.prepare_timeout, self.prepare_target(operation,&application))=>result.map_err(|_| OperationError::PreparationTimeout)??,
                 },
             }
         })
@@ -391,6 +391,7 @@ impl<D: DockerApi> Controller<D> {
         application: &super::StoredApplication,
     ) -> Result<piqueld_core::ResolvedApplication, OperationError> {
         self.check_current(operation).await?;
+        self.docker.ensure_swarm(false).await?;
         if let Some(target) = self
             .store
             .prepared_target(&operation.id)
@@ -440,6 +441,8 @@ impl<D: DockerApi> Controller<D> {
                     }
                 })?;
         self.check_current(operation).await?;
+        // The topology may have changed while images were pulled or built.
+        self.docker.ensure_swarm(false).await?;
         self.store
             .save_prepared(operation, &prepared)
             .await

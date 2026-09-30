@@ -111,6 +111,14 @@ impl<D: DockerApi> Controller<D> {
         ownership: &std::collections::BTreeMap<String, String>,
         secrets: &SecretValues,
     ) -> Result<(), DockerError> {
+        // Creating or updating resources requires the supported topology so local
+        // images and volumes cannot move. Removals stay safe on any topology.
+        if !matches!(
+            kind,
+            ActionKind::RemoveService { .. } | ActionKind::RemoveNetwork { .. }
+        ) {
+            self.docker.ensure_swarm(false).await?;
+        }
         match kind {
             ActionKind::EnsureNetwork { network } => self.docker.ensure_network(network).await,
             ActionKind::EnsureVolume { volume } => self.docker.ensure_volume(volume).await,

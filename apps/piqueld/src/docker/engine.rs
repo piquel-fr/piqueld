@@ -1,4 +1,6 @@
-use super::{Arc, BollardDocker, Docker, DockerError, ListNodesOptions, Path, ServiceSpec};
+use super::{
+    Arc, BollardDocker, Docker, DockerError, ListNodesOptions, Path, ResourceKind, ServiceSpec,
+};
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, StatusCode, body::Bytes, header};
 use hyper_util::rt::TokioIo;
@@ -257,10 +259,11 @@ impl BollardDocker {
 
     /// Updates a service with a bounded retry for Docker's exact transient
     /// optimistic-concurrency response. Every retry refreshes the current
-    /// service version and resubmits the same desired specification.
+    /// service version and rechecks ownership before resubmitting the specification.
+    /// The immutable service ID prevents a replacement with the same name being updated.
     pub(super) async fn update_service_wire(
         &self,
-        name: &str,
+        id: &str,
         mut version: u64,
         spec: &ServiceSpec,
     ) -> Result<(), DockerError> {
@@ -273,7 +276,7 @@ impl BollardDocker {
                     // registryAuthFrom=spec is intentional: piqueld specs are
                     // auth-free, so Docker must not fall back to credentials
                     // from its own store.
-                    &format!("/services/{name}/update?version={version}&registryAuthFrom=spec"),
+                    &format!("/services/{id}/update?version={version}&registryAuthFrom=spec"),
                     Some(spec),
                 ),
             )
@@ -287,13 +290,39 @@ impl BollardDocker {
                 {
                     tokio::time::sleep(Duration::from_millis(250)).await;
                     let refreshed =
-                        tokio::time::timeout_at(deadline, self.inspect_service_wire(name))
+                        tokio::time::timeout_at(deadline, self.inspect_service_wire(id))
                             .await
                             .map_err(|source| {
                                 DockerError::unavailable("refresh the service version", source)
                             })??;
+                    let refreshed = refreshed.ok_or(DockerError::OwnershipConflict)?;
+                    let expected = spec
+                        .labels
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect();
+                    if refreshed.id.as_deref() != Some(id)
+                        || refreshed
+                            .spec
+                            .as_ref()
+                            .and_then(|spec| spec.name.as_deref())
+                            != spec.name.as_deref()
+                        || !Self::owns_resource(
+                            refreshed
+                                .spec
+                                .as_ref()
+                                .and_then(|spec| spec.labels.clone())
+                                .unwrap_or_default(),
+                            &expected,
+                            ResourceKind::Service,
+                            spec.name.as_deref().unwrap_or_default(),
+                        )
+                    {
+                        return Err(DockerError::OwnershipConflict);
+                    }
                     version = refreshed
-                        .and_then(|service| service.version)
+                        .version
                         .and_then(|value| value.index)
                         .ok_or(DockerError::Request("read refreshed service version"))?;
                 }
@@ -349,6 +378,33 @@ impl BollardDocker {
         Ok(())
     }
 
+    /// Reads the daemon's Swarm membership, labelling failures with `operation`.
+    pub(super) async fn swarm_info(
+        &self,
+        operation: &'static str,
+    ) -> Result<bollard::models::SwarmInfo, DockerError> {
+        let info = self
+            .docker
+            .info()
+            .await
+            .map_err(|source| DockerError::unavailable(operation, source))?;
+        Ok(info.swarm.unwrap_or_default())
+    }
+
+    /// Returns the local manager's immutable node ID, which pins services to this
+    /// daemon. Topology is not checked here, so observation and removals keep
+    /// working if another node joins; mutations check it through `ensure_swarm`.
+    pub(super) async fn local_node_id(&self) -> Result<String, DockerError> {
+        let swarm = self.swarm_info("inspect Docker Swarm state").await?;
+        if swarm.control_available != Some(true) {
+            return Err(DockerError::NotManager);
+        }
+        swarm
+            .node_id
+            .filter(|id| !id.is_empty())
+            .ok_or(DockerError::Request("read local Swarm node identity"))
+    }
+
     /// Returns whether Docker reports exactly one ready, reachable manager.
     pub(super) fn single_node_manager(nodes: &[bollard::models::Node]) -> bool {
         nodes.len() == 1
@@ -385,29 +441,142 @@ mod tests {
     }
 
     impl EngineStub {
+        /// Serves one raw 200 response whose declared length may disagree with the body.
         fn respond(body: &'static str, declared_length: usize) -> Self {
+            Self::serve(vec![(
+                None,
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {declared_length}\r\nConnection: close\r\n\r\n{body}"
+                ),
+            )])
+        }
+
+        /// Serves JSON responses in order, asserting each request line.
+        fn sequence(responses: Vec<(String, u16, serde_json::Value)>) -> Self {
+            Self::serve(
+                responses
+                    .into_iter()
+                    .map(|(request, status, body)| {
+                        let body = body.to_string();
+                        (
+                            Some(request),
+                            format!(
+                                "HTTP/1.1 {status} fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            ),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+
+        /// Answers one connection per exchange with its raw response, checking
+        /// the request line when one is expected.
+        fn serve(exchanges: Vec<(Option<String>, String)>) -> Self {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let directory = tempfile::tempdir().unwrap();
             let socket = directory.path().join("docker.sock");
             let listener = tokio::net::UnixListener::bind(&socket).unwrap();
             let docker = BollardDocker::connect(&socket).unwrap();
             let task = tokio::spawn(async move {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = Vec::new();
-                while !request.ends_with(b"\r\n\r\n") {
-                    request.push(stream.read_u8().await.unwrap());
+                for (expected, response) in exchanges {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut headers = Vec::new();
+                    while !headers.ends_with(b"\r\n\r\n") {
+                        headers.push(stream.read_u8().await.unwrap());
+                    }
+                    let headers = String::from_utf8(headers).unwrap();
+                    if let Some(expected) = expected {
+                        assert_eq!(
+                            headers.lines().next().unwrap(),
+                            format!("{expected} HTTP/1.1")
+                        );
+                    }
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap_or_default();
+                    stream.read_exact(&mut vec![0; length]).await.unwrap();
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.shutdown().await.unwrap();
                 }
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {declared_length}\r\nConnection: close\r\n\r\n{body}"
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-                stream.shutdown().await.unwrap();
             });
             Self {
                 docker,
                 task,
                 _directory: directory,
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn service_update_retry_uses_id_and_rechecks_ownership() {
+        use piqueld_core::resource::{
+            APPLICATION_LABEL, INSTANCE_LABEL, MANAGED_LABEL, SERVICE_LABEL, SPEC_HASH_LABEL,
+        };
+        let app = piqueld_core::ApplicationId::parse("app-update-race").unwrap();
+        let name = piqueld_core::docker_resource_name(
+            &app,
+            piqueld_core::ResourceKind::Service,
+            Some("web"),
+        );
+        let spec = bollard::models::ServiceSpec {
+            name: Some(name.clone()),
+            labels: Some(std::collections::HashMap::from([
+                (MANAGED_LABEL.into(), "true".into()),
+                (INSTANCE_LABEL.into(), "test-instance".into()),
+                (APPLICATION_LABEL.into(), app.to_string()),
+                (SERVICE_LABEL.into(), "web".into()),
+                (SPEC_HASH_LABEL.into(), format!("sha256:{}", "a".repeat(64))),
+            ])),
+            ..Default::default()
+        };
+        for changed in ["none", "owner", "id", "name", "removed"] {
+            let mut refreshed =
+                serde_json::json!({"ID":"immutable-id", "Version":{"Index":42}, "Spec":spec});
+            match changed {
+                "owner" => refreshed["Spec"]["Labels"][INSTANCE_LABEL] = "another-instance".into(),
+                "id" => refreshed["ID"] = "replacement-id".into(),
+                "name" => refreshed["Spec"]["Name"] = "renamed-service".into(),
+                _ => {}
+            }
+            let mut responses = vec![
+                (
+                    "POST /services/immutable-id/update?version=1&registryAuthFrom=spec".into(),
+                    500,
+                    serde_json::json!({"message":"rpc error: code = Unknown desc = update out of sequence"}),
+                ),
+                (
+                    "GET /services/immutable-id".into(),
+                    if changed == "removed" { 404 } else { 200 },
+                    refreshed,
+                ),
+            ];
+            if changed == "none" {
+                responses.push((
+                    "POST /services/immutable-id/update?version=42&registryAuthFrom=spec".into(),
+                    200,
+                    serde_json::json!({}),
+                ));
+            }
+            let stub = EngineStub::sequence(responses);
+            let result = stub
+                .docker
+                .update_service_wire("immutable-id", 1, &spec)
+                .await;
+            if changed == "none" {
+                result.unwrap();
+            } else {
+                assert!(
+                    matches!(result, Err(super::DockerError::OwnershipConflict)),
+                    "{changed}: {result:?}"
+                );
+            }
+            stub.task.await.unwrap();
         }
     }
 

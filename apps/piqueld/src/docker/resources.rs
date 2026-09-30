@@ -4,7 +4,7 @@ use super::{
     InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
     ListTasksOptionsBuilder, ListVolumesOptionsBuilder, NetworkCreateRequest,
     OBSERVATION_INSPECT_CONCURRENCY, ObservedApplication, ObservedNetwork, ObservedVolume,
-    SERVICE_LABEL, StreamExt, SwarmInitRequest, SwarmState, TryStreamExt, VolumeCreateOptions,
+    ResourceKind, StreamExt, SwarmInitRequest, SwarmState, TryStreamExt, VolumeCreateOptions,
     async_trait, resolve_image_digest, stream,
 };
 
@@ -203,6 +203,7 @@ impl BollardDocker {
         &self,
         application: &ApplicationId,
         network_names: &HashMap<String, String>,
+        node_id: &str,
     ) -> Result<Vec<piqueld_core::ObservedService>, DockerError> {
         let (raw_services, service_names) = self.inspect_application_services(application).await?;
         let all_tasks = if service_names.is_empty() {
@@ -256,6 +257,7 @@ impl BollardDocker {
                     .collect::<Vec<_>>();
                 Some(Self::observe_service(
                     &spec,
+                    node_id,
                     tasks,
                     service.update_status.and_then(|u| u.state),
                 ))
@@ -364,10 +366,7 @@ impl DockerApi for BollardDocker {
     async fn ensure_swarm(&self, auto_initialize: bool) -> Result<SwarmState, DockerError> {
         DockerTimeout::Request
             .run("ensure Docker Swarm", async {
-                let info = self.docker.info().await.map_err(|error| {
-                    DockerError::unavailable("inspect Docker Swarm state", error)
-                })?;
-                let swarm = info.swarm.unwrap_or_default();
+                let swarm = self.swarm_info("inspect Docker Swarm state").await?;
                 if swarm.control_available == Some(true) {
                     self.validate_single_node_manager().await?;
                     return Ok(SwarmState::Ready);
@@ -389,13 +388,8 @@ impl DockerApi for BollardDocker {
                         })
                         .await,
                 )?;
-                let checked = self.docker.info().await.map_err(|error| {
-                    DockerError::unavailable("verify initialized Docker Swarm", error)
-                })?;
-                if checked
-                    .swarm
-                    .is_none_or(|s| s.control_available != Some(true))
-                {
+                let checked = self.swarm_info("verify initialized Docker Swarm").await?;
+                if checked.control_available != Some(true) {
                     return Err(DockerError::NotManager);
                 }
                 self.validate_single_node_manager().await?;
@@ -469,9 +463,12 @@ impl DockerApi for BollardDocker {
         // One deadline covers every phase, including complete resource inspections.
         DockerTimeout::Request
             .run("observe application", async {
+                let node_id = self.local_node_id().await?;
                 let (networks, network_names) = self.snapshot_networks(application).await?;
                 let volumes = self.snapshot_volumes(application).await?;
-                let services = self.snapshot_services(application, &network_names).await?;
+                let services = self
+                    .snapshot_services(application, &network_names, &node_id)
+                    .await?;
                 Ok(ObservedApplication {
                     networks,
                     volumes,
@@ -511,13 +508,12 @@ impl DockerApi for BollardDocker {
                     };
                     let runtime_configuration_matches =
                         Self::network_configuration_matches(&network);
-                    let labels = network
-                        .labels
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect::<BTreeMap<_, _>>();
-                    let wrong_resource_role = labels.contains_key(SERVICE_LABEL);
-                    if !Self::owns(&labels, &desired.labels) || wrong_resource_role {
+                    if !Self::owns_resource(
+                        network.labels.unwrap_or_default(),
+                        &desired.labels,
+                        ResourceKind::Network,
+                        desired.name.as_str(),
+                    ) {
                         return Err(DockerError::OwnershipConflict);
                     }
                     if !runtime_configuration_matches {
@@ -569,8 +565,12 @@ impl DockerApi for BollardDocker {
                 .find(|v| v.name == desired.name.as_str());
                 if let Some(volume) = existing {
                     let runtime_configuration_matches = Self::volume_configuration_matches(&volume);
-                    let labels = volume.labels.into_iter().collect::<BTreeMap<_, _>>();
-                    if !Self::owns(&labels, &desired.labels) || labels.contains_key(SERVICE_LABEL) {
+                    if !Self::owns_resource(
+                        volume.labels,
+                        &desired.labels,
+                        ResourceKind::Volume,
+                        desired.name.as_str(),
+                    ) {
                         return Err(DockerError::OwnershipConflict);
                     }
                     return if runtime_configuration_matches {
@@ -618,16 +618,8 @@ impl DockerApi for BollardDocker {
                             ))
                             .await,
                     )?;
-                    let mut spec = Self::service_spec(desired)?;
-                    if !desired.secrets.is_empty() {
-                        spec.task_template
-                            .as_mut()
-                            .expect("task spec")
-                            .container_spec
-                            .as_mut()
-                            .expect("container spec")
-                            .secrets = Some(self.secret_references(desired).await?);
-                    }
+                    let node_id = self.local_node_id().await?;
+                    let spec = self.service_spec_with_secrets(desired, &node_id).await?;
                     match matches.into_iter().find(|s| {
                         s.spec.as_ref().and_then(|s| s.name.as_deref())
                             == Some(desired.name.as_str())
@@ -644,14 +636,16 @@ impl DockerApi for BollardDocker {
                             let Some(existing) = inspected else {
                                 return self.create_service_wire(&spec).await;
                             };
-                            let labels: BTreeMap<_, _> = existing
-                                .spec
-                                .as_ref()
-                                .and_then(|s| s.labels.clone())
-                                .unwrap_or_default()
-                                .into_iter()
-                                .collect();
-                            if !Self::owns(&labels, &desired.labels) {
+                            if !Self::owns_resource(
+                                existing
+                                    .spec
+                                    .as_ref()
+                                    .and_then(|s| s.labels.clone())
+                                    .unwrap_or_default(),
+                                &desired.labels,
+                                ResourceKind::Service,
+                                desired.name.as_str(),
+                            ) {
                                 return Err(DockerError::OwnershipConflict);
                             }
                             let existing_spec = existing.spec.as_ref().ok_or(
@@ -659,6 +653,7 @@ impl DockerApi for BollardDocker {
                             )?;
                             let mut observed = Self::observe_service(
                                 existing_spec,
+                                &node_id,
                                 Vec::new(),
                                 existing
                                     .update_status
@@ -689,8 +684,11 @@ impl DockerApi for BollardDocker {
                                 .version
                                 .and_then(|v| v.index)
                                 .ok_or(DockerError::Request("read existing service version"))?;
-                            self.update_service_wire(desired.name.as_str(), version, &spec)
-                                .await
+                            let id = existing
+                                .id
+                                .as_deref()
+                                .ok_or(DockerError::Request("read existing service identity"))?;
+                            self.update_service_wire(id, version, &spec).await
                         }
                         None => self.create_service_wire(&spec).await,
                     }
@@ -722,13 +720,8 @@ impl DockerApi for BollardDocker {
                     .id
                     .clone()
                     .ok_or(DockerError::Request("read existing service identity"))?;
-                let labels: BTreeMap<_, _> = existing
-                    .spec
-                    .and_then(|s| s.labels)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect();
-                if !Self::owns_named_service(&labels, ownership, name) {
+                let labels = existing.spec.and_then(|s| s.labels).unwrap_or_default();
+                if !Self::owns_resource(labels, ownership, ResourceKind::Service, name) {
                     return Err(DockerError::OwnershipConflict);
                 }
                 // Delete the resource that was inspected, even if the name is replaced
@@ -767,9 +760,8 @@ impl DockerApi for BollardDocker {
                     .id
                     .clone()
                     .ok_or(DockerError::Request("read existing network identity"))?;
-                let labels: BTreeMap<_, _> =
-                    existing.labels.unwrap_or_default().into_iter().collect();
-                if !Self::owns_private_network(&labels, ownership, name) {
+                let labels = existing.labels.unwrap_or_default();
+                if !Self::owns_resource(labels, ownership, ResourceKind::Network, name) {
                     return Err(DockerError::OwnershipConflict);
                 }
                 // Network IDs make the ownership check and removal target the same object.

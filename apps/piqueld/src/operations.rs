@@ -90,6 +90,9 @@ pub enum OperationError {
     /// A service did not converge before its deadline.
     #[error("service did not converge before the deadline")]
     ConvergenceTimeout,
+    /// Image resolution or the source build did not finish before its deadline.
+    #[error("application preparation did not finish before the deadline")]
+    PreparationTimeout,
 }
 
 impl OperationError {
@@ -133,6 +136,7 @@ impl OperationError {
             Self::ServiceUpdateFailed => DiagnosticCode::ServiceUpdateFailed,
             Self::PlanBlocked(_) => DiagnosticCode::PlanBlocked,
             Self::ConvergenceTimeout => DiagnosticCode::ConvergenceTimeout,
+            Self::PreparationTimeout => DiagnosticCode::PreparationTimeout,
         }
     }
 

@@ -200,7 +200,10 @@ impl<D: DockerApi> Controller<D> {
                 | "image_resolution_failed"
                 | "docker_request_failed"
                 | "convergence_timeout"
+                | "preparation_timeout"
                 | "journal_unavailable"
+                | "swarm_manager_unavailable"
+                | "swarm_topology_unsupported"
         ) {
             return false;
         }

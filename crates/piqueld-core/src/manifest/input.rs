@@ -189,6 +189,55 @@ pub enum HealthCheck {
     },
 }
 
+/// What the container runtime executes for a health check. Two checks with the
+/// same execution behave identically, whichever variant declared them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthExecution {
+    /// Executable and arguments, run directly without a shell.
+    pub command: Vec<String>,
+    /// Probe interval in seconds.
+    pub interval_seconds: u32,
+    /// Probe timeout in seconds.
+    pub timeout_seconds: u32,
+}
+
+impl HealthCheck {
+    /// Returns the direct command and timing Docker runs for this check.
+    /// HTTP checks become the equivalent `wget` probe.
+    #[must_use]
+    pub fn execution(&self) -> HealthExecution {
+        match self {
+            Self::Command {
+                command,
+                interval_seconds,
+                timeout_seconds,
+            } => HealthExecution {
+                command: command.clone(),
+                interval_seconds: *interval_seconds,
+                timeout_seconds: *timeout_seconds,
+            },
+            Self::Http {
+                port,
+                path,
+                interval_seconds,
+                timeout_seconds,
+            } => HealthExecution {
+                command: vec![
+                    "wget".into(),
+                    "-q".into(),
+                    "-T".into(),
+                    timeout_seconds.to_string(),
+                    "-O".into(),
+                    "/dev/null".into(),
+                    format!("http://127.0.0.1:{port}{path}"),
+                ],
+                interval_seconds: *interval_seconds,
+                timeout_seconds: *timeout_seconds,
+            },
+        }
+    }
+}
+
 fn default_health_path() -> String {
     "/health".into()
 }
