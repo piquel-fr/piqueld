@@ -121,7 +121,7 @@ mod tests {
         let (MutationResponse::Saved(saved), _) = store
             .accept(
                 Mutation::Save {
-                    application: initial,
+                    application: Box::new(initial),
                     expected_application_id: None,
                     deploy: true,
                 },
@@ -158,7 +158,7 @@ mod tests {
         store
             .accept(
                 Mutation::Save {
-                    application: edited.clone(),
+                    application: Box::new(edited.clone()),
                     expected_application_id: Some(op.application_id.to_string()),
                     deploy: false,
                 },

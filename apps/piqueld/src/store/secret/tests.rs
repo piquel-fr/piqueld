@@ -34,7 +34,7 @@ async fn captured_deployment_protects_secrets_before_pinning() {
     store
         .accept(
             Mutation::Save {
-                application: app.clone(),
+                application: Box::new(app.clone()),
                 expected_application_id: Some(app.id().to_string()),
                 deploy: false,
             },

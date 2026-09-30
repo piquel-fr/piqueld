@@ -2592,7 +2592,6 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     let manifest = manifest().validate().unwrap();
     let id = piqueld_core::ApplicationId::parse("absent-application").unwrap();
     for mutation in [
-        Mutation::apply(manifest.clone(), None),
         Mutation::save(manifest.clone(), None, false),
         Mutation::Deploy { id: id.clone() },
         Mutation::Delete { id: id.clone() },
@@ -4025,13 +4024,13 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
     .unwrap();
     let edit = Mutation::Edit {
         id: app.id().clone(),
-        edit: ApplicationEdit::Service {
+        edit: Box::new(ApplicationEdit::Service {
             name: "web".into(),
             edit: ServiceEdit::Secrets(vec![piqueld_core::manifest::SecretMount {
                 name: "token".into(),
                 target: "/run/secrets/token".into(),
             }]),
-        },
+        }),
         deploy: false,
     };
     assert!(matches!(

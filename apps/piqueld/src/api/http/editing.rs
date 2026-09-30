@@ -62,7 +62,7 @@ macro_rules! edit_endpoint {
             let options = options(query)?;
             let body: $body = $decode(&headers, bytes)?;
             let edit = ($edit)(($($part.clone()),+), body);
-            accept_mutation(&state, Mutation::Edit { id: ApplicationId::parse(edit_endpoint!(@id $($part),+))?, edit, deploy: options.deploy }, options.expected_generation, options.force, &headers).await
+            accept_mutation(&state, Mutation::Edit { id: ApplicationId::parse(edit_endpoint!(@id $($part),+))?, edit: Box::new(edit), deploy: options.deploy }, options.expected_generation, options.force, &headers).await
         }
     };
     (@id $first:ident $(,$rest:ident)*) => { $first };
@@ -89,7 +89,7 @@ async fn disconnect_manifest_repository(
         &state,
         Mutation::Edit {
             id: ApplicationId::parse(id)?,
-            edit: ApplicationEdit::Repository(None),
+            edit: Box::new(ApplicationEdit::Repository(None)),
             deploy: options.deploy,
         },
         options.expected_generation,
@@ -122,7 +122,7 @@ async fn remove_application_service(
         &state,
         Mutation::Edit {
             id: ApplicationId::parse(id)?,
-            edit: ApplicationEdit::RemoveService(service),
+            edit: Box::new(ApplicationEdit::RemoveService(service)),
             deploy: options.deploy,
         },
         options.expected_generation,
@@ -149,7 +149,7 @@ async fn remove_application_volume(
         &state,
         Mutation::Edit {
             id: ApplicationId::parse(id)?,
-            edit: ApplicationEdit::RemoveVolume(volume),
+            edit: Box::new(ApplicationEdit::RemoveVolume(volume)),
             deploy: options.deploy,
         },
         options.expected_generation,
@@ -202,10 +202,10 @@ async fn remove_service_environment_entry(
         &state,
         Mutation::Edit {
             id: ApplicationId::parse(id)?,
-            edit: ApplicationEdit::Service {
+            edit: Box::new(ApplicationEdit::Service {
                 name: service,
                 edit: ServiceEdit::EnvironmentEntry((key, None)),
-            },
+            }),
             deploy: options.deploy,
         },
         options.expected_generation,

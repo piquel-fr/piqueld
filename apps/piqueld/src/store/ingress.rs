@@ -272,7 +272,7 @@ mod tests {
         let (response, _) = store
             .accept(
                 Mutation::Save {
-                    application,
+                    application: Box::new(application),
                     expected_application_id: None,
                     deploy,
                 },
@@ -356,7 +356,7 @@ mod tests {
         let result = store
             .accept(
                 Mutation::Save {
-                    application: app("two", Some("taken.example.com")),
+                    application: Box::new(app("two", Some("taken.example.com"))),
                     expected_application_id: None,
                     deploy: true,
                 },
@@ -387,7 +387,7 @@ mod tests {
         store
             .accept(
                 Mutation::Save {
-                    application: app("two", Some("free.example.com")),
+                    application: Box::new(app("two", Some("free.example.com"))),
                     expected_application_id: None,
                     deploy: true,
                 },
