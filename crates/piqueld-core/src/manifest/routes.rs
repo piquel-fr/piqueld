@@ -18,6 +18,16 @@ validated_string!(
         && value.rsplit('.').next().is_some_and(|tld| tld.bytes().any(|b| b.is_ascii_lowercase()) && !matches!(tld, "localhost" | "local" | "internal"))
 );
 
+impl Hostname {
+    /// Whether this is `domain` itself or one of its subdomains.
+    #[must_use]
+    pub fn is_within(&self, domain: &Self) -> bool {
+        self.as_str()
+            .strip_suffix(domain.as_str())
+            .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('.'))
+    }
+}
+
 /// Validated, application-owned HTTP route; TLS terminates at the gateway.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]

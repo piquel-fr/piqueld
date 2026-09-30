@@ -11,3 +11,9 @@ CREATE TABLE hostname_reservations (
     application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE
 ) STRICT;
 CREATE INDEX hostname_reservations_application ON hostname_reservations(application_id);
+
+-- Hostnames the installation serves itself, such as the website origin. Routes
+-- may not claim them or their subdomains. Replaced from configuration at startup.
+CREATE TABLE installation_hostnames (
+    hostname TEXT PRIMARY KEY
+) STRICT;

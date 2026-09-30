@@ -1,7 +1,10 @@
 //! Transactional hostname ownership and the gateway's durable routing projection.
 use super::{Store, StoreError};
-use piqueld_core::{ApplicationId, manifest::ValidatedRoute};
-use sqlx::{Sqlite, SqliteConnection, Transaction};
+use piqueld_core::{
+    ApplicationId,
+    manifest::{Hostname, ValidatedRoute},
+};
+use sqlx::{Sqlite, SqliteConnection, SqliteExecutor, Transaction};
 use std::collections::BTreeMap;
 
 pub(crate) type RoutingTable = BTreeMap<ApplicationId, Vec<ValidatedRoute>>;
@@ -20,6 +23,55 @@ impl Store {
             Self::reserve_hostnames_on(&mut tx, id).await?;
         }
         tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Replaces the hostnames the installation serves itself. Routes may not
+    /// claim them or their subdomains. Returns route hostnames saved before the
+    /// reservation that now conflict; the gateway never publishes them.
+    pub(crate) async fn reserve_installation_hostnames(
+        &self,
+        hostnames: &[Hostname],
+    ) -> Result<Vec<Hostname>, StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        sqlx::query!("DELETE FROM installation_hostnames")
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        for hostname in hostnames {
+            let hostname = hostname.as_str();
+            sqlx::query!(
+                "INSERT INTO installation_hostnames(hostname) VALUES(?1)",
+                hostname
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        }
+        let routed = sqlx::query_scalar!("SELECT hostname FROM hostname_reservations")
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)?;
+        let mut conflicts = Vec::new();
+        for hostname in routed {
+            let hostname = Hostname::parse(hostname).map_err(StoreError::corrupt)?;
+            if hostnames.iter().any(|domain| hostname.is_within(domain)) {
+                conflicts.push(hostname);
+            }
+        }
+        Ok(conflicts)
+    }
+
+    async fn installation_hostnames<'e>(
+        executor: impl SqliteExecutor<'e>,
+    ) -> Result<Vec<Hostname>, StoreError> {
+        sqlx::query_scalar!("SELECT hostname FROM installation_hostnames")
+            .fetch_all(executor)
+            .await
+            .map_err(StoreError::database)?
+            .into_iter()
+            .map(|hostname| Hostname::parse(hostname).map_err(StoreError::corrupt))
+            .collect()
     }
 
     pub(crate) async fn applied_routes(
@@ -63,6 +115,15 @@ impl Store {
                 UNION ALL SELECT applied_json FROM application_routes WHERE application_id=?1
             ) AS sources, json_each(sources.routes) AS r
         "#, application_id).fetch_all(&mut *connection).await.map_err(StoreError::database)?;
+        let installation = Self::installation_hostnames(&mut *connection).await?;
+        for hostname in &names {
+            let parsed = Hostname::parse(hostname.as_str()).map_err(StoreError::corrupt)?;
+            if installation.iter().any(|domain| parsed.is_within(domain)) {
+                return Err(StoreError::HostnameConflict {
+                    hostname: hostname.clone(),
+                });
+            }
+        }
         sqlx::query!(
             "DELETE FROM hostname_reservations WHERE application_id=?1",
             application_id
@@ -134,7 +195,10 @@ impl Store {
         Self::commit_application_changes(tx, [id]).await
     }
 
+    /// Routes the gateway should serve. Hostnames reserved by the installation
+    /// are withheld even if they were saved before the reservation.
     pub(crate) async fn routing_table(&self) -> Result<RoutingTable, StoreError> {
+        let installation = Self::installation_hostnames(&self.pool).await?;
         sqlx::query!(
             "SELECT application_id,desired_json FROM application_routes ORDER BY application_id"
         )
@@ -143,9 +207,16 @@ impl Store {
         .map_err(StoreError::database)?
         .into_iter()
         .map(|row| {
+            let mut routes: Vec<ValidatedRoute> =
+                serde_json::from_str(&row.desired_json).map_err(StoreError::corrupt)?;
+            routes.retain(|route| {
+                !installation
+                    .iter()
+                    .any(|domain| route.hostname.is_within(domain))
+            });
             Ok((
                 ApplicationId::parse(row.application_id).map_err(StoreError::corrupt)?,
-                serde_json::from_str(&row.desired_json).map_err(StoreError::corrupt)?,
+                routes,
             ))
         })
         .collect()
@@ -214,6 +285,42 @@ mod tests {
             panic!("saved response")
         };
         Ok(saved)
+    }
+
+    #[tokio::test]
+    async fn installation_hostnames_and_subdomains_are_never_routed() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let early = app("early", Some("app.piqueld.example.com"));
+        let saved = save(&store, early.clone(), true).await.unwrap();
+        let id = ApplicationId::parse(saved.application_id).unwrap();
+        store
+            .stage_routes(&id, &early.spec().routes, true, None)
+            .await
+            .unwrap();
+
+        // Routes saved before the website hostname was configured are withheld.
+        let website = Hostname::parse("piqueld.example.com").unwrap();
+        let conflicts = store
+            .reserve_installation_hostnames(std::slice::from_ref(&website))
+            .await
+            .unwrap();
+        assert_eq!(conflicts, [early.spec().routes[0].hostname.clone()]);
+        assert_eq!(store.routing_table().await.unwrap()[&id], []);
+
+        for hostname in ["piqueld.example.com", "api.piqueld.example.com"] {
+            assert!(matches!(
+                save(&store, app("late", Some(hostname)), false).await,
+                Err(StoreError::HostnameConflict { .. })
+            ));
+        }
+        save(
+            &store,
+            app("sibling", Some("notpiqueld.example.com")),
+            false,
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

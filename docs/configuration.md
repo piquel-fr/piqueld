@@ -182,6 +182,9 @@ retaining route intent, reservations, and certificates. No DNS or certificate wo
 runs while disabled. Re-enabling restores deployed routes, including deployments
 made while disabled, without activating saved-but-undeployed changes.
 
+Routes cannot use the `auth.public_url` hostname or its subdomains, and the
+website's reverse proxy cannot share the gateway's ports on the same address.
+
 Gateway certificates, accepted configuration, and the private administration socket
 live below `<data_dir>/ingress`. Only dedicated subdirectories are mounted into
 Caddy; it receives neither the Docker socket nor the daemon API socket/database.

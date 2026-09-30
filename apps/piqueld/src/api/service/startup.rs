@@ -8,6 +8,7 @@ use crate::{
     store::{Store, StoreError},
 };
 use anyhow::Context;
+use piqueld_core::manifest::Hostname;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::Notify, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -36,6 +37,17 @@ impl ApplicationService {
         );
         info!(path = %config.server.database_path().display(), "opened control-plane state");
         let auth = crate::auth::Auth::initialize(&store, config).await?;
+        // Application routes must never serve the website origin or its subdomains,
+        // which could otherwise act on its passkeys or cookies.
+        let website = crate::auth::Auth::validate_origin(&config.auth.public_url)?
+            .domain()
+            .and_then(|host| Hostname::parse(host.trim_end_matches('.')).ok());
+        for hostname in store
+            .reserve_installation_hostnames(website.as_slice())
+            .await?
+        {
+            tracing::error!(%hostname, "route hostname is reserved for the piqueld website; the gateway will not publish it");
+        }
         let docker = Arc::new(
             BollardDocker::connect(&config.docker.socket)
                 .context("failed to connect to Docker Engine")?,

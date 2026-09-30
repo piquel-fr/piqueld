@@ -80,7 +80,7 @@ diagnostic_codes! {
     Superseded => "superseded",
     /// Observed application health is degraded.
     ServiceDegraded => "service_degraded",
-    /// A route hostname is reserved by another application.
+    /// A route hostname is reserved by another application or this installation.
     HostnameConflict => "hostname_conflict",
     /// The managed ingress gateway is unavailable or could not apply a change.
     IngressUnavailable => "ingress_unavailable",
@@ -144,7 +144,7 @@ impl DiagnosticCode {
             Self::HostnameConflict => (
                 Application,
                 false,
-                "Choose a hostname that no other application reserves, then deploy again.",
+                "Choose a hostname that no other application or the piqueld website uses, then deploy again.",
             ),
             Self::OwnershipConflict | Self::DockerConfigurationConflict => (
                 Application,

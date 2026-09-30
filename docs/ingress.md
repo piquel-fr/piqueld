@@ -36,6 +36,14 @@ HTTPS backends are outside this release.
 
 ## Traffic and isolation
 
+The piqueld website and API are never served through ingress; routes can only
+target application services. The hostname of `auth.public_url` and its subdomains
+are reserved for the installation, so application code can never run on the
+passkey origin or set cookies for it. Saving or deploying such a route fails with
+`hostname_conflict`. Routes saved before that hostname was configured stay
+unpublished and are logged at startup. Ingress owns ports 80/443, so the website's
+HTTPS reverse proxy must listen on a different address or host.
+
 Only Caddy publishes ports. HTTP redirects to HTTPS for known hosts; unknown HTTP
 hosts receive 404 and unknown TLS names receive no automatically issued certificate.
 Each application's exposed services share a dedicated ingress overlay with Caddy.

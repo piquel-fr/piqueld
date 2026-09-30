@@ -4,8 +4,8 @@ use piqueld_core::observability::DiagnosticCode;
 /// Sanitized failure returned while executing a durable operation.
 #[derive(Debug, thiserror::Error)]
 pub enum OperationError {
-    /// A saved or captured route belongs to another application.
-    #[error("hostname {0} is reserved by another application")]
+    /// A saved or captured route belongs to another application or the installation.
+    #[error("hostname {0} is reserved by another application or this installation")]
     HostnameConflict(String),
     /// Managed gateway could not apply the required routing transition.
     #[error("ingress configuration could not be applied; see ingress health and daemon logs")]
