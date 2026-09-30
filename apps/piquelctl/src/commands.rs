@@ -30,6 +30,7 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         Command::Logout => crate::auth::logout(cli, client, console).await,
         Command::Whoami => console.emit(&crate::auth::AccountReport(client.auth_me().await?)),
         Command::Profiles => unreachable!("profiles are listed before connecting"),
+        Command::Secrets { action } => action.run(cli, client, console).await,
         Command::Status => status(cli, client, console).await,
         Command::App { command } => app(cli, client, console, command).await,
         Command::Builds(args) => match &args.command {
@@ -78,6 +79,10 @@ async fn app(
             )
             .await
         }
+        AppCommand::Secret {
+            application,
+            action,
+        } => action.run(cli, client, console, application).await,
         AppCommand::Plan(args) => plan_command(console, client, args).await,
         AppCommand::Apply(args) => apply(cli, client, console, args).await,
         AppCommand::Delete(args) => delete(cli, client, console, args).await,

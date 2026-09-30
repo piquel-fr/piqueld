@@ -36,6 +36,8 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Default)]
 struct FakeDocker {
     observed: Arc<Mutex<ObservedApplication>>,
+    secret_values: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    fail_secret_removal: Arc<AtomicBool>,
     registry: Arc<Mutex<RegistryState>>,
     deny_network_removal: Arc<AtomicBool>,
     fail_observations: Arc<AtomicBool>,
@@ -182,6 +184,7 @@ impl ImageSource for RegistryView {
 
 fn observed_service(desired: &DesiredService) -> ObservedService {
     ObservedService {
+        secrets: desired.secrets.clone(),
         name: desired.name.to_string(),
         image: desired.image.to_string(),
         replicas: desired.replicas,
@@ -211,6 +214,35 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
 
 #[async_trait]
 impl DockerApi for FakeDocker {
+    async fn ensure_secret(
+        &self,
+        name: &str,
+        value: &[u8],
+        _ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        self.secret_values
+            .lock()
+            .await
+            .entry(name.to_owned())
+            .or_insert_with(|| value.to_vec());
+        Ok(())
+    }
+
+    async fn remove_secrets(
+        &self,
+        names: &[String],
+        _ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError> {
+        if self.fail_secret_removal.load(Ordering::SeqCst) {
+            return Err(DockerError::Request("remove secrets"));
+        }
+        let mut values = self.secret_values.lock().await;
+        for name in names {
+            values.remove(name);
+        }
+        Ok(())
+    }
+
     async fn application_logs(
         &self,
         _instance: &InstanceId,
@@ -430,6 +462,7 @@ async fn fixture_store(
     );
     let application = application();
     let resolutions = ResolutionSet {
+        secret_names: std::collections::BTreeMap::default(),
         sources: [(
             piqueld_core::ServiceName::parse("web").unwrap(),
             ResolvedSource::parse_image(
@@ -481,6 +514,7 @@ impl ControllerHarness {
         );
         let application = application();
         let resolutions = ResolutionSet {
+            secret_names: std::collections::BTreeMap::default(),
             sources: [(
                 piqueld_core::ServiceName::parse("web").unwrap(),
                 ResolvedSource::parse_image(
@@ -1024,6 +1058,10 @@ impl ControllerHarness {
             self.store.operation(&operation.id).await.unwrap().state,
             OperationState::Succeeded
         );
+    }
+
+    async fn target(&self, id: &ApplicationId) -> ResolvedApplication {
+        self.store.get(id).await.unwrap().resolved.unwrap()
     }
 
     async fn pulls(&self) -> u64 {
@@ -2257,4 +2295,287 @@ async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
     cancellation.cancel();
     task.await.unwrap().unwrap();
     assert_eq!(recorded().await, 1);
+}
+
+#[tokio::test]
+async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_versions() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let first = applications
+        .apply(manifest().validate().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    harness
+        .store
+        .put_secret(&first.application_id, "token", 0, b"version-one".to_vec())
+        .await
+        .unwrap();
+    let mut input = manifest();
+    input.spec.services[0]
+        .secrets
+        .push(piqueld_core::manifest::SecretMount {
+            name: "token".into(),
+            target: "/run/secrets/token".into(),
+        });
+    let deployment = applications
+        .apply(input.validate().unwrap(), Some(1))
+        .await
+        .unwrap();
+    harness.finish(&deployment).await;
+    let target = harness.target(&first.application_id).await;
+    let old = target.secret_names["token"].clone();
+    assert_eq!(
+        harness.docker.secret_values.lock().await[&old],
+        b"version-one"
+    );
+    harness
+        .store
+        .put_secret(&first.application_id, "token", 1, b"version-two".to_vec())
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.target(&first.application_id).await,
+        target,
+        "rotation alone must not update services"
+    );
+    let next = applications
+        .deploy(&first.application_id, None)
+        .await
+        .unwrap();
+    harness.finish(&next).await;
+    let target = harness.target(&first.application_id).await;
+    let new = &target.secret_names["token"];
+    assert_ne!(&old, new);
+    assert_eq!(
+        harness.docker.secret_values.lock().await[new],
+        b"version-two"
+    );
+    assert_eq!(
+        harness
+            .docker
+            .observe(&first.application_id)
+            .await
+            .unwrap()
+            .services[0]
+            .secrets,
+        target.services[0].secrets
+    );
+
+    // Historical completed deployments must not block deletion forever.
+    let clean = applications
+        .apply(manifest().validate().unwrap(), Some(2))
+        .await
+        .unwrap();
+    harness.finish(&clean).await;
+    let service = piqueld::api::ApplicationService::new(
+        Arc::clone(&harness.store),
+        harness
+            .controller
+            .runtime(Arc::new(tokio::sync::Notify::new())),
+    );
+    service
+        .delete_secret(&first.application_id, "token", 2)
+        .await
+        .unwrap();
+    assert!(harness.docker.secret_values.lock().await.is_empty());
+    assert!(
+        harness
+            .store
+            .secrets(&first.application_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn application_deletion_journals_secret_cleanup_failures() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let first = applications
+        .apply(manifest().validate().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    harness
+        .store
+        .put_secret(&first.application_id, "token", 0, b"value".to_vec())
+        .await
+        .unwrap();
+    harness
+        .docker
+        .fail_secret_removal
+        .store(true, Ordering::SeqCst);
+    let deletion = applications
+        .delete(&first.application_id, Some(1))
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let events = harness
+        .store
+        .filtered_events(
+            &piqueld_core::observability::EventFilter {
+                operation_id: Some(deletion.id.clone()),
+                ..Default::default()
+            },
+            None,
+            100,
+        )
+        .await
+        .unwrap()
+        .items;
+    let phases = |kind: &str| {
+        events
+            .iter()
+            .filter(|event| event.kind == kind && event.phase.as_deref() == Some("remove_secrets"))
+            .count()
+    };
+    assert_eq!(phases("action_requested"), 1, "{events:#?}");
+    assert!(events.iter().any(|event| event.kind == "action_failed"
+        && event.phase.as_deref() == Some("remove_secrets")
+        && event.error_code.as_deref() == Some("docker_request_failed")));
+    assert!(harness.store.get(&first.application_id).await.is_ok());
+}
+
+#[tokio::test]
+async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollouts() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let initial = applications
+        .apply(manifest().validate().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness.finish(&initial).await;
+    let id = &initial.application_id;
+    harness
+        .store
+        .put_secret(id, "token", 0, b"original".to_vec())
+        .await
+        .unwrap();
+    let mut input = manifest();
+    input.spec.services[0]
+        .secrets
+        .push(piqueld_core::manifest::SecretMount {
+            name: "token".into(),
+            target: "/run/secrets/token".into(),
+        });
+    let deployed = applications
+        .apply(input.validate().unwrap(), Some(1))
+        .await
+        .unwrap();
+    harness.finish(&deployed).await;
+    let target = harness.target(id).await;
+    let original = harness.docker.observe(id).await.unwrap();
+
+    std::fs::remove_file(harness.database_path.with_file_name("secrets.key")).unwrap();
+    harness.store.recover_secret_key().await.unwrap();
+    let failed = applications.deploy(id, None).await.unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let result = harness.store.operation(&failed.id).await.unwrap();
+    assert_eq!(result.error_code.as_deref(), Some("secret_unavailable"));
+    assert!(result.error_message.as_deref().unwrap().contains("token"));
+    assert_eq!(harness.target(id).await, target);
+    assert_eq!(harness.docker.observe(id).await.unwrap(), original);
+
+    harness
+        .store
+        .put_secret(id, "token", 1, b"replacement".to_vec())
+        .await
+        .unwrap();
+    let replacement = applications.deploy(id, None).await.unwrap();
+    harness.finish(&replacement).await;
+    let new_target = harness.target(id).await;
+    assert_eq!(
+        harness.docker.secret_values.lock().await[&new_target.secret_names["token"]],
+        b"replacement"
+    );
+    assert_eq!(
+        harness.docker.secret_values.lock().await[&target.secret_names["token"]],
+        b"original",
+        "running services keep their existing Docker secret"
+    );
+}
+
+#[tokio::test]
+async fn missing_secret_key_fails_rollout_before_docker_mutation() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let first = applications
+        .apply(manifest().validate().unwrap(), Some(0))
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    harness
+        .store
+        .put_secret(&first.application_id, "token", 0, b"value".to_vec())
+        .await
+        .unwrap();
+    std::fs::remove_file(harness.database_path.with_file_name("secrets.key")).unwrap();
+    let mut input = manifest();
+    input.spec.services[0]
+        .secrets
+        .push(piqueld_core::manifest::SecretMount {
+            name: "token".into(),
+            target: "/run/secrets/token".into(),
+        });
+    let deployment = applications
+        .apply(input.validate().unwrap(), Some(1))
+        .await
+        .unwrap();
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    let operation = harness.store.operation(&deployment.id).await.unwrap();
+    assert_eq!(
+        operation.error_code.as_deref(),
+        Some("secret_storage_unavailable")
+    );
+    assert!(harness.docker.secret_values.lock().await.is_empty());
+    let events = harness
+        .store
+        .filtered_events(
+            &piqueld_core::observability::EventFilter {
+                operation_id: Some(deployment.id.clone()),
+                ..Default::default()
+            },
+            None,
+            100,
+        )
+        .await
+        .unwrap()
+        .items;
+    let service = |kind: &str| {
+        events
+            .iter()
+            .find(|event| event.kind == kind && event.phase.as_deref() == Some("ensure_service"))
+    };
+    let failed = service("action_failed").expect("service action failed");
+    assert_eq!(
+        failed.error_code.as_deref(),
+        Some("secret_storage_unavailable")
+    );
+    assert_eq!(
+        failed.diagnostic.as_ref().unwrap().causes,
+        ["Secret master key: missing"]
+    );
+    assert!(
+        service("action_requested").is_none(),
+        "no Docker request is made without secret values: {events:#?}"
+    );
 }

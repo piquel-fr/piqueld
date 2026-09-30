@@ -72,6 +72,9 @@ pub struct Service {
     /// Persistent volume mounts.
     #[serde(default)]
     pub mounts: Vec<Mount>,
+    /// Application-scoped secrets mounted as files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<SecretMount>,
     /// Optional container health check.
     pub healthcheck: Option<HealthCheck>,
     /// Optional CPU and memory limits.
@@ -204,4 +207,14 @@ pub struct ResourceLimits {
     /// Memory limit in bytes.
     #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_u64)]
     pub memory_bytes: Option<u64>,
+}
+
+/// A logical application secret exposed only as a container file.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretMount {
+    /// Application-scoped logical secret name.
+    pub name: String,
+    /// Absolute normalized destination under /run/secrets.
+    pub target: String,
 }

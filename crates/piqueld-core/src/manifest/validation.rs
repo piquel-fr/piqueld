@@ -207,6 +207,7 @@ pub fn safe_decode_path(path: &str) -> String {
         "command",
         "arguments",
         "mounts",
+        "secrets",
         "healthcheck",
         "resources",
         "type",
@@ -410,6 +411,32 @@ fn validate_services(
                     );
                 }
             }
+        }
+        let mut targets = service
+            .mounts
+            .iter()
+            .map(|m| m.target.as_str())
+            .collect::<BTreeSet<_>>();
+        for (index, secret) in service.secrets.iter().enumerate() {
+            let path = format!("{base}.secrets[{index}]");
+            validate_name(&secret.name, &format!("{path}.name"), errors);
+            validate_absolute_path(&secret.target, &format!("{path}.target"), errors);
+            if !secret.target.starts_with("/run/secrets/") || !targets.insert(&secret.target) {
+                error(
+                    errors,
+                    "secret_target_invalid",
+                    &path,
+                    "secret targets must be unique file paths under /run/secrets",
+                );
+            }
+        }
+        if service.secrets.len() > 64 {
+            error(
+                errors,
+                "secrets_excessive",
+                &base,
+                "at most 64 secret file mounts per service",
+            );
         }
         validate_environment(&service.environment, &base, errors);
         validate_mounts(&service.mounts, &base, volume_names, errors);

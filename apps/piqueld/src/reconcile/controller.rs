@@ -74,7 +74,7 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
         }
         let operation = &self.store.operation(&operation.id).await?;
-        let result = self.execute_operation(operation, cancellation).await;
+        let result = self.execute_and_cleanup(operation, cancellation).await;
         if cancellation.is_cancelled() {
             return Ok("cancelled");
         }
@@ -133,6 +133,53 @@ impl<D: DockerApi> Controller<D> {
             }
         };
         persisted.map(|()| outcome)
+    }
+
+    /// Completes convergence and removes retained secrets after service deletion.
+    async fn execute_and_cleanup(
+        &self,
+        operation: &Operation,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        self.execute_operation(operation, cancellation).await?;
+        if operation.kind == OperationKind::Delete {
+            let names = self.store.secret_names(&operation.application_id).await?;
+            if !names.is_empty() {
+                self.remove_secrets(operation, &names).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Journals retained secret removal like other runtime mutations.
+    async fn remove_secrets(
+        &self,
+        operation: &Operation,
+        names: &[String],
+    ) -> Result<(), OperationError> {
+        let journal = self
+            .store
+            .begin_action(Some(&operation.id), "remove_secrets", None)
+            .await?;
+        let result = match self.store.action_request(&journal, 1).await {
+            Ok(()) => self
+                .docker
+                .remove_secrets(names, &self.ownership_labels(&operation.application_id))
+                .await
+                .map_err(OperationError::from),
+            Err(error) => Err(error.into()),
+        };
+        self.store
+            .finish_action(
+                &journal,
+                result.as_ref().err().map(OperationError::diagnostic),
+            )
+            .await?;
+        result?;
+        self.store
+            .mutation_event(&operation.id)
+            .await
+            .map_err(OperationError::from)
     }
 
     /// Plans from fresh observations until no work remains. Only desired state and
@@ -274,7 +321,7 @@ impl<D: DockerApi> Controller<D> {
         let manifest = self.deployment_manifest(operation, &snapshot).await?;
         // A rename changes display metadata without rewriting deployment history.
         let manifest = manifest.with_name(application.application.metadata().name.clone());
-        let reusable = if operation.kind == OperationKind::Refresh {
+        let mut reusable = if operation.kind == OperationKind::Refresh {
             piqueld_core::ResolutionSet::default()
         } else {
             application
@@ -284,6 +331,7 @@ impl<D: DockerApi> Controller<D> {
                     target.reusable_resolutions(&manifest)
                 })
         };
+        reusable.secret_names = self.store.pin_secrets(&operation.id, &manifest).await?;
         let prepared =
             runtime
                 .prepare(&manifest, &reusable)

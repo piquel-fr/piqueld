@@ -232,7 +232,7 @@ impl<D: DockerApi> Controller<D> {
         if latest.state == OperationState::Requested
             || (latest.state == OperationState::Running && latest.error_code.is_none())
         {
-            return self.run_operation(&latest, cancellation).await;
+            return Box::pin(self.run_operation(&latest, cancellation)).await;
         }
         if Self::retry_due(&latest) {
             let operation = if latest.state == OperationState::Running {
@@ -240,7 +240,7 @@ impl<D: DockerApi> Controller<D> {
             } else {
                 self.store.retry_operation(&latest).await?
             };
-            return self.run_operation(&operation, cancellation).await;
+            return Box::pin(self.run_operation(&operation, cancellation)).await;
         }
         let application = self.store.get(application.application.id()).await?;
         let observed = match self.docker.observe(application.application.id()).await {
@@ -306,14 +306,14 @@ impl<D: DockerApi> Controller<D> {
             || was_blocked
         {
             if latest.state == OperationState::Running {
-                return self.run_operation(&latest, cancellation).await;
+                return Box::pin(self.run_operation(&latest, cancellation)).await;
             }
             if let Some(operation) = self
                 .store
                 .request_reconcile(application.application.id(), &latest.id)
                 .await?
             {
-                self.run_operation(&operation, cancellation).await?;
+                Box::pin(self.run_operation(&operation, cancellation)).await?;
             }
         }
         Ok(())
@@ -414,17 +414,16 @@ impl<D: DockerApi> Controller<D> {
                 Some(action.kind.resource_name()),
             )
             .await?;
-        if let Err(error) = self.store.action_request(&journal, 1).await {
-            let failure = super::OperationError::from(error);
-            self.store
-                .finish_action(&journal, Some(failure.diagnostic()))
-                .await?;
-            return Err(failure);
-        }
-        let result = self
-            .mutate_action(&action.kind, &ownership)
-            .await
-            .map_err(super::OperationError::from);
+        let result = match self.service_secrets(&action.kind, &ownership).await {
+            Ok(secrets) => match self.store.action_request(&journal, 1).await {
+                Ok(()) => self
+                    .mutate_action(&action.kind, &ownership, &secrets)
+                    .await
+                    .map_err(super::OperationError::from),
+                Err(error) => Err(error.into()),
+            },
+            Err(error) => Err(error),
+        };
         self.store
             .finish_action(
                 &journal,

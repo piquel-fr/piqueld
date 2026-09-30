@@ -4,7 +4,7 @@ use crate::{profiles::ProfileSummary, support::desired_replicas};
 use piqueld_client::{
     AcceptedOperation, ActionReason, ActionRisk, ApplicationLogs, ApplicationStatusView,
     ApplicationSummary, ApplicationView, BuildLogPage, BuildRecord, Event, Operation,
-    OperationState, Page, PlanView, SavedApplication, Source, SystemStatus,
+    OperationState, Page, PlanView, SavedApplication, SecretMetadata, Source, SystemStatus,
 };
 use serde::Serialize;
 use std::io;
@@ -165,6 +165,48 @@ report!(Page<BuildRecord>, self, out, {
         out.label("Next cursor", cursor)?;
     }
     Ok(())
+});
+
+impl Report for Vec<SecretMetadata> {
+    type Json = [SecretMetadata];
+    fn json(&self) -> &Self::Json {
+        self
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        for secret in self {
+            out.line(format_args!(
+                "{}  generation {}{}{}",
+                secret.name,
+                secret.generation,
+                if secret.unavailable {
+                    "  value unavailable; replace value and deploy"
+                } else {
+                    ""
+                },
+                if secret.deleting {
+                    "  deletion pending; retry delete"
+                } else {
+                    ""
+                }
+            ))?;
+        }
+        Ok(())
+    }
+}
+
+report!(SecretMetadata, self, out, {
+    out.line(format_args!(
+        "Saved {} generation {}. Deploy the application to use it.",
+        self.name, self.generation
+    ))
+});
+
+#[derive(Serialize)]
+pub(crate) struct SecretDeletionReport<'a> {
+    pub(crate) deleted: &'a str,
+}
+report!(SecretDeletionReport<'_>, self, out, {
+    out.line(format_args!("Deleted {}.", self.deleted))
 });
 
 report!(Page<Event>, self, out, {
@@ -407,3 +449,14 @@ impl Configuration {
         }
     }
 }
+
+report!(piqueld_client::SecretKeyRecovery, self, out, {
+    out.line(format_args!(
+        "Secret key recovered: {} values discarded across {} secrets in {} applications.",
+        self.discarded_versions, self.affected_secrets, self.affected_applications,
+    ))?;
+    out.line(
+        "Running services keep their Docker secrets. Supply replacement values, then deploy.",
+    )?;
+    out.line("The next stored value generates a new key; back it up with the database.")
+});

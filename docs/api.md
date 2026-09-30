@@ -73,6 +73,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/services/{service}/{command,arguments}` | `{ "value": ["element", "..."] }` |
 | PUT | `/services/{service}/mount` | `Mount`; adds/replaces by container target |
 | DELETE | `/services/{service}/mount` | `{ "value": "/container/target" }` |
+| PUT | `/services/{service}/secrets` | `{ "value": [{ "name": "token", "target": "/run/secrets/token" }] }`; replaces file references without exposing values |
 | PUT | `/services/{service}/healthcheck` | `{ "value": HealthCheck }`; null clears |
 | PUT | `/services/{service}/healthcheck/{port,path,command,interval,timeout}` | Typed `{ "value": ... }` |
 | PUT | `/services/{service}/resources/{cpu,memory}` | `{ "value": 500 }`; null clears the selected limit |
@@ -258,3 +259,42 @@ Metadata survives operation pruning and is deleted with its application.
 
 See [observability](observability.md) for diagnostic history, daemon statistics, analytics, metrics
 and webhook delivery configuration.
+
+Application secret endpoints expose metadata only:
+
+- `GET /api/v1/applications/{id}/secrets` lists names, current generations, update times, `deleting` and `unavailable` status.
+  Its unpaginated metadata array is returned directly in `data`, without `items` or `next_cursor`.
+- `PUT /api/v1/applications/{id}/secrets/{name}` accepts an `application/octet-stream`
+  value of 1–512000 bytes. `X-Expected-Generation: 0` creates; a current generation
+  replaces. Each application supports at most 100 logical secrets, 1,000 retained
+  values and 100 MiB of ciphertext. Discarded unavailable versions do not consume
+  this value quota. Exceeding the retained-version or byte quota
+  returns 409 `secret_quota_exceeded`; delete unused secrets to free space.
+- `DELETE` at the same path requires `X-Expected-Generation` and refuses references
+  in saved configuration, the current runnable deployment, or the active target.
+  The captured deployment manifest protects references even before version pinning.
+  Deletion reserves the secret, releases the database writer lock, then removes
+  Docker versions before encrypted records. Partial failure or restart leaves
+  `deleting: true`; retry DELETE to finish. Replacement and new configuration
+  references return 409 `secret_deleting` until cleanup completes. A version conflict
+  returns 409; missing or invalid key material returns 503 `secret_storage_unavailable`
+  with a `details.diagnostic_id` for value-dependent work.
+
+Values never appear in responses, manifests or deployment snapshots. Deployments
+pin immutable versions during effective-input preparation; retries preserve those
+pins. Earlier ciphertext versions remain until logical-secret or application deletion.
+
+Quota enforcement never evicts pinned versions. To retire a secret, save and deploy
+configuration without its references, then delete it. An existing database above
+the quota remains readable and deployable; new writes require freeing space.
+
+`POST /api/v1/system/secrets/recover-key` recovers from a lost or unusable master
+key by discarding stored values for **all applications**. It returns 409
+`secret_key_usable` while the current key still works. Discarded versions are
+marked unavailable; metadata, running Docker services and their secrets are
+preserved. Supplying replacement values creates new versions, and an explicit new
+deployment is required to adopt them. Deployments that need discarded values fail
+with `secret_unavailable` and the logical names. The response contains
+`affected_applications`, `affected_secrets` and `discarded_versions`; no key or
+secret value is returned. Repeating the request after a lost response returns
+`secret_key_usable`, because no stored value then needs the old key.

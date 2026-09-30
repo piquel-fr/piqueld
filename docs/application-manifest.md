@@ -31,9 +31,10 @@ name = "data"
 ```
 
 Services support replicas, environment variables, command and argument arrays,
-health checks, CPU/memory limits, and mounts of declared named volumes. Named
-volumes are retained when an application is deleted. There are no manifest
-fields for managed credentials, secrets, routes, or published ports.
+health checks, CPU/memory limits, mounts of declared named volumes, and file
+references to application secrets. Named volumes are retained when an application
+is deleted. Secret values are never manifest fields, and there are no manifest
+fields for routes or published ports.
 
 Names are 1–63 lowercase ASCII letters, digits, or hyphens; they start with a
 letter and cannot end with a hyphen. Applications may be empty. Deploying an empty application removes its services and network, retaining volume data.
@@ -170,3 +171,15 @@ Connection settings alone remain editable through apply so an incorrect path
 can be repaired. Manifest connection settings do not change the runtime spec
 hash. Source builds, deployment, and rollback retain the behavior described above.
 Automatic synchronization and webhooks are not implemented.
+
+Services can reference application-scoped secrets as files:
+
+```toml
+[[spec.services.secrets]]
+name = "database-password"
+target = "/run/secrets/database-password"
+```
+
+References contain names and paths, never values. A service supports up to 64
+secret mounts, with unique normalized paths under `/run/secrets`. Values are set
+separately, and must exist when effective deployment inputs are prepared.
