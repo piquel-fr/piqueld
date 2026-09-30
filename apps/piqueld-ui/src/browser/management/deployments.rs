@@ -1,10 +1,13 @@
-//! Deployment actions, history, and snapshot inspection.
-use super::controls::Tabs;
+//! Deployment actions, preview dialog, history, and snapshot inspection.
+use super::super::format::timestamp;
+use super::super::ui::{
+    Icon, Modal, Tabs, Tone, badge, empty, icon, notice, operation_badge, when,
+};
 use super::{client_error_message, editor, mutation_client, transport_failure};
 use leptos::{
     Callable, Callback, CollectView, For, IntoView, RwSignal, Show, Signal, SignalGet,
-    SignalGetUntracked, SignalSet, SignalUpdate, SignalWith, SignalWithUntracked, component,
-    create_effect, create_rw_signal, on_cleanup, spawn_local, view,
+    SignalGetUntracked, SignalSet, SignalUpdate, SignalWith, component, create_effect,
+    create_rw_signal, on_cleanup, spawn_local, view,
 };
 use piqueld_client::{ApplyApplicationRequest, Client, DeploymentView, Page, Source};
 use std::cell::Cell;
@@ -73,16 +76,131 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         preview.set(None);
     });
     view! {
-        <div class="deployment-actions">
-            <button disabled={move || context.action_blocked()} on:click={inspect}>
-                "Preview"
-            </button>
-            <button class="primary" disabled={move || context.action_blocked()} on:click={deploy}>
-                "Deploy"
-            </button>
-            <DeploymentPreview preview={preview} />
+        <button
+            type="button"
+            class="btn"
+            disabled={move || context.action_blocked()}
+            on:click={inspect}
+            title="Show what deploying the saved configuration would change"
+        >
+            {icon(Icon::Eye)}
+            "Preview"
+        </button>
+        <button
+            type="button"
+            class="btn btn-primary"
+            disabled={move || context.action_blocked()}
+            on:click={deploy}
+        >
+            {icon(Icon::Rocket)}
+            "Deploy"
+        </button>
+        <DeploymentPreview preview={preview} />
+    }
+}
 
-        </div>
+/// Panel showing a deployment plan: configuration changes, planned runtime
+/// actions and plan diagnostics.
+#[component]
+fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> impl IntoView {
+    let opened = create_rw_signal(false);
+    create_effect(move |_| opened.set(preview.get().is_some()));
+    view! {
+        <Modal
+            title="Deployment preview"
+            opened={opened}
+            wide={true}
+            on_close={Callback::new(move |()| preview.set(None))}
+        >
+            {move || {
+                preview
+                    .get()
+                    .map(|plan| {
+                        view! {
+                            {plan
+                                .identical
+                                .then(|| {
+                                    notice(
+                                        Tone::Info,
+                                        "Saved configuration matches the latest deployment snapshot. Deploying refreshes image resolution only.",
+                                    )
+                                })}
+                            <p class="hint">
+                                "Image tags and runtime state may change before the deployment runs."
+                            </p>
+                            <section>
+                                <div class="section-header">
+                                    <h3>"Configuration changes"</h3>
+                                </div>
+                                {if plan.changes.is_empty() {
+                                    view! { <p class="hint">"No configuration changes since the last deployment."</p> }.into_view()
+                                } else {
+                                    plan
+                                        .changes
+                                        .into_iter()
+                                        .map(|change| {
+                                            view! {
+                                                <div class="diff-row">
+                                                    <code>{change.field}</code>
+                                                    <span class="before">
+                                                        {change.before.unwrap_or_else(|| "absent".into())}
+                                                    </span>
+                                                    <span class="arrow" aria-hidden="true">
+                                                        "→"
+                                                    </span>
+                                                    <span class="after">
+                                                        {change.after.unwrap_or_else(|| "absent".into())}
+                                                    </span>
+                                                </div>
+                                            }
+                                        })
+                                        .collect_view()
+                                }}
+                            </section>
+                            <section>
+                                <div class="section-header">
+                                    <h3>"Planned actions"</h3>
+                                </div>
+                                {if plan.plan.actions.is_empty() {
+                                    view! { <p class="hint">"No runtime actions are required."</p> }.into_view()
+                                } else {
+                                    view! {
+                                        <ul class="stack-sm">
+                                            {plan
+                                                .plan
+                                                .actions
+                                                .into_iter()
+                                                .map(|action| {
+                                                    view! {
+                                                        <li class="btn-group">
+                                                            {badge(Tone::Neutral, action.kind.name().replace('_', " "))}
+                                                            <code>{action.kind.resource_name().to_owned()}</code>
+                                                        </li>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </ul>
+                                    }
+                                        .into_view()
+                                }}
+                            </section>
+                            {(!plan.plan.diagnostics.is_empty())
+                                .then(|| {
+                                    view! {
+                                        <div class="stack-sm">
+                                            {plan
+                                                .plan
+                                                .diagnostics
+                                                .into_iter()
+                                                .map(|d| notice(Tone::Warn, format!("{}: {}", d.resource, d.message)))
+                                                .collect_view()}
+                                        </div>
+                                    }
+                                })}
+                        }
+                    })
+            }}
+        </Modal>
     }
 }
 
@@ -97,9 +215,7 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
     let cursor = create_rw_signal(None::<String>);
     let error = create_rw_signal(None::<String>);
     let loading = create_rw_signal(false);
-    let id = context
-        .saved
-        .with_untracked(|a| a.application.id().to_string());
+    let id = context.id();
     context.poll_deployments(id.clone(), history, cursor, paginated, error, loading);
     let more = move |_| {
         let id = id.clone();
@@ -128,19 +244,10 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
         });
     };
     view! {
-        <section class="deployment-history">
-            {move || {
-                error
-                    .get()
-                    .map(|e| {
-                        view! {
-                            <p class="form-error" role="alert">
-                                {e}
-                            </p>
-                        }
-                    })
-            }} <Show when={move || history.with(Vec::is_empty)}>
-                <p class="empty-state">"No deployments yet."</p>
+        <section class="stack-sm" aria-label="Deployment history">
+            {move || error.get().map(|e| notice(Tone::Bad, e))}
+            <Show when={move || history.with(Vec::is_empty)}>
+                {empty("No deployments yet. Deploy the saved configuration to create one.")}
             </Show>
             <For
                 each={move || history.get()}
@@ -158,10 +265,13 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
                     });
                     view! { <DeploymentCard deployment={deployment} /> }
                 }}
-            /> <Show when={move || cursor.get().is_some()}>
-                <button disabled={move || loading.get()} on:click={more.clone()}>
-                    "Load older deployments"
-                </button>
+            />
+            <Show when={move || cursor.get().is_some()}>
+                <div class="btn-group">
+                    <button type="button" class="btn" disabled={move || loading.get()} on:click={more.clone()}>
+                        "Load older deployments"
+                    </button>
+                </div>
             </Show>
         </section>
     }
@@ -223,26 +333,23 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
         }
     });
     view! {
-        <article class="deployment-card" class:selected={selected}>
+        <article class="expander" class:selected={selected}>
             <button
-                class="deployment-summary"
+                type="button"
+                class="expander-summary"
                 aria-expanded={move || opened.get().to_string()}
                 on:click={move |_| opened.update(|v| *v = !*v)}
             >
-                <span
-                    class="deployment-state"
-                    data-state={move || deployment.get().operation.state.as_str()}
-                >
-                    {move || deployment.get().operation.state.as_str()}
+                <span class="chevron" aria-hidden="true">
+                    {icon(Icon::ChevronRight)}
                 </span>
-                <strong>
-                    {move || format!("Deployment · #{}", deployment.get().operation.generation)}
-                </strong>
+                {move || operation_badge(deployment.get().operation.state)}
+                <strong>{move || format!("Deployment #{}", deployment.get().operation.generation)}</strong>
                 {move || {
                     deployment
                         .get()
                         .current_target
-                        .then(|| view! { <span class="tag">"Current"</span> })
+                        .then(|| view! { <span class="tag">"Current target"</span> })
                 }}
                 {move || {
                     deployment
@@ -250,44 +357,59 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                         .last_successful
                         .then(|| view! { <span class="tag">"Last successful"</span> })
                 }}
-                <span class="deployment-time">
-                    {move || timestamp(deployment.get().operation.created_at_ms)}
+                <span class="meta">
+                    {move || {
+                        let op = deployment.get().operation;
+                        view! {
+                            {op.phase.map(|phase| format!("{phase} · "))}
+                            {when(op.created_at_ms)}
+                        }
+                    }}
                 </span>
-                <span aria-hidden="true">{move || if opened.get() { "−" } else { "+" }}</span>
             </button>
-            <div class="deployment-body" hidden={move || !opened.get()}>
+            <div class="expander-body" hidden={move || !opened.get()}>
                 <Tabs
                     label="Deployment sections"
                     options={&["Details", "Snapshot", "Attempts"]}
                     selected={tab}
-                    class="tabs"
                 />
-                <div hidden={move || {
-                    tab.get() != "Details"
-                }}>
+                <div hidden={move || tab.get() != "Details"}>
                     {move || {
                         let op = deployment.get().operation;
                         view! {
-                            <dl class="host-settings">
-                                <dt>"Operation ID"</dt>
-                                <dd>
-                                    <code>{op.id}</code>
-                                </dd>
-                                <dt>"Generation"</dt>
-                                <dd>{op.generation}</dd>
-                                <dt>"Attempt"</dt>
-                                <dd>{op.attempt}</dd>
-                                <dt>"Phase"</dt>
-                                <dd>{op.phase.unwrap_or_else(|| "Waiting".into())}</dd>
-                                <dt>"Created"</dt>
-                                <dd>{timestamp(op.created_at_ms)}</dd>
-                                <dt>"Updated"</dt>
-                                <dd>{timestamp(op.updated_at_ms)}</dd>
-                            </dl>
-                            {op.resource.map(|resource| view! { <p>{resource}</p> })}
-                            {op
-                                .error_message
-                                .map(|error| view! { <p class="form-error">{error}</p> })}
+                            <div class="stack-sm">
+                                <dl class="kv">
+                                    <dt>"Operation ID"</dt>
+                                    <dd>
+                                        <code>{op.id}</code>
+                                    </dd>
+                                    <dt>"Kind"</dt>
+                                    <dd>{op.kind.as_str()}</dd>
+                                    <dt>"Generation"</dt>
+                                    <dd>{op.generation}</dd>
+                                    <dt>"Attempts"</dt>
+                                    <dd>{op.attempt}</dd>
+                                    <dt>"Phase"</dt>
+                                    <dd>{op.phase.unwrap_or_else(|| "Waiting".into())}</dd>
+                                    {op.resource.map(|resource| view! { <dt>"Resource"</dt><dd><code>{resource}</code></dd> })}
+                                    <dt>"Created"</dt>
+                                    <dd>{timestamp(op.created_at_ms)}</dd>
+                                    <dt>"Updated"</dt>
+                                    <dd>{timestamp(op.updated_at_ms)}</dd>
+                                    {op.finished_at_ms.map(|ms| view! { <dt>"Finished"</dt><dd>{timestamp(ms)}</dd> })}
+                                </dl>
+                                {op
+                                    .error_message
+                                    .map(|error| {
+                                        notice(
+                                            Tone::Bad,
+                                            view! {
+                                                {op.error_code.map(|code| view! { <strong>{code}</strong> })}
+                                                <span>{error}</span>
+                                            },
+                                        )
+                                    })}
+                            </div>
                         }
                     }}
                 </div>
@@ -298,7 +420,6 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                     <Show when={move || attempts_requested.get()}>
                         <DeploymentAttempts deployment={deployment} />
                     </Show>
-
                 </div>
             </div>
         </article>
@@ -309,115 +430,26 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
 #[component]
 fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
     view! {
+        <p class="hint">"Configuration captured when this deployment was accepted."</p>
         {move || {
-            deployment
-                .get()
-                .application.to_manifest()
-                .spec
-                .services
-                .into_iter()
-                .map(|service| view! { <SnapshotService service={service} /> })
-                .collect_view()
-        }}
-        <p>
-            "Volumes: "
-            {move || {
-                deployment
-                    .get()
-                    .application.to_manifest()
-                    .spec
-                    .volumes
+            let spec = deployment.get().application.to_manifest().spec;
+            view! {
+                {spec
+                    .services
                     .into_iter()
-                    .map(|v| v.name)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }}
-        </p>
-    }
-}
-
-/// Display deployment timestamps in the browser's local timezone.
-pub(in crate::browser) fn timestamp(milliseconds: i64) -> String {
-    let date = leptos::web_sys::js_sys::Date::new(&leptos::wasm_bindgen::JsValue::from_f64(
-        milliseconds
-            .to_string()
-            .parse::<f64>()
-            .expect("integer timestamps are valid floating point numbers"),
-    ));
-    date.to_locale_string("default", &leptos::web_sys::js_sys::Object::new())
-        .into()
-}
-
-/// Panel showing a deployment plan: configuration changes, planned runtime
-/// actions and plan diagnostics.
-#[component]
-fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> impl IntoView {
-    view! {
-        {move || {
-            preview
-                .get()
-                .map(|plan| {
-                    view! {
-                        <div class="preview-panel" role="region" aria-label="Deployment preview">
-                            <header>
-                                <h3>"Deployment preview"</h3>
-                                <button on:click={move |_| {
-                                    preview.set(None);
-                                }}>"Close preview"</button>
-                            </header>
-                            <p class="help">
-                                "Image tags and runtime state may change before deployment."
-                            </p>
-                            <ul>
-                                {plan
-                                    .changes
-                                    .into_iter()
-                                    .map(|change| {
-                                        view! {
-                                            <li>
-                                                <strong>{change.field}</strong>
-                                                " · "
-                                                {change.before.unwrap_or_else(|| "absent".into())}
-                                                " → "
-                                                {change.after.unwrap_or_else(|| "absent".into())}
-                                            </li>
-                                        }
-                                    })
-                                    .collect_view()}
-                            </ul>
-                            <ul>
-                                {plan
-                                    .plan
-                                    .actions
-                                    .into_iter()
-                                    .map(|action| {
-                                        view! {
-                                            <li>
-                                                {format!(
-                                                    "{} · {}",
-                                                    action.kind.name(),
-                                                    action.kind.resource_name(),
-                                                )}
-                                            </li>
-                                        }
-                                    })
-                                    .collect_view()}
-                            </ul>
-                            {plan
-                                .plan
-                                .diagnostics
-                                .into_iter()
-                                .map(|d| {
-                                    view! {
-                                        <p class="form-error">
-                                            {format!("{}: {}", d.resource, d.message)}
-                                        </p>
-                                    }
-                                })
-                                .collect_view()}
-                        </div>
-                    }
-                })
+                    .map(|service| view! { <SnapshotService service={service} /> })
+                    .collect_view()}
+                <div class="snapshot-service">
+                    <h4>"Volumes"</h4>
+                    <p class="hint">
+                        {if spec.volumes.is_empty() {
+                            "None".to_owned()
+                        } else {
+                            spec.volumes.into_iter().map(|v| v.name).collect::<Vec<_>>().join(", ")
+                        }}
+                    </p>
+                </div>
+            }
         }}
     }
 }
@@ -475,47 +507,88 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
     });
 
     view! {
-        {move || {
-            failure
-                .get()
-                .map(|error| {
-                    view! {
-                        <p class="form-error" role="alert">
-                            {error}
-                        </p>
+        <div class="stack-sm">
+            {move || failure.get().map(|error| notice(Tone::Bad, error))}
+            {move || {
+                if visible_attempts.with(Vec::is_empty) {
+                    if loading.get() {
+                        empty("Loading attempts…")
+                    } else if failure.get().is_none() {
+                        empty("No attempts yet.")
+                    } else {
+                        ().into_view()
                     }
-                })
-        }}
-        {move || {
-            visible_attempts
-                .get()
-                .into_iter()
-                .map(|attempt| view! { <AttemptRow attempt={attempt} /> })
-                .collect_view()
-        }}
-        <Show when={move || loading.get()}>
-            <p role="status" class="help">
-                "Loading attempts…"
-            </p>
-        </Show>
-        <Show when={move || {
-            !loading.get() && failure.get().is_none() && visible_attempts.with(Vec::is_empty)
-        }}>
-            <p class="empty-state">"No attempts yet."</p>
-        </Show>
-        <div class="form-actions">
-            <button disabled={move || loading.get()} on:click={move |_| load.call(None)}>
-                "Refresh attempts"
-            </button>
-            <Show when={move || cursor.get().is_some()}>
+                } else {
+                    view! {
+                        <div class="table-wrap">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th class="num">"Attempt"</th>
+                                        <th>"State"</th>
+                                        <th>"Outcome"</th>
+                                        <th>"Updated"</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {visible_attempts
+                                        .get()
+                                        .into_iter()
+                                        .map(|attempt| view! { <AttemptRow attempt={attempt} /> })
+                                        .collect_view()}
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                        .into_view()
+                }
+            }}
+            <div class="btn-group">
                 <button
+                    type="button"
+                    class="btn btn-sm"
                     disabled={move || loading.get()}
-                    on:click={move |_| load.call(cursor.get_untracked())}
+                    on:click={move |_| load.call(None)}
                 >
-                    "Older attempts"
+                    {icon(Icon::Refresh)}
+                    "Refresh attempts"
                 </button>
-            </Show>
+                <Show when={move || cursor.get().is_some()}>
+                    <button
+                        type="button"
+                        class="btn btn-sm"
+                        disabled={move || loading.get()}
+                        on:click={move |_| load.call(cursor.get_untracked())}
+                    >
+                        "Older attempts"
+                    </button>
+                </Show>
+            </div>
         </div>
+    }
+}
+
+/// One attempt outcome with a link to its events and diagnostics.
+#[component]
+fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
+    let history = format!("/dashboard/events?operation={}", attempt.id);
+    let outcome = match (attempt.error_code, attempt.error_message) {
+        (Some(code), Some(message)) => format!("{code}: {message}"),
+        (Some(code), None) => code,
+        (None, Some(message)) => message,
+        (None, None) => String::new(),
+    };
+    view! {
+        <tr>
+            <td class="num">{attempt.attempt}</td>
+            <td>{operation_badge(attempt.state)}</td>
+            <td class="muted">{outcome}</td>
+            <td class="muted">{when(attempt.updated_at_ms)}</td>
+            <td class="actions">
+                <leptos_router::A href={history}>"Events"</leptos_router::A>
+            </td>
+        </tr>
     }
 }
 
@@ -541,54 +614,51 @@ fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
             )
         }
     };
+    let list = |items: Vec<String>| {
+        if items.is_empty() {
+            "None".to_owned()
+        } else {
+            items.join("\n")
+        }
+    };
     view! {
         <div class="snapshot-service">
             <h4>{service.name.clone()}</h4>
-            <dl>
+            <dl class="kv">
                 <dt>"Source"</dt>
-                <dd>{source}</dd>
+                <dd>
+                    <code>{source}</code>
+                </dd>
                 <dt>"Replicas"</dt>
                 <dd>{service.replicas}</dd>
                 <dt>"Environment"</dt>
                 <dd>
-                    {service
-                        .environment
-                        .clone()
-                        .into_iter()
-                        .map(|(k, v)| {
-                            view! {
-                                <p>
-                                    <code>{k}</code>
-                                    " = "
-                                    {v}
-                                </p>
-                            }
-                        })
-                        .collect_view()}
+                    {list(service.environment.iter().map(|(k, v)| format!("{k}={v}")).collect())}
                 </dd>
                 <dt>"Command"</dt>
-                <dd>{service.command.join(" · ")}</dd>
+                <dd>{list(service.command.clone())}</dd>
                 <dt>"Arguments"</dt>
-                <dd>{service.arguments.join(" · ")}</dd>
+                <dd>{list(service.arguments.clone())}</dd>
                 <dt>"Mounts"</dt>
                 <dd>
-                    {service
-                        .mounts
-                        .clone()
-                        .into_iter()
-                        .map(|m| {
-                            view! {
-                                <p>
-                                    {format!(
-                                        "{} → {}{}",
-                                        m.volume,
-                                        m.target,
-                                        if m.read_only { " (read only)" } else { "" },
-                                    )}
-                                </p>
-                            }
-                        })
-                        .collect_view()}
+                    {list(
+                        service
+                            .mounts
+                            .iter()
+                            .map(|m| {
+                                format!(
+                                    "{} → {}{}",
+                                    m.volume,
+                                    m.target,
+                                    if m.read_only { " (read only)" } else { "" },
+                                )
+                            })
+                            .collect(),
+                    )}
+                </dd>
+                <dt>"Secret files"</dt>
+                <dd>
+                    {list(service.secrets.iter().map(|s| format!("{} → {}", s.name, s.target)).collect())}
                 </dd>
                 <SnapshotRuntime service={service} />
             </dl>
@@ -624,7 +694,7 @@ fn SnapshotRuntime(service: piqueld_client::Service) -> impl IntoView {
                         } => {
                             format!(
                                 "{} · every {interval_seconds}s · timeout {timeout_seconds}s",
-                                command.join(" · "),
+                                command.join(" "),
                             )
                         }
                     },
@@ -693,23 +763,5 @@ impl super::EditorContext {
                 gloo_timers::future::TimeoutFuture::new(2000).await;
             }
         });
-    }
-}
-
-/// One attempt outcome with a link to its events and diagnostics.
-#[component]
-fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
-    let history = format!("/dashboard/events?operation={}", attempt.id);
-    view! {
-        <p class="attempt">
-            {format!(
-                "Attempt {} · {} · {} {}",
-                attempt.attempt,
-                attempt.state,
-                attempt.error_code.unwrap_or_default(),
-                attempt.error_message.unwrap_or_default(),
-            )}
-            <leptos_router::A href=history>" View events and diagnostics"</leptos_router::A>
-        </p>
     }
 }

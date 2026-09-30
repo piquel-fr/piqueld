@@ -1,209 +1,227 @@
-//! Application runtime details and diagnostics.
-use super::{DashboardSignals, dashboard_context, health_class, load_detail};
+//! Application runtime overview: lifecycle status, observed services, and diagnostics.
+use super::format::timestamp;
+use super::ui::{Icon, Tone, badge, empty, health_badge, icon, notice, operation_badge, when};
+use super::{DashboardSignals, dashboard_context, load_detail};
 use crate::state::ApplicationHealth;
 use leptos::{CollectView, IntoView, Show, SignalGet, View, component, view};
 use piqueld_client::{ApplicationDetailView, Client, DiagnosticView, ObservedServiceView};
 
-/// Which part of the application's runtime detail to render.
-#[derive(Clone, Copy)]
-pub(super) enum RuntimeSection {
-    Overview,
-    Services,
-    Diagnostics,
-}
-
-/// Renders one section of the selected application's runtime detail from the
-/// shared dashboard signals, with loading/error states and a retry button.
+/// Live runtime detail for the application editor's Overview tab.
 #[component]
-pub(super) fn RuntimeDetails(section: RuntimeSection) -> impl IntoView {
+pub(super) fn RuntimeOverview() -> impl IntoView {
     let dashboard = dashboard_context();
     let signals = dashboard.signals;
     let refresh = leptos::store_value(dashboard.refresh);
-    let retry = move |_| refresh.with_value(|refresh| refresh());
     view! {
         <Show when={move || signals.detail.get().is_none()}>
-            <p role="status">
-                {move || {
-                    signals
-                        .detail_error
-                        .get()
-                        .map_or_else(
-                            || "Loading runtime detail…".into(),
-                            |error| format!("Detail unavailable: {error}"),
-                        )
-                }}
-            </p>
-            <button disabled={move || signals.detail_loading.get()} on:click={retry}>
-                "Retry runtime detail"
-            </button>
+            <div class="card">
+                <div class="stack-sm">
+                    <p class="hint" role="status">
+                        {move || {
+                            signals
+                                .detail_error
+                                .get()
+                                .map_or_else(
+                                    || "Loading runtime detail…".into(),
+                                    |error| format!("Runtime detail unavailable: {error}"),
+                                )
+                        }}
+                    </p>
+                    <div class="btn-group">
+                        <button
+                            type="button"
+                            class="btn btn-sm"
+                            disabled={move || signals.detail_loading.get()}
+                            on:click={move |_| refresh.with_value(|refresh| refresh())}
+                        >
+                            {icon(Icon::Refresh)}
+                            "Retry"
+                        </button>
+                    </div>
+                </div>
+            </div>
         </Show>
         {move || {
             signals
                 .detail
                 .get()
-                .map(|detail| detail_view(&detail, signals, dashboard.client.clone(), section))
+                .map(|detail| detail_view(&detail, signals, dashboard.client.clone()))
         }}
     }
 }
 
 /// Loaded detail: a stale-data warning if the last detail refresh failed, the
-/// section content, and a button that reloads only this application's detail.
-fn detail_view(
-    detail: &ApplicationDetailView,
-    signals: DashboardSignals,
-    client: Client,
-    section: RuntimeSection,
-) -> View {
+/// runtime status, observed services, and diagnostics cards, and a button that
+/// reloads only this application's detail.
+fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client: Client) -> View {
     let refresh_detail = {
         let id = detail.application.application.id().to_string();
         move || load_detail(client.clone(), signals, id.clone())
     };
+    let app = &detail.application;
+    let status = &detail.status;
+    let observed = &detail.observed;
+    let health = ApplicationHealth::from_server_state(status.state);
+    let latest = detail.latest_operation.clone();
     view! {
-        <div class="grid gap-4">
+        <div class="stack">
             {move || {
                 signals
                     .detail_error
                     .get()
                     .map(|message| {
-                        view! {
-                            <p
-                                class="rounded-lg border border-warn bg-warn-bg p-3 text-warn"
-                                role="status"
-                            >
-                                {format!(
-                                    "Showing the last successful detail; the latest detail refresh failed: {message}",
-                                )}
-                            </p>
-                        }
+                        notice(
+                            Tone::Warn,
+                            format!(
+                                "Showing the last successful detail; the latest refresh failed: {message}",
+                            ),
+                        )
                     })
-            }} {section.render(detail)} <div class="flex justify-start">
-                <button
-                    class="rounded-md border border-line bg-surface px-3 py-2 font-bold text-accent-strong hover:border-accent disabled:cursor-wait disabled:opacity-60"
-                    type="button"
-                    disabled={move || signals.detail_loading.get()}
-                    on:click={move |_| refresh_detail()}
-                >
-                    {move || {
-                        if signals.detail_loading.get() {
-                            "Refreshing…"
-                        } else {
-                            "Refresh"
-                        }
-                    }}
-                </button>
-            </div>
+            }}
+            <section class="card" aria-labelledby="runtime-status-heading">
+                <header>
+                    <div>
+                        <h3 id="runtime-status-heading">"Runtime status"</h3>
+                        <p>{status.message.clone().unwrap_or_else(|| "Observed from Docker Swarm.".into())}</p>
+                    </div>
+                    <button
+                        type="button"
+                        class="btn btn-sm"
+                        disabled={move || signals.detail_loading.get()}
+                        on:click={move |_| refresh_detail()}
+                    >
+                        {icon(Icon::Refresh)}
+                        {move || if signals.detail_loading.get() { "Refreshing…" } else { "Refresh" }}
+                    </button>
+                </header>
+                <dl class="kv">
+                    <dt>"State"</dt>
+                    <dd>{health_badge(health)}</dd>
+                    <dt>"Runtime health"</dt>
+                    <dd>{status.runtime_health.clone().unwrap_or_else(|| "unknown".into())}</dd>
+                    <dt>"Latest operation"</dt>
+                    <dd>
+                        {latest
+                            .map_or_else(
+                                || "None".into_view(),
+                                |op| {
+                                    view! {
+                                        <span class="btn-group">
+                                            {operation_badge(op.state)}
+                                            <span>{format!("{} #{}", op.kind.as_str(), op.generation)}</span>
+                                            {op.phase.map(|phase| view! { <span class="muted">{phase}</span> })}
+                                            <span class="muted">{when(op.updated_at_ms)}</span>
+                                        </span>
+                                    }
+                                        .into_view()
+                                },
+                            )}
+                    </dd>
+                    <dt>"Generation"</dt>
+                    <dd>
+                        {format!(
+                            "{} saved · {} resolved",
+                            app.generation,
+                            app.resolved_generation.map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                        )}
+                    </dd>
+                    <dt>"Resources"</dt>
+                    <dd>
+                        {format!(
+                            "{} network{} · {} volume{}",
+                            observed.network_count,
+                            if observed.network_count == 1 { "" } else { "s" },
+                            observed.volume_count,
+                            if observed.volume_count == 1 { "" } else { "s" },
+                        )}
+                    </dd>
+                    <dt>"Application ID"</dt>
+                    <dd>
+                        <code>{app.application.id().to_string()}</code>
+                    </dd>
+                    <dt>"Created"</dt>
+                    <dd>{timestamp(app.created_at_ms)}</dd>
+                    <dt>"Updated"</dt>
+                    <dd>{timestamp(app.updated_at_ms)}</dd>
+                </dl>
+            </section>
+            <section class="card card-flush" aria-labelledby="observed-title">
+                <header>
+                    <div>
+                        <h3 id="observed-title">"Observed services"</h3>
+                        <p>"Replicas and health as reported by Docker for the current runtime target."</p>
+                    </div>
+                </header>
+                {if observed.services.is_empty() {
+                    empty("No services are running for this application.")
+                } else {
+                    view! {
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>"Service"</th>
+                                    <th>"Image"</th>
+                                    <th class="num">"Healthy"</th>
+                                    <th>"Health"</th>
+                                </tr>
+                            </thead>
+                            <tbody>{observed.services.iter().map(observed_service_row).collect_view()}</tbody>
+                        </table>
+                    }
+                        .into_view()
+                }}
+            </section>
+            <section class="card" aria-labelledby="diagnostics-title">
+                <header>
+                    <div>
+                        <h3 id="diagnostics-title">"Diagnostics"</h3>
+                        <p>"Reconciliation problems from status, runtime observation, and the latest operation."</p>
+                    </div>
+                </header>
+                {if detail.diagnostics.is_empty() {
+                    view! { <p class="hint">"No diagnostics reported."</p> }.into_view()
+                } else {
+                    view! {
+                        <ul class="stack-sm">
+                            {detail.diagnostics.iter().map(diagnostic_view).collect_view()}
+                        </ul>
+                    }
+                        .into_view()
+                }}
+            </section>
         </div>
     }
     .into_view()
 }
 
-impl RuntimeSection {
-    /// Renders this section: overview facts, observed services, or diagnostics.
-    fn render(self, detail: &ApplicationDetailView) -> View {
-        let app = detail.application.application.clone();
-        let status = detail.status.clone();
-        let observed = &detail.observed;
-        let intent_generation = detail.application.generation;
-        let resolved_generation = detail
-            .application
-            .resolved_generation
-            .map_or_else(|| "none".to_owned(), |value| value.to_string());
-        let runtime_health = status
-            .runtime_health
-            .clone()
-            .unwrap_or_else(|| "unknown".to_owned());
-        let application_id = app.id().to_string();
-        let health = ApplicationHealth::from_server_state(status.state);
-        match self {
-            RuntimeSection::Overview => view! {
-                <dl class="host-settings">
-                    <dt>"Application ID"</dt>
-                    <dd>
-                        <code>{application_id}</code>
-                    </dd>
-                    <dt>"State"</dt>
-                    <dd>
-                        <span class={health_class(health)}>{status.state.to_string()}</span>
-                    </dd>
-                    <dt>"Generation"</dt>
-                    <dd>{intent_generation}</dd>
-                    <dt>"Resolved generation"</dt>
-                    <dd>{resolved_generation}</dd>
-                    <dt>"Runtime health"</dt>
-                    <dd>{runtime_health}</dd>
-                    <dt>"Networks / volumes"</dt>
-                    <dd>
-                        {format!("{} / {}", observed.network_count, observed.volume_count)}
-                    </dd>
-                </dl>
-            }
-            .into_view(),
-            RuntimeSection::Services => view! {
-                <section aria-labelledby="observed-title">
-                    <h3 id="observed-title" class="mb-2 text-lg font-bold">
-                        "Observed services"
-                    </h3>
-                    {if observed.services.is_empty() {
-                        view! { <p class="m-0 text-muted">"No observed services."</p> }
-                            .into_view()
-                    } else {
-                        view! {
-                            <ul class="grid gap-2">
-                                {observed
-                                    .services
-                                    .iter()
-                                    .map(observed_service_view)
-                                    .collect_view()}
-                            </ul>
-                        }
-                            .into_view()
-                    }}
-                </section>
-            }
-            .into_view(),
-            RuntimeSection::Diagnostics => {
-                if detail.diagnostics.is_empty() {
-                    view! { <p class="m-0 text-muted">"No diagnostics reported."</p> }.into_view()
-                } else {
-                    view! {
-                        <ul class="grid gap-2">
-                            {detail.diagnostics.iter().map(diagnostic_view).collect_view()}
-                        </ul>
-                    }
-                    .into_view()
-                }
-            }
-        }
-    }
-}
-
-/// List item for one observed service: image, health, replica counts and diagnostics.
-fn observed_service_view(service: &ObservedServiceView) -> View {
+fn observed_service_row(service: &ObservedServiceView) -> View {
     let health = ApplicationHealth::from_convergence(&service.convergence);
-    let image = service
-        .image
-        .clone()
-        .unwrap_or_else(|| "Service not observed".into());
     let diagnostics = service
         .diagnostics
         .iter()
         .map(diagnostic_view)
         .collect_view();
     view! {
-        <li class="grid gap-3 rounded-lg border border-line p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-            <div>
-                <strong class="block break-words">{service.name.clone()}</strong>
-                <span class="break-words text-muted">{image}</span>
-            </div>
-            <div class="flex flex-wrap items-center justify-start gap-2 text-sm text-muted sm:justify-end">
-                <span class={health_class(health)}>{health.label()}</span>
-                <span>
-                    {format!("{} / {} healthy", service.healthy_replicas, service.desired_replicas)}
-                </span>
-            </div>
-            {(!service.diagnostics.is_empty())
-                .then(|| view! { <ul class="col-span-full grid gap-2">{diagnostics}</ul> })}
-        </li>
+        <tr>
+            <td>
+                <strong>{service.name.clone()}</strong>
+            </td>
+            <td class="muted">
+                {service.image.clone().map_or_else(|| "Not observed".into_view(), |image| view! { <code>{image}</code> }.into_view())}
+            </td>
+            <td class="num">{format!("{} / {}", service.healthy_replicas, service.desired_replicas)}</td>
+            <td>{health_badge(health)}</td>
+        </tr>
+        {(!service.diagnostics.is_empty())
+            .then(|| {
+                view! {
+                    <tr>
+                        <td colspan="4">
+                            <ul class="stack-sm">{diagnostics}</ul>
+                        </td>
+                    </tr>
+                }
+            })}
     }
     .into_view()
 }
@@ -211,9 +229,16 @@ fn observed_service_view(service: &ObservedServiceView) -> View {
 /// List item for one diagnostic code and message.
 fn diagnostic_view(diagnostic: &DiagnosticView) -> View {
     view! {
-        <li class="flex gap-3 rounded-md bg-surface-muted p-2">
-            <strong class="text-xs text-bad">{diagnostic.code.clone()}</strong>
-            <span class="break-words">{diagnostic.message.clone()}</span>
+        <li>
+            {notice(
+                Tone::Warn,
+                view! {
+                    <span class="btn-group">
+                        {badge(Tone::Warn, diagnostic.code.clone())}
+                        <span>{diagnostic.message.clone()}</span>
+                    </span>
+                },
+            )}
         </li>
     }
     .into_view()

@@ -1,16 +1,24 @@
 //! Build metadata and bounded output pages, independent of application runtime logs.
 use super::client_error_message;
+use super::format::{bytes, duration, timestamp};
 use super::logs::{LogKind, LogViewer, StreamFilter};
-use super::management::timestamp;
+use super::ui::{Icon, PageHeader, Tone, build_badge, empty, icon, notice, when};
 use crate::log_output::LogLine;
 use leptos::*;
+use leptos_router::A;
 use piqueld_client::{Build, BuildRecord, BuildState, Client, Source};
 use std::{cell::Cell, rc::Rc};
 
 /// `/builds` page: build history across all applications.
 #[component]
 pub(super) fn BuildsPage() -> impl IntoView {
-    view! {<header class="application-heading"><div><p class="eyebrow">"HISTORY"</p><h2>"Builds"</h2></div></header><BuildHistory/>}
+    view! {
+        <PageHeader
+            title="Builds"
+            description="Every Git source preparation is recorded, including failed checkouts and cached builds. Image pulls do not create builds."
+        />
+        <BuildHistory />
+    }
 }
 
 /// Build list, optionally scoped to one `application`. A 3-second loop refetches
@@ -28,6 +36,7 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
     let alive = Rc::new(Cell::new(true));
     let cleanup = alive.clone();
     on_cleanup(move || cleanup.set(false));
+    let scoped = application.is_some();
     let app = store_value(application);
     spawn_local(async move {
         while alive.get() {
@@ -92,61 +101,140 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
             loading.set(false);
         });
     };
-    view! {<section class="deployment-history build-history"><div class="build-history-heading"><p class="help">"Every Git source preparation is recorded, including failed checkouts and cached builds. Image pulls do not create builds."</p>
-        <button disabled=move ||loading.get() on:click=move |_|refresh.set(true)>"Refresh builds"</button></div>
-        {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}
-        <Show when=move ||!loading.get() && records.with(Vec::is_empty)><p class="empty-state">"No builds recorded yet."</p></Show>
-        <For each=move ||records.get() key=|build|build.id children=move |initial|{
-            let build=Signal::derive(move ||records.with(|items|items.iter().find(|b|b.id==initial.id).cloned().unwrap_or_else(||initial.clone())));
-            view!{<BuildCard record=build/>}
-        }/>
-        <Show when=move ||cursor.get().is_some()><button disabled=move ||loading.get() on:click=older>"Load older builds"</button></Show>
-    </section>}
+    view! {
+        <section class="stack-sm" aria-label="Build history">
+            <div class="toolbar">
+                <p class="hint">"Running builds refresh automatically while this page is visible."</p>
+                <div class="toolbar-end">
+                    <button
+                        type="button"
+                        class="btn btn-sm"
+                        disabled={move || loading.get()}
+                        on:click={move |_| refresh.set(true)}
+                    >
+                        {icon(Icon::Refresh)}
+                        "Refresh"
+                    </button>
+                </div>
+            </div>
+            {move || error.get().map(|e| notice(Tone::Bad, e))}
+            <Show when={move || !loading.get() && records.with(Vec::is_empty)}>
+                {empty("No builds recorded yet.")}
+            </Show>
+            <For
+                each={move || records.get()}
+                key={|build| build.id}
+                children={move |initial| {
+                    let build = Signal::derive(move || {
+                        records
+                            .with(|items| {
+                                items
+                                    .iter()
+                                    .find(|b| b.id == initial.id)
+                                    .cloned()
+                                    .unwrap_or_else(|| initial.clone())
+                            })
+                    });
+                    view! { <BuildCard record={build} scoped={scoped} /> }
+                }}
+            />
+            <Show when={move || cursor.get().is_some()}>
+                <div class="btn-group">
+                    <button type="button" class="btn" disabled={move || loading.get()} on:click={older}>
+                        "Load older builds"
+                    </button>
+                </div>
+            </Show>
+        </section>
+    }
 }
 
 /// Expandable summary of one build; expanding shows metadata and mounts `BuildOutput`.
 #[component]
-fn BuildCard(record: Signal<BuildRecord>) -> impl IntoView {
+fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
     let opened = create_rw_signal(false);
-    let toggle = move |_| opened.update(|value| *value = !*value);
-    view! {<article class="deployment-card build-card">
-        <button class="deployment-summary build-summary" aria-expanded=move ||opened.get().to_string() on:click=toggle>
-            {move ||{let b=record.get();let state=build_state(b.state);let summary_time=build_summary_time(&b);view!{
-                <span class="deployment-state" data-state=state>{state}</span>
-                <strong>{format!("Build #{}",b.id)}</strong>
-                <span class="build-service">{b.service}</span>
-                <span class="deployment-time">{summary_time}</span>
-                <span class="expand-icon" aria-hidden="true">{if opened.get(){"−"}else{"+"}}</span>
-            }}}
-        </button>
-        <div class="deployment-body build-body" hidden=move ||!opened.get()>
-            {move ||{let b=record.get();let duration=build_duration(&b);view!{
-                <dl class="host-settings build-details">
-                    <dt>"Application"</dt>
-                    <dd><leptos_router::A href=format!("/dashboard/applications/{}",b.application_id)>{b.application_id}</leptos_router::A></dd>
-                    <dt>"Service"</dt><dd>{b.service}</dd>
-                    <dt>"Operation ID"</dt><dd><code>{b.operation_id}</code></dd>
-                    <dt>"Started"</dt><dd>{timestamp(b.started_at_ms)}</dd>
-                    <dt>"Finished"</dt><dd>{b.finished_at_ms.map(timestamp).unwrap_or_else(||"In progress".into())}</dd>
-                    <dt>"Duration"</dt><dd>{duration}</dd>
-                    {source_details(b.source)}
-                    <dt>"Resolved commit"</dt><dd>{b.commit.map(|commit|view!{<code>{commit}</code>}.into_view()).unwrap_or_else(||view!{<span class="help-inline">"Not resolved"</span>}.into_view())}</dd>
-                    <dt>"Image"</dt><dd>{b.image_id.map(|image|view!{<code>{image}</code>}.into_view()).unwrap_or_else(||view!{<span class="help-inline">"Not produced"</span>}.into_view())}</dd>
-                    <dt>"Retained output"</dt><dd>{format_bytes(b.log_bytes)}</dd>
-                </dl>
-            }}}
-            <Show when=move ||opened.get()><BuildOutput record/></Show>
-        </div>
-    </article>}
+    view! {
+        <article class="expander">
+            <button
+                type="button"
+                class="expander-summary"
+                aria-expanded={move || opened.get().to_string()}
+                on:click={move |_| opened.update(|value| *value = !*value)}
+            >
+                <span class="chevron" aria-hidden="true">
+                    {icon(Icon::ChevronRight)}
+                </span>
+                {move || build_badge(record.get().state)}
+                <strong>{move || format!("Build #{}", record.get().id)}</strong>
+                <span class="tag">{move || record.get().service}</span>
+                <span class="meta">{move || build_summary_time(&record.get())}</span>
+            </button>
+            <div class="expander-body" hidden={move || !opened.get()}>
+                {move || {
+                    let b = record.get();
+                    let duration = build_duration(&b);
+                    let application_id = b.application_id.clone();
+                    let operation_id = b.operation_id.clone();
+                    view! {
+                        <dl class="kv">
+                            {(!scoped)
+                                .then(|| {
+                                    view! {
+                                        <dt>"Application"</dt>
+                                        <dd>
+                                            <A href={format!("/dashboard/applications/{application_id}")}>
+                                                {application_id.clone()}
+                                            </A>
+                                        </dd>
+                                    }
+                                })}
+                            <dt>"Operation"</dt>
+                            <dd>
+                                <A href={format!("/dashboard/events?operation={operation_id}")}>
+                                    <code>{operation_id.clone()}</code>
+                                </A>
+                            </dd>
+                            <dt>"Started"</dt>
+                            <dd>{timestamp(b.started_at_ms)}</dd>
+                            <dt>"Finished"</dt>
+                            <dd>
+                                {b.finished_at_ms.map_or_else(|| "In progress".into(), timestamp)}
+                            </dd>
+                            <dt>"Duration"</dt>
+                            <dd>{duration}</dd>
+                            {source_details(b.source)}
+                            <dt>"Resolved commit"</dt>
+                            <dd>
+                                {b
+                                    .commit
+                                    .map_or_else(
+                                        || view! { <span class="muted">"Not resolved"</span> }.into_view(),
+                                        |commit| view! { <code>{commit}</code> }.into_view(),
+                                    )}
+                            </dd>
+                            <dt>"Image"</dt>
+                            <dd>
+                                {b
+                                    .image_id
+                                    .map_or_else(
+                                        || view! { <span class="muted">"Not produced"</span> }.into_view(),
+                                        |image| view! { <code>{image}</code> }.into_view(),
+                                    )}
+                            </dd>
+                            <dt>"Retained output"</dt>
+                            <dd>{bytes(u64::try_from(b.log_bytes).unwrap_or(0))}</dd>
+                        </dl>
+                    }
+                }}
+                <Show when={move || opened.get()}>
+                    <BuildOutput record={record} />
+                </Show>
+            </div>
+        </article>
+    }
 }
 
-/// Paged build log viewer. Only mounted for an expanded build; the final
-/// successful fetch stops polling.
-///
-/// A 1-second loop replaces the newest page on refresh, stream-filter changes,
-/// or every 30 seconds while the build runs, and prepends older pages on request
-/// (bumping `prepend_revision` so `LogViewer` keeps its scroll position).
-/// Responses for a stale stream filter are discarded and refetched.
+/// Only mounted for an expanded build; the final successful fetch stops polling.
 #[component]
 fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
     let chunks = create_rw_signal(Vec::<piqueld_client::BuildLogChunk>::new());
@@ -227,42 +315,76 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
     let service = record.get_untracked().service;
     let lines = create_memo(move |_| chunks.with(|chunks| LogLine::build(chunks, &service)));
     view! {
-        <div class="build-output-heading"><h4>"Build output"</h4></div>
-        <div class="log-toolbar">
-            <StreamFilter stream/>
-            <button class="log-refresh" disabled=move ||loading.get() || record.get().log_expired
-                on:click=move |_|refresh.set(true)>{move ||if loading.get(){"Loading…"}else{"Refresh output"}}</button>
+        <div class="section-header">
+            <div>
+                <h4>"Build output"</h4>
+                <p>"Refreshes every 30 seconds while visible until the build finishes."</p>
+            </div>
         </div>
-        <p class="help">"Refreshes every 30 seconds while visible until the build finishes."</p>
-        {move ||record.get().log_truncated.then(||view!{<p class="build-output-notice">"Output reached the configured byte limit, so its end is not retained."</p>})}
-        <Show when=move ||record.get().log_expired || expired.get()><p class="build-output-notice">"Output expired under the retention policy; build metadata remains available."</p></Show>
-        {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}
-        <Show when=move ||previous.get().is_some()>
-            <button disabled=move ||loading.get() on:click=move |_|older.set(true)>"Load older output"</button>
-        </Show>
-        <LogViewer lines prepend_revision kind=LogKind::Build label="Build log output" empty="No build output was captured."/>
-    }
-}
-
-/// Lowercase state label, also used as the `data-state` styling hook.
-fn build_state(state: BuildState) -> &'static str {
-    match state {
-        BuildState::Running => "running",
-        BuildState::Succeeded => "succeeded",
-        BuildState::Failed => "failed",
-        BuildState::Interrupted => "interrupted",
+        <div class="toolbar">
+            <StreamFilter stream={stream} />
+            <div class="toolbar-end">
+                <Show when={move || previous.get().is_some()}>
+                    <button
+                        type="button"
+                        class="btn btn-sm"
+                        disabled={move || loading.get()}
+                        on:click={move |_| older.set(true)}
+                    >
+                        "Load older output"
+                    </button>
+                </Show>
+                <button
+                    type="button"
+                    class="btn btn-sm"
+                    disabled={move || loading.get() || record.get().log_expired}
+                    on:click={move |_| refresh.set(true)}
+                >
+                    {icon(Icon::Refresh)}
+                    {move || if loading.get() { "Loading…" } else { "Refresh" }}
+                </button>
+            </div>
+        </div>
+        <div class="stack-sm">
+            {move || {
+                record
+                    .get()
+                    .log_truncated
+                    .then(|| {
+                        notice(
+                            Tone::Warn,
+                            "Output reached the configured byte limit, so its end is not retained.",
+                        )
+                    })
+            }}
+            <Show when={move || record.get().log_expired || expired.get()}>
+                {notice(
+                    Tone::Warn,
+                    "Output expired under the retention policy; build metadata remains available.",
+                )}
+            </Show>
+            {move || error.get().map(|e| notice(Tone::Bad, e))}
+        </div>
+        <LogViewer
+            lines={lines}
+            prepend_revision={prepend_revision}
+            kind={LogKind::Build}
+            label="Build log output"
+            empty="No build output was captured."
+        />
     }
 }
 
 /// Summary line time: duration and start for finished builds, start otherwise.
-fn build_summary_time(build: &BuildRecord) -> String {
+fn build_summary_time(build: &BuildRecord) -> View {
     match build.finished_at_ms {
-        Some(_) => format!(
-            "{} · {}",
-            build_duration(build),
-            timestamp(build.started_at_ms)
-        ),
-        None => format!("Started {}", timestamp(build.started_at_ms)),
+        Some(_) => view! {
+            {build_duration(build)}
+            " · "
+            {when(build.started_at_ms)}
+        }
+        .into_view(),
+        None => view! { "Started " {when(build.started_at_ms)} }.into_view(),
     }
 }
 
@@ -274,35 +396,47 @@ fn build_summary_time(build: &BuildRecord) -> String {
 /// running  -> "In progress"
 /// ```
 fn build_duration(build: &BuildRecord) -> String {
-    let Some(finished) = build.finished_at_ms else {
-        return "In progress".into();
-    };
-    let milliseconds = finished.saturating_sub(build.started_at_ms);
-    if milliseconds < 1_000 {
-        format!("{milliseconds} ms")
-    } else {
-        format!("{:.1} s", milliseconds as f64 / 1_000.0)
-    }
+    build.finished_at_ms.map_or_else(
+        || "In progress".into(),
+        |finished| duration(finished.saturating_sub(build.started_at_ms)),
+    )
 }
 
 /// Definition-list rows describing the image or Git source that was built.
 fn source_details(source: Source) -> View {
     match source {
-        Source::Image { image } => view! {<dt>"Source"</dt><dd><code>{image}</code></dd>}.into_view(),
-        Source::Git {repository,build:Build::Docker {dockerfile,context}} => view! {
-            <dt>"Repository"</dt><dd><code>{repository.url}</code></dd>
-            <dt>"Requested revision"</dt><dd><code>{repository.commit.unwrap_or(repository.branch)}</code></dd>
-            <dt>"Dockerfile"</dt><dd><code>{dockerfile}</code></dd>
-            <dt>"Build context"</dt><dd><code>{context}</code></dd>
-        }.into_view(),
-    }
-}
-
-/// Formats a byte count as `B` below 1 `KiB`, otherwise `KiB` with one decimal.
-fn format_bytes(bytes: i64) -> String {
-    if bytes < 1_024 {
-        format!("{bytes} B")
-    } else {
-        format!("{:.1} KiB", bytes as f64 / 1_024.0)
+        Source::Image { image } => view! {
+            <dt>"Source"</dt>
+            <dd>
+                <code>{image}</code>
+            </dd>
+        }
+        .into_view(),
+        Source::Git {
+            repository,
+            build:
+                Build::Docker {
+                    dockerfile,
+                    context,
+                },
+        } => view! {
+            <dt>"Repository"</dt>
+            <dd>
+                <code>{repository.url}</code>
+            </dd>
+            <dt>"Requested revision"</dt>
+            <dd>
+                <code>{repository.commit.unwrap_or(repository.branch)}</code>
+            </dd>
+            <dt>"Dockerfile"</dt>
+            <dd>
+                <code>{dockerfile}</code>
+            </dd>
+            <dt>"Build context"</dt>
+            <dd>
+                <code>{context}</code>
+            </dd>
+        }
+        .into_view(),
     }
 }

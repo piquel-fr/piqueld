@@ -1,12 +1,34 @@
 import { test, expect, auth } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
-async function createApplication(page: Page) {
-  await page.getByRole('button', { name: '+ Create application', exact: true }).click();
-  await page.getByLabel('Application name', { exact: true }).fill('browser-test');
+const title = (page: Page) => page.locator('.detail-title h1');
+const tab = (page: Page, name: string) =>
+  page.getByRole('navigation', { name: 'Application sections' }).getByRole('button', { name, exact: true });
+/** Save buttons exist for every settings group; only the edited group's is shown. */
+const visible = (page: Page, name: string) => page.getByRole('button', { name, exact: true }).locator('visible=true');
+
+async function createApplication(page: Page, name = 'browser-test') {
+  await page.goto('/dashboard/applications');
+  await page.getByRole('button', { name: 'New application', exact: true }).click();
+  await page.getByLabel('Application name', { exact: true }).fill(name);
   await page.getByRole('button', { name: 'Create application', exact: true }).click();
   await expect(page).toHaveURL(/\/dashboard\/applications\/[^/]+$/);
-  await expect(page.locator('.application-name h1')).toHaveText('browser-test');
+  await expect(title(page)).toHaveText(name);
+}
+async function addService(page: Page, name: string, image: string) {
+  await tab(page, 'Services').click();
+  await page.getByRole('button', { name: 'Add service', exact: true }).first().click();
+  const dialog = page.getByRole('dialog', { name: 'Add service' });
+  await dialog.getByLabel('Service name', { exact: true }).fill(name);
+  await dialog.getByLabel('Container image', { exact: true }).fill(image);
+  await dialog.getByRole('button', { name: 'Add service', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.locator('a.list-row', { hasText: name })).toContainText(image);
+}
+async function save(page: Page) {
+  await visible(page, 'Save changes').click();
+  await expect(page.getByText('Saved.', { exact: true })).toBeVisible();
+  await expect(visible(page, 'Save changes')).toHaveCount(0);
 }
 
 test('creates an application, saves a rename, and retains it after reload', async ({ page, account }) => {
@@ -15,9 +37,93 @@ test('creates an application, saves a rename, and retains it after reload', asyn
   await page.getByRole('button', { name: 'Rename application', exact: true }).click();
   await page.getByLabel('Application name', { exact: true }).fill('renamed-application');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.locator('.application-name h1')).toHaveText('renamed-application');
+  await expect(title(page)).toHaveText('renamed-application');
   await page.reload();
-  await expect(page.locator('.application-name h1')).toHaveText('renamed-application');
+  await expect(title(page)).toHaveText('renamed-application');
+  await page.goto('/dashboard/applications');
+  const row = page.locator('a.list-row', { hasText: 'renamed-application' });
+  await expect(row).toContainText('Not deployed');
+  await expect(row).toContainText('Never deployed');
+});
+
+test('adds a service and edits it on the service page', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  await addService(page, 'web', 'nginx:1.27');
+  const row = page.locator('a.list-row', { hasText: 'web' });
+  await expect(row).toContainText('1 replicas');
+  await row.click();
+  await expect(page).toHaveURL(/\/services\/web$/);
+  await expect(title(page)).toHaveText('web');
+  await expect(visible(page, 'Save changes')).toHaveCount(0);
+  await page.getByLabel('Replicas', { exact: true }).fill('3');
+  await expect(visible(page, 'Save changes')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Remove service', exact: true })).toBeDisabled();
+  await save(page);
+  await expect(page.getByRole('button', { name: 'Remove service', exact: true })).toBeEnabled();
+  await page.reload();
+  await expect(page.getByLabel('Replicas', { exact: true })).toHaveValue('3');
+  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Environment', exact: true }).click();
+  await page.getByRole('button', { name: 'Add variable', exact: true }).click();
+  await page.getByLabel('Key', { exact: true }).fill('PORT');
+  await page.getByLabel('Value', { exact: true }).fill('8080');
+  await save(page);
+  await page.locator('.breadcrumb').getByRole('link', { name: 'browser-test', exact: true }).click();
+  await expect(page.locator('a.list-row', { hasText: 'web' })).toContainText('3 replicas');
+});
+
+test('saves volumes and routes, previews the plan, and records a deployment', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  await addService(page, 'web', 'nginx:1.27');
+  await tab(page, 'Volumes').click();
+  await page.getByRole('button', { name: 'Add volume', exact: true }).click();
+  await page.getByLabel('Volume name', { exact: true }).fill('data');
+  await save(page);
+  await tab(page, 'Routes').click();
+  await page.getByRole('button', { name: 'Add route', exact: true }).click();
+  await page.getByLabel('Hostname', { exact: true }).fill('shop.example.com');
+  await page.getByRole('combobox', { name: 'Service', exact: true }).selectOption('web');
+  await page.getByLabel('HTTP port', { exact: true }).fill('8080');
+  await save(page);
+  await page.reload();
+  await tab(page, 'Routes').click();
+  await expect(page.getByLabel('Hostname', { exact: true })).toHaveValue('shop.example.com');
+
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  const preview = page.getByRole('dialog', { name: 'Deployment preview' });
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText('volumes.data');
+  await expect(preview).toContainText('services.web.source');
+  await expect(preview).toContainText('resolve image');
+  await page.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+
+  await page.getByRole('button', { name: 'Deploy', exact: true }).click();
+  await expect(tab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+  const deployment = page.locator('.expander', { hasText: 'Deployment #' });
+  await expect(deployment).toBeVisible();
+  await deployment.getByRole('button', { name: /Deployment #/ }).click();
+  await expect(deployment.getByText('Operation ID', { exact: true })).toBeVisible();
+  await deployment.getByRole('button', { name: 'Snapshot', exact: true }).click();
+  await expect(deployment).toContainText('nginx:1.27');
+  await page.goto('/dashboard/');
+  await expect(page.getByRole('heading', { name: 'Recent deployments' })).toBeVisible();
+  await expect(page.locator('.table', { hasText: 'browser-test' })).toContainText('requested');
+});
+
+test('unsaved edits block deployment and navigation until discarded', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  await tab(page, 'Volumes').click();
+  await page.getByRole('button', { name: 'Add volume', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Deploy', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Preview', exact: true })).toBeDisabled();
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.getByRole('complementary').getByRole('link', { name: 'Applications', exact: true }).click();
+  await expect(page).toHaveURL(/\/dashboard\/applications\/[^/]+$/);
+  await visible(page, 'Discard').click();
+  await expect(page.getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
 });
 
 test('reauthenticates after revocation without losing an unsaved editor draft', async ({ page, account }) => {
@@ -32,5 +138,5 @@ test('reauthenticates after revocation without losing an unsaved editor draft', 
   await expect(dialog).toHaveCount(0);
   await expect(page.getByLabel('Application name', { exact: true })).toHaveValue('preserved-draft');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.locator('.application-name h1')).toHaveText('preserved-draft');
+  await expect(title(page)).toHaveText('preserved-draft');
 });

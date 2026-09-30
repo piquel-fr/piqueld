@@ -3,12 +3,15 @@
 mod auth;
 mod builds;
 mod dashboard;
+mod format;
 mod logs;
 mod management;
 mod observability;
 mod runtime;
+mod ui;
 
-use dashboard::{ApplicationsPage, OverviewPage, dashboard_header};
+use dashboard::{ApplicationsPage, OverviewPage, Sidebar};
+use ui::{Icon, Tone, icon, notice};
 
 use crate::state::{
     ApplicationHealth, ConnectionState, DataState, MAX_PAGES, PAGE_LIMIT, PaginationState,
@@ -51,14 +54,12 @@ struct DashboardSnapshot {
     system: SystemStatus,
     readiness: Result<ReadinessStatus, String>,
     applications: Vec<ApplicationRow>,
-    /// Pagination stopped before the application list was proven complete.
     incomplete: bool,
 }
 
 /// A refresh failure, split by whether the daemon was reachable at all.
 #[derive(Clone, Debug)]
 struct LoadFailure {
-    /// The request failed at the transport level rather than with an API error.
     unreachable: bool,
     message: String,
 }
@@ -78,7 +79,6 @@ struct DashboardSignals {
     selected_id: RwSignal<Option<String>>,
     detail: RwSignal<Option<ApplicationDetailView>>,
     detail_loading: RwSignal<bool>,
-    /// Generation counter; detail responses from older requests are discarded.
     detail_request: RwSignal<u64>,
     detail_error: RwSignal<Option<String>>,
 }
@@ -181,23 +181,23 @@ fn DashboardRedirect() -> impl IntoView {
     view! { <Redirect path="/dashboard/" /> }
 }
 
-/// Catch-all under `/dashboard`: an empty remainder renders the overview,
-/// anything else renders the not-found page.
+/// The router reuses this component across `/dashboard/*` paths, so the
+/// overview-or-not decision must follow the parameters reactively.
 #[component]
 fn DashboardRouteFallback() -> impl IntoView {
     let params = use_params_map();
-    let is_overview = params.with(|params| params.get("any").is_none_or(String::is_empty));
-
-    if is_overview {
-        view! { <OverviewPage /> }.into_view()
-    } else {
-        view! { <NotFoundPage /> }.into_view()
+    move || {
+        if params.with(|params| params.get("any").is_none_or(String::is_empty)) {
+            view! { <OverviewPage /> }.into_view()
+        } else {
+            view! { <NotFoundPage /> }.into_view()
+        }
     }
 }
 
 /// Shared shell for authenticated dashboard pages. Provides `DashboardContext`,
 /// starts an immediate refresh plus a background poll loop (paused while the tab
-/// is hidden), and renders the header, refresh error, stale notice and the routed page.
+/// is hidden), and renders the sidebar, refresh error, stale notice and the routed page.
 #[component]
 fn DashboardLayout() -> impl IntoView {
     let signals = DashboardSignals::new();
@@ -236,7 +236,7 @@ fn DashboardLayout() -> impl IntoView {
         <a class="skip-link" href="#dashboard-main">
             "Skip to main content"
         </a>
-        {dashboard_header()}
+        <Sidebar />
 
         <main id="dashboard-main" class="dashboard-main" tabindex="-1">
             {refresh_error(&context)}
@@ -299,21 +299,15 @@ fn ApplicationDetailPage() -> impl IntoView {
 #[component]
 fn NotFoundPage() -> impl IntoView {
     view! {
-        <section
-            class="rounded-xl border border-line bg-surface p-6 shadow-panel"
-            aria-labelledby="not-found-title"
-        >
-            <p class="mb-1 text-xs font-extrabold tracking-[.12em] text-accent">"NOT FOUND"</p>
-            <h2 id="not-found-title" class="mb-2 text-2xl font-bold">
-                "Dashboard page not found"
-            </h2>
-            <p class="mb-4 text-muted">"Choose a known dashboard destination to continue."</p>
-            <A
-                class="rounded-md border border-line bg-surface px-3 py-2 font-bold text-accent-strong hover:border-accent"
-                href="/dashboard/"
-            >
-                "Return to overview"
-            </A>
+        <section class="card" aria-labelledby="not-found-title">
+            <h2 id="not-found-title">"Page not found"</h2>
+            <p class="hint">"This dashboard address does not exist."</p>
+            <div class="form-actions">
+                <A class="btn" href="/dashboard/">
+                    {icon(Icon::ArrowLeft)}
+                    "Back to overview"
+                </A>
+            </div>
         </section>
     }
 }
@@ -322,29 +316,21 @@ fn NotFoundPage() -> impl IntoView {
 fn refresh_error(context: &DashboardContext) -> View {
     let signals = context.signals;
     view! {
-        {move || {
-            signals
-                .refresh_error
-                .get()
-                .map(|message| {
-                    view! {
-                        <div
-                            class="mb-4 rounded-xl border border-line border-l-4 border-l-bad bg-surface p-4 shadow-panel"
-                            role="alert"
-                            aria-live="assertive"
-                        >
-                            <h2 class="mb-1 text-lg font-bold">
-                                {if signals.connection.get() == ConnectionState::Unreachable {
-                                    "Daemon unreachable"
-                                } else {
-                                    "Refresh failed"
-                                }}
-                            </h2>
-                            <p class="mb-2">{message}</p>
-                        </div>
-                    }
-                })
-        }}
+        <div class="stack-sm" style="margin-bottom:16px" hidden={move || signals.refresh_error.get().is_none()}>
+            {move || {
+                signals
+                    .refresh_error
+                    .get()
+                    .map(|message| {
+                        let title = if signals.connection.get() == ConnectionState::Unreachable {
+                            "Daemon unreachable"
+                        } else {
+                            "Refresh failed"
+                        };
+                        notice(Tone::Bad, view! { <strong>{title}</strong> {message} })
+                    })
+            }}
+        </div>
     }
     .into_view()
 }
@@ -352,19 +338,12 @@ fn refresh_error(context: &DashboardContext) -> View {
 /// Notice shown when the dashboard is displaying data from an earlier refresh.
 fn stale_notice(signals: DashboardSignals) -> View {
     view! {
-        {move || {
-            (signals.data_state.get() == DataState::Stale)
-                .then(|| {
-                    view! {
-                        <p
-                            class="mb-4 rounded-lg border border-warn bg-warn-bg p-3 text-warn"
-                            role="status"
-                        >
-                            "Showing the last successful view; the latest refresh failed."
-                        </p>
-                    }
-                })
-        }}
+        <div class="stack-sm" style="margin-bottom:16px" hidden={move || signals.data_state.get() != DataState::Stale}>
+            {notice(
+                Tone::Warn,
+                "Showing the last successful view; the latest refresh failed.",
+            )}
+        </div>
     }
     .into_view()
 }
@@ -616,22 +595,4 @@ fn row_health(row: &ApplicationRow) -> ApplicationHealth {
         },
         |_| ApplicationHealth::Pending,
     )
-}
-
-/// Tailwind badge classes for a health category.
-fn health_class(health: ApplicationHealth) -> &'static str {
-    match health {
-        ApplicationHealth::Converged => {
-            "inline-flex w-fit items-center rounded-full bg-ok-bg px-2 py-1 text-xs font-extrabold text-ok"
-        }
-        ApplicationHealth::Degraded => {
-            "inline-flex w-fit items-center rounded-full bg-warn-bg px-2 py-1 text-xs font-extrabold text-warn"
-        }
-        ApplicationHealth::Failed => {
-            "inline-flex w-fit items-center rounded-full bg-bad-bg px-2 py-1 text-xs font-extrabold text-bad"
-        }
-        ApplicationHealth::Pending | ApplicationHealth::NotDeployed => {
-            "inline-flex w-fit items-center rounded-full bg-pending-bg px-2 py-1 text-xs font-extrabold text-pending"
-        }
-    }
 }

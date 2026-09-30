@@ -1,8 +1,9 @@
 //! Write-only secret values and saved file references.
-use super::{client_error_message, diagnostic_id, dirty_group, editor, text_input};
+use super::super::ui::{Icon, Tone, badge, empty, icon, notice, text_input, when};
+use super::{client_error_message, diagnostic_id, dirty_group, editor, save_actions};
 use leptos::{
-    Callable, Callback, CollectView, For, IntoView, Show, SignalGet, SignalGetUntracked, SignalSet,
-    SignalUpdate, SignalWithUntracked, component, create_rw_signal, event_target_value,
+    Callable, Callback, CollectView, For, IntoView, SignalGet, SignalGetUntracked, SignalSet,
+    SignalUpdate, SignalWith, SignalWithUntracked, component, create_rw_signal, event_target_value,
     spawn_local, store_value, view, window,
 };
 use leptos_router::A;
@@ -31,16 +32,12 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
         diagnostic.set(None);
         error.set(None);
     };
-    let notice = create_rw_signal(String::new());
+    let notice_text = create_rw_signal(String::new());
     let name = create_rw_signal(String::new());
     let value = create_rw_signal(String::new());
-    let empty = create_rw_signal(String::new());
-    dirty_group("secret-value".into(), value, empty);
-    let id = store_value(
-        context
-            .saved
-            .with_untracked(|a| a.application.id().to_string()),
-    );
+    let empty_value = create_rw_signal(String::new());
+    dirty_group("secret-value".into(), value, empty_value);
+    let id = store_value(context.id());
     let reload = Callback::new(move |()| {
         if context.blocked() || loading.get_untracked() {
             return;
@@ -77,7 +74,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
         value.set(String::new());
         let id = id.get_value();
         context.busy.set(true);
-        notice.set(String::new());
+        notice_text.set(String::new());
         clear();
         spawn_local(async move {
             match Client::browser()
@@ -90,7 +87,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                         items.push(secret);
                         items.sort_by(|a, b| a.name.cmp(&b.name));
                     });
-                    notice
+                    notice_text
                         .set("Secret saved. Deploy the application to use its new version.".into());
                 }
                 Err(e) => {
@@ -122,7 +119,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
         }
         let id = id.get_value();
         context.busy.set(true);
-        notice.set(String::new());
+        notice_text.set(String::new());
         clear();
         spawn_local(async move {
             match Client::browser()
@@ -131,7 +128,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
             {
                 Ok(()) => {
                     metadata.update(|items| items.retain(|s| s.name != secret.name));
-                    notice.set("Secret deleted.".into());
+                    notice_text.set("Secret deleted.".into());
                     clear();
                 }
                 Err(e) => {
@@ -148,28 +145,192 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
             context.busy.set(false);
         });
     });
-    view! {<section class="settings-card"><h3>"Application secrets"</h3>
-        <p class="help">"Values are write-only. File references below are saved configuration; deploy after saving to use them."</p>
-        <button disabled=move ||context.blocked() || loading.get() on:click=move |_|reload.call(())>"Refresh metadata"</button>
-        {move ||error.get().map(|e|view!{<div class="form-error" role="alert"><p>{e}</p>{move ||diagnostic.get().map(|id|view!{<A href=format!("/dashboard/errors/{id}")>"Diagnostic details"</A>})}</div>})}<p role="status">{move ||notice.get()}</p>
-        {move ||metadata.get().into_iter().map(|secret|{let selected=secret.name.clone();view!{
-            <div class="form-actions"><strong>{secret.name.clone()}</strong><span>{format!("Version {}{}",secret.generation,if secret.deleting { " · deletion pending" } else { "" })}</span>
-                <Show when=move ||secret.unavailable><span class="form-error">"Value discarded by secret key recovery. Supply a replacement value, then deploy."</span></Show>
-                <button disabled=move ||context.blocked() || !ready.get() || secret.deleting on:click=move |_|name.set(selected.clone())>"Replace value"</button>
-                <button disabled=move ||context.blocked() || !ready.get() on:click=move |_|remove.call(secret.clone())>"Delete"</button>
-            </div>
-        }}).collect_view()}
-        <fieldset disabled=move ||context.blocked() || !ready.get()>
-            {text_input("Secret name",name,String::clone,|v,s|*v=s)}
-            <label>"New value"<textarea autocomplete="off" spellcheck="false" rows="3" prop:value=move ||value.get() on:input=move |e|value.set(event_target_value(&e))></textarea></label>
-            <p class="help">"The value is cleared when submitted and cannot be read back. Use the CLI for binary files."</p>
-            <button class="primary" disabled=move ||name.get().is_empty() || value.get().is_empty() || metadata.get().iter().any(|s|s.name==name.get() && s.deleting) on:click=write>"Save secret"</button>
-        </fieldset>
-    </section>
-    <Show when=move ||context.saved.get().application.spec().manifest.is_some()><p class="help">"Edit secret file references in the repository manifest."</p></Show>
-    <fieldset disabled=move ||context.blocked() || context.saved.get().application.spec().manifest.is_some()>
-        <For each={move ||context.saved.get().application.spec().services.iter().map(|s|s.name.to_string()).collect::<Vec<_>>()} key=|name|name.clone() children=move |name|view!{<SecretFiles service_name=name/>}/>
-    </fieldset>}
+    let secret_rows = move || {
+        metadata
+            .get()
+            .into_iter()
+            .map(|secret| {
+                let selected = secret.name.clone();
+                let deleting = secret.deleting;
+                let unavailable = secret.unavailable;
+                view! {
+                    <tr>
+                        <td>
+                            <strong>{secret.name.clone()}</strong>
+                        </td>
+                        <td class="num">{secret.generation}</td>
+                        <td class="muted">{when(secret.updated_at_ms)}</td>
+                        <td>
+                            {if deleting {
+                                badge(Tone::Warn, "deletion pending")
+                            } else if unavailable {
+                                badge(Tone::Bad, "value discarded")
+                            } else {
+                                badge(Tone::Ok, "stored")
+                            }}
+                        </td>
+                        <td class="actions">
+                            <span class="btn-group" style="justify-content:flex-end">
+                                <button
+                                    type="button"
+                                    class="btn btn-sm"
+                                    disabled={move || context.blocked() || !ready.get() || deleting}
+                                    on:click={move |_| name.set(selected.clone())}
+                                >
+                                    "Replace"
+                                </button>
+                                <button
+                                    type="button"
+                                    class="btn btn-ghost btn-sm"
+                                    disabled={move || context.blocked() || !ready.get()}
+                                    on:click={move |_| remove.call(secret.clone())}
+                                >
+                                    "Delete"
+                                </button>
+                            </span>
+                        </td>
+                    </tr>
+                }
+            })
+            .collect_view()
+    };
+    view! {
+        <div class="stack">
+            <section class="card">
+                <header>
+                    <div>
+                        <h3>"Secrets"</h3>
+                        <p>
+                            "Values are write-only and never read back. Replace a value, then deploy to adopt the new version; running deployments keep theirs."
+                        </p>
+                    </div>
+                    <button
+                        type="button"
+                        class="btn btn-sm"
+                        disabled={move || context.blocked() || loading.get()}
+                        on:click={move |_| reload.call(())}
+                    >
+                        {icon(Icon::Refresh)}
+                        "Refresh"
+                    </button>
+                </header>
+                <div class="stack-sm">
+                    {move || {
+                        error
+                            .get()
+                            .map(|e| {
+                                notice(
+                                    Tone::Bad,
+                                    view! {
+                                        <span>{e}</span>
+                                        {diagnostic
+                                            .get()
+                                            .map(|id| {
+                                                view! {
+                                                    <A href={format!("/dashboard/errors/{id}")}>"Diagnostic details"</A>
+                                                }
+                                            })}
+                                    },
+                                )
+                            })
+                    }}
+                    {move || (!notice_text.get().is_empty()).then(|| notice(Tone::Ok, notice_text.get()))}
+                    {move || {
+                        metadata
+                            .with(|items| items.iter().any(|s| s.unavailable))
+                            .then(|| {
+                                notice(
+                                    Tone::Warn,
+                                    "Some values were discarded by secret key recovery. Supply a replacement value for each, then deploy.",
+                                )
+                            })
+                    }}
+                    <div class="table-wrap">
+                        {move || {
+                            if metadata.with(Vec::is_empty) {
+                                empty(if ready.get() { "No secrets stored for this application." } else { "Loading secrets…" })
+                            } else {
+                                view! {
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>"Name"</th>
+                                                <th class="num">"Version"</th>
+                                                <th>"Updated"</th>
+                                                <th>"Status"</th>
+                                                <th></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>{secret_rows()}</tbody>
+                                    </table>
+                                }
+                                    .into_view()
+                            }
+                        }}
+                    </div>
+                    <fieldset class="stack-sm" disabled={move || context.blocked() || !ready.get()}>
+                        <div class="section-header">
+                            <h4>"Save a value"</h4>
+                        </div>
+                        {text_input("Secret name", name, String::clone, |v, s| *v = s)}
+                        <label class="field">
+                            <span>"Value"</span>
+                            <textarea
+                                autocomplete="off"
+                                spellcheck="false"
+                                rows="3"
+                                prop:value={move || value.get()}
+                                on:input={move |e| value.set(event_target_value(&e))}
+                            ></textarea>
+                        </label>
+                        <p class="hint">
+                            "The value is cleared when submitted. Use the CLI for binary secret files."
+                        </p>
+                        <div class="form-actions">
+                            <button
+                                type="button"
+                                class="btn btn-primary"
+                                disabled={move || {
+                                    name.get().is_empty() || value.get().is_empty()
+                                        || metadata.get().iter().any(|s| s.name == name.get() && s.deleting)
+                                }}
+                                on:click={write}
+                            >
+                                "Save secret"
+                            </button>
+                        </div>
+                    </fieldset>
+                </div>
+            </section>
+            {move || {
+                context
+                    .managed()
+                    .then(|| {
+                        notice(
+                            Tone::Info,
+                            "Secret file references are managed in the repository manifest.",
+                        )
+                    })
+            }}
+            <fieldset class="stack" disabled={move || context.blocked() || context.managed()}>
+                <For
+                    each={move || {
+                        context
+                            .saved
+                            .get()
+                            .application
+                            .spec()
+                            .services
+                            .iter()
+                            .map(|s| s.name.to_string())
+                            .collect::<Vec<_>>()
+                    }}
+                    key={|name| name.clone()}
+                    children={move |name| view! { <SecretFiles service_name={name} /> }}
+                />
+            </fieldset>
+        </div>
+    }
 }
 
 /// Editor for one service's secret file references (secret name and container
@@ -189,7 +350,7 @@ fn SecretFiles(service_name: String) -> impl IntoView {
     let baseline = create_rw_signal(mounts.get_untracked());
     dirty_group(format!("secret-files:{service_name}"), mounts, baseline);
     let service = store_value(service_name.clone());
-    let save = move |_| {
+    let save = move || {
         context.save(
             ApplicationEdit::Service {
                 name: service.get_value(),
@@ -209,14 +370,79 @@ fn SecretFiles(service_name: String) -> impl IntoView {
             }),
         );
     };
-    view! {<section class="settings-card"><h3>{format!("{} · Secret files",service_name)}</h3>
-        <For each={move ||(0..mounts.get().len()).collect::<Vec<_>>()} key=|i|*i children=move |index|view!{
-            <div class="form-grid"><label>"Secret name"<input prop:value=move ||mounts.get().get(index).map(|m|m.name.clone()).unwrap_or_default() on:input=move |e|mounts.update(|items|items[index].name=event_target_value(&e))/></label>
-            <label>"Container path"<input prop:value=move ||mounts.get().get(index).map(|m|m.target.clone()).unwrap_or_default() on:input=move |e|mounts.update(|items|items[index].target=event_target_value(&e))/></label>
-            <button on:click=move |_|mounts.update(|items|{items.remove(index);})>"Remove reference"</button></div>
-        }/>
-        <button on:click=move |_|mounts.update(|items|items.push(piqueld_client::SecretMount{name:String::new(),target:"/run/secrets/".into()}))>"Add secret file"</button>
-        <p class="help">"Paths must be under /run/secrets. This saves references, never secret values."</p>
-        <div class="form-actions"><button class="primary" disabled=move ||mounts.get()==baseline.get() on:click=save>"Save Changes"</button><button on:click=move |_|mounts.set(baseline.get_untracked())>"Discard edits"</button></div>
-    </section>}
+    view! {
+        <section class="card">
+            <header>
+                <div>
+                    <h3>{service_name} " · secret files"</h3>
+                    <p>
+                        "Mount stored secrets as files under /run/secrets. This saves references only; deploy to mount the referenced versions."
+                    </p>
+                </div>
+            </header>
+            <div class="form-list">
+                <For
+                    each={move || (0..mounts.get().len()).collect::<Vec<_>>()}
+                    key={|i| *i}
+                    children={move |index| {
+                        view! {
+                            <div class="form-row">
+                                <label class="field">
+                                    <span>"Secret name"</span>
+                                    <input
+                                        prop:value={move || {
+                                            mounts.get().get(index).map(|m| m.name.clone()).unwrap_or_default()
+                                        }}
+                                        on:input={move |e| {
+                                            mounts.update(|items| items[index].name = event_target_value(&e));
+                                        }}
+                                    />
+                                </label>
+                                <label class="field">
+                                    <span>"Container path"</span>
+                                    <input
+                                        prop:value={move || {
+                                            mounts.get().get(index).map(|m| m.target.clone()).unwrap_or_default()
+                                        }}
+                                        on:input={move |e| {
+                                            mounts.update(|items| items[index].target = event_target_value(&e));
+                                        }}
+                                    />
+                                </label>
+                                <button
+                                    type="button"
+                                    class="btn btn-ghost"
+                                    on:click={move |_| {
+                                        mounts.update(|items| {
+                                            items.remove(index);
+                                        });
+                                    }}
+                                >
+                                    "Remove"
+                                </button>
+                            </div>
+                        }
+                    }}
+                />
+            </div>
+            <button
+                type="button"
+                class="btn btn-sm"
+                on:click={move |_| {
+                    mounts
+                        .update(|items| {
+                            items
+                                .push(piqueld_client::SecretMount {
+                                    name: String::new(),
+                                    target: "/run/secrets/".into(),
+                                });
+                        });
+                }}
+            >
+                {icon(Icon::Plus)}
+                "Add secret file"
+            </button>
+            {save_actions(mounts, baseline, save, || false)}
+        </section>
+    }
 }

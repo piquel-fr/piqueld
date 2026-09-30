@@ -1,63 +1,78 @@
 //! Application editor state and page composition. Polling never replaces local edits.
-mod controls;
-mod logs;
-use logs::ApplicationLogs;
-mod secrets;
-use secrets::ApplicationSecrets;
 mod deployments;
+mod logs;
 mod navigation;
 mod routes;
+mod secrets;
 mod services;
 mod settings;
 
-use super::runtime::{RuntimeDetails, RuntimeSection};
-use super::{client_error_message, dashboard_context};
+use super::runtime::RuntimeOverview;
+use super::ui::{Icon, Modal, PageHeader, Tabs, Tone, health_badge, icon, notice, text_input};
+use super::{client_error_message, dashboard_context, row_health};
 
-use controls::{Modal, Tabs, text_input};
-pub(super) use deployments::timestamp;
 use deployments::{DeploymentActions, DeploymentHistory};
 use leptos::{
-    Callable, Callback, CollectView, IntoView, RwSignal, SignalGet, SignalGetUntracked, SignalSet,
-    SignalUpdate, SignalWith, SignalWithUntracked, StoredValue, component, create_effect,
-    create_rw_signal, on_cleanup, provide_context, spawn_local, store_value, use_context, view,
-    window,
+    Callable, Callback, CollectView, IntoView, RwSignal, Show, SignalGet, SignalGetUntracked,
+    SignalSet, SignalUpdate, SignalWith, SignalWithUntracked, StoredValue, component,
+    create_effect, create_rw_signal, on_cleanup, provide_context, spawn_local, store_value,
+    use_context, view, window,
 };
 use leptos_router::{A, NavigateOptions, use_navigate};
+use logs::ApplicationLogs;
 pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
 use piqueld_client::{
     ApplicationManifest, ApplicationSpec, ApplicationView, Client, ClientError, Metadata,
     edit::{ApplicationEdit, EditOptions},
 };
+use secrets::ApplicationSecrets;
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
+
+const APPLICATION_TABS: [&str; 10] = [
+    "Overview",
+    "Services",
+    "Source",
+    "Routes",
+    "Volumes",
+    "Secrets",
+    "Deployments",
+    "Builds",
+    "Logs",
+    "Events",
+];
 
 /// State shared by every section of one application editor, provided as context.
 #[derive(Clone, Copy)]
 struct EditorContext {
     dashboard: StoredValue<super::DashboardContext>,
-    /// Last configuration known to be saved; drafts are compared against it.
     saved: RwSignal<ApplicationView>,
-    /// Keys of form groups whose draft differs from the saved value.
     dirty: RwSignal<BTreeSet<String>>,
-    /// A save or action request is in flight.
     busy: RwSignal<bool>,
-    /// A request failed in transit, so its outcome is unknown; blocks further
-    /// mutations until the page is reloaded.
     uncertain: RwSignal<bool>,
     error: RwSignal<Option<String>>,
-    /// Diagnostic linked from the current error, if the API reported one.
     diagnostic_id: RwSignal<Option<String>>,
-    /// Success message shown after a save.
     notice: RwSignal<String>,
-    /// Selected application tab label.
     tab: RwSignal<&'static str>,
 }
 impl EditorContext {
-    /// Saved configuration as an editable manifest.
+    /// The saved manifest, tracked so lists re-render after every save.
     fn manifest(self) -> ApplicationManifest {
+        self.saved.with(|saved| saved.application.to_manifest())
+    }
+    fn id(self) -> String {
         self.saved
-            .with_untracked(|saved| saved.application.to_manifest())
+            .with_untracked(|saved| saved.application.id().to_string())
+    }
+    fn name(self) -> String {
+        self.saved
+            .with(|saved| saved.application.metadata().name.to_string())
+    }
+    /// Whether runtime configuration is owned by a Git manifest instead of these forms.
+    fn managed(self) -> bool {
+        self.saved
+            .with(|saved| saved.application.spec().manifest.is_some())
     }
     /// Whether saves are currently disallowed.
     fn blocked(self) -> bool {
@@ -150,8 +165,7 @@ impl EditorContext {
 fn editor() -> EditorContext {
     use_context().expect("application editor context")
 }
-/// Returns the diagnostic occurrence ID attached to an API failure. Storage
-/// failures carry a log-only ID that the diagnostics page cannot load.
+/// Returns the persisted diagnostic occurrence attached to an API failure.
 fn diagnostic_id(error: &ClientError) -> Option<String> {
     match error {
         ClientError::Api { error, .. } => error
@@ -179,10 +193,11 @@ fn mutation_client() -> Result<Client, String> {
         .map_err(|_| error)?
         .get_random_values_with_u8_array(&mut bytes)
         .map_err(|_| error)?;
-    let id = bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let id = bytes.iter().fold(String::new(), |mut hex, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    });
     Ok(Client::browser().with_request_id(id))
 }
 /// Tracks whether `draft` differs from `baseline`, keeping `key` in the editor's
@@ -210,6 +225,36 @@ fn dirty_group<T: Clone + PartialEq + 'static>(
         });
     });
 }
+
+/// Save and discard buttons for one settings group, shown only while it has edits.
+fn save_actions<T: Clone + PartialEq + 'static>(
+    draft: RwSignal<T>,
+    baseline: RwSignal<T>,
+    save: impl Fn() + Copy + 'static,
+    disabled: impl Fn() -> bool + Copy + 'static,
+) -> impl IntoView {
+    view! {
+        <div class="form-actions" hidden={move || draft.get() == baseline.get()}>
+            <button
+                type="button"
+                class="btn btn-primary"
+                disabled={move || draft.get() == baseline.get() || disabled()}
+                on:click={move |_| save()}
+            >
+                "Save changes"
+            </button>
+            <button
+                type="button"
+                class="btn btn-ghost"
+                on:click={move |_| draft.set(baseline.get_untracked())}
+            >
+                "Discard"
+            </button>
+            <span class="status">"Unsaved edits"</span>
+        </div>
+    }
+}
+
 /// "Create application" button and modal. Validates the name locally, creates an
 /// empty application (retrying once on transport failure), refreshes the
 /// dashboard and navigates to the new application.
@@ -268,47 +313,40 @@ pub(super) fn CreateApplication() -> impl IntoView {
         });
     };
     view! {
-        <div class="create-app">
-            <button class="primary" on:click={move |_| opened.set(true)}>
-                "+ Create application"
-            </button>
-            <Modal
-                title="Create application"
-                opened={opened}
-                busy={busy}
-                on_close={Callback::new(move |()| {
-                    name.set(String::new());
-                    error.set(None);
-                })}
-            >
-                <form on:submit={move |event| {
+        <button type="button" class="btn btn-primary" on:click={move |_| opened.set(true)}>
+            {icon(Icon::Plus)}
+            "New application"
+        </button>
+        <Modal
+            title="Create application"
+            opened={opened}
+            busy={busy}
+            on_close={Callback::new(move |()| {
+                name.set(String::new());
+                error.set(None);
+            })}
+        >
+            <form
+                class="stack-sm"
+                on:submit={move |event| {
                     event.prevent_default();
                     create(());
-                }}>
-                    <fieldset disabled={move || {
-                        busy.get()
-                    }}>
-                        {text_input("Application name", name, String::clone, |v, s| *v = s)}
-                        <div class="form-actions">
-                            <button type="submit" class="primary">
-                                "Create application"
-                            </button>
-                        </div>
-                    </fieldset>
-                    {move || {
-                        error
-                            .get()
-                            .map(|e| {
-                                view! {
-                                    <p class="form-error" role="alert">
-                                        {e}
-                                    </p>
-                                }
-                            })
-                    }}
-                </form>
-            </Modal>
-        </div>
+                }}
+            >
+                <fieldset class="stack-sm" disabled={move || busy.get()}>
+                    <p class="hint">
+                        "The application starts empty. Add services, routes, and volumes afterwards, then deploy."
+                    </p>
+                    {text_input("Application name", name, String::clone, |v, s| *v = s)}
+                </fieldset>
+                {move || error.get().map(|e| notice(Tone::Bad, e))}
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary" disabled={move || busy.get()}>
+                        "Create application"
+                    </button>
+                </div>
+            </form>
+        </Modal>
     }
 }
 
@@ -316,12 +354,6 @@ pub(super) fn CreateApplication() -> impl IntoView {
 /// the whole application or for one `service`.
 #[component]
 pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoView {
-    let is_service = service.is_some();
-    let back = if is_service {
-        format!("/dashboard/applications/{id}?tab=services")
-    } else {
-        "/dashboard/applications".into()
-    };
     let initial = create_rw_signal(None::<ApplicationView>);
     let error = create_rw_signal(None::<String>);
     spawn_local(async move {
@@ -331,17 +363,20 @@ pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoV
         }
     });
     view! {
-        <A href={back} class="back-link">
-            {if is_service { "← Services" } else { "← Applications" }}
-        </A>
         {move || {
             error
                 .get()
                 .map(|e| {
                     view! {
-                        <p class="form-error" role="alert">
-                            {e}
-                        </p>
+                        <div class="stack-sm">
+                            {notice(Tone::Bad, e)}
+                            <div class="btn-group">
+                                <A class="btn" href="/dashboard/applications">
+                                    {icon(Icon::ArrowLeft)}
+                                    "Back to applications"
+                                </A>
+                            </div>
+                        </div>
                     }
                 })
         }}
@@ -360,6 +395,7 @@ pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoV
 /// tab comes from the `deployment` or `tab=services` query parameters.
 #[component]
 fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl IntoView {
+    let query = leptos_router::use_query_map();
     let context = EditorContext {
         dashboard: store_value(dashboard_context()),
         saved: create_rw_signal(initial),
@@ -369,65 +405,77 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         error: create_rw_signal(None),
         diagnostic_id: create_rw_signal(None),
         notice: create_rw_signal(String::new()),
-        tab: create_rw_signal(
-            if leptos_router::use_query_map().with(|q| q.get("deployment").is_some()) {
-                "Deployments"
-            } else if leptos_router::use_query_map()
-                .with(|q| q.get("tab").is_some_and(|tab| tab == "services"))
-            {
-                "Services"
-            } else {
-                "Overview"
-            },
-        ),
+        tab: create_rw_signal(if query.with(|q| q.get("deployment").is_some()) {
+            "Deployments"
+        } else if query.with(|q| q.get("tab").is_some_and(|tab| tab == "services")) {
+            "Services"
+        } else {
+            "Overview"
+        }),
     };
     provide_context(context);
     guard_navigation(context.dirty);
     if let Some(name) = service {
         return view! { <services::ServiceEditor name={name} /> }.into_view();
     }
+    let signals = context.dashboard.with_value(|d| d.signals);
+    let id = context.id();
+    let health = move || {
+        let id = context.id();
+        signals.applications.with(|rows| {
+            rows.iter()
+                .find(|row| row.application.id.to_string() == id)
+                .map(row_health)
+        })
+    };
     view! {
-        <header class="application-heading">
-            <MetadataSettings />
-            <div class="header-controls">
+        <nav class="breadcrumb" aria-label="Breadcrumb">
+            <A href="/dashboard/applications">"Applications"</A>
+            {icon(Icon::ChevronRight)}
+            <span>{move || context.name()}</span>
+        </nav>
+        <header class="detail-head">
+            <div class="detail-title">
+                <MetadataSettings />
+                {move || health().map(health_badge)}
+            </div>
+            <div class="page-actions">
                 <a
-                    class="back-link"
-                    href={move || {
-                        format!(
-                            "/api/v1/applications/{}/manifest",
-                            context.saved.get().application.id()
-                        )
-                    }}
+                    class="btn btn-ghost"
+                    href={format!("/api/v1/applications/{id}/manifest")}
                     download
+                    title="Download the saved manifest as TOML"
                 >
-                    "Download saved manifest"
+                    {icon(Icon::Download)}
+                    "Manifest"
                 </a>
                 <DeploymentActions />
             </div>
         </header>
         <EditorFeedback />
-        <Tabs
-            label="Application sections"
-            options={&["Overview", "Source", "Services", "Routes", "Volumes", "Deployments", "Diagnostics", "Events", "Builds", "Logs", "Secrets"]}
-            selected={context.tab}
-            class="tabs"
-        />
+        <Tabs label="Application sections" options={&APPLICATION_TABS} selected={context.tab} />
+        <div hidden={move || context.tab.get() != "Overview"}>
+            <div class="stack">
+                <RuntimeOverview />
+                <DeleteApplication />
+            </div>
+        </div>
         <ApplicationSettings />
-        <leptos::Show when=move ||context.tab.get()=="Events"><super::observability::EventHistory application=context.saved.with_untracked(|a|a.application.id().to_string())/></leptos::Show>
-        <leptos::Show when=move ||context.tab.get()=="Logs"><ApplicationLogs/></leptos::Show>
-        <leptos::Show when=move ||context.tab.get()=="Builds"><super::builds::BuildHistory application=context.saved.with_untracked(|a|a.application.id().to_string())/></leptos::Show>
-        <div hidden=move ||context.tab.get()!="Secrets"><ApplicationSecrets/></div>
+        <div hidden={move || context.tab.get() != "Secrets"}>
+            <ApplicationSecrets />
+        </div>
         <div hidden={move || context.tab.get() != "Deployments"}>
             <DeploymentHistory />
         </div>
-        <div hidden={move || context.tab.get() != "Overview"}>
-            <RuntimeDetails section={RuntimeSection::Overview} />
-            <DeleteApplication />
-        </div>
-        <div hidden={move || context.tab.get() != "Diagnostics"}>
-            <RuntimeDetails section={RuntimeSection::Diagnostics} />
-            <leptos::Show when=move ||context.tab.get()=="Diagnostics"><super::observability::EventHistory application=context.saved.with_untracked(|a|a.application.id().to_string()) errors_only=true/></leptos::Show>
-        </div>
+        <Show when={move || context.tab.get() == "Builds"}>
+            <super::builds::BuildHistory application={context.id()} />
+        </Show>
+        <Show when={move || context.tab.get() == "Logs"}>
+            <ApplicationLogs />
+        </Show>
+        <Show when={move || context.tab.get() == "Events"}>
+            <super::observability::EventHistory application={context.id()} />
+        </Show>
     }
     .into_view()
 }
@@ -471,14 +519,23 @@ fn DeleteApplication() -> impl IntoView {
         });
     };
     view! {
-        <section class="settings-card danger-zone">
-            <h3>"Delete application"</h3>
-            <p class="help">
-                "Removes services and all application history. Docker volumes and their data are retained."
-            </p>
-            <button class="danger" disabled={move || context.action_blocked()} on:click={delete}>
-                "Delete application"
-            </button>
+        <section class="card card-danger">
+            <header>
+                <div>
+                    <h3>"Delete application"</h3>
+                    <p>
+                        "Removes running services and all configuration and deployment history. Docker volumes and their data are retained."
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    class="btn btn-danger"
+                    disabled={move || context.action_blocked()}
+                    on:click={delete}
+                >
+                    "Delete application"
+                </button>
+            </header>
         </section>
     }
 }
@@ -495,40 +552,43 @@ pub(super) fn HostPage() -> impl IntoView {
         }
     });
     view! {
-        <header class="application-heading">
-            <div>
-                <h2>"Host settings"</h2>
-            </div>
-        </header>
-        {move || error.get().map(|e| view! { <p class="form-error">{e}</p> })}
-        {move || {
-            settings
-                .get()
-                .map(|config| {
-                    config
-                        .groups
-                        .into_iter()
-                        .map(|(group, values)| {
-                            view! {
-                                <section class="settings-card">
-                                    <h3>{group}</h3>
-                                    <dl class="host-settings">
-                                        {values
-                                            .into_iter()
-                                            .map(|(key, value)| {
-                                                view! {
-                                                    <dt>{key}</dt>
-                                                    <dd>{value}</dd>
-                                                }
-                                            })
-                                            .collect_view()}
-                                    </dl>
-                                </section>
-                            }
-                        })
-                        .collect_view()
-                })
-        }}
+        <PageHeader
+            title="Host settings"
+            description="Effective daemon configuration. Edit the TOML file and restart the daemon to change these values."
+        />
+        <div class="stack">
+            {move || error.get().map(|e| notice(Tone::Bad, e))}
+            {move || {
+                settings
+                    .get()
+                    .map(|config| {
+                        config
+                            .groups
+                            .into_iter()
+                            .map(|(group, values)| {
+                                view! {
+                                    <section class="card">
+                                        <header>
+                                            <h3>{group}</h3>
+                                        </header>
+                                        <dl class="kv">
+                                            {values
+                                                .into_iter()
+                                                .map(|(key, value)| {
+                                                    view! {
+                                                        <dt>{key}</dt>
+                                                        <dd>{value}</dd>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </dl>
+                                    </section>
+                                }
+                            })
+                            .collect_view()
+                    })
+            }}
+        </div>
     }
 }
 
@@ -538,55 +598,74 @@ pub(super) fn HostPage() -> impl IntoView {
 fn EditorFeedback() -> impl IntoView {
     let context = editor();
     let signals = dashboard_context().signals;
+    let show_status = move || {
+        context.busy.get() || (context.dirty.get().is_empty() && !context.notice.get().is_empty())
+    };
+    let conflict = move || {
+        signals.detail.with(|detail| {
+            detail
+                .as_ref()
+                .is_some_and(|d| d.application.generation > context.saved.get().generation)
+        })
+    };
     view! {
-        <p
-            class="save-status"
-            role="status"
-            hidden={move || {
-                !context.busy.get()
-                    && (!context.dirty.get().is_empty() || context.notice.get().is_empty())
-            }}
-        >
+        <div class="stack-sm" style="margin-bottom:16px">
+            <p class="hint" role="status" hidden={move || !show_status()}>
+                {move || {
+                    if context.busy.get() {
+                        "Saving…".into()
+                    } else {
+                        context.notice.get()
+                    }
+                }}
+            </p>
             {move || {
-                if context.busy.get() {
-                    "Saving…".into()
-                } else {
-                    context.notice.get()
-                }
+                context
+                    .error
+                    .get()
+                    .map(|e| {
+                        notice(
+                            Tone::Bad,
+                            view! {
+                                <span>{e}</span>
+                                <span>
+                                    "Your form edits have been kept. Reload to review the latest saved configuration."
+                                </span>
+                                <div class="btn-group">
+                                    <button
+                                        type="button"
+                                        class="btn btn-sm"
+                                        on:click={move |_| {
+                                            let _ = window().location().reload();
+                                        }}
+                                    >
+                                        "Reload saved configuration"
+                                    </button>
+                                    {context
+                                        .diagnostic_id
+                                        .get()
+                                        .map(|id| {
+                                            view! {
+                                                <A class="btn btn-sm btn-ghost" href={format!("/dashboard/errors/{id}")}>
+                                                    "Diagnostic details"
+                                                </A>
+                                            }
+                                        })}
+                                </div>
+                            },
+                        )
+                    })
             }}
-        </p>
-        {move || {
-            context
-                .error
-                .get()
-                .map(|e| {
-                    view! {
-                        <div class="form-error" role="alert">
-                            <p>{e}</p>
-                            {context.diagnostic_id.get().map(|id|view!{<A href=format!("/dashboard/errors/{id}")>"Diagnostic details"</A>})}
-                            <p>
-                                "Your form edits have been kept. Reload to review the latest saved configuration."
-                            </p>
-                            <button on:click={move |_| {
-                                let _ = window().location().reload();
-                            }}>"Reload saved configuration"</button>
-                        </div>
-                    }
-                })
-        }}
-        {move || {
-            signals
-                .detail
-                .get()
-                .filter(|d| d.application.generation > context.saved.get().generation)
-                .map(|_| {
-                    view! {
-                        <p class="conflict-notice">
-                            "Configuration changed elsewhere. Your edits are preserved; reload to review the latest version."
-                        </p>
-                    }
-                })
-        }}
+            {move || {
+                conflict()
+                    .then(|| {
+                        notice(
+                            Tone::Warn,
+                            "Configuration changed elsewhere. Your edits are preserved; reload to review the latest version.",
+                        )
+                    })
+            }}
+        </div>
     }
 }
 
@@ -597,39 +676,38 @@ fn ApplicationSettings() -> impl IntoView {
     let context = editor();
     view! {
         <div hidden={move || !matches!(context.tab.get(), "Source" | "Services" | "Routes" | "Volumes")}>
-            <div hidden={move || context.tab.get() != "Source"}>
-                <RepositorySettings />
-            </div>
-            {move || {
-                context
-                    .saved
-                    .get()
-                    .application.to_manifest()
-                    .spec
-                    .manifest
-                    .is_some()
-                    .then(|| {
-                        view! {
-                            <p class="help">
-                                "Managed in Git. Disconnect the repository in Source to edit services, routes, and volumes here."
-                            </p>
-                        }
-                    })
-            }}
-            <fieldset disabled={move || context.saved.get().application.to_manifest().spec.manifest.is_some()}>
-                <div hidden={move || context.tab.get() != "Services"}>
-                    <div class="list-actions">
-                        <NewService />
+            <div class="stack">
+                {move || {
+                    context
+                        .managed()
+                        .then(|| {
+                            notice(
+                                Tone::Info,
+                                "Runtime configuration is managed in Git. Disconnect the repository in Source to edit services, routes, and volumes here.",
+                            )
+                        })
+                }}
+                <div hidden={move || context.tab.get() != "Source"}>
+                    <RepositorySettings />
+                </div>
+                <fieldset disabled={move || context.managed()}>
+                    <div hidden={move || context.tab.get() != "Services"}>
+                        <div class="section-header">
+                            <div>
+                                <h2>"Services"</h2>
+                                <p>"Each service runs one image as a replicated Swarm service on the application network."</p>
+                            </div>
+                            <NewService />
+                        </div>
+                        <services::ServiceList />
                     </div>
-                    <services::ServiceList />
-                </div>
-                <div hidden={move || context.tab.get() != "Routes"}><routes::RouteSettings /></div>
-                <div hidden={move || context.tab.get() != "Volumes"}>
-                    <VolumeSettings />
-                </div>
-            </fieldset>
-            <div class="mt-4" hidden={move || context.tab.get() != "Services"}>
-                <RuntimeDetails section={RuntimeSection::Services} />
+                    <div hidden={move || context.tab.get() != "Routes"}>
+                        <routes::RouteSettings />
+                    </div>
+                    <div hidden={move || context.tab.get() != "Volumes"}>
+                        <VolumeSettings />
+                    </div>
+                </fieldset>
             </div>
         </div>
     }
