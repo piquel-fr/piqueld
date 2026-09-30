@@ -301,6 +301,7 @@ impl Store {
                     "docker_unavailable"
                         | "swarm_manager_unavailable"
                         | "swarm_topology_unsupported"
+                        | "ingress_unavailable"
                 ) =>
             {
                 NotificationCategory::DaemonFailures
@@ -486,6 +487,7 @@ impl Store {
             (Some(id), _) => format!("Service health for application {id}"),
             (None, "docker_unavailable") => "Docker Engine".into(),
             (None, "swarm_manager_unavailable") => "Swarm manager".into(),
+            (None, "ingress_unavailable") => "Managed ingress gateway".into(),
             _ => key.to_owned(),
         };
         let summary = if failed {

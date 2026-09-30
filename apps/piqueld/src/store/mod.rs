@@ -7,6 +7,7 @@ mod auth;
 mod build;
 mod deployment;
 mod event;
+pub(crate) mod ingress;
 mod journal;
 mod notifications;
 mod observability;
@@ -84,6 +85,12 @@ pub enum StoreError {
         expected: i64,
         /// Current logical secret version.
         actual: i64,
+    },
+    /// An exact public hostname belongs to another application or the installation.
+    #[error("hostname {hostname} is reserved by another application or this installation")]
+    HostnameConflict {
+        /// Conflicting canonical public hostname.
+        hostname: String,
     },
     /// A storage operation failed without a lower-level source.
     #[error("database operation failed")]

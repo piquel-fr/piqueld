@@ -74,7 +74,7 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
         }
         let operation = &self.store.operation(&operation.id).await?;
-        let result = self.execute_and_cleanup(operation, cancellation).await;
+        let result = Box::pin(self.execute_and_cleanup(operation, cancellation)).await;
         if cancellation.is_cancelled() {
             return Ok("cancelled");
         }
@@ -190,30 +190,12 @@ impl<D: DockerApi> Controller<D> {
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
-        self.store
-            .progress(&operation.id, "preparing", None)
-            .await
-            .map_err(OperationError::from)?;
-        let application = self
-            .store
-            .get(&operation.application_id)
-            .await
-            .map_err(OperationError::from)?;
-        let request = if operation.kind == OperationKind::Delete {
-            PlanRequest::Delete {
-                application_id: operation.application_id.clone(),
-                instance_id: piqueld_core::InstanceId::parse(self.store.instance_id())
-                    .expect("valid store identity"),
-            }
-        } else {
-            PlanRequest::Reconcile {
-                desired: tokio::select! {
-                    ()=cancellation.cancelled()=>return Err(OperationError::Cancelled),
-                    result=tokio::time::timeout(self.prepare_timeout, self.prepare_target(operation,&application))=>result.map_err(|_| OperationError::ValidationFailed("preparation timed out"))??,
-                },
-            }
-        };
-        let ownership = self.ownership_labels(application.application.id());
+        let request = self.operation_request(operation, cancellation).await?;
+        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+        if operation.kind == OperationKind::Delete {
+            self.withdraw_routes(operation, deadline).await?;
+        }
+        let ownership = self.ownership_labels(&operation.application_id);
         if operation.kind != OperationKind::Delete
             && !self
                 .store
@@ -227,7 +209,6 @@ impl<D: DockerApi> Controller<D> {
             timeout_seconds = self.retry.convergence_timeout.as_secs(),
             "convergence started"
         );
-        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
         loop {
             self.check_current(operation).await?;
             if cancellation.is_cancelled() {
@@ -244,20 +225,41 @@ impl<D: DockerApi> Controller<D> {
                 .record_health(&operation.id, &observed)
                 .await
                 .map_err(OperationError::from)?;
-            let plan = Plan::from_request(&request, &observed);
-            tracing::debug!(
-                actions = plan.actions.len(),
-                blocked = plan.is_blocked(),
-                "observation planned"
-            );
+            let accepted_routes = self.store.applied_routes(&operation.application_id).await?;
+            let runtime_request = match &request {
+                PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
+                    desired: desired
+                        .clone()
+                        .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
+                },
+                _ => request.clone(),
+            };
+            let plan = Plan::from_request(&runtime_request, &observed);
             self.check_plan(operation, &plan).await?;
             if operation.kind != OperationKind::Delete {
-                let _guard = self.mutations.lock().await;
-                self.check_current(operation).await?;
-                self.store
-                    .publish_prepared(operation)
+                {
+                    let _guard = self.mutations.lock().await;
+                    self.check_current(operation).await?;
+                    self.store.publish_prepared(operation).await?;
+                }
+                // Gateway I/O has its own writer lock. Never hold the global
+                // Docker mutation lock while waiting for another app's routing.
+                if let PlanRequest::Reconcile { desired } = &request {
+                    tokio::time::timeout_at(
+                        deadline,
+                        self.sync_routes(
+                            operation,
+                            &desired.routes,
+                            plan.desired_resources_ready(),
+                        ),
+                    )
                     .await
-                    .map_err(OperationError::from)?;
+                    .map_err(|_| OperationError::ConvergenceTimeout)??;
+                }
+            }
+            if self.store.applied_routes(&operation.application_id).await? != accepted_routes {
+                // Replan after cutover before dropping old ingress attachments.
+                continue;
             }
             let action = plan.actions.iter().find(|action| {
                 !matches!(action.kind, piqueld_core::ActionKind::RetainVolume { .. })
@@ -279,7 +281,94 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
+    /// Public exposure must be withdrawn within the deletion's convergence budget.
+    async fn withdraw_routes(
+        &self,
+        operation: &Operation,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), OperationError> {
+        tokio::time::timeout_at(deadline, async {
+            self.check_current(operation).await?;
+            self.sync_routes(operation, &[], true).await
+        })
+        .await
+        .map_err(|_| OperationError::ConvergenceTimeout)?
+    }
+
+    async fn operation_request(
+        &self,
+        operation: &Operation,
+        cancellation: &CancellationToken,
+    ) -> Result<PlanRequest, OperationError> {
+        self.store
+            .progress(&operation.id, "preparing", None)
+            .await
+            .map_err(OperationError::from)?;
+        let application = self
+            .store
+            .get(&operation.application_id)
+            .await
+            .map_err(OperationError::from)?;
+        Ok(if operation.kind == OperationKind::Delete {
+            PlanRequest::Delete {
+                application_id: operation.application_id.clone(),
+                instance_id: piqueld_core::InstanceId::parse(self.store.instance_id())
+                    .expect("valid store identity"),
+            }
+        } else {
+            PlanRequest::Reconcile {
+                desired: tokio::select! {
+                    ()=cancellation.cancelled()=>return Err(OperationError::Cancelled),
+                    result=tokio::time::timeout(self.prepare_timeout, self.prepare_target(operation,&application))=>result.map_err(|_| OperationError::ValidationFailed("preparation timed out"))??,
+                },
+            }
+        })
+    }
+
+    async fn sync_routes(
+        &self,
+        operation: &Operation,
+        routes: &[piqueld_core::manifest::ValidatedRoute],
+        ready: bool,
+    ) -> Result<(), OperationError> {
+        if routes.is_empty() && !self.store.has_routes(&operation.application_id).await? {
+            return Ok(());
+        }
+        self.store.progress(&operation.id, "routing", None).await?;
+        // Staging rejects an operation that a newer request replaced while it
+        // waited, including behind another application's gateway update.
+        if let Some(ingress) = &self.ingress {
+            Box::pin(ingress.apply(operation, routes, ready))
+                .await
+                .map_err(|error| match error.downcast_ref::<StoreError>() {
+                    Some(StoreError::IllegalTransition) => OperationError::Superseded,
+                    _ => OperationError::Ingress(error),
+                })?;
+        } else {
+            self.store
+                .stage_routes(
+                    &operation.application_id,
+                    routes,
+                    ready,
+                    Some(&operation.id),
+                )
+                .await
+                .map_err(|error| match error {
+                    StoreError::IllegalTransition => OperationError::Superseded,
+                    other => other.into(),
+                })?;
+            let table = self.store.routing_table().await?;
+            self.store.acknowledge_routes(&table).await?;
+        }
+        Ok(())
+    }
+
     async fn check_plan(&self, operation: &Operation, plan: &Plan) -> Result<(), OperationError> {
+        tracing::debug!(
+            actions = plan.actions.len(),
+            blocked = plan.is_blocked(),
+            "observation planned"
+        );
         let resource = plan
             .diagnostics
             .iter()
@@ -397,6 +486,146 @@ mod tests {
         docker::BollardDocker,
         store::Store,
     };
+
+    /// Accepts a routed application and starts executing its operation.
+    async fn running_operation(store: &Store) -> Operation {
+        let manifest = piqueld_core::parse_toml(&format!(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='routed'\n\
+             [[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='{}'\n\
+             [[spec.routes]]\nhostname='routed.example.com'\nservice='web'\nport=80",
+            crate::ingress::CADDY_IMAGE
+        ))
+        .unwrap();
+        let (MutationResponse::Operation(receipt), _) = store
+            .accept(Mutation::apply(manifest, None), Some(0), false, None)
+            .await
+            .unwrap()
+        else {
+            panic!("operation")
+        };
+        store
+            .transition_operation(
+                &receipt.operation_id,
+                OperationState::Requested,
+                OperationState::Running,
+                None,
+            )
+            .await
+            .unwrap();
+        store.operation(&receipt.operation_id).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn routing_superseded_while_waiting_for_the_gateway_is_superseded() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+        let operation = running_operation(&store).await;
+        let routes = store
+            .get(&operation.application_id)
+            .await
+            .unwrap()
+            .application
+            .spec()
+            .routes
+            .clone();
+        let socket_path = temp.path().join("unused.sock");
+        let _socket = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let ingress = Arc::new(
+            crate::ingress::Ingress::new(true, &socket_path, temp.path(), Arc::clone(&store))
+                .unwrap(),
+        );
+        let controller = Arc::new(
+            Controller::new(
+                Arc::new(BollardDocker::connect(&socket_path).unwrap()),
+                Arc::clone(&store),
+            )
+            .with_ingress(Arc::clone(&ingress)),
+        );
+
+        let gateway = ingress.hold_updates().await;
+        let staging = tokio::spawn({
+            let operation = operation.clone();
+            async move { controller.sync_routes(&operation, &routes, true).await }
+        });
+        // The routing phase commits just before staging waits for the gateway.
+        while store
+            .operation(&operation.id)
+            .await
+            .unwrap()
+            .phase
+            .as_deref()
+            != Some("routing")
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        store
+            .accept(
+                Mutation::Deploy {
+                    id: operation.application_id.clone(),
+                },
+                None,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        drop(gateway);
+        assert!(matches!(
+            staging.await.unwrap(),
+            Err(OperationError::Superseded)
+        ));
+    }
+
+    #[tokio::test]
+    async fn reconciliation_leaves_concurrent_daemon_actions_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+        let operation = running_operation(&store).await;
+        store
+            .transition_operation(
+                &operation.id,
+                OperationState::Running,
+                OperationState::Requested,
+                None,
+            )
+            .await
+            .unwrap();
+        let socket_path = temp.path().join("unused.sock");
+        let _socket = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let controller = Controller::new(
+            Arc::new(BollardDocker::connect(&socket_path).unwrap()),
+            Arc::clone(&store),
+        );
+        // Another worker, such as ingress, is mid-change when reconciliation starts.
+        let action = store
+            .begin_action(None, "ingress_start_gateway", None)
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let run = controller.run(
+            Arc::new(tokio::sync::Notify::new()),
+            std::time::Duration::from_mins(1),
+            0,
+            0,
+            cancellation.clone(),
+        );
+        let finished = async {
+            // Operations start only after the first discovery pass, including recovery.
+            while store.operation(&operation.id).await.unwrap().state == OperationState::Requested {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let finished = store.finish_action(&action, None).await;
+            cancellation.cancel();
+            finished
+        };
+        let (result, finished) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(run, finished)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+        finished.unwrap();
+    }
 
     #[tokio::test]
     async fn execution_cleanup_waits_for_live_repair_to_commit() {

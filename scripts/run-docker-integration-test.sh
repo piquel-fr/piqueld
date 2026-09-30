@@ -44,7 +44,7 @@ container_id=""
 
 cleanup() {
   if [[ -n "$container_id" ]]; then
-    docker rm --force "$container_id" >/dev/null 2>&1 || true
+    docker rm --force --volumes "$container_id" >/dev/null 2>&1 || true
   fi
   if [[ -n "$runtime_dir" && -d "$runtime_dir" && "$(basename "$runtime_dir")" == piqueld-dind.* ]]; then
     rm -rf -- "$runtime_dir"
@@ -52,11 +52,16 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Pre-mount /tmp so the DinD entrypoint does not hide the nested data bind.
 container_id="$(docker run \
   --detach \
   --privileged \
+  --tmpfs /tmp:rw,exec,dev \
   --env DOCKER_TLS_CERTDIR= \
   --volume "$runtime_dir:/piqueld-socket" \
+  --volume "$runtime_dir:$runtime_dir" \
+  --publish 127.0.0.1::80 \
+  --publish 127.0.0.1::443 \
   "$dind_image" \
   dockerd \
   --host=unix:///piqueld-socket/docker.sock \
@@ -79,6 +84,15 @@ for _attempt in {1..60}; do
       echo "docker-test requires GNU timeout to bound the test run" >&2
       exit 1
     fi
+    http_port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "80/tcp") 0).HostPort}}' "$container_id")"
+    https_port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "443/tcp") 0).HostPort}}' "$container_id")"
+    PIQUELD_DOCKER_ISOLATED=1 \
+      PIQUELD_DOCKER_SOCKET="$socket_path" \
+      PIQUELD_DOCKER_DATA_DIR="$runtime_dir" \
+      PIQUELD_INGRESS_HTTP_PORT="$http_port" \
+      PIQUELD_INGRESS_HTTPS_PORT="$https_port" \
+      "${test_wrapper[@]}" \
+      cargo nextest run --locked -p piqueld --lib --run-ignored only --no-capture -E 'test(ingress_caddy)' --test-threads=1
     # Tests share one daemon and mutate its Swarm state.
     PIQUELD_DOCKER_ISOLATED=1 \
       PIQUELD_DOCKER_SOCKET="$socket_path" \

@@ -4,22 +4,24 @@ use super::ApplicationService;
 use crate::{
     config::DaemonConfig,
     docker::{BollardDocker, DockerApi},
-    reconcile::{Controller, RetryPolicy},
+    reconcile::Controller,
     store::{Store, StoreError},
 };
 use anyhow::Context;
+use piqueld_core::manifest::Hostname;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::Notify, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 impl ApplicationService {
-    /// Opens persistence, initializes authentication, connects Docker, and starts reconciliation.
+    /// Opens persistence, initializes authentication, connects Docker, and starts
+    /// reconciliation and ingress.
     ///
     /// The process must hold its data-directory lock and bind its listeners first.
-    /// Cancelling the supplied token stops reconciliation; the returned task must
-    /// be joined before releasing the lock. A controller failure cancels the token
-    /// so all transports shut down together.
+    /// Cancelling the supplied token stops both workers; the returned task must
+    /// be joined before releasing the lock. Caddy keeps serving after normal shutdown.
+    /// A controller failure cancels the token so all transports shut down together.
     /// # Errors
     /// Returns contextual storage, Docker connection, or Swarm initialization errors.
     pub async fn start(
@@ -35,6 +37,17 @@ impl ApplicationService {
         );
         info!(path = %config.server.database_path().display(), "opened control-plane state");
         let auth = crate::auth::Auth::initialize(&store, config).await?;
+        // Application routes must never serve the website origin or its subdomains,
+        // which could otherwise act on its passkeys or cookies.
+        let website = crate::auth::Auth::validate_origin(&config.auth.public_url)?
+            .domain()
+            .and_then(|host| Hostname::parse(host.trim_end_matches('.')).ok());
+        for hostname in store
+            .reserve_installation_hostnames(website.as_slice())
+            .await?
+        {
+            tracing::error!(%hostname, "route hostname is reserved for the piqueld website; the gateway will not publish it");
+        }
         let docker = Arc::new(
             BollardDocker::connect(&config.docker.socket)
                 .context("failed to connect to Docker Engine")?,
@@ -69,19 +82,19 @@ impl ApplicationService {
             auto_initialize_swarm = config.docker.auto_initialize_swarm,
             "connected to Docker Engine as a single-node Swarm manager"
         );
+        let ingress = Arc::new(crate::ingress::Ingress::new(
+            config.ingress.enabled,
+            &config.docker.socket,
+            &config.server.data_dir,
+            Arc::clone(&store),
+        )?);
         let wake = Arc::new(Notify::new());
         let reconciler = Controller::new(docker, Arc::clone(&store))
-            .with_retry_policy(RetryPolicy {
-                convergence_timeout: Duration::from_secs(
-                    config.reconciliation.convergence_timeout_seconds,
-                ),
-                ..RetryPolicy::default()
-            })
-            .with_prepare_timeout(Duration::from_secs(
-                config.reconciliation.prepare_timeout_seconds,
-            ));
+            .with_config(&config.reconciliation)
+            .with_ingress(Arc::clone(&ingress));
         let service = Self::new(store, reconciler.runtime(Arc::clone(&wake)))
-            .with_configuration(config.view());
+            .with_configuration(config.view())
+            .with_ingress(Arc::clone(&ingress));
         let scan_interval = Duration::from_secs(config.reconciliation.scan_interval_seconds);
         let finished_operation_days = config.retention.finished_operation_days;
         let event_days = config.retention.event_days;
@@ -103,8 +116,9 @@ impl ApplicationService {
                 cancellation.cancel();
                 result
             };
-            let (result, (), ()) = tokio::join!(
+            let (result, (), (), ()) = tokio::join!(
                 reconcile,
+                ingress.run(cancellation.child_token()),
                 background.observe_notifications(scan_seconds, cancellation.child_token()),
                 background.deliver_notifications(webhook_client, cancellation.child_token())
             );

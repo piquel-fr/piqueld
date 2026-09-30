@@ -158,6 +158,12 @@ impl From<StoreError> for ApiError {
             | StoreError::SecretDeleting
             | StoreError::SecretQuota
             | StoreError::SecretReferenced) => Self::from_secret_error(error),
+            StoreError::HostnameConflict { hostname } => Self::new(
+                StatusCode::CONFLICT,
+                "hostname_conflict",
+                "Hostname is reserved by another application or this installation",
+            )
+            .details(json!({"hostname": hostname})),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",

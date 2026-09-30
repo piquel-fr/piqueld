@@ -80,6 +80,10 @@ diagnostic_codes! {
     Superseded => "superseded",
     /// Observed application health is degraded.
     ServiceDegraded => "service_degraded",
+    /// A route hostname is reserved by another application or this installation.
+    HostnameConflict => "hostname_conflict",
+    /// The managed ingress gateway is unavailable or could not apply a change.
+    IngressUnavailable => "ingress_unavailable",
 }
 
 const INSPECT_DIAGNOSTIC: &str =
@@ -97,6 +101,11 @@ impl DiagnosticCode {
                 Daemon,
                 true,
                 "Check Docker Engine availability. Reconciliation retries after connectivity recovers.",
+            ),
+            Self::IngressUnavailable => (
+                Daemon,
+                true,
+                "Check ingress health and daemon logs. Reconciliation reapplies routes from durable intent.",
             ),
             Self::JournalUnavailable | Self::StorageUnavailable => (
                 Daemon,
@@ -131,6 +140,11 @@ impl DiagnosticCode {
                 Application,
                 true,
                 "Inspect service health and resource capacity. Reconciliation will retry.",
+            ),
+            Self::HostnameConflict => (
+                Application,
+                false,
+                "Choose a hostname that no other application or the piqueld website uses, then deploy again.",
             ),
             Self::OwnershipConflict | Self::DockerConfigurationConflict => (
                 Application,
@@ -204,6 +218,7 @@ mod tests {
             DiagnosticCode::SchemaMismatch,
             DiagnosticCode::InternalError,
             DiagnosticCode::ApplicationCompilationFailed,
+            DiagnosticCode::IngressUnavailable,
         ] {
             let diagnostic = Diagnostic::new("occurrence".into(), code, "failure".into());
             assert_eq!(diagnostic.scope, EventScope::Daemon, "{code:?}");
@@ -220,6 +235,8 @@ mod tests {
             (DiagnosticCode::ImageResolutionFailed, true),
             (DiagnosticCode::DockerRequestFailed, true),
             (DiagnosticCode::ConvergenceTimeout, true),
+            (DiagnosticCode::IngressUnavailable, true),
+            (DiagnosticCode::HostnameConflict, false),
             (DiagnosticCode::ImageResolutionRejected, false),
             (DiagnosticCode::OwnershipConflict, false),
             (DiagnosticCode::ServiceDegraded, false),

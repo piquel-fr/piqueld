@@ -78,6 +78,7 @@ async fn log_parameters_are_encoded_and_readiness_keeps_its_503_payload() {
     );
 
     let readiness = ReadinessStatus {
+        ingress: piqueld_core::api::IngressStatus::default(),
         ready: false,
         database: DependencyStatus::Ready,
         docker: DependencyStatus::Failed {

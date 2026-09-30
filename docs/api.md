@@ -64,6 +64,7 @@ immutable deployment snapshot commit in the same transaction.
 | DELETE | `/services/{service}` | None |
 | POST | `/volumes` | `{ "name": "data" }` |
 | DELETE | `/volumes/{volume}` | None; mounted volumes are rejected |
+| PUT | `/routes` | `{ "value": [{ "hostname": "notes.example.com", "service": "web", "port": 3000 }] }`; replaces this application's routes |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }` |
 | PUT | `/services/{service}/source` | `{ "value": Source }` |
@@ -86,6 +87,9 @@ source/check settings require the appropriate variant; switch variants through
 missing resources are rejected. Optional values must explicitly use null to clear.
 The same validation and Git ownership rules apply even with `force=true`.
 Disconnecting a repository preserves saved services and volumes for local editing.
+Renaming a service updates its routes; removing a service removes its routes.
+Routes remain saved while ingress is disabled and become active only after deployment
+with ingress enabled in the daemon's read-only TOML configuration.
 
 For dashboard forms, typed section endpoints also allow atomically replacing
 `/volumes`, service `/environment`, `/mounts`, `/resources`, `/general`
@@ -236,8 +240,9 @@ verdicts omit it. HTTP 200 means deployment dependencies are available; HTTP 503
 carries the same structured envelope when they are not. Probes have bounded
 deadlines and do not initialize Swarm or repair resources. Docker being unavailable
 does not block configuration saves or history reads. `/health` remains a
-process-liveness endpoint. No metrics or external registry/ingress checks are
-introduced.
+process-liveness endpoint. A separate `ingress` object reports gateway health and
+per-route public HTTPS readiness without affecting `ready`; see
+[ingress](ingress.md#status-and-recovery). No registry checks are introduced.
 
 `GET /api/v1/builds` lists attempts newest first, with optional `application_id`,
 `cursor`, and `limit` (1–100, default 50). Each executed Git-service preparation

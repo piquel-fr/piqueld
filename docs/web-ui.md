@@ -20,7 +20,10 @@ row opens that deployment in its application history. Applications also has a
 compact, clickable directory.
 
 Applications have one main tab row: Overview (the default), Source, Services,
-Volumes, Deployments, Diagnostics, Builds, and Logs. Services contains the compact service list
+Volumes, Routes, Deployments, Diagnostics, Builds, and Logs. The Routes tab edits public
+hostnames and shows each deployed route's HTTPS readiness and diagnostics.
+Saving routes updates only the route field; Deploy activates the change.
+Services contains the compact service list
 and observed runtime services. Reconciliation diagnostics appear in Diagnostics.
 Each service row opens a service page
 headed by application / service, with tabs for source and scaling, environment,

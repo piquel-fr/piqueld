@@ -4,6 +4,12 @@ use piqueld_core::observability::DiagnosticCode;
 /// Sanitized failure returned while executing a durable operation.
 #[derive(Debug, thiserror::Error)]
 pub enum OperationError {
+    /// A saved or captured route belongs to another application or the installation.
+    #[error("hostname {0} is reserved by another application or this installation")]
+    HostnameConflict(String),
+    /// Managed gateway could not apply the required routing transition.
+    #[error("ingress configuration could not be applied; see ingress health and daemon logs")]
+    Ingress(#[source] anyhow::Error),
     /// Docker failure with its complete diagnostic cause chain.
     #[error("{}", .0.operation_classification())]
     Docker(#[source] crate::docker::DockerError),
@@ -97,6 +103,8 @@ impl OperationError {
     #[must_use]
     pub fn diagnostic_code(&self) -> DiagnosticCode {
         match self {
+            Self::HostnameConflict(_) => DiagnosticCode::HostnameConflict,
+            Self::Ingress(_) => DiagnosticCode::IngressUnavailable,
             Self::Docker(error) => error.diagnostic_code(),
             Self::Journal(_) => DiagnosticCode::JournalUnavailable,
             Self::SecretStorageUnavailable(_) => DiagnosticCode::SecretStorageUnavailable,
@@ -193,6 +201,9 @@ impl From<crate::store::StoreError> for OperationError {
             crate::store::StoreError::SecretUnavailable { names } => {
                 Self::SecretUnavailable { names }
             }
+            crate::store::StoreError::HostnameConflict { hostname } => {
+                Self::HostnameConflict(hostname)
+            }
             other => Self::Journal(other),
         }
     }
@@ -207,6 +218,18 @@ impl OperationError {
             _ => self,
         };
         Self::diagnostic_from(self.diagnostic_code(), self.message(), source)
+    }
+
+    /// Diagnoses a failed gateway action without taking ownership of its error.
+    pub(crate) fn ingress_diagnostic(
+        error: &anyhow::Error,
+    ) -> piqueld_core::observability::Diagnostic {
+        Self::diagnostic_from(
+            DiagnosticCode::IngressUnavailable,
+            "managed ingress could not apply a gateway change; see ingress health and daemon logs"
+                .into(),
+            error.as_ref(),
+        )
     }
 
     fn diagnostic_from(
@@ -244,6 +267,12 @@ impl OperationError {
             }
             if let Some(failure) = error.downcast_ref::<crate::secrets::KeyFailure>() {
                 diagnostic.causes.push(failure.fact().into());
+            }
+            if let Some(error) = error.downcast_ref::<crate::ingress::ResponseError>() {
+                diagnostic.causes.push(format!(
+                    "Ingress API returned HTTP status {}",
+                    error.status.as_u16()
+                ));
             }
             if let Some(error) = error.downcast_ref::<std::io::Error>() {
                 diagnostic
