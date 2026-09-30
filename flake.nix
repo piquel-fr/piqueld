@@ -184,7 +184,12 @@
                   ''}
                 '';
                 postInstall = lib.optionalString (builtins.elem "piqueld" binaries) ''
-                  wrapProgram "$out/bin/piqueld" --prefix PATH : ${lib.makeBinPath [ pkgs.git ]}
+                  wrapProgram "$out/bin/piqueld" --prefix PATH : ${
+                    lib.makeBinPath [
+                      pkgs.git
+                      pkgs.docker-client
+                    ]
+                  }
                 '';
               }
               // lib.optionalAttrs withUi {
@@ -235,8 +240,8 @@
         in
         {
           default = pkgs.mkShell {
-            # The unpinned nixpkgs toolchain can differ from rust-toolchain.toml;
-            # rustup users get the pinned one automatically inside the repo.
+            # The locked nixpkgs toolchain can differ from rustup's moving
+            # stable channel selected by rust-toolchain.toml.
             packages =
               with pkgs;
               [

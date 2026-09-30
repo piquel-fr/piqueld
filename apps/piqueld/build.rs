@@ -152,8 +152,21 @@ fn embed_dashboard(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
         }
         println!("cargo:rerun-if-changed={}", file.display());
     }
-    let lockfile = ui_dir.join("../../Cargo.lock").canonicalize()?;
-    println!("cargo:rerun-if-changed={}", lockfile.display());
+    // Trunk builds these shared crates in a separate Cargo invocation, so
+    // Cargo cannot infer them as inputs to this build script. Track source
+    // directories too, including newly added files, without watching outputs.
+    for input in [
+        "src",
+        "../../Cargo.toml",
+        "../../Cargo.lock",
+        "../../crates/piqueld-core",
+        "../../crates/piqueld-client",
+    ] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            ui_dir.join(input).canonicalize()?.display()
+        );
+    }
 
     let out_dir = PathBuf::from(
         env::var_os("OUT_DIR")
