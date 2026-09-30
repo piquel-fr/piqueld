@@ -212,60 +212,7 @@ impl UnixApi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use piqueld_core::observability::EventScope;
-    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    #[tokio::test]
-    async fn journaled_requests_commit_intent_and_record_sanitized_failures() {
-        let directory = tempfile::tempdir().unwrap();
-        let socket = directory.path().join("docker.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let engine = axum::Router::new()
-            .fallback(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "private-engine-detail") });
-        let server = tokio::spawn(async move { axum::serve(listener, engine).await });
-        let store = Arc::new(
-            crate::store::Store::open(directory.path().join("db"))
-                .await
-                .unwrap(),
-        );
-        let ingress =
-            super::super::Ingress::new(true, &socket, directory.path(), Arc::clone(&store))
-                .unwrap();
-        let journal = ingress
-            .journal("ingress_create_network", "edge")
-            .await
-            .unwrap();
-        let result = ingress
-            .docker
-            .send(&journal, Method::POST, "/networks/create", None)
-            .await;
-        journal.finish(result).await.unwrap_err();
-        server.abort();
-
-        let events = store.events(None, None, 100).await.unwrap().items;
-        let kinds: Vec<_> = events.iter().map(|event| event.kind.as_str()).collect();
-        assert_eq!(
-            kinds,
-            ["action_started", "action_requested", "action_failed"]
-        );
-        let failed = &events[2];
-        assert_eq!(failed.scope, EventScope::Daemon);
-        assert_eq!(failed.error_code.as_deref(), Some("ingress_unavailable"));
-        assert!(
-            failed
-                .diagnostic
-                .as_ref()
-                .unwrap()
-                .causes
-                .contains(&"Ingress API returned HTTP status 500".to_owned())
-        );
-        assert!(
-            !serde_json::to_string(&events)
-                .unwrap()
-                .contains("private-engine-detail")
-        );
-    }
 
     #[tokio::test]
     async fn supplied_budget_covers_a_stalled_response_body() {

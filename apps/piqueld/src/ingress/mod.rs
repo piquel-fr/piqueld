@@ -93,6 +93,12 @@ impl Ingress {
         self.health.read().await.clone()
     }
 
+    /// Holds the gateway writer lock, as a slow update for another application does.
+    #[cfg(test)]
+    pub(crate) async fn hold_updates(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.update.lock().await
+    }
+
     /// Applies one application's deployment boundary under the gateway writer lock.
     pub(crate) async fn apply(
         &self,

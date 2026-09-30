@@ -487,6 +487,146 @@ mod tests {
         store::Store,
     };
 
+    /// Accepts a routed application and starts executing its operation.
+    async fn running_operation(store: &Store) -> Operation {
+        let manifest = piqueld_core::parse_toml(&format!(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='routed'\n\
+             [[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='{}'\n\
+             [[spec.routes]]\nhostname='routed.example.com'\nservice='web'\nport=80",
+            crate::ingress::CADDY_IMAGE
+        ))
+        .unwrap();
+        let (MutationResponse::Operation(receipt), _) = store
+            .accept(Mutation::apply(manifest, None), Some(0), false, None)
+            .await
+            .unwrap()
+        else {
+            panic!("operation")
+        };
+        store
+            .transition_operation(
+                &receipt.operation_id,
+                OperationState::Requested,
+                OperationState::Running,
+                None,
+            )
+            .await
+            .unwrap();
+        store.operation(&receipt.operation_id).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn routing_superseded_while_waiting_for_the_gateway_is_superseded() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+        let operation = running_operation(&store).await;
+        let routes = store
+            .get(&operation.application_id)
+            .await
+            .unwrap()
+            .application
+            .spec()
+            .routes
+            .clone();
+        let socket_path = temp.path().join("unused.sock");
+        let _socket = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let ingress = Arc::new(
+            crate::ingress::Ingress::new(true, &socket_path, temp.path(), Arc::clone(&store))
+                .unwrap(),
+        );
+        let controller = Arc::new(
+            Controller::new(
+                Arc::new(BollardDocker::connect(&socket_path).unwrap()),
+                Arc::clone(&store),
+            )
+            .with_ingress(Arc::clone(&ingress)),
+        );
+
+        let gateway = ingress.hold_updates().await;
+        let staging = tokio::spawn({
+            let operation = operation.clone();
+            async move { controller.sync_routes(&operation, &routes, true).await }
+        });
+        // The routing phase commits just before staging waits for the gateway.
+        while store
+            .operation(&operation.id)
+            .await
+            .unwrap()
+            .phase
+            .as_deref()
+            != Some("routing")
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        store
+            .accept(
+                Mutation::Deploy {
+                    id: operation.application_id.clone(),
+                },
+                None,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+        drop(gateway);
+        assert!(matches!(
+            staging.await.unwrap(),
+            Err(OperationError::Superseded)
+        ));
+    }
+
+    #[tokio::test]
+    async fn reconciliation_leaves_concurrent_daemon_actions_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+        let operation = running_operation(&store).await;
+        store
+            .transition_operation(
+                &operation.id,
+                OperationState::Running,
+                OperationState::Requested,
+                None,
+            )
+            .await
+            .unwrap();
+        let socket_path = temp.path().join("unused.sock");
+        let _socket = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let controller = Controller::new(
+            Arc::new(BollardDocker::connect(&socket_path).unwrap()),
+            Arc::clone(&store),
+        );
+        // Another worker, such as ingress, is mid-change when reconciliation starts.
+        let action = store
+            .begin_action(None, "ingress_start_gateway", None)
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let run = controller.run(
+            Arc::new(tokio::sync::Notify::new()),
+            std::time::Duration::from_secs(60),
+            0,
+            0,
+            cancellation.clone(),
+        );
+        let finished = async {
+            // Operations start only after the first discovery pass, including recovery.
+            while store.operation(&operation.id).await.unwrap().state == OperationState::Requested {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let finished = store.finish_action(&action, None).await;
+            cancellation.cancel();
+            finished
+        };
+        let (result, finished) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(run, finished)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+        finished.unwrap();
+    }
+
     #[tokio::test]
     async fn execution_cleanup_waits_for_live_repair_to_commit() {
         let temp = tempfile::tempdir().unwrap();

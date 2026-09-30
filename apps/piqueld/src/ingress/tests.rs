@@ -7,7 +7,9 @@ use crate::{
     reconcile::Controller,
 };
 use hyper::Method;
-use piqueld_core::{ApplicationId, NormalizedApplication, OperationState};
+use piqueld_core::{
+    ApplicationId, NormalizedApplication, OperationState, observability::EventScope,
+};
 use serde_json::json;
 
 fn application(name: &str, host: &str, body: &str) -> NormalizedApplication {
@@ -887,6 +889,108 @@ impl Scenario {
         assert_eq!(self.body("two.example.test").await, "second backend");
         disabled.synchronize().await.unwrap();
     }
+}
+
+/// Response body that must never reach history, diagnostics or health messages.
+const PRIVATE_BODY: &str = "private-engine-detail";
+
+/// An enabled ingress whose Docker Engine fails every request with `PRIVATE_BODY`.
+struct FailingEngine {
+    _directory: tempfile::TempDir,
+    store: Arc<Store>,
+    ingress: Ingress,
+    server: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+impl FailingEngine {
+    async fn start() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("docker.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let engine = axum::Router::new()
+            .fallback(|| async { (hyper::StatusCode::INTERNAL_SERVER_ERROR, PRIVATE_BODY) });
+        let server = tokio::spawn(async move { axum::serve(listener, engine).await });
+        let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+        let ingress = Ingress::new(true, &socket, directory.path(), Arc::clone(&store)).unwrap();
+        Self {
+            _directory: directory,
+            store,
+            ingress,
+            server,
+        }
+    }
+
+    async fn history(&self) -> Vec<piqueld_core::Event> {
+        let events = self.store.events(None, None, 100).await.unwrap().items;
+        assert!(
+            !serde_json::to_string(&events)
+                .unwrap()
+                .contains(PRIVATE_BODY)
+        );
+        events
+    }
+}
+
+impl Drop for FailingEngine {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+#[tokio::test]
+async fn journaled_requests_commit_intent_and_record_sanitized_failures() {
+    let engine = FailingEngine::start().await;
+    let journal = engine
+        .ingress
+        .journal("ingress_create_network", "edge")
+        .await
+        .unwrap();
+    let result = engine
+        .ingress
+        .docker
+        .send(&journal, Method::POST, "/networks/create", None)
+        .await;
+    journal.finish(result).await.unwrap_err();
+
+    let events = engine.history().await;
+    let kinds: Vec<_> = events.iter().map(|event| event.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["action_started", "action_requested", "action_failed"]
+    );
+    let failed = &events[2];
+    assert_eq!(failed.scope, EventScope::Daemon);
+    assert_eq!(failed.error_code.as_deref(), Some("ingress_unavailable"));
+    assert!(
+        failed
+            .diagnostic
+            .as_ref()
+            .unwrap()
+            .causes
+            .contains(&"Ingress API returned HTTP status 500".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn failed_gateway_sync_reports_health_without_response_details() {
+    let engine = FailingEngine::start().await;
+    engine.ingress.synchronize().await.unwrap_err();
+
+    // The failure happened while reading Docker, so no action was journaled.
+    let events = engine.history().await;
+    let [health] = events.as_slice() else {
+        panic!("expected one health transition: {events:#?}")
+    };
+    assert_eq!(health.kind, "dependency_health_changed");
+    assert_eq!(health.scope, EventScope::Daemon);
+    assert_eq!(health.error_code.as_deref(), Some("ingress_unavailable"));
+    let status = engine.ingress.status().await;
+    assert!(!status.healthy);
+    assert_eq!(
+        status.message,
+        "Ingress unavailable: could not prepare the Caddy gateway (requires free ports \
+         80/443 and Docker 28+). See daemon logs for details."
+    );
 }
 
 #[tokio::test]
