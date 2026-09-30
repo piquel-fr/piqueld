@@ -200,6 +200,7 @@ mod tests {
     #[test]
     fn service_diagnostics_ignore_historical_tasks() {
         let service = ObservedService {
+            secrets: Vec::new(),
             name: "web".into(),
             image: "example/web@sha256:digest".into(),
             replicas: 1,
@@ -245,6 +246,7 @@ mod tests {
             diagnostic: None,
         };
         let mut service = ObservedService {
+            secrets: Vec::new(),
             name: "web".into(),
             image: "example/web@sha256:digest".into(),
             replicas: 1,

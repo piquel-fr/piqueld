@@ -78,6 +78,14 @@ Follow the [upgrade and rollback checklist](authentication.md#upgrading-an-exist
 before deployment. An older daemon rejects the migrated schema; rollback requires
 restoring the pre-upgrade data directory together with the old binary/configuration.
 
+`0008_application_secrets.sql` adds application-secret metadata, encrypted versions,
+per-deployment pins and a persistent master-key verifier. Empty pin sets are
+recorded too, so retries cannot silently pick up subsequently added values. Secret
+value changes do not update application configuration or request deployments.
+Deletion reservations survive restarts; retry deletion to finish cleanup. Lost-key
+recovery marks discarded versions unavailable without changing pins, and
+unavailable values are excluded from retained-value quotas.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

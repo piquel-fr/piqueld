@@ -1738,3 +1738,31 @@ fn git_service_creation_does_not_require_a_placeholder_image() {
     assert_eq!(assert_json_success(&output)["generation"], 2);
     assert_eq!(server.finish().len(), 2);
 }
+
+#[test]
+fn secret_key_recovery_requires_confirmation() {
+    let server = start_server(false, 1, |request| {
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/api/v1/system/secrets/recover-key");
+        Reply::json(json!({
+            "affected_applications": 2,
+            "affected_secrets": 3,
+            "discarded_versions": 4,
+        }))
+    });
+    let rejected = run(&server, &["--noninteractive", "secrets", "recover-key"]);
+    assert!(!rejected.status.success());
+    let recovery = run_human(&server, &["secrets", "recover-key", "--yes"]);
+    assert!(
+        recovery.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovery.stderr)
+    );
+    assert!(String::from_utf8_lossy(&recovery.stdout).contains("4 values discarded"));
+    assert!(String::from_utf8_lossy(&recovery.stderr).contains("ALL applications"));
+    assert_eq!(
+        server.finish().len(),
+        1,
+        "unconfirmed recovery must not reach the server"
+    );
+}

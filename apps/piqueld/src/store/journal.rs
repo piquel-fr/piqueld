@@ -1,5 +1,5 @@
 //! Persist intent before a runtime request and record its observed outcome afterward.
-use super::{Store, StoreError, new_id, now_ms};
+use super::{ApplicationId, Store, StoreError, new_id, now_ms};
 use piqueld_core::observability::{Diagnostic, DiagnosticCode, EventScope};
 use sqlx::{Sqlite, Transaction};
 
@@ -44,6 +44,36 @@ impl Store {
                 .map_err(StoreError::corrupt)?,
             started_at_ms: now_ms(),
         };
+        Self::start_action_on(&mut tx, &action).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(action)
+    }
+    /// Journals an application-owned runtime request made outside any operation.
+    pub(crate) async fn begin_application_action(
+        &self,
+        application: &ApplicationId,
+        phase: &str,
+        resource: Option<&str>,
+    ) -> Result<JournalAction, StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let action = JournalAction {
+            id: new_id("action"),
+            operation_id: None,
+            application_id: Some(application.to_string()),
+            generation: None,
+            phase: phase.to_owned(),
+            resource: resource.map(str::to_owned),
+            attempt: None,
+            started_at_ms: now_ms(),
+        };
+        Self::start_action_on(&mut tx, &action).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(action)
+    }
+    async fn start_action_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        action: &JournalAction,
+    ) -> Result<(), StoreError> {
         sqlx::query!(
             "INSERT INTO active_actions(id,operation_id,application_id,generation,phase,resource,attempt,started_at_ms)
             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -56,12 +86,10 @@ impl Store {
             action.attempt,
             action.started_at_ms,
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Self::action_event_on(&mut tx, &action, "action_started", None, None, None).await?;
-        tx.commit().await.map_err(StoreError::database)?;
-        Ok(action)
+        Self::action_event_on(tx, action, "action_started", None, None, None).await
     }
     pub(crate) async fn action_request(
         &self,

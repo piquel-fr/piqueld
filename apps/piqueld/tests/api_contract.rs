@@ -31,7 +31,14 @@ impl Authenticator for FakeAuth {
     }
 }
 
+#[derive(Default)]
+struct CleanupGate {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
 struct FakeRuntime {
+    cleanup_gate: Option<Arc<CleanupGate>>,
     instance: InstanceId,
     unavailable: std::sync::atomic::AtomicBool,
 }
@@ -70,6 +77,18 @@ impl RuntimeBoundary for FakeRuntime {
         )
     }
 
+    async fn remove_secrets(
+        &self,
+        _application: &piqueld_core::ApplicationId,
+        _names: &[String],
+    ) -> Result<(), BoundaryError> {
+        if let Some(gate) = &self.cleanup_gate {
+            gate.started.notify_one();
+            gate.release.notified().await;
+        }
+        self.check_available().await
+    }
+
     async fn prepare(
         &self,
         application: &NormalizedApplication,
@@ -98,7 +117,10 @@ impl RuntimeBoundary for FakeRuntime {
         let resolved = compile_application(
             application,
             self.instance.clone(),
-            &ResolutionSet { sources },
+            &ResolutionSet {
+                sources,
+                secret_names: BTreeMap::default(),
+            },
         )
         .map_err(BoundaryError::Compilation)?;
         Ok(resolved)
@@ -145,6 +167,7 @@ async fn fake_runtime_accepts_digest_pinned_requested_images() {
         .unwrap()
         .normalize(piqueld_core::ApplicationId::parse("app-digest-fixture").unwrap());
     let runtime = FakeRuntime {
+        cleanup_gate: None,
         instance: InstanceId::parse("test").unwrap(),
         unavailable: std::sync::atomic::AtomicBool::new(false),
     };
@@ -165,6 +188,7 @@ async fn state(temp: &TempDir) -> ApiState {
     ApiState::new(
         Arc::clone(&store),
         Arc::new(FakeRuntime {
+            cleanup_gate: None,
             instance,
             unavailable: std::sync::atomic::AtomicBool::new(false),
         }),
@@ -1481,6 +1505,7 @@ impl AcceptanceApi {
         let store = Arc::new(Store::open(temp.path().join("state.db")).await.unwrap());
         let instance = InstanceId::parse(store.instance_id()).unwrap();
         let runtime = Arc::new(FakeRuntime {
+            cleanup_gate: None,
             instance,
             unavailable: std::sync::atomic::AtomicBool::new(false),
         });
@@ -1700,6 +1725,7 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
         .unwrap()
         .normalize(piqueld_core::ApplicationId::parse("app-preview-01").unwrap());
     let runtime = FakeRuntime {
+        cleanup_gate: None,
         instance: InstanceId::parse(api.store.instance_id()).unwrap(),
         unavailable: std::sync::atomic::AtomicBool::new(false),
     };
@@ -3559,6 +3585,7 @@ async fn every_documented_operation_requires_authentication() {
     let state = ApiState::new(
         Arc::clone(&store),
         Arc::new(FakeRuntime {
+            cleanup_gate: None,
             instance,
             unavailable: std::sync::atomic::AtomicBool::new(false),
         }),
@@ -3710,4 +3737,325 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
         }
     }
     transaction.rollback().await.unwrap();
+}
+
+/// Secret lifecycle history names secrets and journals cleanup without values.
+async fn assert_secret_history(client: &Client, application_id: &str) {
+    let history = client
+        .events(Some(application_id), None, 100)
+        .await
+        .unwrap()
+        .items;
+    let recorded = |kind: &str| {
+        history
+            .iter()
+            .find(|event| event.kind == kind)
+            .unwrap_or_else(|| panic!("{kind} recorded: {history:#?}"))
+    };
+    assert_eq!(recorded("secret_saved").resource.as_deref(), Some("token"));
+    assert_eq!(
+        recorded("secret_saved").message.as_deref(),
+        Some("Stored secret version 1")
+    );
+    assert_eq!(
+        recorded("secret_deleted").resource.as_deref(),
+        Some("token")
+    );
+    let removal = history
+        .iter()
+        .find(|event| {
+            event.kind == "action_succeeded" && event.phase.as_deref() == Some("remove_secrets")
+        })
+        .expect("runtime cleanup is journaled");
+    assert_eq!(removal.resource.as_deref(), Some("token"));
+    assert!(removal.operation_id.is_none());
+    assert!(
+        !serde_json::to_string(&history)
+            .unwrap()
+            .contains("private-token-value")
+    );
+}
+
+#[tokio::test]
+async fn secret_api_is_application_scoped_write_only_and_versioned() {
+    use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let api = router(state(&temp).await, FakeAuth);
+    let server = tokio::spawn(serve(listener, api.clone()).into_future());
+    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let app = create_and_inspect(&client, &manifest()).await;
+    let response = api
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!(
+                    "/api/v1/applications/{}/secrets/token",
+                    app.application_id
+                ))
+                .header("content-type", "application/octet-stream")
+                .header("x-expected-generation", "0")
+                .body(Body::from("private-token-value"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let raw = std::str::from_utf8(&bytes).unwrap();
+    assert!(!raw.contains("private-token-value"));
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["data"]["generation"], 1);
+    assert_eq!(client.secrets(&app.application_id).await.unwrap().len(), 1);
+    let reference = |secrets| ApplicationEdit::Service {
+        name: "web".into(),
+        edit: ServiceEdit::Secrets(secrets),
+    };
+    let mount = piqueld_client::SecretMount {
+        name: "token".into(),
+        target: "/run/secrets/token".into(),
+    };
+    let saved = client
+        .edit_application(
+            &app.application_id,
+            &reference(vec![mount.clone()]),
+            &EditOptions {
+                expected_generation: Some(app.generation),
+                ..EditOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .application(&app.application_id)
+            .await
+            .unwrap()
+            .application
+            .to_manifest()
+            .spec
+            .services[0]
+            .secrets,
+        vec![mount]
+    );
+    assert!(matches!(
+        client.delete_secret(&app.application_id, "token", 1).await,
+        Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 409
+    ));
+    client
+        .edit_application(
+            &app.application_id,
+            &reference(Vec::new()),
+            &EditOptions {
+                expected_generation: Some(saved.generation),
+                ..EditOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(client.put_secret(&app.application_id,"token",0,b"stale".to_vec()).await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==409)
+    );
+    assert!(
+        matches!(client.secrets("app-absent").await.unwrap_err(),piqueld_client::ClientError::Api{status,..} if status.as_u16()==404)
+    );
+    client
+        .delete_secret(&app.application_id, "token", 1)
+        .await
+        .unwrap();
+    assert!(
+        client
+            .secrets(&app.application_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_secret_history(&client, &app.application_id).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, router(state(&temp).await, FakeAuth)).into_future());
+    let client = Client::tcp(&format!("http://{address}/")).unwrap();
+    let app = create_and_inspect(&client, &manifest()).await;
+    client
+        .put_secret(&app.application_id, "token", 0, b"value".to_vec())
+        .await
+        .unwrap();
+    std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
+    let error = client
+        .put_secret(&app.application_id, "token", 1, b"replacement".to_vec())
+        .await
+        .unwrap_err();
+    let piqueld_client::ClientError::Api { status, error, .. } = error else {
+        panic!("API error");
+    };
+    assert_eq!(status.as_u16(), 503);
+    assert_eq!(error.code, "secret_storage_unavailable");
+    let event = client
+        .diagnostic(error.details["diagnostic_id"].as_str().unwrap())
+        .await
+        .unwrap();
+    let diagnostic = event.diagnostic.unwrap();
+    assert_eq!(diagnostic.code, "secret_storage_unavailable");
+    assert_eq!(
+        diagnostic.scope,
+        piqueld_core::observability::EventScope::Daemon
+    );
+    assert!(!diagnostic.retryable);
+    assert_eq!(diagnostic.causes, ["Secret master key: missing"]);
+    assert_eq!(event.request_id.as_deref(), Some(error.request_id.as_str()));
+    server.abort();
+}
+
+#[tokio::test]
+async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_failure() {
+    use piqueld::{
+        api::{ApplicationError, Mutation},
+        store::StoreError,
+    };
+    use piqueld_core::edit::{ApplicationEdit, ServiceEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+    let app = manifest()
+        .validate()
+        .unwrap()
+        .normalize(piqueld_core::ApplicationId::parse("app-cleanup").unwrap());
+    store.save_application(&app, None, None).await.unwrap();
+    let gate = Arc::new(CleanupGate::default());
+    let runtime = Arc::new(FakeRuntime {
+        cleanup_gate: Some(gate.clone()),
+        instance: InstanceId::parse(store.instance_id()).unwrap(),
+        unavailable: std::sync::atomic::AtomicBool::new(true),
+    });
+    let service = ApiState::new(store.clone(), runtime.clone());
+    service
+        .put_secret(app.id(), "token", 0, b"value".to_vec())
+        .await
+        .unwrap();
+    let cleanup = {
+        let service = service.clone();
+        let id = app.id().clone();
+        tokio::spawn(async move { service.delete_secret(&id, "token", 1).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        service.put_secret(app.id(), "other", 0, b"unrelated".to_vec()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let edit = Mutation::Edit {
+        id: app.id().clone(),
+        edit: ApplicationEdit::Service {
+            name: "web".into(),
+            edit: ServiceEdit::Secrets(vec![piqueld_core::manifest::SecretMount {
+                name: "token".into(),
+                target: "/run/secrets/token".into(),
+            }]),
+        },
+        deploy: false,
+    };
+    assert!(matches!(
+        service.accept(edit, Some(1), false, None).await,
+        Err(ApplicationError::Store(StoreError::SecretDeleting))
+    ));
+    gate.release.notify_one();
+    assert!(matches!(
+        cleanup.await.unwrap(),
+        Err(ApplicationError::Runtime(_))
+    ));
+    let failed = store
+        .filtered_events(
+            &piqueld_core::observability::EventFilter {
+                kind: Some("action_failed".into()),
+                ..Default::default()
+            },
+            None,
+            100,
+        )
+        .await
+        .unwrap()
+        .items;
+    assert!(
+        failed
+            .iter()
+            .any(|event| event.phase.as_deref() == Some("remove_secrets")
+                && event.resource.as_deref() == Some("token")
+                && event.application_id.as_ref() == Some(app.id())
+                && event.diagnostic.is_some()),
+        "{failed:#?}"
+    );
+    assert!(
+        service
+            .secrets(app.id())
+            .await
+            .unwrap()
+            .iter()
+            .find(|s| s.name == "token")
+            .unwrap()
+            .deleting
+    );
+    runtime
+        .unavailable
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    gate.release.notify_one();
+    service.delete_secret(app.id(), "token", 1).await.unwrap();
+    assert_eq!(service.secrets(app.id()).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+    let application = manifest()
+        .validate()
+        .unwrap()
+        .normalize(piqueld_core::ApplicationId::parse("app-key-api").unwrap());
+    store
+        .save_application(&application, None, None)
+        .await
+        .unwrap();
+    store
+        .put_secret(application.id(), "token", 0, b"private-value".to_vec())
+        .await
+        .unwrap();
+    let api = router(
+        ApiState::new(
+            store.clone(),
+            Arc::new(FakeRuntime {
+                cleanup_gate: None,
+                instance: InstanceId::parse(store.instance_id()).unwrap(),
+                unavailable: std::sync::atomic::AtomicBool::new(false),
+            }),
+        ),
+        FakeAuth,
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(serve(listener, api).into_future());
+    let client = Client::tcp(&format!("http://{address}")).unwrap();
+    assert!(
+        matches!(client.recover_secret_key().await, Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 409)
+    );
+    assert!(!client.secrets(application.id().as_str()).await.unwrap()[0].unavailable);
+
+    std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
+    let recovery = client.recover_secret_key().await.unwrap();
+    assert_eq!(recovery.discarded_versions, 1);
+    assert!(client.secrets(application.id().as_str()).await.unwrap()[0].unavailable);
+    client
+        .put_secret(application.id().as_str(), "token", 1, b"new-value".to_vec())
+        .await
+        .unwrap();
+    assert!(!client.secrets(application.id().as_str()).await.unwrap()[0].unavailable);
+    server.abort();
 }

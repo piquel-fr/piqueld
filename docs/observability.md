@@ -10,6 +10,17 @@ collector management, or external daemon-outage monitoring in this implementatio
 Saved typed edits record their field and resource in application history without
 copying configuration values.
 
+Secret writes and deletions record `secret_saved` and `secret_deleted` events with
+the logical name as their resource; history never contains values. Removing a
+secret's Docker versions is a journaled `remove_secrets` action, whether it follows
+an API deletion (application-owned, without an operation) or application deletion.
+A missing, unreadable or non-matching master key produces a daemon-scoped
+`secret_storage_unavailable` diagnostic whose causal fact names the key condition.
+Deployments decrypt values before their service request, so this failure is never
+reported as a Docker error. Lost-key recovery records a daemon-scoped
+`secret_key_recovered` event with value counts, and `secret_values_discarded` in
+each affected application's history.
+
 An operation groups execution attempts; an attempt groups actions. Action events
 carry an action ID, operation ID, application ID, generation, attempt, phase,
 resource, request/retry number, and completed duration where applicable. Source

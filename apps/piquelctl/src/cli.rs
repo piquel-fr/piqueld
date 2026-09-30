@@ -71,6 +71,11 @@ pub(crate) enum Command {
     Whoami,
     /// List effective connection profile names and endpoints without contacting a daemon.
     Profiles,
+    /// Manage the encryption key for all application secrets on this daemon.
+    Secrets {
+        #[command(subcommand)]
+        action: crate::secrets::KeyAction,
+    },
     /// Report daemon availability and version.
     Status,
     /// Create, inspect, edit, and deploy applications.
@@ -131,6 +136,12 @@ pub(crate) enum AppCommand {
         tail: u16,
         #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
         since_seconds: u32,
+    },
+    /// Manage application-scoped secret values and metadata.
+    Secret {
+        application: String,
+        #[command(subcommand)]
+        action: crate::secrets::SecretAction,
     },
     /// Preview creation or replacement from a TOML manifest.
     Plan(ManifestArgs),

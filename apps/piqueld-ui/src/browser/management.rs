@@ -2,6 +2,8 @@
 mod controls;
 mod logs;
 use logs::ApplicationLogs;
+mod secrets;
+use secrets::ApplicationSecrets;
 mod deployments;
 mod navigation;
 mod services;
@@ -58,14 +60,7 @@ impl EditorContext {
     }
     fn failure(self, error: &ClientError) {
         self.set_error(Some(client_error_message(error)));
-        self.diagnostic_id.set(match error {
-            ClientError::Api { error, .. } => error
-                .details
-                .get("diagnostic_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned),
-            _ => None,
-        });
+        self.diagnostic_id.set(diagnostic_id(error));
         if matches!(error, ClientError::Transport { .. }) {
             self.uncertain.set(true);
             self.set_error(Some("The request outcome is unknown. Reload saved configuration and deployment history before another action.".into()));
@@ -133,6 +128,18 @@ impl EditorContext {
 fn editor() -> EditorContext {
     use_context().expect("application editor context")
 }
+/// Returns the persisted diagnostic occurrence attached to an API failure.
+fn diagnostic_id(error: &ClientError) -> Option<String> {
+    match error {
+        ClientError::Api { error, .. } => error
+            .details
+            .get("diagnostic_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        _ => None,
+    }
+}
+
 fn transport_failure(error: &ClientError) -> bool {
     matches!(error, ClientError::Transport { .. })
 }
@@ -365,7 +372,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         <EditorFeedback />
         <Tabs
             label="Application sections"
-            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics", "Events", "Builds", "Logs"]}
+            options={&["Overview", "Source", "Services", "Volumes", "Deployments", "Diagnostics", "Events", "Builds", "Logs", "Secrets"]}
             selected={context.tab}
             class="tabs"
         />
@@ -373,6 +380,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
         <leptos::Show when=move ||context.tab.get()=="Events"><super::observability::EventHistory application=context.saved.with_untracked(|a|a.application.id().to_string())/></leptos::Show>
         <leptos::Show when=move ||context.tab.get()=="Logs"><ApplicationLogs/></leptos::Show>
         <leptos::Show when=move ||context.tab.get()=="Builds"><super::builds::BuildHistory application=context.saved.with_untracked(|a|a.application.id().to_string())/></leptos::Show>
+        <div hidden=move ||context.tab.get()!="Secrets"><ApplicationSecrets/></div>
         <div hidden={move || context.tab.get() != "Deployments"}>
             <DeploymentHistory />
         </div>

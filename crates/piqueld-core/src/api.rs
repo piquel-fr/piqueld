@@ -483,3 +483,31 @@ mod log_tests {
         );
     }
 }
+
+/// Metadata only: secret values are never returned.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SecretMetadata {
+    /// Application-scoped logical name.
+    pub name: String,
+    /// Current version, used for optimistic writes.
+    pub generation: i64,
+    /// Last update time in Unix milliseconds.
+    pub updated_at_ms: i64,
+    /// Cleanup has started; retry deletion to finish it. Replacement is disabled.
+    #[serde(default)]
+    pub deleting: bool,
+    /// The current value was discarded by lost-key recovery; supply a new version.
+    #[serde(default)]
+    pub unavailable: bool,
+}
+
+/// Metadata-only result of lost-key recovery. Never rotates application credentials.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct SecretKeyRecovery {
+    /// Applications whose stored values were discarded.
+    pub affected_applications: i64,
+    /// Logical secrets whose stored values were discarded.
+    pub affected_secrets: i64,
+    /// Stored versions discarded; already unavailable versions are excluded.
+    pub discarded_versions: i64,
+}

@@ -1,6 +1,6 @@
 use axum::{Extension, response::IntoResponse};
 use http::header;
-use piqueld_core::api::ErrorBody;
+use piqueld_core::api::{Envelope, ErrorBody, SecretMetadata};
 use serde_json::Value;
 use std::sync::Arc;
 use utoipa::{OpenApi, ToResponse};
@@ -29,7 +29,12 @@ use utoipa::{OpenApi, ToResponse};
         piqueld_core::auth::DeviceStart,
         piqueld_core::auth::DevicePoll,
         piqueld_core::auth::DeviceApprove,
-        piqueld_core::auth::DeviceToken
+        piqueld_core::auth::DeviceToken,
+        SecretMetadata,
+        piqueld_core::api::SecretKeyRecovery,
+        Envelope<Vec<SecretMetadata>>,
+        Envelope<SecretMetadata>,
+        Envelope<bool>
     ))
 )]
 struct ApiDoc;
