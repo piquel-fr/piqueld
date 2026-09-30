@@ -1,6 +1,7 @@
 //! Authentication HTTP boundary shared by both daemon transports.
 use super::ApiError;
 use crate::auth::{Auth, AuthError, Identity};
+use crate::store::StoreError;
 use axum::{
     Extension, Json, Router,
     extract::{ConnectInfo, Request},
@@ -14,9 +15,11 @@ use piqueld_core::auth::{
 };
 use std::net::SocketAddr;
 
-/// Wraps an API router with mandatory authentication and the authentication
-/// service. Apply this boundary to every listener before serving requests.
-pub fn protect(router: Router, auth: Auth) -> Router {
+/// Applies authentication before the shared HTTP response layers are installed.
+pub(crate) fn protect<S: Clone + Send + Sync + 'static>(
+    router: Router<S>,
+    auth: Auth,
+) -> Router<S> {
     router
         .layer(middleware::from_fn_with_state(auth.clone(), authenticate))
         .layer(Extension(auth))
@@ -54,6 +57,8 @@ impl From<AuthError> for ApiError {
                     "Account name or passkey is already registered",
                 )
             }
+            AuthError::Database(source) => StoreError::DatabaseSource(source).into(),
+            AuthError::Store(source) => source.into(),
             error => {
                 tracing::error!(error = ?error, "authentication operation failed");
                 Self::new(

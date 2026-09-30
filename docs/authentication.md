@@ -172,6 +172,12 @@ all actions. Management responses never return existing credential secrets.
 The device protocol uses the device-code interaction pattern; the JSON endpoints
 are piqueld API contracts, not a general-purpose OAuth authorization server.
 
+Authentication rejections use the same request tracing and paired `x-request-id`
+header/error-body ID as other API responses. Authentication storage failures
+return `503 storage_unavailable` with a log-correlated `details.diagnostic_id`;
+they do not attempt to persist a diagnostic in the failing database. See
+[observability](observability.md#history-and-diagnostics).
+
 Authentication metadata shares the existing SQLite database. WebAuthn challenges
 and device requests are short-lived, bounded, server-side state; a daemon restart
 cancels pending ceremonies without invalidating durable credentials. All

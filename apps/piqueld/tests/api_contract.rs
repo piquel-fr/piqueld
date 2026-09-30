@@ -264,7 +264,7 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
 async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     let temp = tempfile::tempdir().expect("temporary directory");
 
-    let application = web_router(state(&temp).await, UiAssets::Embedded(TEST_BUNDLE));
+    let application = web_router(state(&temp).await, UiAssets::Embedded(TEST_BUNDLE), None);
     assert_dashboard_routes(&application).await;
     assert_api_routes(&application).await;
     assert_api_only_and_ui_modes(&temp).await;
@@ -282,7 +282,7 @@ async fn compiled_dashboard_serves_assets_and_authorizes_inline_scripts() {
     let UiAssets::Embedded(bundle) = assets else {
         panic!("embedded-ui must resolve to the compiled bundle");
     };
-    let application = web_router(state(&temp).await, assets);
+    let application = web_router(state(&temp).await, assets, None);
     let response = application
         .clone()
         .oneshot(request("/dashboard/"))
@@ -475,7 +475,7 @@ async fn assert_api_routes(application: &axum::Router) {
 }
 
 async fn assert_api_only_and_ui_modes(temp: &TempDir) {
-    let api_only = api_router(state(temp).await);
+    let api_only = api_router(state(temp).await, None);
     let unix_root = response_text(
         api_only
             .clone()
@@ -507,7 +507,7 @@ async fn assert_api_only_and_ui_modes(temp: &TempDir) {
     assert_eq!(api_only_error.0, axum::http::StatusCode::NOT_FOUND);
     assert!(api_only_error.1.contains("endpoint_not_found"));
 
-    let disabled = web_router(state(temp).await, UiAssets::Disabled);
+    let disabled = web_router(state(temp).await, UiAssets::Disabled, None);
     let disabled_root = response_text(
         disabled
             .clone()
@@ -537,7 +537,7 @@ fn request(uri: &str) -> Request<Body> {
 #[tokio::test]
 async fn dashboard_responses_carry_security_headers() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let application = web_router(state(&temp).await, UiAssets::Embedded(TEST_BUNDLE));
+    let application = web_router(state(&temp).await, UiAssets::Embedded(TEST_BUNDLE), None);
     let shell = application
         .clone()
         .oneshot(request("/dashboard/"))
@@ -634,7 +634,7 @@ async fn dashboard_responses_carry_security_headers() {
 #[tokio::test]
 async fn dashboard_cache_policy_tracks_content_hashing_and_shell_fallbacks() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let application = web_router(state(&temp).await, UiAssets::Embedded(TEST_BUNDLE));
+    let application = web_router(state(&temp).await, UiAssets::Embedded(TEST_BUNDLE), None);
 
     let hashed = application
         .clone()
@@ -876,7 +876,7 @@ async fn transport_failures_are_structured_safe_and_request_ids_pair() {
     let tcp_server = tokio::spawn(serve(listener, router(state.clone())).into_future());
     let socket = temp.path().join("api.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let unix_server = tokio::spawn(serve(listener, api_router(state)).into_future());
+    let unix_server = tokio::spawn(serve(listener, api_router(state, None)).into_future());
 
     for target in [Target::Tcp(address), Target::Unix(&socket)] {
         target.assert_failures().await;
@@ -2479,7 +2479,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     assert_eq!(saved.generation, replay.generation);
     let id = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
     let direct = service.clone().application_detail(&id).await.unwrap();
-    let response = api_router(service.clone())
+    let response = api_router(service.clone(), None)
         .oneshot(
             Request::builder()
                 .uri(format!("/api/v1/applications/{id}/detail"))
@@ -3533,11 +3533,12 @@ async fn every_documented_operation_requires_authentication() {
     let paths = document["paths"].as_object().unwrap();
     let mut checked = 0;
     for listener in [
-        piqueld::api::http::protect(
-            web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE)),
-            auth.clone(),
+        web_router(
+            state.clone(),
+            UiAssets::Embedded(TEST_BUNDLE),
+            Some(auth.clone()),
         ),
-        piqueld::api::http::protect(api_router(state.clone()), auth.clone()),
+        api_router(state.clone(), Some(auth.clone())),
     ] {
         for (path, item) in paths {
             if PUBLIC.contains(&path.as_str()) {
@@ -3566,6 +3567,7 @@ async fn every_documented_operation_requires_authentication() {
                             .method(method.as_str())
                             .uri(&uri)
                             .header("content-type", "application/json")
+                            .header("x-request-id", "anonymous-contract")
                             .body(Body::from("{}"))
                             .unwrap(),
                     )
@@ -3576,9 +3578,106 @@ async fn every_documented_operation_requires_authentication() {
                     axum::http::StatusCode::UNAUTHORIZED,
                     "{method} {path} must require authentication"
                 );
+                assert_eq!(response.headers()["x-request-id"], "anonymous-contract");
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&body).unwrap();
+                assert_eq!(error.request_id, "anonymous-contract");
                 checked += 1;
             }
         }
     }
     assert!(checked > 60, "only {checked} operations were checked");
+}
+
+/// Authentication short circuits still use the common error correlation layers,
+/// including storage failures that must not attempt another database write.
+#[tokio::test]
+async fn authentication_errors_preserve_request_and_diagnostic_ids() {
+    use sqlx::Connection as _;
+
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let store = Store::open(temp.path().join("state.db")).await.unwrap();
+    let mut connection = sqlx::SqliteConnection::connect(&format!(
+        "sqlite:{}",
+        temp.path().join("state.db").display()
+    ))
+    .await
+    .unwrap();
+    // Leave the observability tables healthy, but break authentication reads.
+    sqlx::query("ALTER TABLE auth_credentials RENAME TO unavailable_credentials")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    // A diagnostic write would block behind this transaction. Storage failures
+    // must return promptly with log-only diagnostic IDs instead.
+    let transaction = connection.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    for website in [false, true] {
+        let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+        let listener = if website {
+            web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), Some(auth))
+        } else {
+            api_router(state.clone(), Some(auth))
+        };
+        for (method, path, bearer, origin, status, code) in [
+            (
+                "GET",
+                "/api/v1/system/status",
+                "invalid".to_owned(),
+                "",
+                401,
+                "authentication_required",
+            ),
+            (
+                "POST",
+                "/api/v1/auth/login/start",
+                String::new(),
+                "https://other.example",
+                403,
+                "origin_mismatch",
+            ),
+            (
+                "GET",
+                "/api/v1/auth/me",
+                "x".repeat(43),
+                "",
+                503,
+                "storage_unavailable",
+            ),
+        ] {
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                listener.clone().oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("authorization", format!("Bearer {bearer}"))
+                        .header("origin", origin)
+                        .header("x-request-id", "auth-correlation")
+                        .body(Body::empty())
+                        .unwrap(),
+                ),
+            )
+            .await
+            .expect("authentication errors must not wait for a diagnostic write")
+            .unwrap();
+            assert_eq!(response.status().as_u16(), status);
+            assert_eq!(response.headers()["x-request-id"], "auth-correlation");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error.code, code);
+            assert_eq!(error.request_id, "auth-correlation");
+            if status == 503 {
+                let id = error.details["diagnostic_id"].as_str().unwrap();
+                assert!(id.starts_with("diagnostic-"));
+                assert!(matches!(
+                    store.diagnostic(id).await,
+                    Err(piqueld::store::StoreError::NotFound)
+                ));
+            } else {
+                assert!(error.details.get("diagnostic_id").is_none());
+            }
+        }
+    }
+    transaction.rollback().await.unwrap();
 }
