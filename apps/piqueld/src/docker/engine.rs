@@ -1,4 +1,6 @@
-use super::{Arc, BollardDocker, Docker, DockerError, ListNodesOptions, Path, ServiceSpec};
+use super::{
+    Arc, BollardDocker, Docker, DockerError, ListNodesOptions, Path, ResourceKind, ServiceSpec,
+};
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, StatusCode, body::Bytes, header};
 use hyper_util::rt::TokioIo;
@@ -294,13 +296,6 @@ impl BollardDocker {
                                 DockerError::unavailable("refresh the service version", source)
                             })??;
                     let refreshed = refreshed.ok_or(DockerError::OwnershipConflict)?;
-                    let labels = refreshed
-                        .spec
-                        .as_ref()
-                        .and_then(|spec| spec.labels.clone())
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect();
                     let expected = spec
                         .labels
                         .clone()
@@ -313,9 +308,14 @@ impl BollardDocker {
                             .as_ref()
                             .and_then(|spec| spec.name.as_deref())
                             != spec.name.as_deref()
-                        || !Self::owns_named_service(
-                            &labels,
+                        || !Self::owns_resource(
+                            refreshed
+                                .spec
+                                .as_ref()
+                                .and_then(|spec| spec.labels.clone())
+                                .unwrap_or_default(),
                             &expected,
+                            ResourceKind::Service,
                             spec.name.as_deref().unwrap_or_default(),
                         )
                     {
@@ -367,7 +367,7 @@ impl BollardDocker {
 
     /// Fetches the local nodes and rejects anything other than one ready,
     /// reachable, active manager.
-    pub(super) async fn validate_single_node_manager(&self) -> Result<String, DockerError> {
+    pub(super) async fn validate_single_node_manager(&self) -> Result<(), DockerError> {
         let nodes = Self::map_request(
             "list Swarm nodes",
             self.docker.list_nodes(None::<ListNodesOptions>).await,
@@ -375,27 +375,34 @@ impl BollardDocker {
         if !Self::single_node_manager(&nodes) {
             return Err(DockerError::IncompatibleSwarm);
         }
-        nodes[0]
-            .id
-            .clone()
-            .filter(|id| !id.is_empty())
-            .ok_or(DockerError::Request("read local Swarm node identity"))
+        Ok(())
     }
 
-    /// Refreshes the local manager's immutable identity and supported topology.
-    pub(super) async fn local_node_id(&self) -> Result<String, DockerError> {
+    /// Reads the daemon's Swarm membership, labelling failures with `operation`.
+    pub(super) async fn swarm_info(
+        &self,
+        operation: &'static str,
+    ) -> Result<bollard::models::SwarmInfo, DockerError> {
         let info = self
             .docker
             .info()
             .await
-            .map_err(|source| DockerError::unavailable("inspect Docker Swarm state", source))?;
-        if info
-            .swarm
-            .is_none_or(|swarm| swarm.control_available != Some(true))
-        {
+            .map_err(|source| DockerError::unavailable(operation, source))?;
+        Ok(info.swarm.unwrap_or_default())
+    }
+
+    /// Returns the local manager's immutable node ID, which pins services to this
+    /// daemon. Topology is not checked here, so observation and removals keep
+    /// working if another node joins; mutations check it through `ensure_swarm`.
+    pub(super) async fn local_node_id(&self) -> Result<String, DockerError> {
+        let swarm = self.swarm_info("inspect Docker Swarm state").await?;
+        if swarm.control_available != Some(true) {
             return Err(DockerError::NotManager);
         }
-        self.validate_single_node_manager().await
+        swarm
+            .node_id
+            .filter(|id| !id.is_empty())
+            .ok_or(DockerError::Request("read local Swarm node identity"))
     }
 
     /// Returns whether Docker reports exactly one ready, reachable manager.
@@ -434,49 +441,57 @@ mod tests {
     }
 
     impl EngineStub {
+        /// Serves one raw 200 response whose declared length may disagree with the body.
         fn respond(body: &'static str, declared_length: usize) -> Self {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let directory = tempfile::tempdir().unwrap();
-            let socket = directory.path().join("docker.sock");
-            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-            let docker = BollardDocker::connect(&socket).unwrap();
-            let task = tokio::spawn(async move {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = Vec::new();
-                while !request.ends_with(b"\r\n\r\n") {
-                    request.push(stream.read_u8().await.unwrap());
-                }
-                let response = format!(
+            Self::serve(vec![(
+                None,
+                format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {declared_length}\r\nConnection: close\r\n\r\n{body}"
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-                stream.shutdown().await.unwrap();
-            });
-            Self {
-                docker,
-                task,
-                _directory: directory,
-            }
+                ),
+            )])
         }
 
+        /// Serves JSON responses in order, asserting each request line.
         fn sequence(responses: Vec<(String, u16, serde_json::Value)>) -> Self {
+            Self::serve(
+                responses
+                    .into_iter()
+                    .map(|(request, status, body)| {
+                        let body = body.to_string();
+                        (
+                            Some(request),
+                            format!(
+                                "HTTP/1.1 {status} fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            ),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+
+        /// Answers one connection per exchange with its raw response, checking
+        /// the request line when one is expected.
+        fn serve(exchanges: Vec<(Option<String>, String)>) -> Self {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let directory = tempfile::tempdir().unwrap();
             let socket = directory.path().join("docker.sock");
             let listener = tokio::net::UnixListener::bind(&socket).unwrap();
             let docker = BollardDocker::connect(&socket).unwrap();
             let task = tokio::spawn(async move {
-                for (expected, status, body) in responses {
+                for (expected, response) in exchanges {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let mut headers = Vec::new();
                     while !headers.ends_with(b"\r\n\r\n") {
                         headers.push(stream.read_u8().await.unwrap());
                     }
                     let headers = String::from_utf8(headers).unwrap();
-                    assert_eq!(
-                        headers.lines().next().unwrap(),
-                        format!("{expected} HTTP/1.1")
-                    );
+                    if let Some(expected) = expected {
+                        assert_eq!(
+                            headers.lines().next().unwrap(),
+                            format!("{expected} HTTP/1.1")
+                        );
+                    }
                     let length: usize = headers
                         .lines()
                         .find_map(|line| {
@@ -486,11 +501,6 @@ mod tests {
                         })
                         .unwrap_or_default();
                     stream.read_exact(&mut vec![0; length]).await.unwrap();
-                    let body = body.to_string();
-                    let response = format!(
-                        "HTTP/1.1 {status} fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
                     stream.write_all(response.as_bytes()).await.unwrap();
                     stream.shutdown().await.unwrap();
                 }

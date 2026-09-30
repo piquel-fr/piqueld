@@ -102,30 +102,15 @@ impl BollardDocker {
             })
     }
 
-    /// Rechecks ownership and the canonical name before mutating a service.
-    pub(super) fn owns_named_service(
-        observed: &BTreeMap<String, String>,
-        expected: &BTreeMap<String, String>,
-        name: &str,
-    ) -> bool {
-        Self::owns_resource(observed, expected, ResourceKind::Service, name)
-    }
-
-    /// Rechecks ownership and the canonical name before mutating a network.
-    pub(super) fn owns_private_network(
-        observed: &BTreeMap<String, String>,
-        expected: &BTreeMap<String, String>,
-        name: &str,
-    ) -> bool {
-        Self::owns_resource(observed, expected, ResourceKind::Network, name)
-    }
-
+    /// Rechecks ownership labels, resource role, and the canonical name before
+    /// mutating an existing Docker resource. `observed` takes Docker's label map as-is.
     pub(super) fn owns_resource(
-        observed: &BTreeMap<String, String>,
+        observed: HashMap<String, String>,
         expected: &BTreeMap<String, String>,
         kind: ResourceKind,
         name: &str,
     ) -> bool {
+        let observed = observed.into_iter().collect::<BTreeMap<_, _>>();
         let Some(application) = expected
             .get(APPLICATION_LABEL)
             .and_then(|value| ApplicationId::parse(value.clone()).ok())
@@ -143,7 +128,7 @@ impl BollardDocker {
                 .get(SERVICE_LABEL)
                 .is_none_or(|service| observed.get(SERVICE_LABEL) == Some(service))
             && piqueld_core::OwnershipState::for_resource(
-                observed,
+                &observed,
                 &instance,
                 &application,
                 kind,

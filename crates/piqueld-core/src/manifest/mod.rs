@@ -9,8 +9,9 @@ use domain::{ValidatedMetadata, ValidatedSpec};
 pub mod validation;
 
 pub use input::{
-    ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, Metadata, Mount,
-    RepositoryManifest, ResourceLimits, Route, SecretMount, Service, Source, Volume,
+    ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, HealthExecution,
+    Metadata, Mount, RepositoryManifest, ResourceLimits, Route, SecretMount, Service, Source,
+    Volume,
 };
 pub(crate) use validation::valid_image_reference;
 pub use validation::{

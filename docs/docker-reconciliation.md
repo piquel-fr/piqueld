@@ -5,10 +5,12 @@ manages private overlay networks, named volumes, and replicated services,
 verifies ownership before mutations, and retains volumes on deletion. Service
 updates are start-first, one task at a time, and pause on failure. Tasks are pinned
 to the local manager's immutable node ID so local images and volumes cannot move
-to a subsequently joined node. Preparation, promotion, observation, and mutations
-recheck the supported single-node topology; an unsupported topology blocks work
-and is retried with backoff after the operator restores it. Existing unpinned
-services acquire the constraint during their next reconciliation.
+to a subsequently joined node. Preparation, promotion, and resource creation or
+updates recheck the supported single-node topology; an unsupported topology blocks
+that work and is retried with backoff after the operator restores it. Observation
+and removals only need the local manager, so status, health, and deletion keep
+working if another node joins. Existing unpinned services acquire the constraint
+during their next reconciliation.
 
 Apply validates and persists the entire normalized manifest. Save-only Apply
 returns the saved configuration without an operation ID or scheduling work.
@@ -42,8 +44,8 @@ observations, and one resource mutation request globally. Timers consume no I/O
 slot. New intent cancels obsolete local preparation; dispatched Docker requests
 may finish, but obsolete results cannot authorize subsequent actions. Git and Docker
 CLI commands run in private process groups; cancellation kills their local helper
-processes too. Preparation timeouts retain their runtime failure classification
-and are retried with the same backoff as other transient Docker failures.
+processes too. Preparation timeouts fail with `preparation_timeout` and are retried
+with the same backoff as other transient failures.
 
 New intent marks pending/running older operations superseded; the CLI stops waiting
 successfully with that explicit outcome rather than following the replacement.

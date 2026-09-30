@@ -308,39 +308,16 @@ impl BollardDocker {
         }
     }
 
-    /// Recognizes Docker's canonical HTTP `wget` health-check vector.
-    pub(super) fn observed_wget_health(
+    /// Recognizes the exact `wget` vector piqueld authors for HTTP checks. Near
+    /// matches, such as a URL without a path, stay command checks so that
+    /// authoring the observed check reproduces Docker's vector exactly.
+    fn observed_wget_health(
         test: &[String],
         interval_seconds: u32,
         timeout_seconds: u32,
     ) -> Option<HealthCheck> {
-        if test.len() != 8 {
-            return None;
-        }
-        let [
-            _,
-            wget,
-            quiet,
-            timeout_flag,
-            timeout,
-            output_flag,
-            output_path,
-            url,
-        ] = test
-        else {
-            return None;
-        };
-        let expected_timeout = timeout_seconds.to_string();
-        if wget != "wget"
-            || quiet != "-q"
-            || timeout_flag != "-T"
-            || timeout != &expected_timeout
-            || output_flag != "-O"
-            || output_path != "/dev/null"
-        {
-            return None;
-        }
-        Self::observed_http_health(url, interval_seconds, timeout_seconds)
+        Self::observed_http_health(test.last()?, interval_seconds, timeout_seconds)
+            .filter(|health| health.execution().command == test[1..])
     }
 
     fn observed_http_health(

@@ -676,7 +676,11 @@ fn command_and_http_health_checks_have_the_same_runtime_meaning() {
     };
     desired.services[0].healthcheck = Some(http.clone());
     let mut snapshot = observed(&desired);
-    let (command, interval_seconds, timeout_seconds) = http.execution();
+    let piqueld_core::manifest::HealthExecution {
+        command,
+        interval_seconds,
+        timeout_seconds,
+    } = http.execution();
     desired.services[0].healthcheck = Some(piqueld_core::HealthCheck::Command {
         command,
         interval_seconds,

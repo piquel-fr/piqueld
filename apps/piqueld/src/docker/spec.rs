@@ -109,11 +109,15 @@ impl BollardDocker {
 
     /// Converts a core health check into Docker's health-check representation.
     pub(super) fn health_config(health_check: &HealthCheck) -> HealthConfig {
-        let (command, interval, timeout) = health_check.execution();
+        let execution = health_check.execution();
         HealthConfig {
-            test: Some(std::iter::once("CMD".into()).chain(command).collect()),
-            interval: Some(Self::seconds_to_nanoseconds(interval)),
-            timeout: Some(Self::seconds_to_nanoseconds(timeout)),
+            test: Some(
+                std::iter::once("CMD".into())
+                    .chain(execution.command)
+                    .collect(),
+            ),
+            interval: Some(Self::seconds_to_nanoseconds(execution.interval_seconds)),
+            timeout: Some(Self::seconds_to_nanoseconds(execution.timeout_seconds)),
             retries: Some(HEALTH_RETRIES),
             ..Default::default()
         }

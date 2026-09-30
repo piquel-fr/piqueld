@@ -350,6 +350,36 @@ mod tests {
     }
 
     #[test]
+    fn near_http_command_health_checks_round_trip_as_commands() {
+        for url in ["http://127.0.0.1:8080", "http://127.0.0.1:08080/health"] {
+            let health_check = HealthCheck::Command {
+                command: vec![
+                    "wget".into(),
+                    "-q".into(),
+                    "-T".into(),
+                    "3".into(),
+                    "-O".into(),
+                    "/dev/null".into(),
+                    url.into(),
+                ],
+                interval_seconds: 10,
+                timeout_seconds: 3,
+            };
+
+            let config = BollardDocker::health_config(&health_check);
+            assert_eq!(
+                BollardDocker::observed_health(&config),
+                Some(health_check),
+                "{url}"
+            );
+            assert!(
+                ServiceRuntimePolicy::supported_health_config(&config),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
     fn policy_verifies_exactly_the_authored_fields() {
         let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
         let desired = DesiredService {

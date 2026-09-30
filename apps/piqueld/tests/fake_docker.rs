@@ -2610,7 +2610,7 @@ async fn preparation_timeout_is_retried_after_backoff() {
         .unwrap();
     let failed = harness.store.operation(&operation.id).await.unwrap();
     assert_eq!(failed.state, OperationState::Failed);
-    assert_eq!(failed.error_code.as_deref(), Some("docker_unavailable"));
+    assert_eq!(failed.error_code.as_deref(), Some("preparation_timeout"));
     assert!(
         harness
             .store
@@ -2752,4 +2752,26 @@ async fn topology_change_during_preparation_blocks_promotion_and_mutation() {
             .is_none()
     );
     assert!(harness.docker.observed.lock().await.networks.is_empty());
+}
+
+#[tokio::test]
+async fn deletion_proceeds_after_another_node_joins() {
+    let harness = ControllerHarness::new().await;
+    harness.create().await;
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    harness
+        .docker
+        .incompatible_swarm
+        .store(true, Ordering::SeqCst);
+    harness.delete().await;
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    harness.assert_deleted().await;
 }

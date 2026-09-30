@@ -932,9 +932,8 @@ impl ObservedService {
     }
 
     pub(crate) fn healthcheck_matches(&self, desired: &DesiredService) -> bool {
-        self.healthcheck == desired.healthcheck
-            || self.healthcheck.as_ref().map(HealthCheck::execution)
-                == desired.healthcheck.as_ref().map(HealthCheck::execution)
+        self.healthcheck.as_ref().map(HealthCheck::execution)
+            == desired.healthcheck.as_ref().map(HealthCheck::execution)
     }
 
     /// Returns whether all desired service fields match.
