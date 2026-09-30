@@ -263,9 +263,10 @@ impl ClientState {
 
 fn prepare_request(state: &ClientState, request: &mut reqwest::Request) -> Result<(), String> {
     state.validate_auth_transport(request.url())?;
+    // reqwest passes this duration to the signed 32-bit browser timer.
     #[cfg(target_arch = "wasm32")]
-    u32::try_from(state.timeout.as_millis())
-        .map_err(|_| "browser request timeout exceeds u32::MAX milliseconds".to_owned())?;
+    i32::try_from(state.timeout.as_millis())
+        .map_err(|_| "browser request timeout exceeds i32::MAX milliseconds".to_owned())?;
     *request.timeout_mut() = Some(state.timeout);
     if let Some(bearer) = &state.bearer {
         request
@@ -505,7 +506,7 @@ mod wasm_tests {
     #[wasm_bindgen_test]
     async fn oversized_timeout_is_rejected_before_fetch() {
         let error = Client::browser()
-            .with_timeout(Duration::from_millis(u64::from(u32::MAX) + 1))
+            .with_timeout(Duration::from_millis(u64::try_from(i32::MAX).unwrap() + 1))
             .system_status()
             .await
             .unwrap_err();

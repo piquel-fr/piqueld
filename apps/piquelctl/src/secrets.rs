@@ -3,11 +3,16 @@ use crate::{
     cli::Cli,
     error::{CliError, ErrorKind, Result},
     output::{Console, reports::SecretDeletionReport},
-    support::confirm,
+    support::{confirm, read_input},
 };
 use clap::Subcommand;
 use piqueld_client::Client;
-use std::{io::Read, path::PathBuf};
+use std::{
+    io::{self, Read},
+    path::{Path, PathBuf},
+};
+
+const MAX_SECRET_BYTES: usize = 500 * 1024;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum SecretAction {
@@ -68,7 +73,15 @@ impl SecretAction {
                         "Set secret {name:?} for {application:?}? Takes effect on a later Deploy. [y/N] "
                     ),
                 ).await?;
-                let value = Self::read_value(file.as_ref())?;
+                let file = file.clone();
+                // Stdin can block indefinitely; read off the runtime so Ctrl-C stays responsive.
+                let value = read_input("secret", move || Self::read_value(file.as_deref())).await?;
+                if value.is_empty() || value.len() > MAX_SECRET_BYTES {
+                    return Err(CliError::new(
+                        ErrorKind::Input,
+                        "secret must contain 1–512000 bytes",
+                    ));
+                }
                 let updated = client.put_secret(id, name, generation, value).await?;
                 console.emit(&updated)?;
             }
@@ -98,20 +111,17 @@ impl SecretAction {
         }
         Ok(())
     }
-    fn read_value(file: Option<&PathBuf>) -> Result<Vec<u8>> {
+    /// Reads at most one byte past the limit, so oversized input is detected.
+    fn read_value(file: Option<&Path>) -> io::Result<Vec<u8>> {
         let input: Box<dyn Read> = if let Some(path) = file {
             Box::new(std::fs::File::open(path)?)
         } else {
-            Box::new(std::io::stdin())
+            Box::new(io::stdin())
         };
         let mut bytes = Vec::new();
-        input.take(500 * 1024 + 1).read_to_end(&mut bytes)?;
-        if bytes.is_empty() || bytes.len() > 500 * 1024 {
-            return Err(CliError::new(
-                ErrorKind::Input,
-                "secret must contain 1–512000 bytes",
-            ));
-        }
+        input
+            .take(MAX_SECRET_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
         Ok(bytes)
     }
 }

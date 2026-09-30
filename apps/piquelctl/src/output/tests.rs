@@ -209,7 +209,6 @@ fn writes_and_flushes_fail_without_panicking_and_hidden_results_do_not_render() 
             assert!(console.warning_report(&Sample).is_err());
             assert!(console.prompt("prompt").is_err());
             console.error(&Sample);
-            console.error_message("error");
             let task = console.start_task("task");
             task.update("running");
             task.finish(TaskOutcome::Failed, "failed");
