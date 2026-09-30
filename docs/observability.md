@@ -72,9 +72,8 @@ bounded log and may contain text emitted by the build itself.
 - `daemon`: shared infrastructure or internal failures remain under daemon
   retention, even when they refer to an application that has since been deleted.
 
-`retention.event_days = 0` and `retention.daemon_event_days = 0` both default to no
-age-based pruning. Nonzero values independently enable pruning for the two
-scopes. Executing actions, open notification incidents, and pending deliveries
+`retention.event_days` and `retention.daemon_event_days` both default to 90 days
+and independently bound the two scopes; zero disables age-based pruning. Executing actions, open notification incidents, and pending deliveries
 protect their source events. An open incident retains its failure delivery history
 until recovery, even when the failure was already acknowledged.
 Build output retains its existing byte and age limits. Operation pruning does

@@ -33,8 +33,8 @@ convergence_timeout_seconds = 120
 
 [retention]
 finished_operation_days = 10
-event_days = 0
-daemon_event_days = 0
+event_days = 90
+daemon_event_days = 90
 
 [build_history]
 # Metadata remains until application deletion; these limits apply only to output.

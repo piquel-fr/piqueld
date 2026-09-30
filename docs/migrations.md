@@ -48,7 +48,7 @@ application deletion. Deletion removes the application's database records,
 application-owned history and request receipts after runtime verification; Docker volumes remain.
 Daemon-scoped failures retain optional application context after deletion.
 Application events use `retention.event_days`; shared daemon events use
-`retention.daemon_event_days` (both default to zero, disabling pruning). Non-deployment operation retention remains configurable.
+`retention.daemon_event_days` (both default to 90 days; zero disables pruning). Non-deployment operation retention remains configurable.
 
 The daemon prepares its private data directory before opening SQLite. The store
 checks the database file path. During builds, the daemon build script provisions
@@ -75,10 +75,10 @@ See [observability](observability.md) for the API and deletion contract.
 Recovery deliveries are paired with their original failures at each destination
 in the same observability migration.
 
-Before this release, `retention.event_days` defaulted to 30. Installations that
-relied on that default stop pruning events after upgrading; set
-`retention.event_days = 30` (and optionally `retention.daemon_event_days`) to keep
-bounded history.
+`retention.event_days` defaulted to 30 before this release, and both event
+retention settings briefly defaulted to no pruning afterwards. They now default to
+90 days, so upgrading an installation that relied on unbounded history prunes
+older events on the next reconciliation. Set both to `0` before upgrading to keep it.
 
 `0007_authentication.sql` adds accounts, passkeys, hashed session/API
 credentials, invitations, and a durable initial-setup marker. Existing installations require first-account

@@ -194,7 +194,7 @@ Previews cannot freeze mutable tags or runtime state.
 Events accept optional `application_id`, `cursor`, and `limit` (1–100, default 50).
 They survive ordinary operation pruning but are removed with their application.
 Event retention is independently configured by `retention.event_days` (default
-30; zero disables pruning). Events contain safe diagnostics and identifiers,
+90; zero disables pruning). Events contain safe diagnostics and identifiers,
 never manifests, environment values, or raw Docker errors. Failure events preserve
 `error_code`, `phase`, and `resource`; operation reads expose the current phase and
 resource. Significant resource mutations and active-target repairs are recorded,
