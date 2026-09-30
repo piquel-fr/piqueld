@@ -78,7 +78,12 @@ async fn main() -> Result<()> {
         .map(|listener| {
             spawn_tcp_api(
                 listener,
-                piqueld::api::http::web_router(state.clone(), ui_assets, auth.clone()),
+                piqueld::api::http::web_router_with_hosts(
+                    state.clone(),
+                    ui_assets,
+                    auth.clone(),
+                    config.server.allowed_hosts.clone(),
+                ),
                 cancellation.clone(),
             )
         })

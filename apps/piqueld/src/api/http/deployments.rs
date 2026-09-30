@@ -1,7 +1,7 @@
 //! Explicit deployment acceptance and durable history.
-use super::{ApiError, ApiState, ok, openapi::ApiErrorResponse};
+use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -24,7 +24,7 @@ pub(super) struct HistoryQuery {
     (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn deploy(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
     query: Result<
         Query<super::applications::GenerationQuery>,
@@ -50,7 +50,7 @@ pub(super) async fn deploy(
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse))))]
 pub(super) async fn list(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
     query: Result<Query<HistoryQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let Query(query) = query.map_err(|_| {
@@ -71,7 +71,7 @@ pub(super) async fn list(
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse))))]
 pub(super) async fn attempts(
     State(state): State<ApiState>,
-    Path((id, deployment)): Path<(String, String)>,
+    ApiPath((id, deployment)): ApiPath<(String, String)>,
     query: Result<Query<HistoryQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let Query(query) = query.map_err(|_| {

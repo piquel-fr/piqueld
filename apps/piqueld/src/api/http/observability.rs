@@ -1,6 +1,6 @@
-use super::{ApiError, ApiState, ok, openapi::ApiErrorResponse};
+use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
 use axum::{
-    extract::{Path, Query, State, rejection::QueryRejection},
+    extract::{Query, State, rejection::QueryRejection},
     response::IntoResponse,
 };
 use piqueld_core::{
@@ -12,7 +12,7 @@ use piqueld_core::{
 #[utoipa::path(get,path="/api/v1/diagnostics/{id}",operation_id="getDiagnostic",params(("id"=String,Path)),responses((status=200,body=Envelope<Event>),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn diagnostic(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(ok(state.diagnostic(&id).await?))
 }
@@ -68,7 +68,7 @@ pub(super) async fn deliveries(
 #[utoipa::path(post,path="/api/v1/notifications/deliveries/{id}/retry",operation_id="retryNotificationDelivery",params(("id"=String,Path)),responses((status=200,body=Envelope<bool>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn retry_delivery(
     State(state): State<ApiState>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     state.retry_notification(&id).await?;
     Ok(ok(true))

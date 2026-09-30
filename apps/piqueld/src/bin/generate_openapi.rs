@@ -148,6 +148,18 @@ impl Generator {
             .get_mut("paths")
             .and_then(Value::as_object_mut)
             .context("OpenAPI document has no paths object")?;
+        // Readiness uses a typed readiness body for 503. Progenitor cannot
+        // generate two different error-body types for one operation; preserve
+        // its existing readiness decoder and let middleware errors use the
+        // unexpected-response path. The published contract retains both.
+        if let Some(responses) = paths
+            .get_mut("/api/v1/system/readiness")
+            .and_then(|path| path.get_mut("get"))
+            .and_then(|operation| operation.get_mut("responses"))
+            .and_then(Value::as_object_mut)
+        {
+            responses.remove("403");
+        }
         for item in paths.values_mut().filter_map(Value::as_object_mut) {
             for operation in item.values_mut().filter_map(Value::as_object_mut) {
                 if let Some(content) = operation

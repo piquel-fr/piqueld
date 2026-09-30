@@ -40,6 +40,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `server.runtime_dir` | `/run/piqueld` (must already exist) |
 | `server.listen_mode` | `"off"` |
 | `server.port` | `7845` |
+| `server.allowed_hosts` | `[]` (additional trusted DNS hostnames) |
 | derived socket path | `<runtime_dir>/piqueld.sock` |
 | derived database path | `<data_dir>/piqueld.db` |
 | `docker.socket` | `/var/run/docker.sock` |
@@ -122,6 +123,25 @@ between tailnet nodes is encrypted by Tailscale; piqueld does not manage HTTPS,
 Tailscale Serve, enrollment, or certificates. Set `listen_mode = "localhost"`
 to remove the Tailscale listener, or `"off"` for Unix-socket-only access, and
 restart the daemon. Independently configured proxies can still expose localhost.
+
+TCP requests must use `localhost`, a literal IP address, or a DNS hostname listed
+in `server.allowed_hosts`. To use a Tailscale DNS name, for example, set
+`allowed_hosts = ["my-host.my-tailnet.ts.net"]` in `[server]`. Entries are exact
+hostnames without ports, schemes, or wildcards. Only add names controlled by
+trusted operators; this allowlist prevents an unrelated domain from rebinding
+to the daemon's address. DNS names are not discovered or trusted automatically.
+
+Authentication validates API mutations against `auth.public_url`: any supplied
+`Origin` must match it, and browser login, registration, and cookie-authenticated
+mutations require it. A TLS-terminating proxy must preserve the browser's HTTPS
+`Origin`, even when forwarding over HTTP; piqueld does not trust forwarded headers.
+Keep both the proxy and daemon private, reachable only over a trusted LAN or
+tailnet, never the internet.
+
+TCP additionally rejects mutations with cross-site or same-site Fetch Metadata.
+Native clients without browser headers continue to work. The Unix socket skips
+the TCP hostname and Fetch Metadata checks; authentication and its origin checks
+still apply on every API transport.
 
 See [observability](observability.md) for notification category switches, webhook
 destinations, metrics exposure, diagnostic ownership and retention semantics.

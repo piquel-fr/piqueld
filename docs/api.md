@@ -202,7 +202,13 @@ while unchanged observations and timer ticks are omitted.
 
 The API requires a session cookie or bearer credential on every transport.
 Only setup/login endpoints and TCP `/health` are public; see
-[authentication](authentication.md). The dashboard
+[authentication](authentication.md). TCP requests also validate Host and browser
+Fetch Metadata headers; DNS names need `server.allowed_hosts` (see
+[configuration](configuration.md)). Rejected requests return
+`403 browser_access_denied`. Authentication checks API mutation origins against
+`auth.public_url`, returning `403 origin_mismatch` for rejected origins.
+Invalid URL path parameters return `400 path_invalid`, with the usual JSON error
+and request ID. The dashboard
 is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
 The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
 [the generated contract](openapi-v1.json).
