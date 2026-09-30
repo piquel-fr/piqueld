@@ -164,31 +164,31 @@ impl Ingress {
         application: Option<&piqueld_core::ApplicationId>,
     ) -> Result<()> {
         let mut failures = std::collections::BTreeMap::new();
+        // Health messages name only the failed stage. Error details, which may
+        // include Docker/Caddy response bodies, stay in daemon logs.
+        let mut stage = "read deployed routing configuration";
         let result: Result<()> = async {
-            let table = self
-                .store
-                .routing_table()
-                .await
-                .context("read deployed routing configuration")?;
+            let table = self.store.routing_table().await?;
             if self.enabled {
+                stage = "verify application ingress networks";
                 let (accepted, networks, rejected) = self.prepare_routes(&table).await?;
                 failures = rejected;
-                self.ensure_gateway(&accepted, &networks).await.context(
-                    "prepare the Caddy gateway (requires free ports 80/443 and Docker 28+)",
-                )?;
-                self.configure_gateway(&accepted, &networks)
-                    .await
-                    .context("apply Caddy routes and network attachments")?;
+                stage = "prepare the Caddy gateway (requires free ports 80/443 and Docker 28+)";
+                self.ensure_gateway(&accepted, &networks).await?;
+                stage = "apply Caddy routes and network attachments";
+                self.configure_gateway(&accepted, &networks).await?;
+                stage = "record applied routes";
                 self.store.acknowledge_routes(&accepted).await?;
             } else {
-                self.stop_gateway()
-                    .await
-                    .context("stop the disabled Caddy gateway")?;
+                stage = "stop the disabled Caddy gateway";
+                self.stop_gateway().await?;
+                stage = "record withdrawn routes";
                 self.store.acknowledge_routes(&table).await?;
             }
-            Ok(())
+            anyhow::Ok(())
         }
-        .await;
+        .await
+        .context(stage);
         let healthy = result.is_ok() && failures.is_empty();
         // Health transitions become history, and sustained failures notify
         // administrators, like other daemon dependencies.
@@ -212,12 +212,7 @@ impl Ingress {
             Ok(()) => "Ingress is disabled in daemon TOML; public listeners are stopped".into(),
             Err(error) => {
                 tracing::error!(error=?error, "managed ingress is unhealthy");
-                // Context strings describe the operation; detailed Docker/Caddy
-                // response bodies stay in logs rather than becoming UI content.
-                format!(
-                    "Ingress unavailable: {}. See daemon logs for details.",
-                    error.to_string().chars().take(160).collect::<String>()
-                )
+                format!("Ingress unavailable: could not {stage}. See daemon logs for details.")
             }
         };
         result?;
