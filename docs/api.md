@@ -240,8 +240,9 @@ verdicts omit it. HTTP 200 means deployment dependencies are available; HTTP 503
 carries the same structured envelope when they are not. Probes have bounded
 deadlines and do not initialize Swarm or repair resources. Docker being unavailable
 does not block configuration saves or history reads. `/health` remains a
-process-liveness endpoint. No metrics or external registry/ingress checks are
-introduced.
+process-liveness endpoint. A separate `ingress` object reports gateway health and
+per-route public HTTPS readiness without affecting `ready`; see
+[ingress](ingress.md#status-and-recovery). No registry checks are introduced.
 
 `GET /api/v1/builds` lists attempts newest first, with optional `application_id`,
 `cursor`, and `limit` (1–100, default 50). Each executed Git-service preparation
