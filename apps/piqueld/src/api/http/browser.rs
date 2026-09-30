@@ -3,7 +3,7 @@
 use super::ApiError;
 use axum::{
     extract::Request,
-    http::{StatusCode, Uri, header, uri::Authority},
+    http::{StatusCode, header, uri::Authority},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -33,7 +33,7 @@ impl BrowserPolicy {
             ApiError::new(
                 StatusCode::FORBIDDEN,
                 "browser_access_denied",
-                "request authority or browser origin is not trusted",
+                "request authority or browser fetch metadata is not trusted",
             )
         };
         let mut hosts = request.headers().get_all(header::HOST).iter();
@@ -67,33 +67,8 @@ impl BrowserPolicy {
         {
             return Err(denied());
         }
-        let mut origins = request.headers().get_all(header::ORIGIN).iter();
-        if let Some(origin) = origins.next() {
-            let origin: Uri = origin
-                .to_str()
-                .map_err(|_| denied())?
-                .parse()
-                .map_err(|_| denied())?;
-            let default_port = if request.uri().scheme_str() == Some("https") {
-                443
-            } else {
-                80
-            };
-            if origins.next().is_some()
-                || origin.scheme_str() != Some(request.uri().scheme_str().unwrap_or("http"))
-                || origin.authority().is_none_or(|origin| {
-                    !Self::valid_authority(origin)
-                        || !origin.host().eq_ignore_ascii_case(authority.host())
-                        || origin.port_u16().unwrap_or(default_port)
-                            != authority.port_u16().unwrap_or(default_port)
-                })
-                || origin
-                    .path_and_query()
-                    .is_some_and(|path| path.as_str() != "/")
-            {
-                return Err(denied());
-            }
-        }
+        // Authentication checks API mutation origins against auth.public_url.
+        // The upstream HTTP scheme/Host can differ behind a private TLS proxy.
         if !request.method().is_safe()
             && request
                 .headers()

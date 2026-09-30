@@ -131,12 +131,17 @@ hostnames without ports, schemes, or wildcards. Only add names controlled by
 trusted operators; this allowlist prevents an unrelated domain from rebinding
 to the daemon's address. DNS names are not discovered or trusted automatically.
 
-TCP browser requests with an `Origin` must match the request's HTTP origin,
-and mutations with cross-site or same-site Fetch Metadata are rejected. Native
-clients without browser headers continue to work. A TLS-terminating proxy needs
-to enforce its own origin policy and explicitly adapt the upstream origin;
-piqueld does not trust forwarded headers. The Unix socket has no browser policy.
-These checks supplement the authentication required on every API transport.
+Authentication validates API mutations against `auth.public_url`: any supplied
+`Origin` must match it, and browser login, registration, and cookie-authenticated
+mutations require it. A TLS-terminating proxy must preserve the browser's HTTPS
+`Origin`, even when forwarding over HTTP; piqueld does not trust forwarded headers.
+Keep both the proxy and daemon private, reachable only over a trusted LAN or
+tailnet, never the internet.
+
+TCP additionally rejects mutations with cross-site or same-site Fetch Metadata.
+Native clients without browser headers continue to work. The Unix socket skips
+the TCP hostname and Fetch Metadata checks; authentication and its origin checks
+still apply on every API transport.
 
 See [observability](observability.md) for notification category switches, webhook
 destinations, metrics exposure, diagnostic ownership and retention semantics.

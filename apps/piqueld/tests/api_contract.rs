@@ -1247,7 +1247,105 @@ async fn tcp_rejects_untrusted_authorities() {
 }
 
 #[tokio::test]
-async fn tcp_rejects_cross_origin_mutations_without_creating_deployments() {
+async fn tcp_login_uses_canonical_origin_behind_https_proxy() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let store = Store::open(temp.path().join("state.db")).await.unwrap();
+    let origin = "https://daemon.example.ts.net:8443";
+    let auth = piqueld::auth::Auth::new(&store, origin).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let application = piqueld::api::http::web_router_with_hosts(
+        state,
+        UiAssets::Disabled,
+        auth,
+        vec!["daemon.example.ts.net".into()],
+    );
+    let server = tokio::spawn(serve(listener, application).into_future());
+    // A TLS proxy forwards an ordinary HTTP request, retaining the browser's
+    // HTTPS Origin. Its upstream Host may preserve the name or use localhost.
+    for (host, browser_origin, site, expected_error) in [
+        (
+            "daemon.example.ts.net:8443",
+            Some(origin),
+            "same-origin",
+            None,
+        ),
+        ("localhost:7845", Some(origin), "same-origin", None),
+        (
+            "attacker.example",
+            Some(origin),
+            "same-origin",
+            Some("browser_access_denied"),
+        ),
+        (
+            "localhost",
+            Some(origin),
+            "cross-site",
+            Some("browser_access_denied"),
+        ),
+        (
+            "localhost",
+            Some("https://attacker.example"),
+            "same-origin",
+            Some("origin_mismatch"),
+        ),
+        (
+            "localhost",
+            Some("http://daemon.example.ts.net:8443"),
+            "same-origin",
+            Some("origin_mismatch"),
+        ),
+        (
+            "localhost",
+            Some("https://daemon.example.ts.net"),
+            "same-origin",
+            Some("origin_mismatch"),
+        ),
+        (
+            "localhost",
+            Some("null"),
+            "same-origin",
+            Some("origin_mismatch"),
+        ),
+        ("localhost", None, "same-origin", Some("origin_mismatch")),
+    ] {
+        let mut headers = vec![
+            ("host", host),
+            ("sec-fetch-site", site),
+            // Forwarded headers must neither be required nor override policy.
+            ("x-forwarded-host", "attacker.example"),
+            ("x-forwarded-proto", "http"),
+        ];
+        if let Some(origin) = browser_origin {
+            headers.push(("origin", origin));
+        }
+        let response = send_raw(
+            Target::Tcp(address),
+            Method::POST,
+            "/api/v1/auth/login/start",
+            &headers,
+            Vec::new(),
+        )
+        .await;
+        if let Some(code) = expected_error {
+            response.assert_error(StatusCode::FORBIDDEN, code);
+        } else {
+            assert_eq!(response.status, StatusCode::OK, "headers {headers:?}");
+            assert!(
+                response.headers["set-cookie"]
+                    .to_str()
+                    .unwrap()
+                    .contains("Secure")
+            );
+            serde_json::from_value::<piqueld_core::auth::Ceremony>(response.body).unwrap();
+        }
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn tcp_rejects_cross_site_mutations_without_creating_deployments() {
     let temp = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1255,20 +1353,6 @@ async fn tcp_rejects_cross_origin_mutations_without_creating_deployments() {
     // Apply is a real POST handler, so successful controls prove the
     // middleware allows same-origin and non-browser clients through.
     for (headers, expected) in [
-        (
-            vec![("origin", "https://attacker.example")],
-            StatusCode::FORBIDDEN,
-        ),
-        (vec![("origin", "null")], StatusCode::FORBIDDEN),
-        (
-            vec![("origin", "http://localhost:invalid")],
-            StatusCode::FORBIDDEN,
-        ),
-        (vec![("origin", "https://localhost")], StatusCode::FORBIDDEN),
-        (
-            vec![("origin", "http://localhost:9999")],
-            StatusCode::FORBIDDEN,
-        ),
         (
             vec![("sec-fetch-site", "cross-site")],
             StatusCode::FORBIDDEN,
@@ -1315,7 +1399,7 @@ async fn tcp_rejects_cross_origin_mutations_without_creating_deployments() {
                 saved.application_id
             ),
             &[
-                ("origin", "https://attacker.example"),
+                ("sec-fetch-site", "cross-site"),
                 ("content-type", "application/x-www-form-urlencoded"),
             ],
             Vec::new(),
@@ -1361,7 +1445,7 @@ async fn typed_edits_enforce_the_tcp_browser_policy() {
                 saved.application_id
             ),
             &[
-                ("origin", "https://attacker.example"),
+                ("sec-fetch-site", "cross-site"),
                 ("content-type", "application/json"),
             ],
             body,
