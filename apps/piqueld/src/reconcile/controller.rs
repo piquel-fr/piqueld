@@ -19,8 +19,7 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<(), StoreError> {
         let started = std::time::Instant::now();
         tracing::info!("operation started");
-        // Keep preparation and persistence state out of the discovery future.
-        let result = Box::pin(self.run_operation_inner(operation, cancellation)).await;
+        let result = self.run_operation_inner(operation, cancellation).await;
         {
             // Repair uses this operation's context too. Let any in-flight repair
             // commit its result before recovering abandoned execution actions.
@@ -75,7 +74,7 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
         }
         let operation = &self.store.operation(&operation.id).await?;
-        let result = Box::pin(self.execute_and_cleanup(operation, cancellation)).await;
+        let result = self.execute_and_cleanup(operation, cancellation).await;
         if cancellation.is_cancelled() {
             return Ok("cancelled");
         }
@@ -142,7 +141,8 @@ impl<D: DockerApi> Controller<D> {
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
-        self.execute_operation(operation, cancellation).await?;
+        // Keep preparation and persistence state out of the discovery future.
+        Box::pin(self.execute_operation(operation, cancellation)).await?;
         if operation.kind == OperationKind::Delete {
             let names = self.store.secret_names(&operation.application_id).await?;
             if !names.is_empty() {
@@ -500,23 +500,24 @@ mod tests {
             crate::ingress::CADDY_IMAGE
         ))
         .unwrap();
-        let (MutationResponse::Operation(receipt), _) = store
-            .accept(Mutation::apply(manifest, None), Some(0), false, None)
+        let (MutationResponse::Saved(saved), _) = store
+            .accept(Mutation::save(manifest, None, true), Some(0), false, None)
             .await
             .unwrap()
         else {
-            panic!("operation")
+            panic!("saved deployment")
         };
+        let operation_id = saved.operation_id.unwrap();
         store
             .transition_operation(
-                &receipt.operation_id,
+                &operation_id,
                 OperationState::Requested,
                 OperationState::Running,
                 None,
             )
             .await
             .unwrap();
-        store.operation(&receipt.operation_id).await.unwrap()
+        store.operation(&operation_id).await.unwrap()
     }
 
     #[tokio::test]
@@ -638,14 +639,15 @@ mod tests {
         let manifest = piqueld_core::parse_toml(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='repair'\n[spec]",
         ).unwrap();
-        let (MutationResponse::Operation(receipt), _) = store
-            .accept(Mutation::apply(manifest, None), Some(0), false, None)
+        let (MutationResponse::Saved(saved), _) = store
+            .accept(Mutation::save(manifest, None, true), Some(0), false, None)
             .await
             .unwrap()
         else {
-            panic!("operation")
+            panic!("saved deployment")
         };
-        let operation = store.operation(&receipt.operation_id).await.unwrap();
+        let operation_id = saved.operation_id.unwrap();
+        let operation = store.operation(&operation_id).await.unwrap();
         // A stale execution takes its normal early-exit path without calling Docker.
         store
             .transition_operation(

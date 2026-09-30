@@ -65,11 +65,6 @@ identity to output chunks. Old unstructured output is marked expired because
 its missing provenance cannot be reconstructed; build metadata remains intact.
 The stream index supports filtering before backward pagination.
 
-`0010_history_pagination.sql` aligns the deployment application index with its
-ID-based cursor and ordering. Filtered event/build queries use direct application
-equality, and filtered output uses direct stream equality, so their existing
-compound indexes bound each page without scanning unrelated history.
-
 `0006_observability.sql` adds self-contained diagnostic and action context to
 events, active action recovery, retention coverage, and a durable webhook outbox
 with activation watermarks and observed health conditions. Existing events keep
@@ -108,6 +103,11 @@ configuration, captured deployment inputs, resolved targets, and both routing
 projections participate in reservation checks within the same SQLite transaction.
 An interrupted gateway update is reapplied from durable intent. Application deletion
 cascades routing records only after gateway withdrawal and runtime cleanup succeed.
+
+`0010_history_pagination.sql` aligns the deployment application index with its
+ID-based cursor and ordering. Filtered event/build queries use direct application
+equality, and filtered output uses direct stream equality, so their existing
+compound indexes bound each page without scanning unrelated history.
 
 ## Upgrade and rollback
 

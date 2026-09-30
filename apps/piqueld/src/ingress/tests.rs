@@ -20,7 +20,7 @@ async fn request_deployment(store: &Store, app: NormalizedApplication) -> (Appli
     let (MutationResponse::Saved(saved), _) = store
         .accept(
             Mutation::Save {
-                application: app,
+                application: Box::new(app),
                 expected_application_id: None,
                 deploy: true,
             },
@@ -527,7 +527,7 @@ impl Scenario {
             .store
             .accept(
                 Mutation::Save {
-                    application: app.clone(),
+                    application: Box::new(app.clone()),
                     expected_application_id: None,
                     deploy: false,
                 },

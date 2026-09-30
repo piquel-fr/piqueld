@@ -8,23 +8,24 @@ use piqueld_core::observability::{
 
 async fn application(store: &Store) -> Operation {
     let manifest=piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='observable'\n[spec]").unwrap();
-    let (MutationResponse::Operation(op), _) = store
-        .accept(Mutation::apply(manifest, None), Some(0), false, None)
+    let (MutationResponse::Saved(saved), _) = store
+        .accept(Mutation::save(manifest, None, true), Some(0), false, None)
         .await
         .unwrap()
     else {
-        panic!("operation");
+        panic!("saved deployment");
     };
+    let operation_id = saved.operation_id.unwrap();
     store
         .transition_operation(
-            &op.operation_id,
+            &operation_id,
             OperationState::Requested,
             OperationState::Running,
             None,
         )
         .await
         .unwrap();
-    store.operation(&op.operation_id).await.unwrap()
+    store.operation(&operation_id).await.unwrap()
 }
 fn notifications() -> DaemonConfig {
     let mut config = DaemonConfig::default();

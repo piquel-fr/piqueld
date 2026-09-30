@@ -4024,13 +4024,13 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
     .unwrap();
     let edit = Mutation::Edit {
         id: app.id().clone(),
-        edit: ApplicationEdit::Service {
+        edit: Box::new(ApplicationEdit::Service {
             name: "web".into(),
             edit: ServiceEdit::Secrets(vec![piqueld_core::manifest::SecretMount {
                 name: "token".into(),
                 target: "/run/secrets/token".into(),
             }]),
-        },
+        }),
         deploy: false,
     };
     assert!(matches!(
