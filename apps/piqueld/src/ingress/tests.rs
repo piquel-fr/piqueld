@@ -687,14 +687,20 @@ impl Scenario {
                 }) {
                     break container["Id"].as_str().unwrap().to_owned();
                 }
-                assert_eq!(self.body("one.example.test").await, "first backend");
+                assert_eq!(
+                    self.body_across_reload("one.example.test").await,
+                    "first backend"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
         .await
         .unwrap();
         for _ in 0..5 {
-            assert_eq!(self.body("one.example.test").await, "first backend");
+            assert_eq!(
+                self.body_across_reload("one.example.test").await,
+                "first backend"
+            );
             assert_eq!(
                 self.store.applied_routes(&self.first).await.unwrap()[0]
                     .service
@@ -776,7 +782,7 @@ impl Scenario {
             async {
                 self.release_unhealthy_backend().await;
                 while !completed.load(std::sync::atomic::Ordering::SeqCst) {
-                    let body = self.body("one.example.test").await;
+                    let body = self.body_across_reload("one.example.test").await;
                     assert!(
                         matches!(body.as_str(), "first backend" | "replacement backend"),
                         "{body}"
