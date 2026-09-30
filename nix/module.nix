@@ -122,6 +122,11 @@ in
             default = [ ];
             description = "Metrics-only socket addresses; empty disables exposure.";
           };
+          metrics.token_file = lib.mkOption {
+            type = lib.types.nullOr (lib.types.strMatching "/.+");
+            default = null;
+            description = "File holding the bearer token metrics scrapers must present; required for non-loopback listeners. Supply it with systemd credentials, never the Nix store.";
+          };
         };
       };
       default = { };

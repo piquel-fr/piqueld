@@ -3753,8 +3753,10 @@ async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated()
             .any(|e| e.diagnostic.as_ref().is_some_and(|d| d.id == id))
     );
     assert!(api.client.daemon_stats().await.unwrap().diagnostics > 0);
-    let metrics =
-        piqueld::api::http::metrics_router(ApiState::new(api.store.clone(), api.runtime.clone()));
+    let metrics = piqueld::api::http::metrics_router(
+        ApiState::new(api.store.clone(), api.runtime.clone()),
+        None,
+    );
     let response = metrics.clone().oneshot(request("/metrics")).await.unwrap();
     assert_eq!(response.status(), 200);
     let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -3771,6 +3773,36 @@ async fn diagnostic_ids_correlate_api_failures_and_metrics_routes_are_isolated()
             .status(),
         404
     );
+}
+
+#[tokio::test]
+async fn metrics_token_requires_the_configured_bearer_token() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let token_file = temp.path().join("metrics-token");
+    std::fs::write(&token_file, "scrape-secret\n").unwrap();
+    let token = piqueld::api::http::MetricsToken::read(&token_file).unwrap();
+    let metrics = piqueld::api::http::metrics_router(
+        ApiState::new(api.store.clone(), api.runtime.clone()),
+        Some(token),
+    );
+    let status = |authorization: Option<&str>| {
+        let mut builder = Request::builder().uri("/metrics");
+        if let Some(value) = authorization {
+            builder = builder.header("authorization", value);
+        }
+        let metrics = metrics.clone();
+        async move {
+            metrics
+                .oneshot(builder.body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    assert_eq!(status(None).await, 401);
+    assert_eq!(status(Some("Bearer wrong")).await, 401);
+    assert_eq!(status(Some("Bearer scrape-secret")).await, 200);
 }
 
 #[tokio::test]

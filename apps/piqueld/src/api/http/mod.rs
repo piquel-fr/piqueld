@@ -31,6 +31,7 @@ mod deployments;
 mod editing;
 mod events;
 mod logs;
+mod metrics;
 mod observability;
 mod openapi;
 mod operations;
@@ -41,6 +42,7 @@ mod ui;
 use crate::api::ApplicationError;
 pub use crate::api::ApplicationService as ApiState;
 use crate::application::BoundaryError;
+pub use metrics::{MetricsToken, metrics_router};
 pub use openapi::openapi_document;
 pub use ui::{EmbeddedBundle, UiAssets};
 
@@ -911,34 +913,6 @@ fn optional_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, Ap
             })
         })
         .transpose()
-}
-
-/// Builds an isolated metrics-only router; no administrative routes are installed.
-pub fn metrics_router(state: ApiState) -> Router {
-    Router::new()
-        .route(
-            "/metrics",
-            get(
-                |axum::extract::State(state): axum::extract::State<ApiState>| async move {
-                    match state.prometheus_metrics().await {
-                        Ok(body) => (
-                            StatusCode::OK,
-                            [(
-                                header::CONTENT_TYPE,
-                                "text/plain; version=0.0.4; charset=utf-8",
-                            )],
-                            body,
-                        ),
-                        Err(_) => (
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            [(header::CONTENT_TYPE, "text/plain")],
-                            "Metrics collection unavailable\n".into(),
-                        ),
-                    }
-                },
-            ),
-        )
-        .with_state(state)
 }
 
 /// Path extractor that keeps Axum path decoding failures inside the API's

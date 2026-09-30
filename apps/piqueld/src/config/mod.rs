@@ -76,16 +76,7 @@ impl DaemonConfig {
     /// hostname syntax, and timeout and build-log bounds.
     fn validate(&self) -> Result<(), ConfigError> {
         self.notifications.validate()?;
-        if self
-            .metrics
-            .listen
-            .iter()
-            .any(|address| address.port() == 0)
-        {
-            return Err(ConfigError::Invalid(
-                "metrics ports must be greater than zero".into(),
-            ));
-        }
+        self.metrics.validate()?;
         for (name, path) in [
             ("server.data_dir", &self.server.data_dir),
             ("server.runtime_dir", &self.server.runtime_dir),

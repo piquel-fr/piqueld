@@ -65,6 +65,15 @@ async fn main() -> Result<()> {
     let runtime_dir = piqueld::RuntimeDir::acquire(&config.server.runtime_dir).await?;
     let tcp_listeners = config.server.bind_tcp().await?;
     let unix_listener = runtime_dir.bind_api().await?;
+    let metrics_token = config
+        .metrics
+        .token_file
+        .as_deref()
+        .map(|path| {
+            piqueld::api::http::MetricsToken::read(path)
+                .with_context(|| format!("failed to read metrics token {}", path.display()))
+        })
+        .transpose()?;
     let mut metrics_listeners = Vec::new();
     for address in &config.metrics.listen {
         metrics_listeners.push(
@@ -108,7 +117,7 @@ async fn main() -> Result<()> {
         .map(|listener| {
             spawn_tcp_api(
                 listener,
-                piqueld::api::http::metrics_router(state.clone()),
+                piqueld::api::http::metrics_router(state.clone(), metrics_token.clone()),
                 cancellation.clone(),
             )
         })

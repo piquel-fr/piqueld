@@ -149,7 +149,8 @@ subdomains cannot set or shadow them. Cookie-authenticated mutations require the
 API/CLI credentials use `Authorization: Bearer …`. No tokens are automatically
 renewed. All API listeners require account authentication, regardless of socket
 group membership or Tailscale connectivity. The optional `metrics.listen`
-endpoint serves only `GET /metrics` and is not authenticated; see
+endpoint serves only `GET /metrics` and uses its own static bearer token instead of
+accounts; see
 [observability](observability.md#optional-metrics-and-future-external-services).
 
 Successful registrations, passkey logins, device approvals (with the requesting
