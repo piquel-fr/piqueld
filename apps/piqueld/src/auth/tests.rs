@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::http::Authenticator as _;
 use piqueld_core::auth::Manage;
 
 struct Fixture {
@@ -436,14 +437,13 @@ async fn middleware_protects_api_and_enforces_cookie_csrf_without_ownership_chec
     use tower::ServiceExt;
     let f = Fixture::new().await;
     let (_, token) = f.account("alice", "token", None).await;
-    let router = crate::api::http::protect(
+    let router = f.auth.clone().guard(
         Router::new()
             .route(
                 "/api/v1/private",
                 get(|| async { "ok" }).post(|| async { "ok" }),
             )
             .route("/health", get(|| async { "ok" })),
-        f.auth.clone(),
     );
     for (path, method, credential, origin, expected) in [
         ("/health", "GET", None, None, StatusCode::OK),
@@ -534,12 +534,11 @@ async fn login_start_limits_share_listeners_ignore_forwarded_ips_and_leave_sessi
     use tower::ServiceExt;
     let f = Fixture::new().await;
     let (_, token) = f.account("alice", "token", None).await;
-    let router = crate::api::http::protect(
+    let router = f.auth.clone().guard(
         Router::new()
             .route("/api/v1/auth/login/start", post(|| async { "ok" }))
             .route("/api/v1/auth/device/start", post(|| async { "ok" }))
             .route("/api/v1/private", get(|| async { "ok" })),
-        f.auth.clone(),
     );
     for attempt in 0..31 {
         let request = Request::builder()
@@ -570,10 +569,9 @@ async fn login_start_limits_share_listeners_ignore_forwarded_ips_and_leave_sessi
         }
     }
     // Another router/listener must use the same budget.
-    let other = crate::api::http::protect(
-        Router::new().route("/api/v1/auth/device/start", post(|| async { "ok" })),
-        f.auth,
-    );
+    let other = f
+        .auth
+        .guard(Router::new().route("/api/v1/auth/device/start", post(|| async { "ok" })));
     let request = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/device/start")
@@ -617,10 +615,7 @@ async fn https_cookies_use_host_prefix_and_ignore_unprefixed_names() {
         f.auth.cookie("piqueld_session", "secret", 60),
         "piqueld_session=secret; Path=/; HttpOnly; SameSite=Strict; Max-Age=60"
     );
-    let router = crate::api::http::protect(
-        Router::new().route("/api/v1/private", get(|| async { "ok" })),
-        auth,
-    );
+    let router = auth.guard(Router::new().route("/api/v1/private", get(|| async { "ok" })));
     for (cookie, expected) in [
         (format!("piqueld_session={token}"), StatusCode::UNAUTHORIZED),
         (format!("__Host-piqueld_session={token}"), StatusCode::OK),

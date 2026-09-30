@@ -15,14 +15,19 @@ use piqueld_core::auth::{
 };
 use std::net::SocketAddr;
 
-/// Applies authentication before the shared HTTP response layers are installed.
-pub(crate) fn protect<S: Clone + Send + Sync + 'static>(
-    router: Router<S>,
-    auth: Auth,
-) -> Router<S> {
-    router
-        .layer(middleware::from_fn_with_state(auth.clone(), authenticate))
-        .layer(Extension(auth))
+/// Authentication boundary that every API router requires and applies itself.
+/// Daemon listeners use the passkey [`Auth`] service; tests may supply a fake.
+pub trait Authenticator: Clone + Send + Sync + 'static {
+    /// Wraps every route and fallback already registered on `router`.
+    fn guard<S: Clone + Send + Sync + 'static>(self, router: Router<S>) -> Router<S>;
+}
+
+impl Authenticator for Auth {
+    fn guard<S: Clone + Send + Sync + 'static>(self, router: Router<S>) -> Router<S> {
+        router
+            .layer(middleware::from_fn_with_state(self.clone(), authenticate))
+            .layer(Extension(self))
+    }
 }
 
 impl From<AuthError> for ApiError {

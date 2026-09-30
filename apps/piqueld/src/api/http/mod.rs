@@ -24,7 +24,7 @@ use crate::store::StoreError;
 
 mod applications;
 mod auth;
-pub(crate) use auth::protect;
+pub use auth::Authenticator;
 mod builds;
 mod deployments;
 mod editing;
@@ -278,20 +278,18 @@ impl IntoResponse for ApiError {
 }
 
 /// Builds the TCP router, registering the dashboard when the binary embeds it.
-pub fn router(state: ApiState) -> Router {
-    web_router(state, UiAssets::resolve(), None)
+pub fn router(state: ApiState, auth: impl Authenticator) -> Router {
+    web_router(state, UiAssets::resolve(), auth)
 }
 
 /// Builds the API-only router used by the Unix-socket client transport.
-/// Production listeners must supply authentication; `None` supports isolated contract tests.
-pub fn api_router(state: ApiState, auth: Option<crate::auth::Auth>) -> Router {
+pub fn api_router(state: ApiState, auth: impl Authenticator) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
     finish_router(router.fallback(api_fallback), state, &openapi, auth)
 }
 
 /// Builds the TCP router from the API, liveness, and optional UI boundaries.
-/// Production listeners must supply authentication; `None` supports isolated contract tests.
-pub fn web_router(state: ApiState, ui_assets: UiAssets, auth: Option<crate::auth::Auth>) -> Router {
+pub fn web_router(state: ApiState, ui_assets: UiAssets, auth: impl Authenticator) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
     let router = router.merge(health_router());
     let router = match ui_assets {
@@ -317,7 +315,7 @@ fn finish_router(
     router: Router<ApiState>,
     state: ApiState,
     openapi: &utoipa::openapi::OpenApi,
-    auth: Option<crate::auth::Auth>,
+    auth: impl Authenticator,
 ) -> Router {
     let request_id = header::HeaderName::from_static("x-request-id");
     // 405 responses must advertise exactly the methods each matched endpoint
@@ -330,11 +328,7 @@ fn finish_router(
     });
     // Authentication may reject requests without reaching a handler. Keep it
     // inside the shared request tracing and error/diagnostic response layers.
-    let router = match auth {
-        Some(auth) => protect(router, auth),
-        None => router,
-    };
-    router
+    auth.guard(router)
         .with_state(state.clone())
         .layer(Extension(Arc::new(openapi)))
         // The propagator stamps errors with their request ID, and the binder
