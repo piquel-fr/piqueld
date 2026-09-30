@@ -349,8 +349,8 @@ impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
             finished_operation_days: 10,
-            event_days: 0,
-            daemon_event_days: 0,
+            event_days: 90,
+            daemon_event_days: 90,
         }
     }
 }

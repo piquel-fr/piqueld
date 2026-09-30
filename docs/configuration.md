@@ -49,8 +49,8 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `reconciliation.scan_interval_seconds` | `60` |
 | `reconciliation.prepare_timeout_seconds` | `300` |
 | `reconciliation.convergence_timeout_seconds` | `120` |
-| `retention.event_days` | `0` (application event pruning disabled) |
-| `retention.daemon_event_days` | `0` (daemon event pruning disabled) |
+| `retention.event_days` | `90` (`0` disables application event pruning) |
+| `retention.daemon_event_days` | `90` (`0` disables daemon event pruning) |
 | `metrics.listen` | `[]` (metrics-only listener disabled) |
 | `notifications.enabled` | `false` |
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |

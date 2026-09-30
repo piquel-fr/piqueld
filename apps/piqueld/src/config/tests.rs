@@ -109,11 +109,11 @@ fn built_in_defaults_are_valid() {
 }
 
 #[test]
-fn retention_defaults_to_ten_days_and_accepts_zero_as_disabled() {
-    assert_eq!(
-        DaemonConfig::default().retention.finished_operation_days,
-        10
-    );
+fn retention_defaults_are_bounded_and_accept_zero_as_disabled() {
+    let defaults = DaemonConfig::default().retention;
+    assert_eq!(defaults.finished_operation_days, 10);
+    assert_eq!(defaults.event_days, 90);
+    assert_eq!(defaults.daemon_event_days, 90);
     let disabled = DaemonConfig::from_toml("[retention]\nfinished_operation_days = 0").unwrap();
     assert_eq!(disabled.retention.finished_operation_days, 0);
     let configured = DaemonConfig::from_toml("[retention]\nfinished_operation_days = 30").unwrap();
