@@ -148,6 +148,12 @@ pub(crate) enum AppCommand {
         #[command(subcommand)]
         action: crate::secrets::SecretAction,
     },
+    /// Check a TOML manifest locally, without contacting a daemon.
+    Validate {
+        /// TOML application manifest.
+        #[arg(long, value_name = "PATH")]
+        file: PathBuf,
+    },
     /// Preview creation or replacement from a TOML manifest.
     Plan(ManifestArgs),
     /// Save a TOML manifest; optionally deploy with --deploy.

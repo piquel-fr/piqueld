@@ -327,6 +327,7 @@ jobs:
             target/release/piqueld
             target/release/piquelctl
             examples/piqueld.toml
+            docs/application-manifest.schema.json
 
   nix:
     name: nix packages

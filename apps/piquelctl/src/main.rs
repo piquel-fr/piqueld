@@ -24,6 +24,13 @@ async fn main() -> ExitCode {
     let mut cli = Cli::from_arg_matches(&matches).expect("validated command arguments");
     let mut console = Console::new(&cli);
     let result = async {
+        // Validation is purely local, so it needs neither profiles nor a daemon.
+        if let cli::Command::App {
+            command: cli::AppCommand::Validate { file },
+        } = &cli.command
+        {
+            return commands::validate(&mut console, file).await;
+        }
         let profiles = profiles::Profiles::load(&cli)?;
         if matches!(cli.command, cli::Command::Profiles) {
             return console.emit(&ProfilesReport {
@@ -142,6 +149,7 @@ mod tests {
             vec!["piquelctl", "app", "show", "notes"],
             vec!["piquelctl", "builds", "list", "--application", "app-01"],
             vec!["piquelctl", "builds", "logs", "1", "--before", "64"],
+            vec!["piquelctl", "app", "validate", "--file", "application.toml"],
             vec!["piquelctl", "app", "plan", "--file", "application.toml"],
             vec![
                 "piquelctl",

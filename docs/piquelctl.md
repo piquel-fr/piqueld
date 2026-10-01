@@ -37,6 +37,7 @@ piquelctl status
 piquelctl app list
 piquelctl app show <name-or-id>
 piquelctl app logs <name-or-id> [--service <name>]
+piquelctl app validate --file application.toml
 piquelctl app plan --file application.toml
 piquelctl app apply --file application.toml
 piquelctl app apply --file application.toml --deploy
@@ -81,6 +82,7 @@ written to stderr, so stdout remains valid JSON.
 | `app list` | `{ "items": [{ "application": ApplicationSummary, "status": ApplicationStatusView }], "next_cursor": null }` |
 | `app show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
 | `app logs` | `ApplicationLogs` |
+| `app validate` | `{ "application": string }` |
 | `app plan` | `PlanView` |
 | `app create` / `app rename` / field edits | `SavedApplication`; `--deploy` uses the same output as `app apply --deploy` |
 | `app manifest` | Saved TOML as a JSON string |

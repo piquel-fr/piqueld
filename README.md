@@ -72,8 +72,8 @@ just
 
 `just` checks formatting, lints, compilation, tests, documentation tests,
 dependency licenses, dependency boundaries, and the freshness of the checked-in
-OpenAPI specification and generated client. It does not modify generated files.
-Regenerate both artifacts in dependency order with:
+OpenAPI specification, generated client, and manifest JSON Schema. It does not
+modify generated files. Regenerate all three artifacts in dependency order with:
 
 ```console
 just generate

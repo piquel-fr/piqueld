@@ -178,7 +178,11 @@ pub(crate) fn manifest_name(manifest: &str, path: &Path) -> Result<String> {
 fn manifest_validation_error(path: &Path, errors: &ValidationErrors) -> CliError {
     CliError::new(
         ErrorKind::Input,
-        format!("manifest {} failed validation: {errors}", path.display()),
+        format!(
+            "manifest {} failed validation with {} error(s)",
+            path.display(),
+            errors.0.len()
+        ),
     )
     .with_details(json!({"errors": errors}))
 }

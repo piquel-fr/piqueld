@@ -8,7 +8,7 @@ use crate::{
         Console, TaskOutcome,
         reports::{
             ApplicationRow, DeletionReport, OperationOutcomeReport, SavedDeploymentReport,
-            ShowReport, StatusReport,
+            ShowReport, StatusReport, ValidManifestReport,
         },
     },
     support::{confirm, looks_like_application_id, manifest_name, read_manifest, retry_transport},
@@ -19,7 +19,10 @@ use piqueld_client::{
     OperationState, Page,
 };
 use serde_json::json;
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 use tokio::time;
 
 use crate::support::{DEFAULT_SOCKET, PAGE_SIZE, POLL_INTERVAL, transport_description};
@@ -83,6 +86,7 @@ async fn app(
             application,
             action,
         } => action.run(cli, client, console, application).await,
+        AppCommand::Validate { .. } => unreachable!("validation runs before connecting"),
         AppCommand::Plan(args) => plan_command(console, client, args).await,
         AppCommand::Apply(args) => apply(cli, client, console, args).await,
         AppCommand::Delete(args) => delete(cli, client, console, args).await,
@@ -242,6 +246,14 @@ async fn logs(
         console.warning("Log snapshot was truncated; narrow the service or time window.")?;
     }
     Ok(())
+}
+
+/// Validates a manifest with the same rules as the daemon, without a daemon.
+pub(crate) async fn validate(console: &mut Console, file: &Path) -> Result<()> {
+    let manifest = read_manifest(file).await?;
+    console.emit(&ValidManifestReport {
+        application: manifest_name(&manifest, file)?,
+    })
 }
 
 async fn plan_command(console: &mut Console, client: &Client, args: &ManifestArgs) -> Result<()> {

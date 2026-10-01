@@ -1,8 +1,10 @@
 //! Public manifest input and export shapes, before semantic validation.
 
+use super::{APPLICATION_API_VERSION, APPLICATION_KIND};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use utoipa::ToSchema;
+use utoipa::{PartialSchema, ToSchema};
 
 /// Strict public application manifest request and export shape.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
@@ -16,6 +18,46 @@ pub struct ApplicationManifest {
     pub metadata: Metadata,
     /// Desired application resources.
     pub spec: ApplicationSpec,
+}
+
+impl ApplicationManifest {
+    /// Standalone JSON Schema (draft 7) for manifest files, published for
+    /// editor completion and inline errors. It covers structure only: names,
+    /// limits, and cross-references are checked by [`super::parse_toml`].
+    #[must_use]
+    pub fn json_schema() -> Value {
+        fn relocate_refs(value: &mut Value) {
+            match value {
+                Value::Object(object) => {
+                    if let Some(Value::String(reference)) = object.get_mut("$ref")
+                        && let Some(name) = reference.strip_prefix("#/components/schemas/")
+                    {
+                        *reference = format!("#/definitions/{name}");
+                    }
+                    for value in object.values_mut() {
+                        relocate_refs(value);
+                    }
+                }
+                Value::Array(values) => {
+                    for value in values {
+                        relocate_refs(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut definitions = Vec::new();
+        Self::schemas(&mut definitions);
+        let mut schema = json!(Self::schema());
+        schema["$schema"] = "http://json-schema.org/draft-07/schema#".into();
+        schema["title"] = "piqueld application manifest".into();
+        schema["definitions"] = json!(definitions.into_iter().collect::<BTreeMap<_, _>>());
+        schema["properties"]["api_version"]["const"] = APPLICATION_API_VERSION.into();
+        schema["properties"]["kind"]["const"] = APPLICATION_KIND.into();
+        relocate_refs(&mut schema);
+        schema
+    }
 }
 
 /// User-provided application metadata.
@@ -62,6 +104,7 @@ pub struct Service {
     pub source: Source,
     /// Desired replica count.
     #[serde(default = "default_replicas")]
+    #[schema(maximum = 65_535)]
     pub replicas: u16,
     /// Environment variables keyed by name.
     #[serde(default)]
@@ -165,6 +208,7 @@ pub enum HealthCheck {
     /// HTTP health endpoint check.
     Http {
         /// Container port to probe.
+        #[schema(maximum = 65_535)]
         port: u16,
         /// HTTP path to probe.
         #[serde(default = "default_health_path")]
@@ -280,6 +324,6 @@ pub struct Route {
     /// Logical service in this application.
     pub service: String,
     /// Internal HTTP backend port.
-    #[schema(minimum = 1)]
+    #[schema(minimum = 1, maximum = 65_535)]
     pub port: u16,
 }

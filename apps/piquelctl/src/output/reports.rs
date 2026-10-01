@@ -322,6 +322,17 @@ report!(DeletionReport<'_>, self, out, {
 });
 
 /// Saved TOML in human mode; a JSON string in machine mode.
+#[derive(Serialize)]
+pub(crate) struct ValidManifestReport {
+    pub(crate) application: String,
+}
+report!(ValidManifestReport, self, out, {
+    out.line(format_args!(
+        "Manifest is valid for application {:?}.",
+        self.application
+    ))
+});
+
 pub(crate) struct ManifestReport(pub(crate) String);
 impl Report for ManifestReport {
     type Json = str;

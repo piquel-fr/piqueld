@@ -265,6 +265,19 @@ impl<'a> ErrorReport<'a> {
     }
 
     fn details(details: &Value, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        // Local and daemon manifest validation share the `ValidationErrors` shape.
+        if let Some(errors) = details.get("errors").and_then(Value::as_array) {
+            for error in errors {
+                let field = |name| error.get(name).and_then(Value::as_str).unwrap_or("?");
+                out.line(format_args!(
+                    "  {}: {} ({})",
+                    field("path"),
+                    field("message"),
+                    field("code")
+                ))?;
+            }
+            return Ok(());
+        }
         let Some(operation) = details.get("operation") else {
             return out.label("Details", details);
         };
