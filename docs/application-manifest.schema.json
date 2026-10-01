@@ -119,6 +119,7 @@
             "port": {
               "description": "Container port to probe.",
               "format": "int32",
+              "maximum": 65535,
               "minimum": 0,
               "type": "integer"
             },
@@ -271,6 +272,7 @@
         "port": {
           "description": "Internal HTTP backend port.",
           "format": "int32",
+          "maximum": 65535,
           "minimum": 1,
           "type": "integer"
         },
@@ -358,6 +360,7 @@
         "replicas": {
           "description": "Desired replica count.",
           "format": "int32",
+          "maximum": 65535,
           "minimum": 0,
           "type": "integer"
         },

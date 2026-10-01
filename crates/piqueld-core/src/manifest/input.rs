@@ -104,6 +104,7 @@ pub struct Service {
     pub source: Source,
     /// Desired replica count.
     #[serde(default = "default_replicas")]
+    #[schema(maximum = 65_535)]
     pub replicas: u16,
     /// Environment variables keyed by name.
     #[serde(default)]
@@ -207,6 +208,7 @@ pub enum HealthCheck {
     /// HTTP health endpoint check.
     Http {
         /// Container port to probe.
+        #[schema(maximum = 65_535)]
         port: u16,
         /// HTTP path to probe.
         #[serde(default = "default_health_path")]
@@ -322,6 +324,6 @@ pub struct Route {
     /// Logical service in this application.
     pub service: String,
     /// Internal HTTP backend port.
-    #[schema(minimum = 1)]
+    #[schema(minimum = 1, maximum = 65_535)]
     pub port: u16,
 }
