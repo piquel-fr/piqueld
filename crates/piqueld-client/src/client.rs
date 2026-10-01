@@ -217,6 +217,20 @@ impl Client {
         for (name, value) in headers {
             builder = builder.header(*name, value);
         }
+        let response = self.execute(builder).await?;
+        let status = response.status();
+        let payload = collect_response(response).await?;
+        if !status.is_success() {
+            return Err(api_error(status, &payload));
+        }
+        serde_json::from_slice(&payload).map_err(|source| ClientError::Decode { source })
+    }
+
+    /// Sends one handwritten request with the same preparation as generated operations.
+    pub(crate) async fn execute(
+        &self,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, ClientError> {
         let mut request = builder
             .build()
             .map_err(|_| invalid_request("request could not be constructed"))?;
@@ -227,13 +241,18 @@ impl Client {
             .execute(request)
             .await
             .map_err(transport_error)?;
-        let status = response.status();
         Self::observe_response(&response);
-        let payload = collect_response(response).await?;
-        if !status.is_success() {
-            return Err(api_error(status, &payload));
+        Ok(response)
+    }
+
+    /// Converts an unsuccessful handwritten response into its API error.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn response_error(response: reqwest::Response) -> ClientError {
+        let status = response.status();
+        match collect_response(response).await {
+            Ok(payload) => api_error(status, &payload),
+            Err(error) => error,
         }
-        serde_json::from_slice(&payload).map_err(|source| ClientError::Decode { source })
     }
 }
 

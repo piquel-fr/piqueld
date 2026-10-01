@@ -46,6 +46,7 @@ normalized manifest is needed.
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
+| POST | `/api/v1/applications/{id}/exec` | Upgrade to a command stream in a running service task |
 
 ### Field endpoints
 
@@ -249,6 +250,23 @@ results (omit it for both, including merged terminal output). `tail` defaults to
 Snapshots are capped at 1 MiB of collected text and 256 tasks, with `truncated`
 indicating a partial result. Docker retains the source logs; removed containers
 have no available history. No output is stored by piqueld.
+
+`POST /api/v1/applications/{id}/exec` runs a one-off command in a running
+task of a service (preferring healthy tasks over those still starting) owned by this application and daemon instance. The JSON
+body is `{ "service": "auth", "command": ["auth-service", "invite", "create"],
+"stdin": false, "tty": null }`; `tty` takes an initial `{ "width", "height" }`
+size and reports terminal output as stdout. The request must carry
+`Connection: Upgrade` and `Upgrade: piqueld-exec.v1`; otherwise it returns
+`426 upgrade_required`. Validation, `404 not_found`, `409 service_not_running`
+and Docker errors are ordinary JSON errors returned before the upgrade.
+After `101 Switching Protocols`, each direction sends frames of a one-byte tag, a
+big-endian `u32` payload length (at most 1 MiB) and the payload. Clients send
+stdin bytes (1), stdin end (2; ignored with a terminal, where disconnecting detaches) and terminal resizes (3, `u16` width then height).
+The daemon sends stdout (1), stderr (2), and finally either the exit code (3,
+big-endian `i64`) or an `ErrorBody` JSON failure (4). `piqueld_core::exec`
+implements the framing; Progenitor cannot generate upgrades, so `piqueld-client`
+implements this method by hand. History records `command_started` and
+`command_finished` events, never the command.
 
 `GET /api/v1/system/readiness` reports top-level `ready` plus separate `database`,
 `docker`, and `swarm` verdicts. Each verdict has `status: "ready"` or

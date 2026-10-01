@@ -227,6 +227,89 @@ impl SwarmScenario {
         );
     }
 
+    /// Runs `script` in the web task, sending `stdin`, and returns output and exit code.
+    async fn exec(
+        &self,
+        script: &str,
+        stdin: &[u8],
+        tty: Option<piqueld_core::exec::TerminalSize>,
+    ) -> (Vec<u8>, Vec<u8>, i64) {
+        use piqueld_core::exec::{ExecCommand, ExecInput, ExecOutput, ExecRequest};
+        let instance = InstanceId::parse(&self.labels["io.piqueld.instance"]).unwrap();
+        let request = ExecRequest {
+            service: piqueld_core::ServiceName::parse("web").unwrap(),
+            command: ExecCommand::parse(vec!["/bin/sh".into(), "-c".into(), script.into()])
+                .unwrap(),
+            stdin: true,
+            tty,
+        };
+        let exec = self
+            .engine
+            .docker
+            .create_exec(&instance, &self.app, &request)
+            .await
+            .unwrap()
+            .expect("web has a running task");
+        let (input, input_rx) = tokio::sync::mpsc::channel(4);
+        let (output_tx, mut output) = tokio::sync::mpsc::channel(16);
+        input.send(ExecInput::Stdin(stdin.to_vec())).await.unwrap();
+        input.send(ExecInput::CloseStdin).await.unwrap();
+        let io = piqueld::docker::ExecIo {
+            input: input_rx,
+            output: output_tx,
+        };
+        let code = self.engine.docker.run_exec(&exec, io).await.unwrap();
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        while let Ok(frame) = output.try_recv() {
+            match frame {
+                ExecOutput::Stdout(data) => stdout.extend(data),
+                ExecOutput::Stderr(data) => stderr.extend(data),
+                frame => panic!("unexpected exec output {frame:?}"),
+            }
+        }
+        (stdout, stderr, code)
+    }
+
+    async fn assert_exec(&self) {
+        let (stdout, stderr, code) = self.exec("cat; echo failed >&2; exit 3", b"in", None).await;
+        assert_eq!(
+            (stdout.as_slice(), stderr.as_slice(), code),
+            (&b"in"[..], &b"failed\n"[..], 3)
+        );
+        let size = piqueld_core::exec::TerminalSize {
+            width: 91,
+            height: 17,
+        };
+        let (stdout, stderr, code) = self.exec("stty size", b"", Some(size)).await;
+        assert_eq!(String::from_utf8(stdout).unwrap().trim(), "17 91");
+        assert!(stderr.is_empty());
+        assert_eq!(code, 0);
+        let instance = InstanceId::parse(&self.labels["io.piqueld.instance"]).unwrap();
+        let mut missing = piqueld_core::exec::ExecRequest {
+            service: piqueld_core::ServiceName::parse("absent").unwrap(),
+            command: piqueld_core::exec::ExecCommand::parse(vec!["true".into()]).unwrap(),
+            stdin: false,
+            tty: None,
+        };
+        let docker = &self.engine.docker;
+        assert!(
+            docker
+                .create_exec(&instance, &self.app, &missing)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        missing.service = piqueld_core::ServiceName::parse("web").unwrap();
+        let other = InstanceId::parse("another-instance").unwrap();
+        assert!(
+            docker
+                .create_exec(&other, &self.app, &missing)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     async fn add_http_service(&self) -> DesiredService {
         let mut http_service = self.service.clone();
         http_service.logical_name = piqueld_core::ServiceName::parse("http").unwrap();
@@ -719,6 +802,7 @@ impl SwarmScenario {
 async fn swarm_init_create_replica_drift_restart_jobs_delete_and_volume_retention() {
     let mut scenario = SwarmScenario::new().await;
     scenario.assert_logs().await;
+    scenario.assert_exec().await;
     let http_service = scenario.add_http_service().await;
     scenario.assert_healthchecks(&http_service).await;
     scenario.scale_and_reconnect().await;

@@ -2207,6 +2207,7 @@ dependencies = [
  "futures-util",
  "indicatif",
  "piqueld-client",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

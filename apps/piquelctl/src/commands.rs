@@ -87,6 +87,7 @@ async fn app(
             )
             .await
         }
+        AppCommand::Exec(_) => unreachable!("exec sessions run without the command timeout"),
         AppCommand::Secret {
             application,
             action,

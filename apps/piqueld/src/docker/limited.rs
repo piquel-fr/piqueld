@@ -61,6 +61,19 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         self.inner.ping().await
     }
 
+    async fn create_exec(
+        &self,
+        instance: &piqueld_core::InstanceId,
+        application: &ApplicationId,
+        request: &piqueld_core::exec::ExecRequest,
+    ) -> Result<Option<super::Exec>, DockerError> {
+        self.inner.create_exec(instance, application, request).await
+    }
+
+    async fn run_exec(&self, exec: &super::Exec, io: super::ExecIo) -> Result<i64, DockerError> {
+        self.inner.run_exec(exec, io).await
+    }
+
     async fn ensure_secret(
         &self,
         name: &str,

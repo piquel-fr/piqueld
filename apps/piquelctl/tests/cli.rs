@@ -72,6 +72,16 @@ impl Reply {
         }
     }
 
+    /// Switches to the exec protocol; see [`echo_exec`].
+    fn upgrade() -> Self {
+        Self {
+            status: "101 Switching Protocols",
+            content_type: "",
+            body: Vec::new(),
+            drop_connection: false,
+        }
+    }
+
     fn dropped() -> Self {
         Self {
             status: "200 OK",
@@ -213,6 +223,13 @@ fn serve_stream<S>(
     if reply.drop_connection {
         return;
     }
+    if reply.status == Reply::upgrade().status {
+        stream
+            .write_all(b"HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: piqueld-exec.v1\r\n\r\n")
+            .expect("upgrade response");
+        echo_exec(&mut stream);
+        return;
+    }
     let header = format!(
         "HTTP/1.1 {}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         reply.status,
@@ -231,6 +248,32 @@ fn serve_stream<S>(
             ),
             "HTTP response: {error}"
         );
+    }
+}
+
+/// Echoes standard input until it closes, then reports stderr and exit code 3.
+fn echo_exec<S: Read + Write>(stream: &mut S) {
+    use piqueld_client::exec::{ExecFrame, ExecInput, ExecOutput};
+    let (mut buffer, mut stdin) = (Vec::new(), Vec::new());
+    loop {
+        match ExecInput::decode(&mut buffer).expect("valid exec input") {
+            Some(ExecInput::Stdin(data)) => stdin.extend(data),
+            Some(ExecInput::CloseStdin) => break,
+            Some(frame) => panic!("unexpected exec input {frame:?}"),
+            None => {
+                let mut chunk = [0_u8; 4096];
+                let read = stream.read(&mut chunk).expect("exec input");
+                assert_ne!(read, 0, "exec input ended before stdin closed");
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+        }
+    }
+    for frame in [
+        ExecOutput::Stdout(stdin),
+        ExecOutput::Stderr(b"closed".to_vec()),
+        ExecOutput::Exit(3),
+    ] {
+        stream.write_all(&frame.encoded()).expect("exec output");
     }
 }
 
@@ -510,6 +553,54 @@ fn repeated_pagination_cursor_is_rejected() {
     assert!(!output.status.success());
     assert_eq!(output.stdout, b"");
     assert!(String::from_utf8_lossy(&output.stderr).contains("repeated pagination cursor"));
+    let _ = server.finish();
+}
+
+#[test]
+fn exec_forwards_stdin_streams_output_and_exits_with_the_command_code() {
+    let server = start_server(false, 2, |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+        "/api/v1/applications/app-notes-01/exec" => {
+            assert_eq!(request.headers["upgrade"], "piqueld-exec.v1");
+            let body: Value = serde_json::from_slice(&request.body).expect("exec request");
+            assert_eq!(
+                body,
+                json!({"service": "web", "command": ["cat", "-"], "stdin": true, "tty": null})
+            );
+            Reply::upgrade()
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let Endpoint::Tcp(url) = &server.endpoint else {
+        unreachable!("TCP server")
+    };
+    let mut child = support::command()
+        .args([
+            "--url",
+            url,
+            "app",
+            "exec",
+            "app-notes-01",
+            "web",
+            "-i",
+            "--",
+        ])
+        .args(["cat", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("piquelctl process");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"hello")
+        .expect("stdin is forwarded");
+    let output = child.wait_with_output().expect("piquelctl exits");
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(output.stdout, b"hello");
+    assert_eq!(output.stderr, b"closed");
     let _ = server.finish();
 }
 
