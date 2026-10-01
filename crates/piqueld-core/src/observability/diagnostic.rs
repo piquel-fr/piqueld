@@ -258,7 +258,7 @@ mod tests {
         ] {
             let diagnostic = Diagnostic::new("occurrence".into(), code, "failure".into());
             assert_eq!(diagnostic.retryable, retryable, "{code:?}");
-            assert!(!diagnostic.next_action.is_empty());
+            assert_ne!(diagnostic.next_action, "");
         }
         let unknown = Diagnostic::from_recorded_code(
             "legacy".into(),

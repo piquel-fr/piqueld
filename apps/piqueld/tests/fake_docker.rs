@@ -661,8 +661,8 @@ impl ControllerHarness {
             .observe(self.application.id())
             .await
             .expect("final observation");
-        assert!(observed.services.is_empty());
-        assert!(observed.networks.is_empty());
+        assert_eq!(observed.services, [] as [piqueld_core::ObservedService; 0]);
+        assert_eq!(observed.networks, [] as [piqueld_core::ObservedNetwork; 0]);
         assert_eq!(observed.volumes.len(), 1);
     }
 }
@@ -764,7 +764,7 @@ async fn controller_executes_actions_introduced_by_fresh_planning() {
         .await
         .expect("matching observation");
     let plan = ControllerHarness::reconcile_plan(harness.resolved.clone(), &observed);
-    assert!(plan.actions.is_empty());
+    assert_eq!(plan.actions, [] as [piqueld_core::PlanAction; 0]);
     harness
         .store
         .save_application(&harness.application, Some(&harness.resolved), None)
@@ -811,7 +811,7 @@ async fn superseded_operations_do_not_plan_stale_runtime_state() {
         .await
         .expect("matching observation");
     let plan = ControllerHarness::reconcile_plan(harness.resolved.clone(), &observed);
-    assert!(plan.actions.is_empty());
+    assert_eq!(plan.actions, [] as [piqueld_core::PlanAction; 0]);
     let stale = harness
         .store
         .save_application(&harness.application, Some(&harness.resolved), None)
@@ -2650,7 +2650,10 @@ async fn preparation_timeout_is_retried_after_backoff() {
             .unwrap()
             .is_none()
     );
-    assert!(harness.docker.observed.lock().await.services.is_empty());
+    assert_eq!(
+        harness.docker.observed.lock().await.services,
+        [] as [piqueld_core::ObservedService; 0]
+    );
     let mut connection =
         SqliteConnection::connect(&format!("sqlite://{}", harness.database_path.display()))
             .await
@@ -2705,7 +2708,10 @@ async fn changed_swarm_topology_blocks_preparation_and_recovers_after_backoff() 
         Some("swarm_topology_unsupported")
     );
     assert!(harness.docker.registry.lock().await.pulls.is_empty());
-    assert!(harness.docker.observed.lock().await.networks.is_empty());
+    assert_eq!(
+        harness.docker.observed.lock().await.networks,
+        [] as [piqueld_core::ObservedNetwork; 0]
+    );
     harness
         .docker
         .incompatible_swarm
@@ -2782,7 +2788,10 @@ async fn topology_change_during_preparation_blocks_promotion_and_mutation() {
             .resolved
             .is_none()
     );
-    assert!(harness.docker.observed.lock().await.networks.is_empty());
+    assert_eq!(
+        harness.docker.observed.lock().await.networks,
+        [] as [piqueld_core::ObservedNetwork; 0]
+    );
 }
 
 #[tokio::test]

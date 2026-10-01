@@ -106,7 +106,10 @@ fn image_resolution_is_the_only_pending_compilation_input() {
         desired.services[0].image.as_str(),
         format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64))
     );
-    assert!(preview_resolution(&app, &resolutions()).is_empty());
+    assert_eq!(
+        preview_resolution(&app, &resolutions()),
+        [] as [piqueld_core::ResolutionRequirement; 0]
+    );
 }
 
 #[test]
@@ -704,7 +707,10 @@ fn command_and_http_health_checks_have_the_same_runtime_meaning() {
     let request = PlanRequest::Reconcile {
         desired: desired.clone(),
     };
-    assert!(Plan::from_request(&request, &snapshot).actions.is_empty());
+    assert_eq!(
+        Plan::from_request(&request, &snapshot).actions,
+        [] as [piqueld_core::PlanAction; 0]
+    );
     snapshot.services[0].healthcheck = Some(piqueld_core::HealthCheck::Http {
         port: 8081,
         path: "/health".into(),
@@ -712,7 +718,10 @@ fn command_and_http_health_checks_have_the_same_runtime_meaning() {
         timeout_seconds,
     });
     assert!(!snapshot.services[0].matches(&desired.services[0]));
-    assert!(!Plan::from_request(&request, &snapshot).actions.is_empty());
+    assert_ne!(
+        Plan::from_request(&request, &snapshot).actions,
+        [] as [piqueld_core::PlanAction; 0]
+    );
 }
 
 #[test]

@@ -386,15 +386,9 @@ mod tests {
             )
             .await;
         assert!(matches!(result, Err(StoreError::HostnameConflict { .. })));
-        assert!(
-            store
-                .get(&id)
-                .await
-                .unwrap()
-                .application
-                .spec()
-                .routes
-                .is_empty()
+        assert_eq!(
+            store.get(&id).await.unwrap().application.spec().routes,
+            [] as [piqueld_core::manifest::ValidatedRoute; 0]
         );
         assert!(
             store
@@ -564,6 +558,9 @@ mod tests {
             3000
         );
         store.stage_routes(&id, &[], false, None).await.unwrap();
-        assert!(store.routing_table().await.unwrap()[&id].is_empty());
+        assert_eq!(
+            store.routing_table().await.unwrap()[&id],
+            [] as [piqueld_core::manifest::ValidatedRoute; 0]
+        );
     }
 }

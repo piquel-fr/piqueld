@@ -530,6 +530,6 @@ mod tests {
         ApplicationEdit::RemoveService("frontend".into())
             .apply(&mut manifest)
             .unwrap();
-        assert!(manifest.spec.routes.is_empty());
+        assert_eq!(manifest.spec.routes, [] as [Route; 0]);
     }
 }

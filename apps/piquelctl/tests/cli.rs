@@ -446,7 +446,7 @@ fn status_works_over_tcp_and_unix_with_clean_json() {
         let output = run(&server, &["status"]);
         let value = assert_json_success(&output);
         assert_eq!(value["instance_id"], "instance-test");
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, b"");
         let _ = server.finish();
     }
 }
@@ -480,7 +480,7 @@ fn list_paginates_and_includes_reconciliation_status() {
         let value = assert_json_success(&output);
         assert_eq!(value["items"].as_array().expect("items").len(), 2);
         assert_eq!(value["items"][1]["status"]["state"], "degraded");
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, b"");
         let _ = server.finish();
     }
 }
@@ -507,7 +507,7 @@ fn repeated_pagination_cursor_is_rejected() {
 
     let output = run(&server, &["app", "list"]);
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     assert!(String::from_utf8_lossy(&output.stderr).contains("repeated pagination cursor"));
     let _ = server.finish();
 }
@@ -629,7 +629,7 @@ fn noninteractive_apply_stops_after_inspection() {
         ],
     );
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     assert!(String::from_utf8_lossy(&output.stderr).contains("confirmation"));
     let _ = server.finish();
 }
@@ -656,7 +656,7 @@ fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
         ],
     );
     assert_eq!(output.status.code(), Some(5));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("runtime_failed"));
     assert!(stderr.contains("runtime reconciliation failed"));
@@ -748,7 +748,7 @@ fn partial_list_failures_preserve_results_and_context_in_all_modes() {
                 assert!(value["items"][1]["status"].is_null());
                 assert_eq!(value["items"][1]["application"]["name"], "notes");
             } else if quiet {
-                assert!(output.stdout.is_empty());
+                assert_eq!(output.stdout, b"");
             } else {
                 assert!(String::from_utf8_lossy(&output.stdout).contains("notes  unavailable"));
             }
@@ -850,7 +850,7 @@ fn blocked_plan_emits_json_then_fails_and_quiet_keeps_the_reason() {
             let value: Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(value["plan"]["diagnostics"][0]["blocking"], true);
         } else {
-            assert!(output.stdout.is_empty());
+            assert_eq!(output.stdout, b"");
         }
         assert!(
             String::from_utf8_lossy(&output.stderr)
@@ -940,7 +940,7 @@ fn manifest_input_is_missing_or_oversized_before_network_use() {
         ],
     );
     assert_eq!(missing_output.status.code(), Some(2));
-    assert!(missing_output.stdout.is_empty());
+    assert_eq!(missing_output.stdout, b"");
 
     let oversized_output = run(
         &server,
@@ -952,7 +952,7 @@ fn manifest_input_is_missing_or_oversized_before_network_use() {
         ],
     );
     assert_eq!(oversized_output.status.code(), Some(2));
-    assert!(oversized_output.stdout.is_empty());
+    assert_eq!(oversized_output.stdout, b"");
     let stderr = String::from_utf8_lossy(&oversized_output.stderr);
     assert!(stderr.contains("exceeds"));
     let _ = server.finish();
@@ -989,7 +989,7 @@ fn validate_checks_manifests_without_a_daemon_or_profiles() {
 
     let output = validate(&invalid);
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("failed validation with 2 error(s)"),
@@ -1097,7 +1097,7 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     });
     let output = run_with_timeout(&timeout_server, &["operation", "operation-01"], "50ms");
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("timed out"), "{error}");
     assert!(error.contains("Timeout: 50ms"), "{error}");
@@ -1143,7 +1143,7 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     }
     let output = output.expect("interrupted run reported an exit code");
     assert_eq!(output.status.code(), Some(130));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     assert!(String::from_utf8_lossy(&output.stderr).contains("was not cancelled"));
     let _ = interrupt_server.stop();
 }
@@ -1191,7 +1191,7 @@ fn ctrl_c_ends_a_pending_secret_read_from_stdin() {
     drop(stdin);
     let output = child.wait_with_output().expect("interrupted child");
     assert_eq!(output.status.code(), Some(130));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     assert_eq!(server.finish().len(), 2, "no secret value was sent");
 }
 
@@ -1203,7 +1203,7 @@ fn unknown_names_exit_with_input_error_and_no_mutation() {
     });
     let output = run(&server, &["app", "show", "missing"]);
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("was not found"));
     let _ = server.finish();
@@ -1223,7 +1223,7 @@ fn ambiguous_names_report_the_match_count() {
     });
     let output = run(&server, &["app", "show", "notes"]);
     assert_eq!(output.status.code(), Some(3));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("matched 2 applications"));
     let _ = server.finish();
@@ -1472,7 +1472,7 @@ fn rename_uses_the_inspected_revision_and_preserves_identity() {
         assert_json_success(&output)["application_id"],
         "app-notes-01"
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, b"");
     assert_eq!(server.finish().len(), 2);
 }
 
@@ -1581,11 +1581,11 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
         });
         let output = run_with_format(&server, &["--quiet", "status"], "2s", json);
         assert!(output.status.success());
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, b"");
         if json {
             assert_json_success(&output);
         } else {
-            assert!(output.stdout.is_empty());
+            assert_eq!(output.stdout, b"");
         }
         server.finish();
     }
@@ -1594,8 +1594,8 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
     });
     let output = run_human(&server, &["--quiet", "builds", "list"]);
     assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout, b"");
+    assert_eq!(output.stderr, b"");
     server.finish();
 
     let server = start_server(false, 1, |_| {
@@ -1608,7 +1608,7 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
     });
     let output = run_human(&server, &["--quiet", "builds", "logs", "1"]);
     assert!(output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("expired"));
     assert!(stderr.contains("truncated"));
@@ -1620,7 +1620,7 @@ fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
         .output()
         .expect("CLI");
     assert!(!output.status.success());
-    assert!(!output.stderr.is_empty());
+    assert_ne!(output.stderr, b"");
 }
 
 #[test]
@@ -1641,7 +1641,7 @@ fn unexpected_responses_include_connection_context_without_extra_probes() {
         });
         let output = run(&server, &["--quiet", "status"]);
         assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, b"");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains(expected), "{error}");
         assert!(error.contains("Endpoint: TCP http://127.0.0.1:"), "{error}");

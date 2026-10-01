@@ -148,7 +148,7 @@ socket = "/tmp/dev.sock"
     );
     let result = fixture.run(&["profiles", "--quiet"], &env);
     assert!(result.status.success());
-    assert!(result.stdout.is_empty());
+    assert_eq!(result.stdout, b"");
 }
 
 #[test]
@@ -308,7 +308,7 @@ fn connection_failures_identify_the_effective_endpoint_source() {
     ] {
         let output = fixture.run(&args, &env);
         assert_eq!(output.status.code(), Some(4));
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, b"");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
             error.contains(&format!("Endpoint source: {source}")),
