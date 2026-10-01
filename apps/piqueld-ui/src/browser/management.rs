@@ -150,7 +150,8 @@ impl EditorContext {
 fn editor() -> EditorContext {
     use_context().expect("application editor context")
 }
-/// Returns the persisted diagnostic occurrence attached to an API failure.
+/// Returns the diagnostic occurrence ID attached to an API failure. Storage
+/// failures carry a log-only ID that the diagnostics page cannot load.
 fn diagnostic_id(error: &ClientError) -> Option<String> {
     match error {
         ClientError::Api { error, .. } => error

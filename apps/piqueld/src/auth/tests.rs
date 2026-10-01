@@ -451,6 +451,13 @@ async fn middleware_protects_api_and_enforces_cookie_csrf_without_ownership_chec
             .await
             .unwrap();
         assert_eq!(response.status(), expected);
+        // Rejections are marked too, so no API response is ever cached.
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .map(|value| value.to_str().unwrap());
+        let expected_cache_control = path.starts_with("/api/").then_some("no-store");
+        assert_eq!(cache_control, expected_cache_control, "{method} {path}");
     }
 }
 
