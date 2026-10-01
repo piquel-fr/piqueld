@@ -327,9 +327,8 @@
     @media (max-width: 860px) {
         .sidebar {
             position: sticky;
-            top: 0;
+            inset: 0 auto auto;
             z-index: 20;
-            inset: auto;
             width: auto;
             flex-direction: row;
             align-items: center;
