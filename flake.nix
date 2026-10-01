@@ -21,11 +21,11 @@
       nixosModules = {
         piqueld = { lib, pkgs, ... }: {
           imports = [ ./nix/module.nix ];
-          services.piqueld.package = lib.mkDefault self.packages.${pkgs.system}.combined;
+          services.piqueld.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.combined;
         };
         piquelctl = { lib, pkgs, ... }: {
           imports = [ ./nix/cli-module.nix ];
-          programs.piquelctl.package = lib.mkDefault self.packages.${pkgs.system}.cli;
+          programs.piquelctl.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.cli;
         };
         default =
           { config, lib, ... }:

@@ -85,10 +85,37 @@ selected port on the Tailscale interface. All callers must authenticate. Configu
 `settings.auth.public_url` with a stable HTTPS hostname and terminate TLS externally;
 see [authentication](authentication.md).
 
-`settings` declares typed options for `server.listen_mode`, `server.port`, `auth.public_url`, `docker.socket`,
-`docker.auto_initialize_swarm`, all three `reconciliation` intervals/timeouts,
-the `retention` periods, and both `build_history` limits, with the daemon's defaults. Reconciliation values must be 1–86400 seconds; retention values are
+`settings` declares typed options for `server.listen_mode`, `server.port`,
+`server.allowed_hosts`, `auth.public_url`, `docker.socket`,
+`docker.auto_initialize_swarm`, `ingress.enabled`, all three `reconciliation`
+intervals/timeouts, the `retention` periods, both `build_history` limits,
+`metrics.listen`, and every `notifications` switch and timing, with the daemon's
+defaults. Reconciliation values must be 1–86400 seconds; retention values are
 nonnegative days, with zero disabling pruning. Unknown settings are rejected.
+
+Webhook destination URLs usually embed credentials, so they are not Nix
+settings. Put them in a private file and point `notificationDestinationsFile`
+at it:
+
+```nix
+services.piqueld = {
+  settings.notifications.enabled = true;
+  notificationDestinationsFile = "/run/secrets/piqueld-destinations.toml";
+};
+```
+
+```toml
+[[notifications.destinations]]
+name = "operations"
+kind = "discord" # or "json"
+url = "https://discord.com/api/webhooks/..."
+```
+
+The file must contain only `[[notifications.destinations]]` entries. systemd
+loads it as a service credential, so it can stay root-owned with mode `0600`;
+it is appended to the generated configuration inside the service's private
+`/tmp` at each start. Restart piqueld after changing it. See
+[observability](observability.md) for delivery semantics.
 The module always supplies
 `server.data_dir` from `dataDir` and `server.runtime_dir` from `runtimeDir`. It does not configure a registry, Traefik,
 TLS termination or an external UI directory. Git, SSH, and Docker executables
