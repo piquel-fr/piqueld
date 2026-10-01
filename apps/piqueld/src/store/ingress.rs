@@ -546,16 +546,24 @@ mod tests {
             .await
             .unwrap();
         let mut changed = input.spec().routes.clone();
-        changed[0].port = std::num::NonZeroU16::new(3000).unwrap();
+        changed[0].target =
+            serde_json::from_value(serde_json::json!({"service":"web","port":3000})).unwrap();
         store
             .stage_routes(&id, &changed, false, None)
             .await
             .unwrap();
-        assert_eq!(store.routing_table().await.unwrap()[&id][0].port.get(), 80);
+        assert_eq!(
+            store.routing_table().await.unwrap()[&id][0]
+                .target
+                .to_string(),
+            "web:80"
+        );
         store.stage_routes(&id, &changed, true, None).await.unwrap();
         assert_eq!(
-            store.routing_table().await.unwrap()[&id][0].port.get(),
-            3000
+            store.routing_table().await.unwrap()[&id][0]
+                .target
+                .to_string(),
+            "web:3000"
         );
         store.stage_routes(&id, &[], false, None).await.unwrap();
         assert_eq!(

@@ -310,6 +310,41 @@ fn valid_path_indices(mut value: &str) -> bool {
     true
 }
 
+/// Explains the mutually exclusive route destinations.
+pub(super) const ROUTE_TARGET_MESSAGE: &str =
+    "route must set either both `service` and `port`, or `redirect`";
+
+fn validate_redirect(
+    redirect: &super::Redirect,
+    hostname: &str,
+    path: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    match super::RedirectUrl::parse(&redirect.to) {
+        Ok(to) if to.hostname() == hostname => error(
+            errors,
+            "route_redirect_loop",
+            &format!("{path}.redirect.to"),
+            "redirect must target a different hostname than the route",
+        ),
+        Ok(_) => {}
+        Err(source) => error(
+            errors,
+            "route_redirect_invalid",
+            &format!("{path}.redirect.to"),
+            &source.to_string(),
+        ),
+    }
+    if let Err(source) = super::RedirectStatus::try_from(redirect.status) {
+        error(
+            errors,
+            "route_redirect_status_invalid",
+            &format!("{path}.redirect.status"),
+            &source.to_string(),
+        );
+    }
+}
+
 impl ApplicationManifest {
     /// Canonicalizes route hostnames in place (lowercase, trailing dot removed),
     /// then checks hostname syntax, uniqueness, the target service, and the port.
@@ -338,26 +373,29 @@ impl ApplicationManifest {
                     "hostname is already used in this application",
                 );
             }
-            if !self
-                .spec
-                .services
-                .iter()
-                .any(|service| service.name == route.service)
-            {
-                error(
-                    errors,
-                    "route_service_missing",
-                    &format!("{path}.service"),
-                    "route must reference a service in this application",
-                );
-            }
-            if route.port == 0 {
-                error(
-                    errors,
-                    "route_port_invalid",
-                    &format!("{path}.port"),
-                    "HTTP backend port must be 1..=65535",
-                );
+            match (&route.service, route.port, &route.redirect) {
+                (Some(service), Some(port), None) => {
+                    if !self.spec.services.iter().any(|s| &s.name == service) {
+                        error(
+                            errors,
+                            "route_service_missing",
+                            &format!("{path}.service"),
+                            "route must reference a service in this application",
+                        );
+                    }
+                    if port == 0 {
+                        error(
+                            errors,
+                            "route_port_invalid",
+                            &format!("{path}.port"),
+                            "HTTP backend port must be 1..=65535",
+                        );
+                    }
+                }
+                (None, None, Some(redirect)) => {
+                    validate_redirect(redirect, &route.hostname, &path, errors);
+                }
+                _ => error(errors, "route_target_invalid", &path, ROUTE_TARGET_MESSAGE),
             }
         }
     }

@@ -467,13 +467,20 @@ impl ResolvedApplication {
                     .routes
                     .iter()
                     .chain(accepted)
-                    .any(|route| route.service == service.logical_name)
+                    .any(|route| route.target.service() == Some(&service.logical_name))
             {
                 service.networks.push(name.clone());
                 service.networks.sort();
             }
         }
-        if enabled && (!self.routes.is_empty() || !accepted.is_empty()) {
+        // Redirects are answered by the gateway, so only proxied routes need the network.
+        if enabled
+            && self
+                .routes
+                .iter()
+                .chain(accepted)
+                .any(|route| route.target.service().is_some())
+        {
             let labels = Ownership {
                 instance_id: self.instance_id.clone(),
                 application_id: self.id.clone(),

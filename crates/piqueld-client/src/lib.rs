@@ -37,7 +37,8 @@ pub use applications::{
 pub use client::Client;
 pub use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, Metadata, Mount,
-    RepositoryManifest, ResourceLimits, Route, SecretMount, Service, Source, Volume,
+    Redirect, RedirectStatus, RepositoryManifest, ResourceLimits, Route, RouteTarget, SecretMount,
+    Service, Source, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{

@@ -62,7 +62,7 @@ impl ManifestChange {
         for route in &application.spec().routes {
             fields.insert(
                 format!("routes.{}", route.hostname),
-                serde_json::json!({"service":route.service,"port":route.port}),
+                serde_json::to_value(&route.target).expect("route target is serializable"),
             );
         }
         for volume in &application.spec().volumes {

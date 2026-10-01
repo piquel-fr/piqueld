@@ -8,8 +8,8 @@ use crate::{
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
-    ApplicationView, Build, Client, GitRepository, HealthCheck, Mount, RepositoryManifest, Route,
-    SavedApplication, Service, Source, Volume,
+    ApplicationView, Build, Client, GitRepository, HealthCheck, Mount, Redirect, RedirectStatus,
+    RepositoryManifest, Route, SavedApplication, Service, Source, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit},
 };
 
@@ -310,10 +310,25 @@ pub(crate) struct AddRouteArgs {
     /// Internal HTTP port.
     port: u16,
 }
+#[derive(Debug, Args)]
+pub(crate) struct RedirectRouteArgs {
+    #[command(flatten)]
+    target: RouteTarget,
+    /// Absolute http(s) destination URL.
+    to: String,
+    /// HTTP status: 301, 302, 303, 307, or 308.
+    #[arg(long, default_value_t = RedirectStatus::PermanentRedirect.into())]
+    status: u16,
+    /// Drop the request path and query instead of appending them to the destination.
+    #[arg(long)]
+    no_preserve_path: bool,
+}
 #[derive(Debug, Subcommand)]
 pub(crate) enum RouteCommand {
     /// Add an HTTPS route to an application.
     Add(AddRouteArgs),
+    /// Add an HTTPS route the gateway answers with a redirect.
+    Redirect(RedirectRouteArgs),
     /// Remove an HTTPS route by hostname.
     Remove(RouteTarget),
 }
@@ -572,16 +587,25 @@ impl RouteCommand {
     ) -> Result<()> {
         let target = match self {
             Self::Add(args) => &args.target,
+            Self::Redirect(args) => &args.target,
             Self::Remove(target) => target,
         };
         let current = resolve_application(client, &target.app).await?;
         let mut routes = current.application.to_manifest().spec.routes;
         match self {
-            Self::Add(args) => routes.push(Route {
-                hostname: target.hostname.clone(),
-                service: args.service.clone(),
-                port: args.port,
-            }),
+            Self::Add(args) => routes.push(Route::service(
+                target.hostname.clone(),
+                args.service.clone(),
+                args.port,
+            )),
+            Self::Redirect(args) => routes.push(Route::redirect(
+                target.hostname.clone(),
+                Redirect {
+                    to: args.to.clone(),
+                    status: args.status,
+                    preserve_path: !args.no_preserve_path,
+                },
+            )),
             Self::Remove(_) => {
                 let count = routes.len();
                 let hostname = target.hostname.trim_end_matches('.').to_ascii_lowercase();

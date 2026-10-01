@@ -15,6 +15,7 @@ use futures_util::TryStreamExt;
 use hyper::Method;
 use piqueld_core::{
     DockerNetworkName,
+    manifest::ValidatedRoute,
     resource::{APPLICATION_LABEL, INSTANCE_LABEL, MANAGED_LABEL},
 };
 use serde_json::{Value, json};
@@ -178,12 +179,20 @@ impl Ingress {
         Ok(())
     }
 
+    /// Whether an application's routes reach a backend through its ingress
+    /// network. Redirect-only applications are answered by Caddy and have none.
+    fn proxies(routes: &[ValidatedRoute]) -> bool {
+        routes.iter().any(|route| route.target.service().is_some())
+    }
+
     /// Splits the desired routing table into what can safely be applied now.
     ///
     /// Returns the table to apply, the verified ingress networks to attach, and
-    /// per-application network failures. Keep unavailable apps on their accepted
-    /// destinations, but always honor withdrawals. Never attach an unverified
-    /// network or acknowledge a new route for an app whose network failed validation.
+    /// per-application network failures. Applications without proxied routes
+    /// (withdrawn or redirect-only) need no network and are passed through.
+    /// Keep unavailable apps on their accepted destinations, but always honor
+    /// withdrawals. Never attach an unverified network or acknowledge a new route
+    /// for an app whose network failed validation.
     pub(super) async fn prepare_routes(
         &self,
         desired: &RoutingTable,
@@ -196,7 +205,7 @@ impl Ingress {
         let mut networks = BTreeSet::new();
         let mut failures = BTreeMap::new();
         for (id, routes) in &mut table {
-            if routes.is_empty() {
+            if !Self::proxies(routes) {
                 continue;
             }
             let name = DockerNetworkName::for_ingress(id).to_string();
@@ -409,7 +418,7 @@ impl Ingress {
         spec: &Value,
     ) -> Result<()> {
         if let Some((id, _)) = table.iter().find(|(id, routes)| {
-            !routes.is_empty()
+            Self::proxies(routes)
                 && !networks.contains(&DockerNetworkName::for_ingress(id).to_string())
         }) {
             ensure!(
@@ -777,7 +786,7 @@ impl Ingress {
         // Keep existing attachments for unavailable apps whose routes were retained.
         let retained: BTreeSet<_> = table
             .iter()
-            .filter(|(_, routes)| !routes.is_empty())
+            .filter(|(_, routes)| Self::proxies(routes))
             .map(|(id, _)| DockerNetworkName::for_ingress(id).to_string())
             .collect();
         let stale: Vec<String> = container["NetworkSettings"]["Networks"]

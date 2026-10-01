@@ -238,7 +238,10 @@ impl ApplicationEdit {
                         name: name.clone(),
                     })?;
                 manifest.spec.services.remove(index);
-                manifest.spec.routes.retain(|route| route.service != name);
+                manifest
+                    .spec
+                    .routes
+                    .retain(|route| route.service.as_ref() != Some(&name));
             }
             Self::Service { name, edit } => {
                 let renamed_to = match &edit {
@@ -257,8 +260,8 @@ impl ApplicationEdit {
                 edit.apply(service)?;
                 if let Some(new_name) = renamed_to {
                     for route in &mut manifest.spec.routes {
-                        if route.service == name {
-                            route.service.clone_from(&new_name);
+                        if route.service.as_ref() == Some(&name) {
+                            route.service = Some(new_name.clone());
                         }
                     }
                 }
@@ -512,11 +515,11 @@ mod tests {
                 ..ApplicationSpec::default()
             },
         };
-        ApplicationEdit::Routes(vec![Route {
-            hostname: "app.example.com".into(),
-            service: "web".into(),
-            port: 3000,
-        }])
+        ApplicationEdit::Routes(vec![Route::service(
+            "app.example.com".into(),
+            "web".into(),
+            3000,
+        )])
         .apply(&mut manifest)
         .unwrap();
         ApplicationEdit::Service {
@@ -525,7 +528,7 @@ mod tests {
         }
         .apply(&mut manifest)
         .unwrap();
-        assert_eq!(manifest.spec.routes[0].service, "frontend");
+        assert_eq!(manifest.spec.routes[0].service.as_deref(), Some("frontend"));
         manifest.clone().validate().unwrap();
         ApplicationEdit::RemoveService("frontend".into())
             .apply(&mut manifest)

@@ -138,6 +138,7 @@ impl Scenario {
             .add_root_certificate(reqwest::Certificate::from_pem(&root_cert).unwrap())
             .resolve("one.example.test", "127.0.0.1:443".parse().unwrap())
             .resolve("two.example.test", "127.0.0.1:443".parse().unwrap())
+            .resolve("www.example.test", "127.0.0.1:443".parse().unwrap())
             .build()
             .unwrap();
         Self {
@@ -228,6 +229,25 @@ impl Scenario {
                 .status(),
             404
         );
+    }
+
+    /// A service-less application's redirect is answered by Caddy itself, so
+    /// the application has no ingress network.
+    async fn redirect_without_backend(&self) {
+        let app = piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='www'\n[[spec.routes]]\nhostname='www.example.test'\nredirect={to='https://one.example.test/base/'}").unwrap().normalize(ApplicationId::parse("input-app").unwrap());
+        let id = deploy(&self.store, &self.controller, app).await;
+        let response = self
+            .client
+            .get(format!("{}path?q=1", self.url("www.example.test")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 308);
+        assert_eq!(
+            response.headers()["location"],
+            "https://one.example.test/base/path?q=1"
+        );
+        assert_eq!(self.docker.observe(&id).await.unwrap().networks, []);
     }
 
     async fn add_application_without_interrupting_traffic(&self) {
@@ -556,7 +576,7 @@ impl Scenario {
             .await
             .unwrap();
         let mut pending = app.spec().routes.clone();
-        pending[0].port = std::num::NonZeroU16::new(8081).unwrap();
+        pending[0].target = serde_json::from_value(json!({"service":"web","port":8081})).unwrap();
         self.store
             .stage_routes(&unavailable, &pending, true, None)
             .await
@@ -700,7 +720,9 @@ impl Scenario {
             );
             assert_eq!(
                 self.store.applied_routes(&self.first).await.unwrap()[0]
-                    .service
+                    .target
+                    .service()
+                    .unwrap()
                     .as_str(),
                 "web"
             );
@@ -764,7 +786,7 @@ impl Scenario {
             timeout_seconds: 1,
         });
         changed.spec.services.push(next);
-        changed.spec.routes[0].service = "next".into();
+        changed.spec.routes[0].service = Some("next".into());
         let completed = std::sync::atomic::AtomicBool::new(false);
         tokio::join!(
             async {
@@ -806,7 +828,9 @@ impl Scenario {
         );
         assert_eq!(
             self.store.applied_routes(&self.first).await.unwrap()[0]
-                .service
+                .target
+                .service()
+                .unwrap()
                 .as_str(),
             "next"
         );
@@ -1009,6 +1033,7 @@ async fn ingress_caddy_routes_tls_network_changes_and_disable() {
         .unwrap();
     let scenario = Scenario::new().await;
     scenario.assert_public_routing().await;
+    scenario.redirect_without_backend().await;
     scenario
         .slow_gateway_does_not_block_private_deployment()
         .await;

@@ -567,10 +567,9 @@ pub struct RouteStatus {
     pub application_id: String,
     /// Exact public DNS hostname.
     pub hostname: String,
-    /// Logical backend service.
-    pub service: String,
-    /// Internal HTTP backend port.
-    pub port: u16,
+    /// Backend service or redirect.
+    #[serde(flatten)]
+    pub target: crate::manifest::RouteTarget,
     /// disabled, pending, ready, or failed.
     pub state: String,
     /// Public diagnostic explaining DNS, TLS, or gateway readiness.
