@@ -1,5 +1,5 @@
 //! Metrics listener and webhook notification settings.
-use super::ConfigError;
+use super::{ConfigError, Credential, CredentialError, CredentialFile};
 use piqueld_core::observability::NotificationCategory;
 use serde::Deserialize;
 
@@ -71,7 +71,7 @@ impl NotificationConfig {
                     "webhook names must be unique and contain 1..=63 bytes".into(),
                 ));
             }
-            let url = reqwest::Url::parse(&destination.url)
+            let url = reqwest::Url::parse(destination.url.expose())
                 .map_err(|_| ConfigError::Invalid("webhook URL is invalid".into()))?;
             let loopback_http = url.scheme() == "http"
                 && url.host_str().is_some_and(|host| {
@@ -129,32 +129,44 @@ pub enum WebhookKind {
     /// Discord-compatible message, with mentions disabled.
     Discord,
 }
-/// One configured destination. Its URL is deliberately excluded from debug output.
-#[derive(Clone, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
+/// One configured destination. Its URL never appears in debug output.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(try_from = "RawWebhookDestination")]
 pub struct WebhookDestination {
     /// Stable public name, used in the delivery ledger.
     pub name: String,
     /// HTTP(S) endpoint; may contain a credential and must never be displayed.
-    pub url: String,
+    pub url: Credential,
     /// Whether pending and new deliveries are enabled.
-    #[serde(default = "enabled")]
     pub enabled: bool,
     /// Receiver payload format.
-    #[serde(default)]
     pub kind: WebhookKind,
+}
+/// TOML form of [`WebhookDestination`], before its URL is resolved.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWebhookDestination {
+    name: String,
+    url: Option<String>,
+    url_file: Option<CredentialFile>,
+    #[serde(default = "enabled")]
+    enabled: bool,
+    #[serde(default)]
+    kind: WebhookKind,
 }
 /// Serde default that enables destinations unless configured otherwise.
 const fn enabled() -> bool {
     true
 }
-impl std::fmt::Debug for WebhookDestination {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WebhookDestination")
-            .field("name", &self.name)
-            .field("enabled", &self.enabled)
-            .field("kind", &self.kind)
-            .finish_non_exhaustive()
+impl TryFrom<RawWebhookDestination> for WebhookDestination {
+    type Error = CredentialError;
+    fn try_from(raw: RawWebhookDestination) -> Result<Self, Self::Error> {
+        Ok(Self {
+            name: raw.name,
+            url: Credential::resolve("url", raw.url, raw.url_file)?,
+            enabled: raw.enabled,
+            kind: raw.kind,
+        })
     }
 }
 

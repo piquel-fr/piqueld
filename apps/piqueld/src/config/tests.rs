@@ -159,7 +159,6 @@ fn tailscale_node_settings_are_validated() {
         "[tailscale]\nhostname = ''",
         "[tailscale]\nhostname = 'piqueld.example'",
         "[tailscale]\nhostname = '-piqueld'",
-        "[tailscale]\nauth_key_file = 'relative/key'",
     ] {
         assert!(
             matches!(
@@ -169,4 +168,36 @@ fn tailscale_node_settings_are_validated() {
             "accepted {document}"
         );
     }
+}
+
+#[test]
+fn credential_files_are_read_and_never_shown() {
+    let directory = tempfile::tempdir().unwrap();
+    let webhook = directory.path().join("webhook");
+    let auth_key = directory.path().join("ts-auth-key");
+    std::fs::write(&webhook, "https://hooks.example.com/secret\n").unwrap();
+    let source = format!(
+        "[tailscale]\nauth_key_file = '{}'\n\
+         [[notifications.destinations]]\nname = 'discord'\nurl_file = '{}'",
+        auth_key.display(),
+        webhook.display()
+    );
+    let config = DaemonConfig::from_toml(&source).unwrap();
+    assert_eq!(
+        config.notifications.destinations[0].url.expose(),
+        "https://hooks.example.com/secret"
+    );
+    let view = format!("{:?} {config:?}", config.view());
+    assert!(
+        view.contains(&format!("from {}", webhook.display())),
+        "{view}"
+    );
+    assert!(
+        view.contains(&format!("from {}", auth_key.display())),
+        "{view}"
+    );
+    assert!(!view.contains("secret"), "{view}");
+
+    let both = format!("{source}\nurl = 'https://hooks.example.com/inline'");
+    assert!(DaemonConfig::from_toml(&both).is_err(), "accepted {both}");
 }

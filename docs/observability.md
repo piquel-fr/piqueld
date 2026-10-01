@@ -119,7 +119,7 @@ The dashboard adds Events, Errors, Analytics, Notifications and Daemon status.
 Application pages include scoped history; diagnostics link to related operation
 history. Error feedback links to the specific diagnostic where available. Views
 refresh while visible. Configuration is displayed read-only, with destination
-URLs omitted.
+URLs omitted; only the file a URL was read from is shown.
 
 Resource snapshots are cached for five seconds. They include process uptime,
 resident memory and CPU, DB/WAL sizes, available disk, retained event/diagnostic
@@ -148,6 +148,9 @@ kind = "json" # or "discord"
 url = "https://receiver.example/private-webhook"
 enabled = true
 ```
+
+Webhook URLs are credentials. Use `url_file` instead of `url` to read one from a
+file, such as a systemd credential; see [configuration](configuration.md#credential-files).
 
 Build/deployment failures notify once until a successful operation clears that
 condition. Service degradation is observed at application health level. Docker,
