@@ -109,7 +109,7 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
         <Modal
             title="Deployment preview"
             opened={opened}
-            wide={true}
+            wide=true
             on_close={Callback::new(move |()| preview.set(None))}
         >
             {move || {
@@ -133,10 +133,14 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
                                     <h3>"Configuration changes"</h3>
                                 </div>
                                 {if plan.changes.is_empty() {
-                                    view! { <p class="hint">"No configuration changes since the last deployment."</p> }.into_view()
+                                    view! {
+                                        <p class="hint">
+                                            "No configuration changes since the last deployment."
+                                        </p>
+                                    }
+                                        .into_view()
                                 } else {
-                                    plan
-                                        .changes
+                                    plan.changes
                                         .into_iter()
                                         .map(|change| {
                                             view! {
@@ -162,7 +166,8 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
                                     <h3>"Planned actions"</h3>
                                 </div>
                                 {if plan.plan.actions.is_empty() {
-                                    view! { <p class="hint">"No runtime actions are required."</p> }.into_view()
+                                    view! { <p class="hint">"No runtime actions are required."</p> }
+                                        .into_view()
                                 } else {
                                     view! {
                                         <ul class="stack-sm">
@@ -192,7 +197,10 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
                                                 .plan
                                                 .diagnostics
                                                 .into_iter()
-                                                .map(|d| notice(Tone::Warn, format!("{}: {}", d.resource, d.message)))
+                                                .map(|d| notice(
+                                                    Tone::Warn,
+                                                    format!("{}: {}", d.resource, d.message),
+                                                ))
                                                 .collect_view()}
                                         </div>
                                     }
@@ -246,9 +254,9 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
     view! {
         <section class="stack-sm" aria-label="Deployment history">
             {move || error.get().map(|e| notice(Tone::Bad, e))}
-            <Show when={move || history.with(Vec::is_empty)}>
-                {empty("No deployments yet. Deploy the saved configuration to create one.")}
-            </Show>
+            <Show when={move || {
+                history.with(Vec::is_empty)
+            }}>{empty("No deployments yet. Deploy the saved configuration to create one.")}</Show>
             <For
                 each={move || history.get()}
                 key={|d| d.operation.id.clone()}
@@ -268,7 +276,12 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
             />
             <Show when={move || cursor.get().is_some()}>
                 <div class="btn-group">
-                    <button type="button" class="btn" disabled={move || loading.get()} on:click={more.clone()}>
+                    <button
+                        type="button"
+                        class="btn"
+                        disabled={move || loading.get()}
+                        on:click={more.clone()}
+                    >
                         "Load older deployments"
                     </button>
                 </div>
@@ -344,7 +357,9 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                     {icon(Icon::ChevronRight)}
                 </span>
                 {move || operation_badge(deployment.get().operation.state)}
-                <strong>{move || format!("Deployment #{}", deployment.get().operation.generation)}</strong>
+                <strong>
+                    {move || format!("Deployment #{}", deployment.get().operation.generation)}
+                </strong>
                 {move || {
                     deployment
                         .get()
@@ -373,7 +388,9 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                     options={&["Details", "Snapshot", "Attempts"]}
                     selected={tab}
                 />
-                <div hidden={move || tab.get() != "Details"}>
+                <div hidden={move || {
+                    tab.get() != "Details"
+                }}>
                     {move || {
                         let op = deployment.get().operation;
                         view! {
@@ -391,12 +408,28 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                                     <dd>{op.attempt}</dd>
                                     <dt>"Phase"</dt>
                                     <dd>{op.phase.unwrap_or_else(|| "Waiting".into())}</dd>
-                                    {op.resource.map(|resource| view! { <dt>"Resource"</dt><dd><code>{resource}</code></dd> })}
+                                    {op
+                                        .resource
+                                        .map(|resource| {
+                                            view! {
+                                                <dt>"Resource"</dt>
+                                                <dd>
+                                                    <code>{resource}</code>
+                                                </dd>
+                                            }
+                                        })}
                                     <dt>"Created"</dt>
                                     <dd>{timestamp(op.created_at_ms)}</dd>
                                     <dt>"Updated"</dt>
                                     <dd>{timestamp(op.updated_at_ms)}</dd>
-                                    {op.finished_at_ms.map(|ms| view! { <dt>"Finished"</dt><dd>{timestamp(ms)}</dd> })}
+                                    {op
+                                        .finished_at_ms
+                                        .map(|ms| {
+                                            view! {
+                                                <dt>"Finished"</dt>
+                                                <dd>{timestamp(ms)}</dd>
+                                            }
+                                        })}
                                 </dl>
                                 {op
                                     .error_message
@@ -404,7 +437,9 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
                                         notice(
                                             Tone::Bad,
                                             view! {
-                                                {op.error_code.map(|code| view! { <strong>{code}</strong> })}
+                                                {op
+                                                    .error_code
+                                                    .map(|code| view! { <strong>{code}</strong> })}
                                                 <span>{error}</span>
                                             },
                                         )
@@ -540,8 +575,7 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
                     }
                         .into_view()
                 }
-            }}
-            <div class="btn-group">
+            }} <div class="btn-group">
                 <button
                     type="button"
                     class="btn btn-sm"
@@ -655,7 +689,13 @@ fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
                 </dd>
                 <dt>"Secret files"</dt>
                 <dd>
-                    {list(service.secrets.iter().map(|s| format!("{} → {}", s.name, s.target)).collect())}
+                    {list(
+                        service
+                            .secrets
+                            .iter()
+                            .map(|s| format!("{} → {}", s.name, s.target))
+                            .collect(),
+                    )}
                 </dd>
                 <SnapshotRuntime service={service} />
             </dl>

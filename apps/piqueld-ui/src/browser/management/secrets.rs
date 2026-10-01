@@ -227,14 +227,18 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                                             .get()
                                             .map(|id| {
                                                 view! {
-                                                    <A href={format!("/dashboard/errors/{id}")}>"Diagnostic details"</A>
+                                                    <A href={format!(
+                                                        "/dashboard/errors/{id}",
+                                                    )}>"Diagnostic details"</A>
                                                 }
                                             })}
                                     },
                                 )
                             })
                     }}
-                    {move || (!notice_text.get().is_empty()).then(|| notice(Tone::Ok, notice_text.get()))}
+                    {move || {
+                        (!notice_text.get().is_empty()).then(|| notice(Tone::Ok, notice_text.get()))
+                    }}
                     {move || {
                         metadata
                             .with(|items| items.iter().any(|s| s.unavailable))
@@ -298,7 +302,10 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                                 class="btn btn-primary"
                                 disabled={move || {
                                     name.get().is_empty() || value.get().is_empty()
-                                        || metadata.get().iter().any(|s| s.name == name.get() && s.deleting)
+                                        || metadata
+                                            .get()
+                                            .iter()
+                                            .any(|s| s.name == name.get() && s.deleting)
                                 }}
                                 on:click={write}
                             >
@@ -397,10 +404,15 @@ fn SecretFiles(service_name: String) -> impl IntoView {
                                     <span>"Secret name"</span>
                                     <input
                                         prop:value={move || {
-                                            mounts.get().get(index).map(|m| m.name.clone()).unwrap_or_default()
+                                            mounts
+                                                .get()
+                                                .get(index)
+                                                .map(|m| m.name.clone())
+                                                .unwrap_or_default()
                                         }}
                                         on:input={move |e| {
-                                            mounts.update(|items| items[index].name = event_target_value(&e));
+                                            mounts
+                                                .update(|items| items[index].name = event_target_value(&e));
                                         }}
                                     />
                                 </label>
@@ -408,17 +420,25 @@ fn SecretFiles(service_name: String) -> impl IntoView {
                                     <span>"Container path"</span>
                                     <input
                                         prop:value={move || {
-                                            mounts.get().get(index).map(|m| m.target.clone()).unwrap_or_default()
+                                            mounts
+                                                .get()
+                                                .get(index)
+                                                .map(|m| m.target.clone())
+                                                .unwrap_or_default()
                                         }}
                                         on:input={move |e| {
-                                            mounts.update(|items| items[index].target = event_target_value(&e));
+                                            mounts
+                                                .update(|items| {
+                                                    items[index].target = event_target_value(&e);
+                                                });
                                         }}
                                     />
                                 </label>
                                 {remove_button(move || {
-                                    mounts.update(|items| {
-                                        items.remove(index);
-                                    });
+                                    mounts
+                                        .update(|items| {
+                                            items.remove(index);
+                                        });
                                 })}
                             </div>
                         }

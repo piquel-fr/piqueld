@@ -200,7 +200,9 @@ impl Feedback {
                             view! {
                                 {self.message.get()}
                                 {(!self.secret.get().is_empty())
-                                    .then(|| view! { <pre class="secret-box">{self.secret.get()}</pre> })}
+                                    .then(|| {
+                                        view! { <pre class="secret-box">{self.secret.get()}</pre> }
+                                    })}
                             },
                         )
                     })
@@ -237,9 +239,7 @@ impl AuthState {
             return view! {
                 <main class="auth-page">
                     <section class="card auth-card">
-                        {brand()}
-                        {notice(Tone::Bad, self.error.get())}
-                        <div class="form-actions">
+                        {brand()} {notice(Tone::Bad, self.error.get())} <div class="form-actions">
                             <button type="button" class="btn" on:click={move |_| reload()}>
                                 {icon(Icon::Refresh)}
                                 "Retry"
@@ -342,13 +342,10 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
             aria-labelledby="session-expired-title"
         >
             <section class="card auth-card">
-                {brand()}
-                <h2 id="session-expired-title">"Your session has expired"</h2>
+                {brand()} <h2 id="session-expired-title">"Your session has expired"</h2>
                 <p class="hint">
                     "Sign in to continue. Unsaved edits are still here; retry any action that failed after signing in."
-                </p>
-                {feedback.view()}
-                <div class="form-actions">
+                </p> {feedback.view()} <div class="form-actions">
                     <button
                         type="button"
                         class="btn btn-primary"
@@ -462,8 +459,7 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
             <h2>"Set up piqueld"</h2>
             <p class="hint">
                 "No account exists yet. Open the setup link saved in the daemon’s data directory, in the "
-                <code>"setup-link"</code>
-                " file, to create the first account."
+                <code>"setup-link"</code> " file, to create the first account."
             </p>
             <div class="form-actions">
                 <button type="button" class="btn" on:click={move |_| reload()}>
@@ -513,8 +509,7 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
     view! {
         <main class="auth-page">
             <section class="card auth-card">
-                {brand()}
-                {feedback.view()}
+                {brand()} {feedback.view()}
                 <fieldset disabled={move || feedback.busy.get()}>{content}</fieldset>
             </section>
         </main>
@@ -557,8 +552,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
     view! {
         <h2>"Connect piquelctl"</h2>
         <p class="hint">
-            "Signed in as "
-            <strong>{who}</strong>
+            "Signed in as " <strong>{who}</strong>
             ". Enter the code shown by the CLI you are connecting."
         </p>
         {notice(
@@ -571,7 +565,9 @@ fn DeviceApproval(who: String) -> impl IntoView {
             },
         )}
         {feedback.view()}
-        <fieldset disabled={move || feedback.busy.get()}>
+        <fieldset disabled={move || {
+            feedback.busy.get()
+        }}>
             {move || match request.get() {
                 None => {
                     view! {
@@ -726,13 +722,18 @@ pub(super) fn AccountsPage() -> impl IntoView {
             </button>
         </PageHeader>
         <div class="stack">
-            {feedback.view()}
-            <fieldset class="stack" disabled={move || feedback.busy.get()}>
+            {feedback.view()} <fieldset class="stack" disabled={move || feedback.busy.get()}>
                 {move || {
                     directory
                         .get()
                         .map_or_else(
-                            || feedback.error.with(String::is_empty).then(|| empty("Loading accounts…")).into_view(),
+                            || {
+                                feedback
+                                    .error
+                                    .with(String::is_empty)
+                                    .then(|| empty("Loading accounts…"))
+                                    .into_view()
+                            },
                             |data| {
                                 view! {
                                     {data
@@ -741,7 +742,11 @@ pub(super) fn AccountsPage() -> impl IntoView {
                                         .cloned()
                                         .map(|user| {
                                             view! {
-                                                <Account user={user} directory={data.clone()} feedback={feedback} />
+                                                <Account
+                                                    user={user}
+                                                    directory={data.clone()}
+                                                    feedback={feedback}
+                                                />
                                             }
                                         })
                                         .collect_view()}
@@ -780,7 +785,10 @@ fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
                             type="button"
                             class="btn btn-ghost btn-sm"
                             on:click={move |_| {
-                                feedback.manage(Manage::RevokeInvitation { id: id.clone() });
+                                feedback
+                                    .manage(Manage::RevokeInvitation {
+                                        id: id.clone(),
+                                    });
                             }}
                         >
                             "Revoke"
@@ -795,7 +803,9 @@ fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
             <header>
                 <div>
                     <h2>"Pending invitations"</h2>
-                    <p>"Links expire after 24 hours. The first person to complete registration chooses their own account details."</p>
+                    <p>
+                        "Links expire after 24 hours. The first person to complete registration chooses their own account details."
+                    </p>
                 </div>
             </header>
             {if pending {
@@ -1015,14 +1025,13 @@ fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoVie
                                             <tr>
                                                 <td>{credential.name}</td>
                                                 <td>{badge(Tone::Neutral, credential.kind)}</td>
-                                                <td class="muted">{when(credential.last_used_at * 1000)}</td>
+                                                <td class="muted">
+                                                    {when(credential.last_used_at * 1000)}
+                                                </td>
                                                 <td class="muted">
                                                     {credential
                                                         .expires_at
-                                                        .map_or_else(
-                                                            || "Never".into_view(),
-                                                            |t| when(t * 1000),
-                                                        )}
+                                                        .map_or_else(|| "Never".into_view(), |t| when(t * 1000))}
                                                 </td>
                                                 <td class="actions">
                                                     <button

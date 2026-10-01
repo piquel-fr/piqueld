@@ -316,7 +316,11 @@ fn NotFoundPage() -> impl IntoView {
 fn refresh_error(context: &DashboardContext) -> View {
     let signals = context.signals;
     view! {
-        <div class="stack-sm" style="margin-bottom:16px" hidden={move || signals.refresh_error.get().is_none()}>
+        <div
+            class="stack-sm"
+            style="margin-bottom:16px"
+            hidden={move || signals.refresh_error.get().is_none()}
+        >
             {move || {
                 signals
                     .refresh_error
@@ -327,7 +331,13 @@ fn refresh_error(context: &DashboardContext) -> View {
                         } else {
                             "Refresh failed"
                         };
-                        notice(Tone::Bad, view! { <strong>{title}</strong> {message} })
+                        notice(
+                            Tone::Bad,
+                            view! {
+                                <strong>{title}</strong>
+                                {message}
+                            },
+                        )
                     })
             }}
         </div>
@@ -338,11 +348,12 @@ fn refresh_error(context: &DashboardContext) -> View {
 /// Notice shown when the dashboard is displaying data from an earlier refresh.
 fn stale_notice(signals: DashboardSignals) -> View {
     view! {
-        <div class="stack-sm" style="margin-bottom:16px" hidden={move || signals.data_state.get() != DataState::Stale}>
-            {notice(
-                Tone::Warn,
-                "Showing the last successful view; the latest refresh failed.",
-            )}
+        <div
+            class="stack-sm"
+            style="margin-bottom:16px"
+            hidden={move || signals.data_state.get() != DataState::Stale}
+        >
+            {notice(Tone::Warn, "Showing the last successful view; the latest refresh failed.")}
         </div>
     }
     .into_view()

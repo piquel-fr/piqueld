@@ -104,7 +104,9 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
     view! {
         <section class="stack-sm" aria-label="Build history">
             <div class="toolbar">
-                <p class="hint">"Running builds refresh automatically while this page is visible."</p>
+                <p class="hint">
+                    "Running builds refresh automatically while this page is visible."
+                </p>
                 <div class="toolbar-end">
                     <button
                         type="button"
@@ -118,9 +120,9 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
                 </div>
             </div>
             {move || error.get().map(|e| notice(Tone::Bad, e))}
-            <Show when={move || !loading.get() && records.with(Vec::is_empty)}>
-                {empty("No builds recorded yet.")}
-            </Show>
+            <Show when={move || {
+                !loading.get() && records.with(Vec::is_empty)
+            }}>{empty("No builds recorded yet.")}</Show>
             <For
                 each={move || records.get()}
                 key={|build| build.id}
@@ -140,7 +142,12 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
             />
             <Show when={move || cursor.get().is_some()}>
                 <div class="btn-group">
-                    <button type="button" class="btn" disabled={move || loading.get()} on:click={older}>
+                    <button
+                        type="button"
+                        class="btn"
+                        disabled={move || loading.get()}
+                        on:click={older}
+                    >
                         "Load older builds"
                     </button>
                 </div>
@@ -182,46 +189,43 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                                     view! {
                                         <dt>"Application"</dt>
                                         <dd>
-                                            <A href={format!("/dashboard/applications/{application_id}")}>
-                                                {application_id.clone()}
-                                            </A>
+                                            <A href={format!(
+                                                "/dashboard/applications/{application_id}",
+                                            )}>{application_id.clone()}</A>
                                         </dd>
                                     }
-                                })}
-                            <dt>"Operation"</dt>
-                            <dd>
+                                })} <dt>"Operation"</dt> <dd>
                                 <A href={format!("/dashboard/events?operation={operation_id}")}>
                                     <code>{operation_id.clone()}</code>
                                 </A>
-                            </dd>
-                            <dt>"Started"</dt>
-                            <dd>{timestamp(b.started_at_ms)}</dd>
+                            </dd> <dt>"Started"</dt> <dd>{timestamp(b.started_at_ms)}</dd>
                             <dt>"Finished"</dt>
                             <dd>
                                 {b.finished_at_ms.map_or_else(|| "In progress".into(), timestamp)}
-                            </dd>
-                            <dt>"Duration"</dt>
-                            <dd>{duration}</dd>
-                            {source_details(b.source)}
+                            </dd> <dt>"Duration"</dt> <dd>{duration}</dd> {source_details(b.source)}
                             <dt>"Resolved commit"</dt>
                             <dd>
                                 {b
                                     .commit
                                     .map_or_else(
-                                        || view! { <span class="muted">"Not resolved"</span> }.into_view(),
+                                        || {
+                                            view! { <span class="muted">"Not resolved"</span> }
+                                                .into_view()
+                                        },
                                         |commit| view! { <code>{commit}</code> }.into_view(),
                                     )}
-                            </dd>
-                            <dt>"Image"</dt>
+                            </dd> <dt>"Image"</dt>
                             <dd>
                                 {b
                                     .image_id
                                     .map_or_else(
-                                        || view! { <span class="muted">"Not produced"</span> }.into_view(),
+                                        || {
+                                            view! { <span class="muted">"Not produced"</span> }
+                                                .into_view()
+                                        },
                                         |image| view! { <code>{image}</code> }.into_view(),
                                     )}
-                            </dd>
-                            <dt>"Retained output"</dt>
+                            </dd> <dt>"Retained output"</dt>
                             <dd>{bytes(u64::try_from(b.log_bytes).unwrap_or(0))}</dd>
                         </dl>
                     }
@@ -357,13 +361,14 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
                         )
                     })
             }}
-            <Show when={move || record.get().log_expired || expired.get()}>
+            <Show when={move || {
+                record.get().log_expired || expired.get()
+            }}>
                 {notice(
                     Tone::Warn,
                     "Output expired under the retention policy; build metadata remains available.",
                 )}
-            </Show>
-            {move || error.get().map(|e| notice(Tone::Bad, e))}
+            </Show> {move || error.get().map(|e| notice(Tone::Bad, e))}
         </div>
         <LogViewer
             lines={lines}
@@ -384,7 +389,11 @@ fn build_summary_time(build: &BuildRecord) -> View {
             {when(build.started_at_ms)}
         }
         .into_view(),
-        None => view! { "Started " {when(build.started_at_ms)} }.into_view(),
+        None => view! {
+            "Started "
+            {when(build.started_at_ms)}
+        }
+        .into_view(),
     }
 }
 

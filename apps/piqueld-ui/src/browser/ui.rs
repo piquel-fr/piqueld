@@ -153,7 +153,12 @@ impl ApplicationHealth {
 }
 
 pub(super) fn badge(tone: Tone, label: impl Into<String>) -> View {
-    view! { <span class="badge" data-tone={tone.attr()}>{label.into()}</span> }.into_view()
+    view! {
+        <span class="badge" data-tone={tone.attr()}>
+            {label.into()}
+        </span>
+    }
+    .into_view()
 }
 
 pub(super) fn health_badge(health: ApplicationHealth) -> View {

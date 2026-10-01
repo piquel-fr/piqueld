@@ -83,7 +83,9 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
             <header>
                 <div>
                     <h3>{if scoped { "Service logs" } else { "Application logs" }}</h3>
-                    <p>"Latest 200 lines from the last hour, read directly from Docker. Refreshes every 30 seconds while visible."</p>
+                    <p>
+                        "Latest 200 lines from the last hour, read directly from Docker. Refreshes every 30 seconds while visible."
+                    </p>
                 </div>
                 <button
                     type="button"
@@ -110,7 +112,9 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
                                     .spec
                                     .services
                                     .into_iter()
-                                    .map(|s| view! { <option value={s.name.clone()}>{s.name}</option> })
+                                    .map(|s| {
+                                        view! { <option value={s.name.clone()}>{s.name}</option> }
+                                    })
                                     .collect_view()
                             }}
                         </select>
@@ -125,7 +129,9 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
                     </p>
                 </Show>
                 {move || error.get().map(|e| notice(Tone::Bad, e))}
-                <Show when={move || logs.with(|logs| logs.as_ref().is_some_and(|logs| logs.truncated))}>
+                <Show when={move || {
+                    logs.with(|logs| logs.as_ref().is_some_and(|logs| logs.truncated))
+                }}>
                     {notice(
                         Tone::Warn,
                         "Snapshot truncated. Filter by service or stream to narrow the output.",

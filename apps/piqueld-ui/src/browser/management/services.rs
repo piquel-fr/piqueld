@@ -49,7 +49,9 @@ pub(super) fn ServiceList() -> impl IntoView {
             {move || {
                 let manifest = context.manifest();
                 if manifest.spec.services.is_empty() {
-                    return empty("No services yet. Add one to describe what this application runs.");
+                    return empty(
+                        "No services yet. Add one to describe what this application runs.",
+                    );
                 }
                 let id = context.id();
                 manifest
@@ -65,7 +67,10 @@ pub(super) fn ServiceList() -> impl IntoView {
                         view! {
                             <A
                                 class="list-row"
-                                href={format!("/dashboard/applications/{id}/services/{}", service.name)}
+                                href={format!(
+                                    "/dashboard/applications/{id}/services/{}",
+                                    service.name,
+                                )}
                             >
                                 <span class="app-icon" aria-hidden="true">
                                     {icon(Icon::Package)}
@@ -78,7 +83,9 @@ pub(super) fn ServiceList() -> impl IntoView {
                                     {runtime
                                         .map_or_else(
                                             || format!("{} replicas", service.replicas),
-                                            |(_, healthy, desired)| format!("{healthy} / {desired} healthy"),
+                                            |(_, healthy, desired)| {
+                                                format!("{healthy} / {desired} healthy")
+                                            },
                                         )}
                                 </span>
                                 {runtime.map(|(health, ..)| health_badge(health))}
@@ -110,8 +117,10 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     {
         return view! {
             <div class="stack-sm">
-                {notice(Tone::Bad, format!("Service {name} is not part of the saved configuration."))}
-                <div class="btn-group">
+                {notice(
+                    Tone::Bad,
+                    format!("Service {name} is not part of the saved configuration."),
+                )} <div class="btn-group">
                     <A class="btn" href={app_href}>
                         {icon(Icon::ArrowLeft)}
                         "Back to services"
@@ -179,11 +188,9 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
                             "This service is managed in Git. Edit it in the repository manifest.",
                         )
                     })
-            }}
-            <Show when={move || selected.get() == "Logs"}>
+            }} <Show when={move || selected.get() == "Logs"}>
                 <super::logs::ApplicationLogs fixed_service={log_service.clone()} />
-            </Show>
-            {groups}
+            </Show> {groups}
         </div>
     }
     .into_view()

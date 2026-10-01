@@ -46,7 +46,12 @@ pub(super) fn Sidebar() -> impl IntoView {
                     {nav_link("/dashboard/events", Icon::Events, "Events", false)}
                     {nav_link("/dashboard/errors", Icon::Errors, "Errors", false)}
                     {nav_link("/dashboard/analytics", Icon::Analytics, "Analytics", false)}
-                    {nav_link("/dashboard/notifications", Icon::Notifications, "Notifications", false)}
+                    {nav_link(
+                        "/dashboard/notifications",
+                        Icon::Notifications,
+                        "Notifications",
+                        false,
+                    )}
                 </div>
                 <div class="nav-group">
                     <span class="nav-group-label">"System"</span>
@@ -57,7 +62,10 @@ pub(super) fn Sidebar() -> impl IntoView {
             </nav>
             <div class="sidebar-footer">
                 <span class="connection">
-                    <span class="dot" data-tone={move || connection_tone(signals.connection.get())}></span>
+                    <span
+                        class="dot"
+                        data-tone={move || connection_tone(signals.connection.get())}
+                    ></span>
                     {move || connection_label(signals.connection.get())}
                 </span>
                 <div class="user-row">
@@ -67,7 +75,7 @@ pub(super) fn Sidebar() -> impl IntoView {
                     <span class="user-name" title={display_name}>
                         {display_name}
                     </span>
-                    <super::auth::Logout compact={true} />
+                    <super::auth::Logout compact=true />
                 </div>
             </div>
         </aside>
@@ -127,7 +135,10 @@ pub(super) fn OverviewPage() -> impl IntoView {
                     "Needs attention",
                     move || {
                         count(|health| {
-                            matches!(health, ApplicationHealth::Failed | ApplicationHealth::Degraded)
+                            matches!(
+                                health,
+                                ApplicationHealth::Failed | ApplicationHealth::Degraded
+                            )
                         })
                     },
                     None::<&str>,
@@ -135,7 +146,10 @@ pub(super) fn OverviewPage() -> impl IntoView {
                 {metric(
                     "Daemon",
                     move || {
-                        signals.system.get().map_or_else(|| "—".into(), |system| system.daemon_version)
+                        signals
+                            .system
+                            .get()
+                            .map_or_else(|| "—".into(), |system| system.daemon_version)
                     },
                     Some(move || {
                         signals.system.get().map(|system| format!("API {}", system.api_version))
@@ -288,12 +302,19 @@ fn application_row(row: ApplicationRow) -> View {
             <span class="app-icon" aria-hidden="true">
                 {icon(Icon::Package)}
             </span>
-            <span class="title">
-                {row.application.name.clone()}
-                <small>{subtitle}</small>
-            </span>
+            <span class="title">{row.application.name.clone()} <small>{subtitle}</small></span>
             <span class="meta">
-                {latest.map_or_else(|| "Never deployed".into_view(), |ms| view! { "Deployed " {when(ms)} }.into_view())}
+                {latest
+                    .map_or_else(
+                        || "Never deployed".into_view(),
+                        |ms| {
+                            view! {
+                                "Deployed "
+                                {when(ms)}
+                            }
+                                .into_view()
+                        },
+                    )}
             </span>
             {health_badge(health)}
             <span class="chevron" aria-hidden="true">
@@ -348,7 +369,10 @@ fn RecentDeployments() -> impl IntoView {
                             .flat_map(|row| {
                                 row.deployments
                                     .into_iter()
-                                    .map(move |deployment| (row.application.name.clone(), deployment))
+                                    .map(move |deployment| (
+                                        row.application.name.clone(),
+                                        deployment,
+                                    ))
                             })
                             .collect::<Vec<_>>();
                         deployments

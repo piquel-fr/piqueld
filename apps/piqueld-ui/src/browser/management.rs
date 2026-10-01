@@ -369,8 +369,7 @@ pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoV
                 .map(|e| {
                     view! {
                         <div class="stack-sm">
-                            {notice(Tone::Bad, e)}
-                            <div class="btn-group">
+                            {notice(Tone::Bad, e)} <div class="btn-group">
                                 <A class="btn" href="/dashboard/applications">
                                     {icon(Icon::ArrowLeft)}
                                     "Back to applications"
@@ -612,11 +611,7 @@ fn EditorFeedback() -> impl IntoView {
         <div class="stack-sm" style="margin-bottom:16px">
             <p class="hint" role="status" hidden={move || !show_status()}>
                 {move || {
-                    if context.busy.get() {
-                        "Saving…".into()
-                    } else {
-                        context.notice.get()
-                    }
+                    if context.busy.get() { "Saving…".into() } else { context.notice.get() }
                 }}
             </p>
             {move || {
@@ -646,7 +641,10 @@ fn EditorFeedback() -> impl IntoView {
                                         .get()
                                         .map(|id| {
                                             view! {
-                                                <A class="btn btn-sm btn-ghost" href={format!("/dashboard/errors/{id}")}>
+                                                <A
+                                                    class="btn btn-sm btn-ghost"
+                                                    href={format!("/dashboard/errors/{id}")}
+                                                >
                                                     "Diagnostic details"
                                                 </A>
                                             }
@@ -675,7 +673,9 @@ fn EditorFeedback() -> impl IntoView {
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
     view! {
-        <div hidden={move || !matches!(context.tab.get(), "Source" | "Services" | "Routes" | "Volumes")}>
+        <div hidden={move || {
+            !matches!(context.tab.get(), "Source" | "Services" | "Routes" | "Volumes")
+        }}>
             <div class="stack">
                 {move || {
                     context
@@ -686,16 +686,16 @@ fn ApplicationSettings() -> impl IntoView {
                                 "Runtime configuration is managed in Git. Disconnect the repository in Source to edit services, routes, and volumes here.",
                             )
                         })
-                }}
-                <div hidden={move || context.tab.get() != "Source"}>
+                }} <div hidden={move || context.tab.get() != "Source"}>
                     <RepositorySettings />
-                </div>
-                <fieldset disabled={move || context.managed()}>
+                </div> <fieldset disabled={move || context.managed()}>
                     <div hidden={move || context.tab.get() != "Services"}>
                         <div class="section-header">
                             <div>
                                 <h2>"Services"</h2>
-                                <p>"Each service runs one image as a replicated Swarm service on the application network."</p>
+                                <p>
+                                    "Each service runs one image as a replicated Swarm service on the application network."
+                                </p>
                             </div>
                             <NewService />
                         </div>

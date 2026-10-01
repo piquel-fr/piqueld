@@ -57,7 +57,9 @@ fn period_select(days: RwSignal<u32>, all: bool, changed: impl Fn() + 'static) -
             }}>
                 <option value="1">"24 hours"</option>
                 <option value="7">"7 days"</option>
-                <option value="30" selected>"30 days"</option>
+                <option value="30" selected>
+                    "30 days"
+                </option>
                 {if all {
                     view! { <option value="0">"All retained history"</option> }
                 } else {
@@ -89,7 +91,7 @@ pub(super) fn ErrorsPage() -> impl IntoView {
             title="Errors"
             description="Failures recorded by the daemon, with diagnostics explaining causes and next steps."
         />
-        <EventHistory errors_only={true} />
+        <EventHistory errors_only=true />
     }
 }
 
@@ -156,8 +158,7 @@ pub(super) fn EventHistory(
     let reset = move || cursor.set(None);
     view! {
         <div class="toolbar">
-            {period_select(days, true, reset)}
-            <Show when={move || !scoped}>
+            {period_select(days, true, reset)} <Show when={move || !scoped}>
                 <label class="field">
                     <span>"Scope"</span>
                     <select on:change={move |e| {
@@ -169,8 +170,7 @@ pub(super) fn EventHistory(
                         <option value="daemon">"Daemon"</option>
                     </select>
                 </label>
-            </Show>
-            <label class="field">
+            </Show> <label class="field">
                 <span>"Event kind"</span>
                 <input
                     placeholder="All kinds"
@@ -179,8 +179,7 @@ pub(super) fn EventHistory(
                         reset();
                     }}
                 />
-            </label>
-            <label class="field">
+            </label> <label class="field">
                 <span>"Error code"</span>
                 <input
                     placeholder="All codes"
@@ -189,8 +188,7 @@ pub(super) fn EventHistory(
                         reset();
                     }}
                 />
-            </label>
-            <Show when={move || !errors_only}>
+            </label> <Show when={move || !errors_only}>
                 <label class="checkbox" style="padding-bottom:8px">
                     <input
                         type="checkbox"
@@ -303,24 +301,43 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
             <span class="event-time">{when(event.created_at_ms)}</span>
             <div>
                 <div class="event-title">
-                    {kind_badge(&event)}
-                    <span>{event.message.clone().unwrap_or_default()}</span>
+                    {kind_badge(&event)} <span>{event.message.clone().unwrap_or_default()}</span>
                 </div>
                 <div class="event-meta">
-                    {meta.into_iter().flatten().map(|item| view! { <span>{item}</span> }).collect_view()}
+                    {meta
+                        .into_iter()
+                        .flatten()
+                        .map(|item| view! { <span>{item}</span> })
+                        .collect_view()}
                 </div>
                 <div class="event-links">
                     {(!scoped)
-                        .then(|| event.application_id.map(|id| {
-                            view! { <A href={format!("/dashboard/applications/{id}")}>"Application"</A> }
-                        }))}
+                        .then(|| {
+                            event
+                                .application_id
+                                .map(|id| {
+                                    view! {
+                                        <A href={format!(
+                                            "/dashboard/applications/{id}",
+                                        )}>"Application"</A>
+                                    }
+                                })
+                        })}
                     {event
                         .operation_id
                         .map(|id| {
-                            view! { <A href={format!("/dashboard/events?operation={id}")}>"Operation events"</A> }
+                            view! {
+                                <A href={format!(
+                                    "/dashboard/events?operation={id}",
+                                )}>"Operation events"</A>
+                            }
                         })}
                     {diagnostic
-                        .map(|id| view! { <A href={format!("/dashboard/errors/{id}")}>"Diagnostic details"</A> })}
+                        .map(|id| {
+                            view! {
+                                <A href={format!("/dashboard/errors/{id}")}>"Diagnostic details"</A>
+                            }
+                        })}
                 </div>
             </div>
         </article>
@@ -383,7 +400,11 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                                             <div>
                                                 <h3>"Causes"</h3>
                                                 <ul style="padding-left:1.2em;list-style:disc">
-                                                    {d.causes.into_iter().map(|cause| view! { <li>{cause}</li> }).collect_view()}
+                                                    {d
+                                                        .causes
+                                                        .into_iter()
+                                                        .map(|cause| view! { <li>{cause}</li> })
+                                                        .collect_view()}
                                                 </ul>
                                             </div>
                                         }
@@ -403,8 +424,7 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                             </div>
                         </section>
                     }
-                })}
-            <section class="card">
+                })} <section class="card">
                 <header>
                     <h3>"Context"</h3>
                 </header>
@@ -418,7 +438,14 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                             .clone()
                             .map_or_else(
                                 || "Daemon".into_view(),
-                                |id| view! { <A href={format!("/dashboard/applications/{id}")}>{id.to_string()}</A> }.into_view(),
+                                |id| {
+                                    view! {
+                                        <A href={format!(
+                                            "/dashboard/applications/{id}",
+                                        )}>{id.to_string()}</A>
+                                    }
+                                        .into_view()
+                                },
                             )}
                     </dd>
                     <dt>"Operation"</dt>
@@ -427,7 +454,14 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                             .clone()
                             .map_or_else(
                                 || "None".into_view(),
-                                |id| view! { <A href={format!("/dashboard/events?operation={id}")}>{id}</A> }.into_view(),
+                                |id| {
+                                    view! {
+                                        <A href={format!(
+                                            "/dashboard/events?operation={id}",
+                                        )}>{id}</A>
+                                    }
+                                        .into_view()
+                                },
                             )}
                     </dd>
                     <dt>"Action"</dt>
@@ -436,11 +470,12 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                     <dd>{event.request_id.clone().unwrap_or_else(|| "None".into())}</dd>
                     <dt>"Diagnostic ID"</dt>
                     <dd>
-                        <code>{event.diagnostic.as_ref().map(|d| d.id.clone()).unwrap_or_default()}</code>
+                        <code>
+                            {event.diagnostic.as_ref().map(|d| d.id.clone()).unwrap_or_default()}
+                        </code>
                     </dd>
                 </dl>
-            </section>
-            <section class="list">
+            </section> <section class="list">
                 <EventCard event={event} />
             </section>
         </div>
@@ -530,7 +565,12 @@ fn resource_stats(stats: &DaemonStats) -> View {
             <dl class="kv">
                 {counters
                     .into_iter()
-                    .map(|(label, value)| view! { <dt>{label}</dt><dd>{value}</dd> })
+                    .map(|(label, value)| {
+                        view! {
+                            <dt>{label}</dt>
+                            <dd>{value}</dd>
+                        }
+                    })
                     .collect_view()}
             </dl>
         </section>
@@ -575,7 +615,11 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
                                 )
                             })}
                         <div class="metrics">
-                            {metric("Deployments", a.deployments.to_string(), Some("with terminal attempts"))}
+                            {metric(
+                                "Deployments",
+                                a.deployments.to_string(),
+                                Some("with terminal attempts"),
+                            )}
                             {metric("Succeeded", a.succeeded.to_string(), Some("latest attempt"))}
                             {metric("Failed", a.failed.to_string(), Some("latest attempt"))}
                             {metric(
@@ -585,11 +629,22 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
                             )}
                         </div>
                         <div class="metrics">
-                            {metric("Failed attempts", a.failed_attempts.to_string(), Some("including later recoveries"))}
-                            {metric("Retry attempts", a.retry_attempts.to_string(), Some("attempts beyond the first"))}
-                            {metric("Action retries", a.action_retries.to_string(), Some("Docker actions retried"))}
-                        </div>
-                        <section class="card card-flush">
+                            {metric(
+                                "Failed attempts",
+                                a.failed_attempts.to_string(),
+                                Some("including later recoveries"),
+                            )}
+                            {metric(
+                                "Retry attempts",
+                                a.retry_attempts.to_string(),
+                                Some("attempts beyond the first"),
+                            )}
+                            {metric(
+                                "Action retries",
+                                a.action_retries.to_string(),
+                                Some("Docker actions retried"),
+                            )}
+                        </div> <section class="card card-flush">
                             <header>
                                 <h3>"Action durations"</h3>
                             </header>
@@ -624,8 +679,7 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
                                 }
                                     .into_view()
                             }}
-                        </section>
-                        <section class="card card-flush">
+                        </section> <section class="card card-flush">
                             <header>
                                 <h3>"Common failures"</h3>
                             </header>

@@ -93,7 +93,12 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                             |v| v.1.repository.commit.clone().unwrap_or_default(),
                             |v, s| v.1.repository.commit = (!s.is_empty()).then_some(s),
                         )}
-                        {text_input("Manifest path", draft, |v| v.1.path.clone(), |v, s| v.1.path = s)}
+                        {text_input(
+                            "Manifest path",
+                            draft,
+                            |v| v.1.path.clone(),
+                            |v, s| v.1.path = s,
+                        )}
                     </div>
                     {save_actions(draft, baseline, save, other_edits)}
                 </fieldset>
@@ -231,7 +236,12 @@ pub(super) fn VolumeSettings() -> impl IntoView {
                                             }
                                         },
                                     )}
-                                    {remove_button(move || volumes.update(|v| { v.remove(i); }))}
+                                    {remove_button(move || {
+                                        volumes
+                                            .update(|v| {
+                                                v.remove(i);
+                                            })
+                                    })}
                                 </div>
                             }
                         }}
@@ -310,9 +320,10 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
                     <p>{section_hint(section)}</p>
                 </div>
             </header>
-            <fieldset disabled={move || context.blocked() || context.managed()}>
-                {service_fields(section, draft)}
-                {save_actions(draft, baseline, save, || false)}
+            <fieldset disabled={move || {
+                context.blocked() || context.managed()
+            }}>
+                {service_fields(section, draft)} {save_actions(draft, baseline, save, || false)}
             </fieldset>
         </section>
     }
@@ -362,7 +373,12 @@ pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> V
                                     |v| v.repository.clone(),
                                     |v, s| v.repository = s,
                                 )}
-                                {text_input("Branch", form, |v| v.branch.clone(), |v, s| v.branch = s)}
+                                {text_input(
+                                    "Branch",
+                                    form,
+                                    |v| v.branch.clone(),
+                                    |v, s| v.branch = s,
+                                )}
                                 {text_input(
                                     "Commit (optional)",
                                     form,
@@ -384,7 +400,12 @@ pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> V
                             }
                                 .into_view()
                         } else {
-                            text_input("Container image", form, |v| v.image.clone(), |v, s| v.image = s)
+                            text_input(
+                                "Container image",
+                                form,
+                                |v| v.image.clone(),
+                                |v, s| v.image = s,
+                            )
                         }
                     }}
                 </div>
@@ -447,7 +468,12 @@ pub(super) fn string_rows(
                                     }
                                 },
                             )}
-                            {remove_button(move || form.update(|v| { write(v).remove(i); }))}
+                            {remove_button(move || {
+                                form
+                                    .update(|v| {
+                                        write(v).remove(i);
+                                    })
+                            })}
                         </div>
                     }
                 }}
@@ -491,7 +517,12 @@ pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> View {
                                     }
                                 },
                             )}
-                            {remove_button(move || form.update(|v| { v.environment.remove(i); }))}
+                            {remove_button(move || {
+                                form
+                                    .update(|v| {
+                                        v.environment.remove(i);
+                                    })
+                            })}
                         </div>
                     }
                 }}
@@ -517,7 +548,9 @@ pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> View {
                             {text_input(
                                 "Volume",
                                 form,
-                                move |v| v.mounts.get(i).map_or_else(String::new, |v| v.volume.clone()),
+                                move |v| {
+                                    v.mounts.get(i).map_or_else(String::new, |v| v.volume.clone())
+                                },
                                 move |v, s| {
                                     if let Some(value) = v.mounts.get_mut(i) {
                                         value.volume = s;
@@ -527,14 +560,15 @@ pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> View {
                             {text_input(
                                 "Container path",
                                 form,
-                                move |v| v.mounts.get(i).map_or_else(String::new, |v| v.target.clone()),
+                                move |v| {
+                                    v.mounts.get(i).map_or_else(String::new, |v| v.target.clone())
+                                },
                                 move |v, s| {
                                     if let Some(value) = v.mounts.get_mut(i) {
                                         value.target = s;
                                     }
                                 },
-                            )}
-                            <label class="checkbox">
+                            )} <label class="checkbox">
                                 <input
                                     type="checkbox"
                                     prop:checked={move || {
@@ -550,7 +584,12 @@ pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> View {
                                 />
                                 "Read only"
                             </label>
-                            {remove_button(move || form.update(|v| { v.mounts.remove(i); }))}
+                            {remove_button(move || {
+                                form
+                                    .update(|v| {
+                                        v.mounts.remove(i);
+                                    })
+                            })}
                         </div>
                     }
                 }}
@@ -581,7 +620,9 @@ pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> View {
                 <span>"Check type"</span>
                 <select
                     prop:value={move || form.with(|v| v.health_kind.clone())}
-                    on:change={move |event| form.update(|v| v.health_kind = event_target_value(&event))}
+                    on:change={move |event| {
+                        form.update(|v| v.health_kind = event_target_value(&event))
+                    }}
                 >
                     <option value="none" selected={move || form.with(|v| v.health_kind == "none")}>
                         "None"
@@ -597,7 +638,9 @@ pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> View {
                     </option>
                 </select>
             </label>
-            <Show when={move || form.with(|v| v.health_kind != "none")}>
+            <Show when={move || {
+                form.with(|v| v.health_kind != "none")
+            }}>
                 {text_input(
                     "Interval (seconds)",
                     form,
@@ -606,7 +649,9 @@ pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> View {
                 )}
                 {text_input("Timeout (seconds)", form, |v| v.timeout.clone(), |v, s| v.timeout = s)}
             </Show>
-            <Show when={move || form.with(|v| v.health_kind == "http")}>
+            <Show when={move || {
+                form.with(|v| v.health_kind == "http")
+            }}>
                 {text_input("Port", form, |v| v.port.clone(), |v, s| v.port = s)}
                 {text_input("Path", form, |v| v.path.clone(), |v, s| v.path = s)}
             </Show>
@@ -690,7 +735,11 @@ pub(super) fn NewService() -> impl IntoView {
                 </fieldset>
                 {move || context.error.get().map(|error| notice(Tone::Bad, error))}
                 <div class="form-actions">
-                    <button type="submit" class="btn btn-primary" disabled={move || context.blocked()}>
+                    <button
+                        type="submit"
+                        class="btn btn-primary"
+                        disabled={move || context.blocked()}
+                    >
                         "Add service"
                     </button>
                 </div>

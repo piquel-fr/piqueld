@@ -103,8 +103,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                     "Ingress is disabled in the daemon configuration. Routes can still be saved and deployed; they become public when ingress is enabled.",
                                 )
                             })
-                    }}
-                    <fieldset disabled={move || context.blocked()}>
+                    }} <fieldset disabled={move || context.blocked()}>
                         <div class="form-list">
                             <For
                                 each={move || (0..draft.with(Vec::len)).collect::<Vec<_>>()}
@@ -118,14 +117,18 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                     type="text"
                                                     placeholder="app.example.com"
                                                     prop:value={move || {
-                                                        draft.with(|rows| rows.get(index).map(|r| r.0.clone()).unwrap_or_default())
+                                                        draft
+                                                            .with(|rows| {
+                                                                rows.get(index).map(|r| r.0.clone()).unwrap_or_default()
+                                                            })
                                                     }}
                                                     on:input={move |event| {
-                                                        draft.update(|rows| {
-                                                            if let Some(row) = rows.get_mut(index) {
-                                                                row.0 = event_target_value(&event);
-                                                            }
-                                                        });
+                                                        draft
+                                                            .update(|rows| {
+                                                                if let Some(row) = rows.get_mut(index) {
+                                                                    row.0 = event_target_value(&event);
+                                                                }
+                                                            });
                                                     }}
                                                 />
                                             </label>
@@ -133,14 +136,18 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                 <span>"Service"</span>
                                                 <select
                                                     prop:value={move || {
-                                                        draft.with(|rows| rows.get(index).map(|r| r.1.clone()).unwrap_or_default())
+                                                        draft
+                                                            .with(|rows| {
+                                                                rows.get(index).map(|r| r.1.clone()).unwrap_or_default()
+                                                            })
                                                     }}
                                                     on:change={move |event| {
-                                                        draft.update(|rows| {
-                                                            if let Some(row) = rows.get_mut(index) {
-                                                                row.1 = event_target_value(&event);
-                                                            }
-                                                        });
+                                                        draft
+                                                            .update(|rows| {
+                                                                if let Some(row) = rows.get_mut(index) {
+                                                                    row.1 = event_target_value(&event);
+                                                                }
+                                                            });
                                                     }}
                                                 >
                                                     <option value="">"Select a service"</option>
@@ -151,7 +158,9 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                             .services
                                                             .into_iter()
                                                             .map(|service| {
-                                                                view! { <option value={service.name.clone()}>{service.name}</option> }
+                                                                view! {
+                                                                    <option value={service.name.clone()}>{service.name}</option>
+                                                                }
                                                             })
                                                             .collect_view()
                                                     }}
@@ -164,21 +173,26 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                     min="1"
                                                     max="65535"
                                                     prop:value={move || {
-                                                        draft.with(|rows| rows.get(index).map(|r| r.2.clone()).unwrap_or_default())
+                                                        draft
+                                                            .with(|rows| {
+                                                                rows.get(index).map(|r| r.2.clone()).unwrap_or_default()
+                                                            })
                                                     }}
                                                     on:input={move |event| {
-                                                        draft.update(|rows| {
-                                                            if let Some(row) = rows.get_mut(index) {
-                                                                row.2 = event_target_value(&event);
-                                                            }
-                                                        });
+                                                        draft
+                                                            .update(|rows| {
+                                                                if let Some(row) = rows.get_mut(index) {
+                                                                    row.2 = event_target_value(&event);
+                                                                }
+                                                            });
                                                     }}
                                                 />
                                             </label>
                                             {remove_button(move || {
-                                                draft.update(|rows| {
-                                                    rows.remove(index);
-                                                });
+                                                draft
+                                                    .update(|rows| {
+                                                        rows.remove(index);
+                                                    });
                                             })}
                                         </div>
                                     }
@@ -190,7 +204,10 @@ pub(super) fn RouteSettings() -> impl IntoView {
                             class="btn btn-sm"
                             disabled={move || draft.with(Vec::len) >= 64}
                             on:click={move |_| {
-                                draft.update(|rows| rows.push((String::new(), String::new(), "3000".into())));
+                                draft
+                                    .update(|rows| {
+                                        rows.push((String::new(), String::new(), "3000".into()))
+                                    });
                             }}
                         >
                             {icon(Icon::Plus)}
@@ -210,7 +227,9 @@ pub(super) fn RouteSettings() -> impl IntoView {
                 {move || {
                     match deployed() {
                         None => empty("Waiting for the ingress status…"),
-                        Some(routes) if routes.is_empty() => empty("No routes are deployed for this application."),
+                        Some(routes) if routes.is_empty() => {
+                            empty("No routes are deployed for this application.")
+                        }
                         Some(routes) => {
                             view! {
                                 <table class="table">
@@ -234,7 +253,9 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                         <td>
                                                             <code>{format!("{}:{}", route.service, route.port)}</code>
                                                         </td>
-                                                        <td>{badge(route_tone(&route.state), route.state.clone())}</td>
+                                                        <td>
+                                                            {badge(route_tone(&route.state), route.state.clone())}
+                                                        </td>
                                                         <td class="muted">{route.message}</td>
                                                     </tr>
                                                 }

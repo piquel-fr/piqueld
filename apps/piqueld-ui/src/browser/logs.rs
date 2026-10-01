@@ -208,7 +208,8 @@ pub(super) fn LogViewer(
                         return;
                     }
                     position.set(node.scroll_top());
-                    follow.set(node.scroll_height() - node.client_height() - node.scroll_top() <= 24);
+                    follow
+                        .set(node.scroll_height() - node.client_height() - node.scroll_top() <= 24);
                 }
             }}
         >
@@ -229,13 +230,20 @@ pub(super) fn LogViewer(
                                             class="log-metadata"
                                             hidden={move || !timestamps.get() && !show_service.get()}
                                         >
-                                            <time class="log-time" title={full} hidden={move || !timestamps.get()}>
+                                            <time
+                                                class="log-time"
+                                                title={full}
+                                                hidden={move || !timestamps.get()}
+                                            >
                                                 {time}
                                             </time>
                                             {service
                                                 .map(|_| {
                                                     view! {
-                                                        <span class="log-service" hidden={move || !show_service.get()}>
+                                                        <span
+                                                            class="log-service"
+                                                            hidden={move || !show_service.get()}
+                                                        >
                                                             {line.service}
                                                         </span>
                                                     }

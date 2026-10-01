@@ -77,12 +77,16 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                             ),
                         )
                     })
-            }}
-            <section class="card" aria-labelledby="runtime-status-heading">
+            }} <section class="card" aria-labelledby="runtime-status-heading">
                 <header>
                     <div>
                         <h3 id="runtime-status-heading">"Runtime status"</h3>
-                        <p>{status.message.clone().unwrap_or_else(|| "Observed from Docker Swarm.".into())}</p>
+                        <p>
+                            {status
+                                .message
+                                .clone()
+                                .unwrap_or_else(|| "Observed from Docker Swarm.".into())}
+                        </p>
                     </div>
                     <button
                         type="button"
@@ -91,7 +95,9 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                         on:click={move |_| refresh_detail()}
                     >
                         {icon(Icon::Refresh)}
-                        {move || if signals.detail_loading.get() { "Refreshing…" } else { "Refresh" }}
+                        {move || {
+                            if signals.detail_loading.get() { "Refreshing…" } else { "Refresh" }
+                        }}
                     </button>
                 </header>
                 <dl class="kv">
@@ -108,8 +114,12 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                                     view! {
                                         <span class="btn-group">
                                             {operation_badge(op.state)}
-                                            <span>{format!("{} #{}", op.kind.as_str(), op.generation)}</span>
-                                            {op.phase.map(|phase| view! { <span class="muted">{phase}</span> })}
+                                            <span>
+                                                {format!("{} #{}", op.kind.as_str(), op.generation)}
+                                            </span>
+                                            {op
+                                                .phase
+                                                .map(|phase| view! { <span class="muted">{phase}</span> })}
                                             <span class="muted">{when(op.updated_at_ms)}</span>
                                         </span>
                                     }
@@ -122,7 +132,9 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                         {format!(
                             "{} saved · {} resolved",
                             app.generation,
-                            app.resolved_generation.map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                            app
+                                .resolved_generation
+                                .map_or_else(|| "none".to_owned(), |value| value.to_string()),
                         )}
                     </dd>
                     <dt>"Resources"</dt>
@@ -144,12 +156,13 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                     <dt>"Updated"</dt>
                     <dd>{timestamp(app.updated_at_ms)}</dd>
                 </dl>
-            </section>
-            <section class="card card-flush" aria-labelledby="observed-title">
+            </section> <section class="card card-flush" aria-labelledby="observed-title">
                 <header>
                     <div>
                         <h3 id="observed-title">"Observed services"</h3>
-                        <p>"Replicas and health as reported by Docker for the current runtime target."</p>
+                        <p>
+                            "Replicas and health as reported by Docker for the current runtime target."
+                        </p>
                     </div>
                 </header>
                 {if observed.services.is_empty() {
@@ -165,17 +178,20 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                                     <th>"Health"</th>
                                 </tr>
                             </thead>
-                            <tbody>{observed.services.iter().map(observed_service_row).collect_view()}</tbody>
+                            <tbody>
+                                {observed.services.iter().map(observed_service_row).collect_view()}
+                            </tbody>
                         </table>
                     }
                         .into_view()
                 }}
-            </section>
-            <section class="card" aria-labelledby="diagnostics-title">
+            </section> <section class="card" aria-labelledby="diagnostics-title">
                 <header>
                     <div>
                         <h3 id="diagnostics-title">"Diagnostics"</h3>
-                        <p>"Reconciliation problems from status, runtime observation, and the latest operation."</p>
+                        <p>
+                            "Reconciliation problems from status, runtime observation, and the latest operation."
+                        </p>
                     </div>
                 </header>
                 {if detail.diagnostics.is_empty() {
@@ -207,9 +223,17 @@ fn observed_service_row(service: &ObservedServiceView) -> View {
                 <strong>{service.name.clone()}</strong>
             </td>
             <td class="muted">
-                {service.image.clone().map_or_else(|| "Not observed".into_view(), |image| view! { <code>{image}</code> }.into_view())}
+                {service
+                    .image
+                    .clone()
+                    .map_or_else(
+                        || "Not observed".into_view(),
+                        |image| view! { <code>{image}</code> }.into_view(),
+                    )}
             </td>
-            <td class="num">{format!("{} / {}", service.healthy_replicas, service.desired_replicas)}</td>
+            <td class="num">
+                {format!("{} / {}", service.healthy_replicas, service.desired_replicas)}
+            </td>
             <td>{health_badge(health)}</td>
         </tr>
         {(!service.diagnostics.is_empty())
