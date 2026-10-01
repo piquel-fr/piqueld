@@ -693,6 +693,8 @@ fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
                             .collect(),
                     )}
                 </dd>
+                <dt>"Startup dependencies"</dt>
+                <dd>{list(service.depends_on.clone())}</dd>
                 <SnapshotRuntime service={service} />
             </dl>
         </div>

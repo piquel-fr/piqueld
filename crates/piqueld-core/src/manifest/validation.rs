@@ -1,5 +1,6 @@
 //! Strict decoding and aggregate semantic validation of manifest inputs.
 
+use super::dependencies::StartupOrder;
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, GitRepository,
     HealthCheck, Mount, ResourceLimits, SecretDeclaration, SecretGenerator, Service, Source,
@@ -272,6 +273,7 @@ pub fn safe_decode_path(path: &str) -> String {
         "bytes",
         "encoding",
         "bits",
+        "depends_on",
     ];
     let mut safe = Vec::new();
     for component in path.split('.') {
@@ -411,6 +413,7 @@ impl ApplicationManifest {
             &mut errors,
         );
         validate_services(&self.spec.services, &volume_names, &mut errors);
+        validate_dependencies(&self.spec.services, &mut errors);
         validate_volumes(&self.spec.volumes, &mut errors);
         validate_generated_secrets(&self.spec.secrets, &mut errors);
         errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
@@ -601,6 +604,50 @@ fn validate_services(
             validate_health(healthcheck, &format!("{base}.healthcheck"), errors);
         }
         validate_resources(service.resources.as_ref(), &base, errors);
+    }
+}
+
+/// Dependencies must name other services once each and must not form a cycle.
+fn validate_dependencies(services: &[Service], errors: &mut Vec<ValidationError>) {
+    let names = services
+        .iter()
+        .map(|service| service.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, service) in services.iter().enumerate() {
+        let mut listed = BTreeSet::new();
+        for (dependency_index, dependency) in service.depends_on.iter().enumerate() {
+            let path = format!("spec.services[{index}].depends_on[{dependency_index}]");
+            if !names.contains(dependency.as_str()) {
+                error(
+                    errors,
+                    codes::SERVICE_DEPENDENCY_MISSING,
+                    &path,
+                    "dependency must name a service in this application",
+                );
+            } else if !listed.insert(dependency) {
+                error(
+                    errors,
+                    codes::SERVICE_DEPENDENCY_DUPLICATE,
+                    &path,
+                    "dependency is listed more than once",
+                );
+            }
+        }
+    }
+    let (_, cyclic) = services.startup_order();
+    let cyclic = cyclic
+        .into_iter()
+        .map(|service| service.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, service) in services.iter().enumerate() {
+        if cyclic.contains(service.name.as_str()) {
+            error(
+                errors,
+                codes::SERVICE_DEPENDENCY_CYCLE,
+                &format!("spec.services[{index}].depends_on"),
+                "dependencies must not form or lead into a cycle",
+            );
+        }
     }
 }
 

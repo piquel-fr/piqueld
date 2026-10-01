@@ -3488,7 +3488,7 @@ async fn field_edit_resource_lifecycle_rejects_referenced_volume_removal() {
     assert!(saved.operation_id.is_none());
     api.edit_field(
         id,
-        ApplicationEdit::AddService(manifest().spec.services.remove(0)),
+        ApplicationEdit::AddService(Box::new(manifest().spec.services.remove(0))),
     )
     .await;
     api.edit_field(

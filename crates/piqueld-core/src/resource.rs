@@ -366,6 +366,10 @@ pub struct DesiredService {
     pub networks: Vec<DockerNetworkName>,
     /// Ownership labels.
     pub labels: BTreeMap<String, String>,
+    /// Logical services that must converge before this service rolls out.
+    /// Planning order only; it is not part of the Docker specification.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<ServiceName>,
 }
 
 impl DesiredService {
@@ -770,6 +774,7 @@ fn compile_service(
         resources: service.resources.clone(),
         networks: vec![private_network.clone()],
         labels: ownership.labels(),
+        depends_on: service.depends_on.clone(),
     }
 }
 

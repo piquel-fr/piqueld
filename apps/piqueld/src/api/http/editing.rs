@@ -118,7 +118,7 @@ edit_endpoint!(set_manifest_repository_url, put, "/api/v1/applications/{id}/repo
 edit_endpoint!(set_manifest_repository_branch, put, "/api/v1/applications/{id}/repository/branch", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::RepositoryBranch(body.value));
 edit_endpoint!(set_manifest_repository_commit, put, "/api/v1/applications/{id}/repository/commit", (id: String = "id"), OptionalStringValue, body::<OptionalStringValue>, |_, body: OptionalStringValue| ApplicationEdit::RepositoryCommit(body.value));
 edit_endpoint!(set_manifest_repository_path, put, "/api/v1/applications/{id}/repository/path", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::RepositoryPath(body.value));
-edit_endpoint!(add_application_service, post, "/api/v1/applications/{id}/services", (id: String = "id"), Service, body::<Service>, |_, body: Service| ApplicationEdit::AddService(body));
+edit_endpoint!(add_application_service, post, "/api/v1/applications/{id}/services", (id: String = "id"), Service, body::<Service>, |_, body: Service| ApplicationEdit::AddService(Box::new(body)));
 edit_endpoint!(add_application_volume, post, "/api/v1/applications/{id}/volumes", (id: String = "id"), Volume, body::<Volume>, |_, body: Volume| ApplicationEdit::AddVolume(body));
 /// Removes a service from the saved configuration.
 ///
@@ -193,6 +193,7 @@ edit_endpoint!(set_service_environment, put, "/api/v1/applications/{id}/services
 edit_endpoint!(set_service_command, put, "/api/v1/applications/{id}/services/{service}/command", (id: String = "id", service: String = "service"), StringsValue, body::<StringsValue>, |(_, service), body: StringsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Command(body.value) });
 edit_endpoint!(set_service_arguments, put, "/api/v1/applications/{id}/services/{service}/arguments", (id: String = "id", service: String = "service"), StringsValue, body::<StringsValue>, |(_, service), body: StringsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Arguments(body.value) });
 edit_endpoint!(set_service_mounts, put, "/api/v1/applications/{id}/services/{service}/mounts", (id: String = "id", service: String = "service"), MountsValue, body::<MountsValue>, |(_, service), body: MountsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Mounts(body.value) });
+edit_endpoint!(set_service_depends_on, put, "/api/v1/applications/{id}/services/{service}/depends_on", (id: String = "id", service: String = "service"), StringsValue, body::<StringsValue>, |(_, service), body: StringsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::DependsOn(body.value) });
 edit_endpoint!(set_service_secrets, put, "/api/v1/applications/{id}/services/{service}/secrets", (id: String = "id", service: String = "service"), SecretsValue, body::<SecretsValue>, |(_, service), body: SecretsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Secrets(body.value) });
 edit_endpoint!(set_service_healthcheck, put, "/api/v1/applications/{id}/services/{service}/healthcheck", (id: String = "id", service: String = "service"), HealthValue, body::<HealthValue>, |(_, service), body: HealthValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Healthcheck(body.value) });
 edit_endpoint!(set_service_health_port, put, "/api/v1/applications/{id}/services/{service}/healthcheck/port", (id: String = "id", service: String = "service"), ReplicasValue, body::<ReplicasValue>, |(_, service), body: ReplicasValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthPort(body.value) });
@@ -322,6 +323,7 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(routes!(set_service_arguments))
         .routes(routes!(set_service_mounts))
         .routes(routes!(set_service_secrets))
+        .routes(routes!(set_service_depends_on))
         .routes(routes!(set_service_healthcheck))
         .routes(routes!(set_service_health_port))
         .routes(routes!(set_service_health_path))

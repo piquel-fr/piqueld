@@ -15,6 +15,12 @@ pub const SERVICE_REQUIRED: &str = "service_required";
 pub const SERVICE_NAME_DUPLICATE: &str = "service_name_duplicate";
 /// Volume logical name is duplicated.
 pub const VOLUME_NAME_DUPLICATE: &str = "volume_name_duplicate";
+/// Service dependency does not name a service in the application.
+pub const SERVICE_DEPENDENCY_MISSING: &str = "service_dependency_missing";
+/// Service dependency is listed more than once.
+pub const SERVICE_DEPENDENCY_DUPLICATE: &str = "service_dependency_duplicate";
+/// Service dependencies form or lead into a cycle.
+pub const SERVICE_DEPENDENCY_CYCLE: &str = "service_dependency_cycle";
 /// Replica count is outside its supported range.
 pub const REPLICAS_OUT_OF_RANGE: &str = "replicas_out_of_range";
 /// Image reference is not a safe registry reference.

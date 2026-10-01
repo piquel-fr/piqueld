@@ -435,10 +435,16 @@ impl<D: DockerApi> Controller<D> {
         if plan.is_blocked() {
             return Ok(());
         }
+        // Repair never waits, but must not pass a convergence wait: services
+        // behind one start only after their dependencies converge.
         let Some(action) = plan
             .actions
             .iter()
-            .find(|action| action.kind.mutates_runtime())
+            .find(|action| {
+                action.kind.mutates_runtime()
+                    || matches!(action.kind, piqueld_core::ActionKind::WaitForService { .. })
+            })
+            .filter(|action| action.kind.mutates_runtime())
         else {
             return Ok(());
         };

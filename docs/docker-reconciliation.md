@@ -51,7 +51,9 @@ New intent marks pending/running older operations superseded; the CLI stops wait
 successfully with that explicit outcome rather than following the replacement.
 
 Every action is followed by observation and fresh planning. No action cursor or
-execution plan is stored. Interrupted attempts are recorded on startup, then
+execution plan is stored. Plans place a service's create or update after the
+convergence waits of its `depends_on` services, so dependents roll out only once
+their dependencies are healthy; independent services still start together. Interrupted attempts are recorded on startup, then
 requested again. Each started attempt increments its operation's attempt number.
 
 Transient failures retry indefinitely with exponential delays from 5 to 60

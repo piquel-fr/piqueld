@@ -172,6 +172,101 @@ image = "nginx:1"
     assert_ne!(left.spec_hash(), right.spec_hash());
 }
 
+/// Builds a manifest whose services declare the given startup dependencies.
+fn dependency_manifest(services: &[(&str, &[&str])]) -> String {
+    use std::fmt::Write;
+    let mut manifest = String::from(
+        "api_version = \"piqueld.dev/v1alpha1\"\nkind = \"Application\"\n[metadata]\nname = \"notes\"\n",
+    );
+    for (name, depends_on) in services {
+        write!(
+            manifest,
+            "[[spec.services]]\nname = \"{name}\"\ndepends_on = {depends_on:?}\n[spec.services.source]\ntype = \"image\"\nimage = \"nginx:1.27\"\n"
+        )
+        .unwrap();
+    }
+    manifest
+}
+
+fn dependency_errors(services: &[(&str, &[&str])]) -> Vec<(String, String)> {
+    parse_toml(&dependency_manifest(services))
+        .unwrap_err()
+        .0
+        .into_iter()
+        .map(|error| (error.code, error.path))
+        .collect()
+}
+
+#[test]
+fn service_dependencies_are_canonical_and_hashed() {
+    let app = parse_toml(&dependency_manifest(&[
+        ("web", &["db", "cache"]),
+        ("db", &[]),
+        ("cache", &[]),
+    ]))
+    .unwrap()
+    .normalize(ApplicationId::parse("app-notes-01").unwrap());
+    let web = &app.spec().services[2];
+    assert_eq!(
+        web.depends_on
+            .iter()
+            .map(piqueld_core::ServiceName::as_str)
+            .collect::<Vec<_>>(),
+        ["cache", "db"]
+    );
+    let reparsed = parse_toml(&app.export_toml().unwrap())
+        .unwrap()
+        .normalize(app.id().clone());
+    assert_eq!(app, reparsed);
+    let independent = parse_toml(&dependency_manifest(&[
+        ("web", &[]),
+        ("db", &[]),
+        ("cache", &[]),
+    ]))
+    .unwrap()
+    .normalize(app.id().clone());
+    assert_ne!(app.spec_hash(), independent.spec_hash());
+}
+
+#[test]
+fn service_dependencies_reject_unknown_duplicate_and_cyclic_names() {
+    assert_eq!(
+        dependency_errors(&[("web", &["db", "db", "missing"]), ("db", &[])]),
+        [
+            (
+                codes::SERVICE_DEPENDENCY_DUPLICATE.into(),
+                "spec.services[0].depends_on[1]".into()
+            ),
+            (
+                codes::SERVICE_DEPENDENCY_MISSING.into(),
+                "spec.services[0].depends_on[2]".into()
+            ),
+        ]
+    );
+    assert_eq!(
+        dependency_errors(&[("web", &["web"])]),
+        [(
+            codes::SERVICE_DEPENDENCY_CYCLE.into(),
+            "spec.services[0].depends_on".into()
+        )]
+    );
+    // Services behind a cycle cannot start either, so they are reported too.
+    assert_eq!(
+        dependency_errors(&[
+            ("web", &["api"]),
+            ("api", &["db"]),
+            ("db", &["api"]),
+            ("cache", &[]),
+        ]),
+        [0, 1, 2]
+            .map(|index| (
+                codes::SERVICE_DEPENDENCY_CYCLE.to_owned(),
+                format!("spec.services[{index}].depends_on")
+            ))
+            .to_vec()
+    );
+}
+
 #[test]
 fn abandoned_future_manifest_fields_are_rejected() {
     let error = parse_toml(

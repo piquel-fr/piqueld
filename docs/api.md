@@ -74,6 +74,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/services/{service}/{command,arguments}` | `{ "value": ["element", "..."] }` |
 | PUT | `/services/{service}/mount` | `Mount`; adds/replaces by container target |
 | DELETE | `/services/{service}/mount` | `{ "value": "/container/target" }` |
+| PUT | `/services/{service}/depends_on` | `{ "value": ["db"] }`; replaces the services that must be healthy before this one rolls out |
 | PUT | `/services/{service}/secrets` | `{ "value": [{ "name": "token", "target": "/run/secrets/token" }] }`; replaces file references without exposing values |
 | PUT | `/services/{service}/healthcheck` | `{ "value": HealthCheck }`; null clears |
 | PUT | `/services/{service}/healthcheck/{port,path,command,interval,timeout}` | Typed `{ "value": ... }` |
@@ -87,7 +88,8 @@ source/check settings require the appropriate variant; switch variants through
 missing resources are rejected. Optional values must explicitly use null to clear.
 The same validation and Git ownership rules apply even with `force=true`.
 Disconnecting a repository preserves saved services and volumes for local editing.
-Renaming a service updates its routes; removing a service removes its routes.
+Renaming a service updates its routes and dependents' `depends_on`; removing a
+service removes its routes and drops it from other services' `depends_on`.
 Routes remain saved while ingress is disabled and become active only after deployment
 with ingress enabled in the daemon's read-only TOML configuration.
 
