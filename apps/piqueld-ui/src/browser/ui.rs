@@ -1,12 +1,8 @@
 //! Shared presentational primitives: icons, badges, notices, page chrome, dialogs, and inputs.
 use super::format::{relative, timestamp};
 use crate::state::ApplicationHealth;
+use leptos::prelude::*;
 use leptos::wasm_bindgen::JsCast;
-use leptos::{
-    Callable, Callback, Children, CollectView, IntoView, RwSignal, Signal, SignalGet,
-    SignalGetUntracked, SignalSet, SignalUpdate, SignalWith, View, component, create_effect,
-    event_target_value, view,
-};
 use piqueld_client::{BuildState, OperationState};
 
 /// Inline stroke icons, drawn on a 24-unit grid.
@@ -99,7 +95,7 @@ impl Icon {
     }
 }
 
-pub(super) fn icon(icon: Icon) -> View {
+pub(super) fn icon(icon: Icon) -> AnyView {
     view! {
         <svg
             class="icon"
@@ -113,7 +109,7 @@ pub(super) fn icon(icon: Icon) -> View {
             inner_html={icon.markup()}
         ></svg>
     }
-    .into_view()
+    .into_any()
 }
 
 /// Semantic colour used by badges, notices, and status cards.
@@ -152,20 +148,20 @@ impl ApplicationHealth {
     }
 }
 
-pub(super) fn badge(tone: Tone, label: impl Into<String>) -> View {
+pub(super) fn badge(tone: Tone, label: impl Into<String>) -> AnyView {
     view! {
         <span class="badge" data-tone={tone.attr()}>
             {label.into()}
         </span>
     }
-    .into_view()
+    .into_any()
 }
 
-pub(super) fn health_badge(health: ApplicationHealth) -> View {
+pub(super) fn health_badge(health: ApplicationHealth) -> AnyView {
     badge(health.tone(), health.label())
 }
 
-pub(super) fn operation_badge(state: OperationState) -> View {
+pub(super) fn operation_badge(state: OperationState) -> AnyView {
     let tone = match state {
         OperationState::Requested => Tone::Pending,
         OperationState::Running => Tone::Info,
@@ -176,7 +172,7 @@ pub(super) fn operation_badge(state: OperationState) -> View {
     badge(tone, state.as_str())
 }
 
-pub(super) fn build_badge(state: BuildState) -> View {
+pub(super) fn build_badge(state: BuildState) -> AnyView {
     let (tone, label) = match state {
         BuildState::Running => (Tone::Info, "running"),
         BuildState::Succeeded => (Tone::Ok, "succeeded"),
@@ -187,14 +183,14 @@ pub(super) fn build_badge(state: BuildState) -> View {
 }
 
 /// Inline message box. Failures are announced assertively; everything else politely.
-pub(super) fn notice(tone: Tone, content: impl IntoView) -> View {
+pub(super) fn notice(tone: Tone, content: impl IntoView) -> AnyView {
     let role = if tone == Tone::Bad { "alert" } else { "status" };
     view! {
         <div class="notice" data-tone={tone.attr()} role={role}>
             {content}
         </div>
     }
-    .into_view()
+    .into_any()
 }
 
 /// Stat tile with a label, a large value, and an optional footnote.
@@ -202,7 +198,7 @@ pub(super) fn metric(
     label: &'static str,
     value: impl IntoView,
     detail: Option<impl IntoView>,
-) -> View {
+) -> AnyView {
     view! {
         <div class="metric">
             <span>{label}</span>
@@ -210,26 +206,26 @@ pub(super) fn metric(
             {detail.map(|detail| view! { <small>{detail}</small> })}
         </div>
     }
-    .into_view()
+    .into_any()
 }
 
 /// Ghost "Remove" button for one row of an editable list.
-pub(super) fn remove_button(remove: impl Fn() + 'static) -> View {
+pub(super) fn remove_button(remove: impl Fn() + 'static) -> AnyView {
     view! {
         <button type="button" class="btn btn-ghost" on:click={move |_| remove()}>
             "Remove"
         </button>
     }
-    .into_view()
+    .into_any()
 }
 
-pub(super) fn empty(message: impl Into<String>) -> View {
-    view! { <p class="empty">{message.into()}</p> }.into_view()
+pub(super) fn empty(message: impl Into<String>) -> AnyView {
+    view! { <p class="empty">{message.into()}</p> }.into_any()
 }
 
 /// Relative age with the full local timestamp on hover.
-pub(super) fn when(milliseconds: i64) -> View {
-    view! { <time title={timestamp(milliseconds)}>{relative(milliseconds)}</time> }.into_view()
+pub(super) fn when(milliseconds: i64) -> AnyView {
+    view! { <time title={timestamp(milliseconds)}>{relative(milliseconds)}</time> }.into_any()
 }
 
 /// Page title with an optional description and right-aligned actions.
@@ -250,12 +246,12 @@ pub(super) fn PageHeader(
     }
 }
 
-pub(super) fn text_input<T: Clone + 'static>(
+pub(super) fn text_input<T: Send + Sync + 'static>(
     label: &'static str,
     state: RwSignal<T>,
-    read: impl Fn(&T) -> String + Copy + 'static,
+    read: impl Fn(&T) -> String + Copy + Send + Sync + 'static,
     write: impl Fn(&mut T, String) + Copy + 'static,
-) -> View {
+) -> AnyView {
     view! {
         <label class="field">
             <span>{label}</span>
@@ -266,7 +262,7 @@ pub(super) fn text_input<T: Clone + 'static>(
             />
         </label>
     }
-    .into_view()
+    .into_any()
 }
 
 /// Native dialogs provide focus containment, Escape handling, and focus restoration.
@@ -279,8 +275,8 @@ pub(super) fn Modal(
     #[prop(optional)] wide: bool,
     children: Children,
 ) -> impl IntoView {
-    let dialog = leptos::create_node_ref::<leptos::html::Dialog>();
-    create_effect(move |_| {
+    let dialog = NodeRef::<leptos::html::Dialog>::new();
+    Effect::new(move |_| {
         if let Some(dialog) = dialog.get() {
             if opened.get() {
                 if let Err(error) = dialog.show_modal() {
@@ -300,7 +296,7 @@ pub(super) fn Modal(
         if !busy.get_untracked() {
             opened.set(false);
             if let Some(on_close) = on_close {
-                on_close.call(());
+                on_close.run(());
             }
         }
     };

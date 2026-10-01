@@ -87,51 +87,6 @@
                 buildPhaseCargoCommand = "cargoWithProfile build ${args.cargoExtraArgs}";
               }
             );
-          wasmArgs = commonArgs // {
-            pname = "piqueld-ui";
-            cargoExtraArgs = "--locked --package piqueld-ui";
-            CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
-            doCheck = false;
-          };
-          uiDeps = buildDepsOnly wasmArgs;
-          uiFiles = lib.fileset.toSource {
-            root = ./.;
-            fileset = lib.fileset.unions [
-              ./apps/piqueld-ui
-              ./crates/piqueld-client
-              ./crates/piqueld-core
-            ];
-          };
-          # Cargo still needs valid daemon/CLI workspace members, but their
-          # implementation must not invalidate the dashboard distribution.
-          uiSrc = craneLib.mkDummySrc {
-            inherit src;
-            extraDummyScript = ''
-              # Real UI manifests inherit workspace lints removed by dummification.
-              install -m644 ${./Cargo.toml} "$out/Cargo.toml"
-              for member in apps/piqueld-ui crates/piqueld-client crates/piqueld-core; do
-                rm -rf "$out/$member"
-                cp -R ${uiFiles}/$member "$out/$member"
-              done
-            '';
-          };
-          ui = craneLib.buildTrunkPackage (
-            wasmArgs
-            // {
-              src = uiSrc;
-              cargoArtifacts = uiDeps;
-              wasm-bindgen-cli = pkgs.wasm-bindgen-cli_0_2_126;
-              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.tailwindcss_4 ];
-              trunkExtraBuildArgs = "--offline=true --frozen --public-url /dashboard/";
-              preBuild = ''
-                unset NO_COLOR
-                mkdir -p apps/piqueld-ui/generated
-                tailwindcss --input apps/piqueld-ui/tailwind.css \
-                  --output apps/piqueld-ui/generated/style.css --minify
-                cd apps/piqueld-ui
-              '';
-            }
-          );
           cliDeps = buildDepsOnly (
             commonArgs
             // {
@@ -192,9 +147,6 @@
                   }
                 '';
               }
-              // lib.optionalAttrs withUi {
-                PIQUELD_UI_DIST = ui;
-              }
             );
         in
         {
@@ -253,14 +205,13 @@
               ++ lib.optionals stdenv.isLinux [
                 cargo-deny
                 cargo-watch
-                binaryen
                 docker-client
                 cmake
                 lld
                 procps
                 util-linux
-                tailwindcss_4
-                trunk
+                # Only for `just test-wasm`'s browser test runner; the daemon
+                # build script binds the dashboard without the CLI.
                 wasm-bindgen-cli_0_2_126
               ];
           };

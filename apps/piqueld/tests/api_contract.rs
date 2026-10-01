@@ -197,7 +197,7 @@ async fn state(temp: &TempDir) -> ApiState {
 
 /// Stand-in for the compile-time bundle: a shell, unhashed assets (including
 /// a short all-hex stem that must not read as a digest), and a content-hashed
-/// asset, mirroring what Trunk emits.
+/// asset, mirroring what the build script emits.
 static TEST_BUNDLE: &EmbeddedBundle = &[
     ("added.css", b"body{}" as &'static [u8]),
     ("app.js", b"console.log('dashboard');" as &'static [u8]),
@@ -311,13 +311,11 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
     assert_api_only_and_ui_modes(&temp).await;
 }
 
-/// Exercise the shipped bundle, including the CSP that authorizes its loader.
+/// Exercise the shipped bundle: every script is a same-origin file, so the
+/// constant CSP needs no inline-script hashes.
 #[cfg(feature = "embedded-ui")]
 #[tokio::test]
-async fn compiled_dashboard_serves_assets_and_authorizes_inline_scripts() {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    use sha2::{Digest, Sha256};
-
+async fn compiled_dashboard_serves_assets_without_inline_scripts() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let assets = UiAssets::resolve();
     let UiAssets::Embedded(bundle) = assets else {
@@ -335,32 +333,27 @@ async fn compiled_dashboard_serves_assets_and_authorizes_inline_scripts() {
         .expect("CSP is text")
         .to_owned();
     let html = response_text(response).await.1;
-    let script_policy = csp
-        .split(';')
-        .find(|directive| directive.trim_start().starts_with("script-src "))
-        .expect("CSP restricts scripts");
-    assert!(!script_policy.contains("'unsafe-inline'"));
+    assert!(
+        csp.contains("script-src 'self' 'wasm-unsafe-eval';"),
+        "{csp}"
+    );
+    assert!(!html.contains("{{"), "every shell placeholder is filled");
 
-    let mut inline_scripts = 0;
-    for script in html.split("<script").skip(1) {
+    let scripts = html.split("<script").skip(1).collect::<Vec<_>>();
+    assert!(!scripts.is_empty(), "the shell must load the dashboard");
+    for script in scripts {
         let (attributes, rest) = script.split_once('>').expect("script opening tag");
-        if attributes
-            .split_whitespace()
-            .any(|attr| attr.starts_with("src="))
-        {
-            continue;
-        }
-        let (body, _) = rest.split_once("</script>").expect("script closing tag");
-        let hash = STANDARD.encode(Sha256::digest(body.as_bytes()));
         assert!(
-            script_policy
+            attributes
                 .split_whitespace()
-                .any(|source| source == format!("'sha256-{hash}'")),
-            "CSP must authorize each exact inline script: {hash}"
+                .any(|attr| attr.starts_with("src=")),
+            "inline script in the shell: {script}"
         );
-        inline_scripts += 1;
+        assert!(
+            rest.starts_with("</script>"),
+            "script with a body: {script}"
+        );
     }
-    assert!(inline_scripts > 0, "Trunk's inline loader must be present");
 
     for extension in [".js", ".wasm", ".css"] {
         assert!(
@@ -714,7 +707,7 @@ async fn dashboard_cache_policy_tracks_content_hashing_and_shell_fallbacks() {
     );
     assert_eq!(header_value(&unhashed, "cache-control"), Some("no-cache"));
 
-    // A short all-hex stem is an ordinary name, not a Trunk digest.
+    // A short all-hex stem is an ordinary name, not a content digest.
     let hex_stemmed = application
         .clone()
         .oneshot(request("/dashboard/added.css"))

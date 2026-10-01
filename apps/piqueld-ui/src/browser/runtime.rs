@@ -3,7 +3,7 @@ use super::format::timestamp;
 use super::ui::{Icon, Tone, badge, empty, health_badge, icon, notice, operation_badge, when};
 use super::{DashboardSignals, dashboard_context, load_detail};
 use crate::state::ApplicationHealth;
-use leptos::{CollectView, IntoView, Show, SignalGet, View, component, view};
+use leptos::prelude::*;
 use piqueld_client::{ApplicationDetailView, Client, DiagnosticView, ObservedServiceView};
 
 /// Live runtime detail for the application editor's Overview tab.
@@ -11,7 +11,7 @@ use piqueld_client::{ApplicationDetailView, Client, DiagnosticView, ObservedServ
 pub(super) fn RuntimeOverview() -> impl IntoView {
     let dashboard = dashboard_context();
     let signals = dashboard.signals;
-    let refresh = leptos::store_value(dashboard.refresh);
+    let refresh = dashboard.refresh;
     view! {
         <Show when={move || signals.detail.get().is_none()}>
             <div class="card">
@@ -32,7 +32,7 @@ pub(super) fn RuntimeOverview() -> impl IntoView {
                             type="button"
                             class="btn btn-sm"
                             disabled={move || signals.detail_loading.get()}
-                            on:click={move |_| refresh.with_value(|refresh| refresh())}
+                            on:click={move |_| refresh.run(())}
                         >
                             {icon(Icon::Refresh)}
                             "Retry"
@@ -53,7 +53,11 @@ pub(super) fn RuntimeOverview() -> impl IntoView {
 /// Loaded detail: a stale-data warning if the last detail refresh failed, the
 /// runtime status, observed services, and diagnostics cards, and a button that
 /// reloads only this application's detail.
-fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client: Client) -> View {
+fn detail_view(
+    detail: &ApplicationDetailView,
+    signals: DashboardSignals,
+    client: Client,
+) -> AnyView {
     let refresh_detail = {
         let id = detail.application.application.id().to_string();
         move || load_detail(client.clone(), signals, id.clone())
@@ -109,7 +113,7 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                     <dd>
                         {latest
                             .map_or_else(
-                                || "None".into_view(),
+                                || "None".into_any(),
                                 |op| {
                                     view! {
                                         <span class="btn-group">
@@ -123,7 +127,7 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                                             <span class="muted">{when(op.updated_at_ms)}</span>
                                         </span>
                                     }
-                                        .into_view()
+                                        .into_any()
                                 },
                             )}
                     </dd>
@@ -183,7 +187,7 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                             </tbody>
                         </table>
                     }
-                        .into_view()
+                        .into_any()
                 }}
             </section> <section class="card" aria-labelledby="diagnostics-title">
                 <header>
@@ -195,22 +199,22 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                     </div>
                 </header>
                 {if detail.diagnostics.is_empty() {
-                    view! { <p class="hint">"No diagnostics reported."</p> }.into_view()
+                    view! { <p class="hint">"No diagnostics reported."</p> }.into_any()
                 } else {
                     view! {
                         <ul class="stack-sm">
                             {detail.diagnostics.iter().map(diagnostic_view).collect_view()}
                         </ul>
                     }
-                        .into_view()
+                        .into_any()
                 }}
             </section>
         </div>
     }
-    .into_view()
+    .into_any()
 }
 
-fn observed_service_row(service: &ObservedServiceView) -> View {
+fn observed_service_row(service: &ObservedServiceView) -> AnyView {
     let health = ApplicationHealth::from_convergence(&service.convergence);
     let diagnostics = service
         .diagnostics
@@ -227,8 +231,8 @@ fn observed_service_row(service: &ObservedServiceView) -> View {
                     .image
                     .clone()
                     .map_or_else(
-                        || "Not observed".into_view(),
-                        |image| view! { <code>{image}</code> }.into_view(),
+                        || "Not observed".into_any(),
+                        |image| view! { <code>{image}</code> }.into_any(),
                     )}
             </td>
             <td class="num">
@@ -247,11 +251,11 @@ fn observed_service_row(service: &ObservedServiceView) -> View {
                 }
             })}
     }
-    .into_view()
+    .into_any()
 }
 
 /// List item for one diagnostic code and message.
-fn diagnostic_view(diagnostic: &DiagnosticView) -> View {
+fn diagnostic_view(diagnostic: &DiagnosticView) -> AnyView {
     view! {
         <li>
             {notice(
@@ -265,5 +269,5 @@ fn diagnostic_view(diagnostic: &DiagnosticView) -> View {
             )}
         </li>
     }
-    .into_view()
+    .into_any()
 }

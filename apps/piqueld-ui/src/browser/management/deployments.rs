@@ -4,14 +4,10 @@ use super::super::ui::{
     Icon, Modal, Tabs, Tone, badge, empty, icon, notice, operation_badge, when,
 };
 use super::{client_error_message, editor, mutation_client, transport_failure};
-use leptos::{
-    Callable, Callback, CollectView, For, IntoView, RwSignal, Show, Signal, SignalGet,
-    SignalGetUntracked, SignalSet, SignalUpdate, SignalWith, component, create_effect,
-    create_rw_signal, on_cleanup, spawn_local, view,
-};
+use crate::browser::Alive;
+use leptos::prelude::*;
+use leptos::task::spawn_local;
 use piqueld_client::{ApplyApplicationRequest, Client, DeploymentView, Page, Source};
-use std::cell::Cell;
-use std::rc::Rc;
 
 /// "Preview" and "Deploy" buttons for the saved configuration. Preview asks the
 /// daemon for a plan (cleared whenever the saved view changes); Deploy starts a
@@ -20,7 +16,7 @@ use std::rc::Rc;
 #[component]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
-    let preview = create_rw_signal(None::<piqueld_client::PlanView>);
+    let preview = RwSignal::new(None::<piqueld_client::PlanView>);
     let deploy = move |_| {
         context.set_error(None);
         let client = match mutation_client() {
@@ -47,7 +43,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                     context
                         .notice
                         .set("Deployment accepted. Follow its progress below.".into());
-                    context.dashboard.with_value(|d| (d.refresh)());
+                    context.dashboard.with_value(|d| d.refresh.run(()));
                 }
                 Err(error) => context.failure(&error),
             }
@@ -71,7 +67,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             context.busy.set(false);
         });
     };
-    create_effect(move |_| {
+    Effect::new(move |_| {
         context.saved.track();
         preview.set(None);
     });
@@ -103,8 +99,8 @@ pub(super) fn DeploymentActions() -> impl IntoView {
 /// actions and plan diagnostics.
 #[component]
 fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> impl IntoView {
-    let opened = create_rw_signal(false);
-    create_effect(move |_| opened.set(preview.get().is_some()));
+    let opened = RwSignal::new(false);
+    Effect::new(move |_| opened.set(preview.get().is_some()));
     view! {
         <Modal
             title="Deployment preview"
@@ -138,7 +134,7 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
                                             "No configuration changes since the last deployment."
                                         </p>
                                     }
-                                        .into_view()
+                                        .into_any()
                                 } else {
                                     plan.changes
                                         .into_iter()
@@ -159,6 +155,7 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
                                             }
                                         })
                                         .collect_view()
+                                        .into_any()
                                 }}
                             </section>
                             <section>
@@ -167,7 +164,7 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
                                 </div>
                                 {if plan.plan.actions.is_empty() {
                                     view! { <p class="hint">"No runtime actions are required."</p> }
-                                        .into_view()
+                                        .into_any()
                                 } else {
                                     view! {
                                         <ul class="stack-sm">
@@ -186,7 +183,7 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
                                                 .collect_view()}
                                         </ul>
                                     }
-                                        .into_view()
+                                        .into_any()
                                 }}
                             </section>
                             {(!plan.plan.diagnostics.is_empty())
@@ -218,11 +215,11 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
 #[component]
 pub(super) fn DeploymentHistory() -> impl IntoView {
     let context = editor();
-    let history = create_rw_signal(Vec::<DeploymentView>::new());
-    let paginated = create_rw_signal(false);
-    let cursor = create_rw_signal(None::<String>);
-    let error = create_rw_signal(None::<String>);
-    let loading = create_rw_signal(false);
+    let history = RwSignal::new(Vec::<DeploymentView>::new());
+    let paginated = RwSignal::new(false);
+    let cursor = RwSignal::new(None::<String>);
+    let error = RwSignal::new(None::<String>);
+    let loading = RwSignal::new(false);
     let id = context.id();
     context.poll_deployments(id.clone(), history, cursor, paginated, error, loading);
     let more = move |_| {
@@ -336,11 +333,12 @@ pub(super) fn merge_history(
 pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
     let initial = deployment.get_untracked();
     let op = initial.operation;
-    let selected = leptos_router::use_query_map().with(|q| q.get("deployment") == Some(&op.id));
-    let opened = create_rw_signal(selected);
-    let tab = create_rw_signal("Details");
-    let attempts_requested = create_rw_signal(false);
-    create_effect(move |_| {
+    let selected = leptos_router::hooks::use_query_map()
+        .with(|q| q.get("deployment").is_some_and(|id| id == op.id));
+    let opened = RwSignal::new(selected);
+    let tab = RwSignal::new("Details");
+    let attempts_requested = RwSignal::new(false);
+    Effect::new(move |_| {
         if opened.get() && tab.get() == "Attempts" {
             attempts_requested.set(true);
         }
@@ -493,20 +491,18 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
 #[component]
 fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
     let op = deployment.get_untracked().operation;
-    let attempts = create_rw_signal(Vec::<piqueld_client::Operation>::new());
-    let cursor = create_rw_signal(None::<String>);
-    let failure = create_rw_signal(None::<String>);
-    let loading = create_rw_signal(false);
-    let active = Rc::new(Cell::new(true));
-    let live = Rc::clone(&active);
-    on_cleanup(move || live.set(false));
+    let attempts = RwSignal::new(Vec::<piqueld_client::Operation>::new());
+    let cursor = RwSignal::new(None::<String>);
+    let failure = RwSignal::new(None::<String>);
+    let loading = RwSignal::new(false);
+    let active = Alive::new();
     let load = Callback::new(move |next: Option<String>| {
         if loading.get_untracked() {
             return;
         }
         let app_id = op.application_id.to_string();
         let deployment_id = op.id.clone();
-        let active = Rc::clone(&active);
+        let active = active.clone();
         loading.set(true);
         spawn_local(async move {
             let result = Client::browser()
@@ -530,7 +526,7 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
             loading.set(false);
         });
     });
-    load.call(None);
+    load.run(None);
     // The API retains completed outcomes; include the live attempt while it is running.
     let visible_attempts = Signal::derive(move || {
         let mut items = attempts.get();
@@ -549,7 +545,7 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
                 if visible_attempts.with(Vec::is_empty) {
                     (!loading.get() && failure.get().is_none())
                         .then(|| empty("No attempts yet."))
-                        .into_view()
+                        .into_any()
                 } else {
                     view! {
                         <div class="table-wrap">
@@ -573,14 +569,14 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
                             </table>
                         </div>
                     }
-                        .into_view()
+                        .into_any()
                 }
             }} <div class="btn-group">
                 <button
                     type="button"
                     class="btn btn-sm"
                     disabled={move || loading.get()}
-                    on:click={move |_| load.call(None)}
+                    on:click={move |_| load.run(None)}
                 >
                     {icon(Icon::Refresh)}
                     "Refresh attempts"
@@ -590,7 +586,7 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
                         type="button"
                         class="btn btn-sm"
                         disabled={move || loading.get()}
-                        on:click={move |_| load.call(cursor.get_untracked())}
+                        on:click={move |_| load.run(cursor.get_untracked())}
                     >
                         "Older attempts"
                     </button>
@@ -617,7 +613,7 @@ fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
             <td class="muted">{outcome}</td>
             <td class="muted">{when(attempt.updated_at_ms)}</td>
             <td class="actions">
-                <leptos_router::A href={history}>"Events"</leptos_router::A>
+                <leptos_router::components::A href={history}>"Events"</leptos_router::components::A>
             </td>
         </tr>
     }
@@ -772,9 +768,7 @@ impl super::EditorContext {
         error: RwSignal<Option<String>>,
         loading: RwSignal<bool>,
     ) {
-        let active = Rc::new(Cell::new(true));
-        let live = active.clone();
-        on_cleanup(move || live.set(false));
+        let active = Alive::new();
         let poll_id = id;
         spawn_local(async move {
             while active.get() {

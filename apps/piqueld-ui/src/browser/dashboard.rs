@@ -4,10 +4,9 @@ use super::ui::{
 };
 use super::{ApplicationRow, connection_label, dashboard_context, management, row_health};
 use crate::state::{ApplicationHealth, ConnectionState, DataState};
-use leptos::{CollectView, IntoView, SignalGet, View, component, view};
-use leptos_router::A;
+use leptos::prelude::*;
+use leptos_router::components::A;
 use piqueld_client::system::DependencyStatus;
-use std::rc::Rc;
 
 #[component]
 pub(super) fn Sidebar() -> impl IntoView {
@@ -29,7 +28,7 @@ pub(super) fn Sidebar() -> impl IntoView {
     };
     view! {
         <aside class="sidebar">
-            <A class="brand" href="/dashboard/">
+            <A attr:class="brand" href="/dashboard/">
                 <span class="brand-mark" aria-hidden="true">
                     "p"
                 </span>
@@ -82,14 +81,14 @@ pub(super) fn Sidebar() -> impl IntoView {
     }
 }
 
-fn nav_link(href: &'static str, glyph: Icon, label: &'static str, exact: bool) -> View {
+fn nav_link(href: &'static str, glyph: Icon, label: &'static str, exact: bool) -> AnyView {
     view! {
-        <A href={href} class="nav-link" active_class="active" exact={exact}>
+        <A href={href} attr:class="nav-link" exact={exact}>
             {icon(glyph)}
             {label}
         </A>
     }
-    .into_view()
+    .into_any()
 }
 
 const fn connection_tone(state: ConnectionState) -> &'static str {
@@ -122,7 +121,7 @@ pub(super) fn OverviewPage() -> impl IntoView {
         </PageHeader>
         <div class="stack">
             <div class="metrics">
-                <A href="/dashboard/applications" class="metric">
+                <A href="/dashboard/applications" attr:class="metric">
                     <span>"Applications"</span>
                     <strong>{move || signals.applications.get().len()}</strong>
                 </A>
@@ -168,7 +167,7 @@ pub(super) fn OverviewPage() -> impl IntoView {
 pub(super) fn ReadinessPanel() -> impl IntoView {
     let context = dashboard_context();
     let signals = context.signals;
-    let refresh = Rc::clone(&context.refresh);
+    let refresh = context.refresh;
 
     view! {
         <section class="card" aria-labelledby="system-readiness-heading">
@@ -181,7 +180,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                     type="button"
                     class="btn btn-sm"
                     disabled={move || signals.refreshing.get()}
-                    on:click={move |_| refresh()}
+                    on:click={move |_| refresh.run(())}
                 >
                     {icon(Icon::Refresh)}
                     {move || if signals.refreshing.get() { "Refreshing…" } else { "Refresh" }}
@@ -224,7 +223,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
 }
 
 /// Readiness card for the browser's connection to the daemon itself.
-fn connection_readiness(state: ConnectionState) -> View {
+fn connection_readiness(state: ConnectionState) -> AnyView {
     let (tone, message) = match state {
         ConnectionState::Loading => (Tone::Pending, "Waiting for the daemon"),
         ConnectionState::Reachable => (Tone::Ok, "The API is responding"),
@@ -235,7 +234,7 @@ fn connection_readiness(state: ConnectionState) -> View {
 }
 
 /// Readiness card for one daemon dependency.
-fn dependency_readiness(name: &'static str, status: DependencyStatus) -> View {
+fn dependency_readiness(name: &'static str, status: DependencyStatus) -> AnyView {
     let (tone, label, message) = match status {
         DependencyStatus::Ready => (Tone::Ok, "Ready", "Available".to_owned()),
         DependencyStatus::Failed { message } => (Tone::Bad, "Failed", message),
@@ -243,7 +242,7 @@ fn dependency_readiness(name: &'static str, status: DependencyStatus) -> View {
     status_card(name, tone, label, &message)
 }
 
-fn status_card(name: &'static str, tone: Tone, label: &'static str, message: &str) -> View {
+fn status_card(name: &'static str, tone: Tone, label: &'static str, message: &str) -> AnyView {
     view! {
         <article class="status-card" data-tone={tone.attr()}>
             <header>
@@ -253,7 +252,7 @@ fn status_card(name: &'static str, tone: Tone, label: &'static str, message: &st
             <p>{message.to_owned()}</p>
         </article>
     }
-    .into_view()
+    .into_any()
 }
 
 /// Application directory linking to each application's detail page, with
@@ -274,7 +273,7 @@ pub(super) fn ApplicationsPage() -> impl IntoView {
                 {move || match signals.data_state.get() {
                     DataState::Loading => empty("Loading applications…"),
                     DataState::Empty => empty("No applications yet. Create one to get started."),
-                    _ => ().into_view(),
+                    _ => ().into_any(),
                 }}
             </section>
             <RecentDeployments />
@@ -282,7 +281,7 @@ pub(super) fn ApplicationsPage() -> impl IntoView {
     }
 }
 
-fn application_row(row: ApplicationRow) -> View {
+fn application_row(row: ApplicationRow) -> AnyView {
     let health = row_health(&row);
     let subtitle = if row.application.delete_intent {
         "Deletion requested".to_owned()
@@ -298,7 +297,7 @@ fn application_row(row: ApplicationRow) -> View {
         .max_by_key(|deployment| deployment.operation.created_at_ms)
         .map(|deployment| deployment.operation.created_at_ms);
     view! {
-        <A class="list-row" href={format!("/dashboard/applications/{}", row.application.id)}>
+        <A attr:class="list-row" href={format!("/dashboard/applications/{}", row.application.id)}>
             <span class="app-icon" aria-hidden="true">
                 {icon(Icon::Package)}
             </span>
@@ -306,13 +305,13 @@ fn application_row(row: ApplicationRow) -> View {
             <span class="meta">
                 {latest
                     .map_or_else(
-                        || "Never deployed".into_view(),
+                        || "Never deployed".into_any(),
                         |ms| {
                             view! {
                                 "Deployed "
                                 {when(ms)}
                             }
-                                .into_view()
+                                .into_any()
                         },
                     )}
             </span>
@@ -322,7 +321,7 @@ fn application_row(row: ApplicationRow) -> View {
             </span>
         </A>
     }
-    .into_view()
+    .into_any()
 }
 
 /// The newest deployments across applications; each application contributes its latest page.
@@ -431,7 +430,7 @@ fn RecentDeployments() -> impl IntoView {
                                 </tbody>
                             </table>
                         }
-                            .into_view()
+                            .into_any()
                     }}
                 </div>
             </div>
