@@ -292,7 +292,9 @@ impl BollardDocker {
         Ok(services)
     }
 
-    /// Docker reports attachment targets as network IDs; planning compares names.
+    /// Replaces each attachment's network ID with its name from `network_names`
+    /// (ID to name), because Docker reports targets as IDs while planning
+    /// compares names. Unknown IDs are left as-is and so register as drift.
     fn name_networks(service: &mut ObservedService, network_names: &HashMap<String, String>) {
         for attachment in &mut service.networks {
             if let Some(name) = network_names.get(&attachment.network) {

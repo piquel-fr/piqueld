@@ -387,7 +387,8 @@ impl DesiredService {
     /// Returns the attachments piqueld authors for this service. The logical
     /// name is an alias only on the application's private network, so peers
     /// reach `postgres:5432` while same-named services in other applications
-    /// stay isolated on their own networks.
+    /// stay isolated on their own networks. Without valid ownership labels
+    /// naming the application, no attachment gets an alias.
     #[must_use]
     pub fn network_attachments(&self) -> Vec<NetworkAttachment> {
         let private = desired_application_from_labels(&self.labels)
@@ -1050,8 +1051,8 @@ impl ObservedService {
             }),
         )
     }
-    /// Whether attached networks equal the desired ones, ignoring order but
-    /// not multiplicity.
+    /// Whether network attachments, including their aliases, equal the desired
+    /// ones, ignoring order but not multiplicity.
     pub(crate) fn networks_match(&self, desired: &DesiredService) -> bool {
         unordered_eq(&self.networks, &desired.network_attachments())
     }
