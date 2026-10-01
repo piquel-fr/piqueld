@@ -4,7 +4,7 @@ use super::input::{self, HealthCheck, RepositoryManifest, ResourceLimits, Source
 use super::{ValidationError, ValidationErrors};
 use crate::{ApplicationName, ServiceName, VolumeName};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
 /// Validated application metadata.
@@ -145,6 +145,15 @@ impl ValidatedSpec {
                 })
                 .collect::<Result<_, ValidationErrors>>()?,
         })
+    }
+
+    /// Names of the application secrets that at least one service mounts.
+    #[must_use]
+    pub fn mounted_secret_names(&self) -> BTreeSet<&str> {
+        self.services
+            .iter()
+            .flat_map(|service| service.secrets.iter().map(|secret| secret.name.as_str()))
+            .collect()
     }
 
     /// Converts back to the editable input shape used for export.

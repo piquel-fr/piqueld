@@ -244,10 +244,12 @@ Random secrets use 16–512 bytes from the operating system, encoded as lowercas
 `hex` (the default) or unpadded `base64url`. RSA secrets are 2048-, 3072-, or
 4096-bit private keys in PKCS#8 PEM.
 
-A value is generated when a deployment prepares its inputs and the secret has no
-stored value. It is never changed afterwards: later applies, deploys, and edits to
-the declaration keep it. Values set manually with `piquelctl app secret` are kept
-too, so rotation stays explicit. Removing a declaration retains the stored value.
+A value is generated when a deployment prepares its inputs, a service mounts
+the secret, and it has no stored value. Declarations that no service mounts are
+not generated, so they never count against secret quotas. A value is never
+changed afterwards: later applies, deploys, and edits to the declaration keep
+it. Values set manually with `piquelctl app secret` are kept too, so rotation
+stays explicit. Removing a declaration retains the stored value.
 
 ## Public routes
 

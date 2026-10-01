@@ -386,12 +386,17 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
 }
 
 #[tokio::test]
-async fn declared_secrets_are_generated_once_and_never_replace_values() {
-    use piqueld_core::manifest::{SecretDeclaration, SecretEncoding, SecretGenerator};
+async fn mounted_declared_secrets_are_generated_once_and_never_replace_values() {
+    use piqueld_core::manifest::{SecretDeclaration, SecretEncoding, SecretGenerator, SecretMount};
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("db")).await.unwrap();
     let mut manifest = with_secret(&application()).to_manifest();
-    for name in ["token", "manual"] {
+    manifest.spec.services[0].secrets.push(SecretMount {
+        name: "manual".into(),
+        target: "/run/secrets/manual".into(),
+    });
+    // "unused" is declared but not mounted, so it is not generated.
+    for name in ["token", "manual", "unused"] {
         manifest.spec.secrets.push(SecretDeclaration {
             name: name.into(),
             generate: SecretGenerator::Random {

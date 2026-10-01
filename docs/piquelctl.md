@@ -389,7 +389,7 @@ real use. `--expected-generation` pins a write to inspected metadata; otherwise
 the CLI reads the current generation before confirming. `--json` returns only
 metadata. Replacement creates a new version for a later Deploy and does not
 change running deployments. Deletion refuses saved or runnable references.
-Manifests can declare secrets that piqueld generates on first deployment instead;
+Manifests can declare secrets that piqueld generates when a deployment first mounts them instead;
 see [application manifests](application-manifest.md).
 
 If the daemon's `secrets.key` is lost and no backup exists, recover by discarding

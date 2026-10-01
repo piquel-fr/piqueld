@@ -6,7 +6,7 @@ use super::{ApplicationId, NormalizedApplication, Store, StoreError, now_ms};
 use crate::secrets::{Envelope, Generate, SecretCipher};
 use anyhow::Context;
 use piqueld_core::api::SecretMetadata;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
 impl Store {
@@ -111,8 +111,10 @@ impl Store {
             Err(StoreError::SecretVersionConflict { expected, actual })
         }
     }
-    /// Stores values for declared secrets that have none. A stored value,
-    /// generated or set manually, is never replaced, so deploys never rotate it.
+    /// Stores values for declared secrets that a service mounts and that have
+    /// none; unmounted declarations wait until a service needs them. A stored
+    /// value, generated or set manually, is never replaced, so deploys never
+    /// rotate it.
     /// Call before pinning, outside the writer lock: RSA generation takes time.
     /// Each value is stored as generation 1 with `put_secret`; losing a race to
     /// a concurrent write keeps the other value.
@@ -134,8 +136,9 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .map_err(StoreError::database)?;
+        let mounted = app.spec().mounted_secret_names();
         for secret in &app.spec().secrets {
-            if existing.contains(&secret.name) {
+            if existing.contains(&secret.name) || !mounted.contains(secret.name.as_str()) {
                 continue;
             }
             let generator = secret.generate.clone();
@@ -156,7 +159,7 @@ impl Store {
         }
         Ok(())
     }
-    /// Generates values for declared secrets that have none (see
+    /// Generates values for mounted declared secrets that have none (see
     /// `generate_secrets`), then pins the secret versions a deployment uses in
     /// its own transaction; see `pin_secrets_on`.
     pub(crate) async fn pin_secrets(
@@ -192,13 +195,7 @@ impl Store {
         .is_some();
         let id = app.id().as_str();
         if !prepared {
-            let names = app
-                .spec()
-                .services
-                .iter()
-                .flat_map(|s| s.secrets.iter().map(|s| s.name.as_str()))
-                .collect::<BTreeSet<_>>();
-            for name in names {
+            for name in app.spec().mounted_secret_names() {
                 let changed=sqlx::query!("INSERT INTO deployment_secret_pins(operation_id,application_id,name,generation) SELECT ?1,application_id,name,generation FROM application_secrets WHERE application_id=?2 AND name=?3",operation,id,name).execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
                 if changed != 1 {
                     return Err(StoreError::InvalidInput);
