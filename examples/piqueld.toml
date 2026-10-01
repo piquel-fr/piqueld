@@ -64,9 +64,10 @@ daemon_failures = true
 recovery = true
 failure_threshold_seconds = 120
 retry_window_seconds = 86400
-# Destinations belong in a private configuration file; URLs can contain credentials.
+# URLs can contain credentials: use `url_file` instead of `url` to keep them
+# out of this file. Relative paths resolve against $CREDENTIALS_DIRECTORY.
 # [[notifications.destinations]]
 # name = "admins"
-# url = "https://example.com/webhook"
+# url_file = "/run/credentials/piqueld.service/admins-webhook"
 # kind = "json" # or "discord"
 # enabled = true

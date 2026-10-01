@@ -10,20 +10,38 @@ let
     "tailscale"
     "both"
   ];
+  withoutNulls = lib.filterAttrsRecursive (_: value: value != null);
+  tailscale = cfg.settings.tailscale;
+  destinations = cfg.settings.notifications.destinations;
+  # `_file` settings name host files. systemd copies each into the unit's
+  # private $CREDENTIALS_DIRECTORY, so the files may stay root-only, and the
+  # daemon resolves the credential name there.
+  webhookCredential = index: "webhook-${toString index}";
   configuration = (pkgs.formats.toml { }).generate "piqueld.toml" (
-    lib.recursiveUpdate (lib.filterAttrsRecursive (_: value: value != null) cfg.settings) (
+    lib.recursiveUpdate (withoutNulls cfg.settings) (
       {
         server.data_dir = cfg.dataDir;
         server.runtime_dir = cfg.runtimeDir;
+        notifications.destinations = lib.imap0 (
+          index: destination:
+          withoutNulls (
+            destination
+            // lib.optionalAttrs (destination.url_file != null) { url_file = webhookCredential index; }
+          )
+        ) destinations;
       }
-      # The daemon reads the key through its systemd credential, not the host path.
-      // lib.optionalAttrs (cfg.settings.tailscale.auth_key_file != null) {
-        tailscale.auth_key_file = "/run/credentials/piqueld.service/ts-auth-key";
+      // lib.optionalAttrs (tailscale.auth_key_file != null) {
+        tailscale.auth_key_file = "ts-auth-key";
       }
     )
   );
 in
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "piqueld" "notificationDestinationsFile" ]
+      "Declare destinations in services.piqueld.settings.notifications.destinations, using url_file for private URLs."
+    )
+  ];
   options.services.piqueld = {
     enable = lib.mkEnableOption "the single-node piqueld control plane";
     package = lib.mkOption {
@@ -82,7 +100,7 @@ in
             # A string, not a path, so the secret is never copied into the Nix store.
             type = lib.types.nullOr (lib.types.strMatching "/.+");
             default = null;
-            description = "Host file with a Tailscale auth key for the node's first login, passed to piqueld as a systemd credential. Node state in dataDir makes it unnecessary afterwards.";
+            description = "Host file with a Tailscale auth key for the node's first login, such as an agenix secret, passed to piqueld as a systemd credential. Node state in dataDir makes it unnecessary afterwards.";
           };
           docker.socket = lib.mkOption {
             type = lib.types.strMatching "/.+";
@@ -147,7 +165,45 @@ in
           notifications.enabled = lib.mkOption {
             type = lib.types.bool;
             default = false;
-            description = "Deliver webhook notifications. Destinations come from notificationDestinationsFile. Re-enabling never replays old events.";
+            description = "Deliver webhook notifications to the configured destinations. Re-enabling never replays old events.";
+          };
+          notifications.destinations = lib.mkOption {
+            type = lib.types.listOf (
+              lib.types.submodule {
+                options = {
+                  name = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Unique destination name, used in the delivery ledger.";
+                  };
+                  kind = lib.mkOption {
+                    type = lib.types.enum [
+                      "json"
+                      "discord"
+                    ];
+                    default = "json";
+                    description = "Payload format.";
+                  };
+                  enabled = lib.mkOption {
+                    type = lib.types.bool;
+                    default = true;
+                    description = "Deliver to this destination.";
+                  };
+                  url = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Webhook URL. URLs often contain credentials and this one enters the Nix store; prefer url_file.";
+                  };
+                  url_file = lib.mkOption {
+                    # A string, not a path, so the secret is never copied into the Nix store.
+                    type = lib.types.nullOr (lib.types.strMatching "/.+");
+                    default = null;
+                    description = "Host file with the webhook URL, such as an agenix secret, passed to piqueld as a systemd credential.";
+                  };
+                };
+              }
+            );
+            default = [ ];
+            description = "Webhook destinations. Each needs exactly one of url and url_file.";
           };
           notifications.build_failures = lib.mkOption {
             type = lib.types.bool;
@@ -187,13 +243,7 @@ in
         };
       };
       default = { };
-      description = "Typed daemon TOML settings. dataDir and runtimeDir control server.data_dir and server.runtime_dir. Never put credentials here: these settings enter the Nix store.";
-    };
-    notificationDestinationsFile = lib.mkOption {
-      type = lib.types.nullOr (lib.types.strMatching "/.+");
-      default = null;
-      example = "/run/secrets/piqueld-destinations.toml";
-      description = "Absolute path to a private TOML file containing only [[notifications.destinations]] entries. It is read through systemd credentials at service start and never enters the Nix store, so it may be root-owned.";
+      description = "Typed daemon TOML settings. dataDir and runtimeDir control server.data_dir and server.runtime_dir. These settings enter the Nix store, so give credentials through the `_file` variants.";
     };
   };
   config = lib.mkIf cfg.enable {
@@ -213,6 +263,12 @@ in
             lib.splitString "/" (lib.removePrefix "/run/" cfg.runtimeDir)
           );
         message = "services.piqueld.runtimeDir must be a dedicated directory below /run";
+      }
+      {
+        assertion = lib.all (
+          destination: (destination.url == null) != (destination.url_file == null)
+        ) destinations;
+        message = "services.piqueld.settings.notifications.destinations: each entry needs exactly one of url and url_file";
       }
     ];
     users.groups.piqueld = { };
@@ -236,23 +292,15 @@ in
       # The tailnet node runs its own tailscaled and drives it with the CLI.
       ++ lib.optional (usesTailscale || cfg.settings.tailscale.enabled) config.services.tailscale.package;
       serviceConfig = {
-        ExecStart =
-          if cfg.notificationDestinationsFile == null then
-            "${cfg.package}/bin/piqueld --config ${configuration}"
-          else
-            # Destinations are appended in the unit's private /tmp, never the store.
-            pkgs.writeShellScript "piqueld-start" ''
-              set -eu
-              { cat ${configuration}; echo; cat "$CREDENTIALS_DIRECTORY/notification-destinations"; } > /tmp/piqueld.toml
-              exec ${cfg.package}/bin/piqueld --config /tmp/piqueld.toml
-            '';
+        ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
         LoadCredential =
-          lib.optional (
-            cfg.notificationDestinationsFile != null
-          ) "notification-destinations:${cfg.notificationDestinationsFile}"
-          ++ lib.optional (
-            cfg.settings.tailscale.auth_key_file != null
-          ) "ts-auth-key:${cfg.settings.tailscale.auth_key_file}";
+          lib.optional (tailscale.auth_key_file != null) "ts-auth-key:${tailscale.auth_key_file}"
+          ++ lib.concatLists (
+            lib.imap0 (
+              index: destination:
+              lib.optional (destination.url_file != null) "${webhookCredential index}:${destination.url_file}"
+            ) destinations
+          );
         User = "piqueld";
         Group = "piqueld";
         SupplementaryGroups = [ "docker" ];

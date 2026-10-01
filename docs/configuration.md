@@ -160,7 +160,7 @@ carries the client's tailnet address.
 [tailscale]
 enabled = true
 hostname = "piqueld"      # piqueld.<tailnet>.ts.net
-auth_key_file = "/run/credentials/piqueld.service/ts-auth-key"
+auth_key_file = "ts-auth-key" # $CREDENTIALS_DIRECTORY/ts-auth-key
 ```
 
 - The tailnet needs MagicDNS and HTTPS certificates enabled.
@@ -196,6 +196,29 @@ tailnet node's URL when `[tailscale]` is enabled, and to `http://localhost:7845`
 otherwise. Remote passkey login requires HTTPS even over Tailscale. See
 [authentication](authentication.md) for reverse-proxy setup, the private
 first-account link, invitations, and credential lifetimes.
+
+## Credential files
+
+Settings that carry credentials, such as webhook `url`, also accept a `_file`
+variant (`url_file`) that reads the value from a file at startup. Setting both
+variants is an error. Surrounding whitespace, such as a trailing newline, is
+removed, and an empty file is rejected.
+Relative paths resolve against `$CREDENTIALS_DIRECTORY`, so systemd
+`LoadCredential=`, agenix and sops-nix work unchanged:
+
+```toml
+[[notifications.destinations]]
+name = "discord"
+kind = "discord"
+url_file = "discord-webhook" # $CREDENTIALS_DIRECTORY/discord-webhook
+```
+
+`tailscale.auth_key_file` has no inline variant and follows the same path
+rules, but piqueld hands the path to Tailscale instead of reading the key, so the
+file only has to exist for the node's first login.
+
+Errors and the read-only settings view name the file a value came from, never
+the value. Restart the daemon after changing a credential file.
 
 ## Secret storage
 
