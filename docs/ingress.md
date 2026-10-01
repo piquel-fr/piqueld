@@ -70,6 +70,24 @@ Failed startup restores the old gateway; interrupted replacements are recovered 
 the next reconciliation. Replacement still requires a brief stop/start on the shared
 ports. Docker outages can delay recovery; inspect ingress health and daemon logs.
 
+### Client addresses
+
+Backends receive connections from the gateway, not from clients. Caddy replaces
+any client-supplied `X-Forwarded-For` with the address it accepted the connection
+from, and sets `X-Forwarded-Proto` and `X-Forwarded-Host`. Every routed service
+receives `PIQUELD_INGRESS_PROXIES`: the comma-separated CIDRs of its application's
+ingress network (for example `10.0.3.0/24`). Configure the application to trust
+forwarding headers only from peers in that range, e.g. Express
+`app.set("trust proxy", process.env.PIQUELD_INGRESS_PROXIES.split(","))`.
+
+Only the gateway, Swarm's load balancer for that network, and the application's
+own routed services are attached to the ingress network, so a forwarded header
+from that range was set by Caddy or by the application itself. Private networks
+use different ranges, so other services cannot forge it. The value follows the
+network: piqueld updates services if the network is recreated, and treats a
+modified value as drift. Requests reaching Caddy through Docker's userland proxy
+(for example IPv6 to an IPv4-only bridge) appear to come from the bridge gateway.
+
 ## Status and recovery
 
 System status displays ingress alongside Docker health; effective Settings remain
@@ -126,7 +144,8 @@ certificates independently. Back up the private daemon data directory, including
 test certificates and randomly allocated loopback host ports. It covers routing,
 redirects, unknown-host rejection, network separation, gateway replacement failure
 and recovery, unrelated deployments during a stalled gateway update, withdrawals
-with a broken app network, and a backend cutover held behind a failing health check.
+with a broken app network, a backend cutover held behind a failing health check,
+and forwarded client addresses arriving from the injected ingress range.
 Distinct backend responses establish that requests actually switch destinations.
 
 Persistent HTTP/1, HTTP/2, WebSocket and SSE connections are exercised across reloads.
