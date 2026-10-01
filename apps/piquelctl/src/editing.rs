@@ -149,8 +149,9 @@ pub(crate) struct AddServiceArgs {
     /// Build this Git repository with Docker.
     #[arg(long)]
     git: Option<String>,
+    // Boxed to keep the CLI command enum small.
     #[command(flatten)]
-    build: GitBuildArgs,
+    build: Box<GitBuildArgs>,
 }
 #[derive(Debug, Args)]
 pub(crate) struct GitSourceArgs {
@@ -159,8 +160,9 @@ pub(crate) struct GitSourceArgs {
     /// Git clone URL or host path.
     #[arg(id = "git")]
     url: String,
+    // Boxed to keep the CLI command enum small.
     #[command(flatten)]
-    build: GitBuildArgs,
+    build: Box<GitBuildArgs>,
 }
 // Git build settings; each flag requires the `git` argument (`--git` or the
 // positional URL of `source git`).
