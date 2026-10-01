@@ -310,6 +310,19 @@ pub struct ObservedMount {
     pub read_only: bool,
 }
 
+/// A service's attachment to one network and the DNS aliases it answers to there.
+///
+/// Observed attachments carry untrusted Docker-reported names; desired ones are
+/// derived by [`DesiredService::network_attachments`].
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkAttachment {
+    /// Network name.
+    pub network: String,
+    /// Sorted DNS aliases for the service on this network.
+    pub aliases: Vec<String>,
+}
+
 impl From<&DesiredMount> for ObservedMount {
     fn from(value: &DesiredMount) -> Self {
         Self {
@@ -369,6 +382,28 @@ impl DesiredService {
             && self.labels.get(SERVICE_LABEL).map(String::as_str)
                 == Some(self.logical_name.as_str())
             && self.name == DockerServiceName::for_service(&application, &self.logical_name)
+    }
+
+    /// Returns the attachments piqueld authors for this service. The logical
+    /// name is an alias only on the application's private network, so peers
+    /// reach `postgres:5432` while same-named services in other applications
+    /// stay isolated on their own networks. Without valid ownership labels
+    /// naming the application, no attachment gets an alias.
+    #[must_use]
+    pub fn network_attachments(&self) -> Vec<NetworkAttachment> {
+        let private = desired_application_from_labels(&self.labels)
+            .map(|(application, _)| DockerNetworkName::for_application(&application));
+        self.networks
+            .iter()
+            .map(|network| NetworkAttachment {
+                network: network.to_string(),
+                aliases: if private.as_ref() == Some(network) {
+                    vec![self.logical_name.to_string()]
+                } else {
+                    Vec::new()
+                },
+            })
+            .collect()
     }
 }
 
@@ -984,8 +1019,8 @@ pub struct ObservedService {
     pub healthcheck_configured: bool,
     /// Observed resource limits.
     pub resources: Option<ResourceLimits>,
-    /// Networks attached to the service.
-    pub networks: Vec<String>,
+    /// Networks attached to the service and their aliases.
+    pub networks: Vec<NetworkAttachment>,
     /// Ownership labels observed on the service.
     pub labels: BTreeMap<String, String>,
     /// Whether adapter-owned settings remain canonical.
@@ -1016,13 +1051,10 @@ impl ObservedService {
             }),
         )
     }
-    /// Whether attached networks equal the desired ones, ignoring order but
-    /// not multiplicity.
+    /// Whether network attachments, including their aliases, equal the desired
+    /// ones, ignoring order but not multiplicity.
     pub(crate) fn networks_match(&self, desired: &DesiredService) -> bool {
-        unordered_eq(
-            self.networks.iter().map(String::as_str),
-            desired.networks.iter().map(DockerNetworkName::as_str),
-        )
+        unordered_eq(&self.networks, &desired.network_attachments())
     }
 
     /// Compares health checks by what Docker executes, so an HTTP check and its

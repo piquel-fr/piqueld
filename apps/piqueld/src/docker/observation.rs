@@ -2,8 +2,8 @@ use super::policy::ServiceRuntimePolicy;
 use super::{
     BTreeMap, BollardDocker, Convergence, DockerError, HealthCheck, HealthConfig,
     InspectContainerOptionsBuilder, MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND,
-    ObservedMount, ObservedService, ObservedTask, ResourceLimits, ServiceSpec, TaskDiagnostic,
-    TaskSpecContainerSpec, TaskState,
+    NetworkAttachment, ObservedMount, ObservedService, ObservedTask, ResourceLimits, ServiceSpec,
+    TaskDiagnostic, TaskSpecContainerSpec, TaskState,
 };
 use bollard::models::HealthStatusEnum;
 
@@ -218,14 +218,23 @@ impl BollardDocker {
             })
     }
 
-    /// Returns the task network attachment targets, as reported by Docker.
-    pub(super) fn observed_networks(spec: &ServiceSpec) -> Vec<String> {
+    /// Returns the task network attachments as reported by Docker, with each
+    /// attachment's aliases sorted and target-less attachments skipped.
+    /// Targets are still Docker network IDs; callers map them to names.
+    pub(super) fn observed_networks(spec: &ServiceSpec) -> Vec<NetworkAttachment> {
         spec.task_template
             .as_ref()
             .and_then(|task| task.networks.clone())
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|network| network.target)
+            .filter_map(|network| {
+                let mut aliases = network.aliases.unwrap_or_default();
+                aliases.sort();
+                Some(NetworkAttachment {
+                    network: network.target?,
+                    aliases,
+                })
+            })
             .collect()
     }
 

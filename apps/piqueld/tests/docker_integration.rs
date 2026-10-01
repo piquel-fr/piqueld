@@ -133,7 +133,7 @@ impl SwarmScenario {
             command: vec!["/bin/sh".into()],
             arguments: vec![
                 "-c".into(),
-                "test $(cat /run/secrets/token) = mounted-value || exit 1; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
+                "test $(cat /run/secrets/token) = mounted-value || exit 1; until getent hosts web >/dev/null; do sleep 1; done; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
             ],
             mounts: vec![],
             healthcheck: Some(HealthCheck::Command {
@@ -165,6 +165,8 @@ impl SwarmScenario {
         }
     }
 
+    /// The container logs only after resolving its logical name, so this also
+    /// proves the private-network alias.
     async fn assert_logs(&self) {
         let instance = InstanceId::parse(&self.labels["io.piqueld.instance"]).unwrap();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
