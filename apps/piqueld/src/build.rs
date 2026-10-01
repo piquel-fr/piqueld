@@ -46,6 +46,9 @@ impl BuildLog {
     pub(crate) async fn commit(&self, commit: &str) -> Result<(), StoreError> {
         self.store.build_commit(self.id, commit).await
     }
+    pub(crate) async fn exit_code(&self, code: i64) -> Result<(), StoreError> {
+        self.store.build_exit_code(self.id, code).await
+    }
 }
 
 /// A persisted build record that is always given a terminal state.
@@ -78,16 +81,18 @@ impl Completion {
     }
 }
 impl BuildAttempt {
-    /// Creates a running build record for one service of an operation.
+    /// Creates a running build record for one service of an operation, or a
+    /// job run record when `job` is set.
     pub(crate) async fn start(
         store: Arc<Store>,
         application: &ApplicationId,
         operation: &str,
         service: &str,
         source: &Source,
+        job: Option<&str>,
     ) -> Result<Self, StoreError> {
         let id = store
-            .start_build(application, operation, service, source)
+            .start_build(application, operation, service, source, job)
             .await?;
         Ok(Self {
             log: BuildLog { store, id },

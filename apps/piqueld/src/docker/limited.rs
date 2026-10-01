@@ -143,6 +143,27 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     ) -> Result<(), DockerError> {
         self.inner.remove_service(name, ownership).await
     }
+    async fn start_job(&self, job: &piqueld_core::DesiredJob) -> Result<(), DockerError> {
+        self.inner.start_job(job).await
+    }
+    async fn job_status(
+        &self,
+        job: &piqueld_core::DesiredJob,
+    ) -> Result<super::JobStatus, DockerError> {
+        DockerTimeout::Request
+            .run("inspect job", async {
+                let _permit = self
+                    .observations
+                    .acquire()
+                    .await
+                    .expect("semaphore is never closed");
+                self.inner.job_status(job).await
+            })
+            .await
+    }
+    async fn remove_jobs(&self, ownership: &BTreeMap<String, String>) -> Result<(), DockerError> {
+        self.inner.remove_jobs(ownership).await
+    }
     async fn remove_network(
         &self,
         name: &str,

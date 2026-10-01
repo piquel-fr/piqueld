@@ -1,7 +1,7 @@
 //! Distinct names for generated Docker resources. Engine observations remain raw strings.
 
 use crate::names::validated_string;
-use crate::{ApplicationId, ResourceKind, ServiceName, VolumeName, docker_resource_name};
+use crate::{ApplicationId, JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name};
 
 validated_string!(
     /// A Docker network name, distinct from logical names and other resource kinds.
@@ -60,6 +60,16 @@ impl DockerServiceName {
             id,
             ResourceKind::Service,
             Some(service.as_str()),
+        ))
+    }
+
+    /// Derives a job's service name, disjoint from every logical service's name.
+    #[must_use]
+    pub fn for_job(id: &ApplicationId, job: &JobName) -> Self {
+        Self(docker_resource_name(
+            id,
+            ResourceKind::Job,
+            Some(job.as_str()),
         ))
     }
 }

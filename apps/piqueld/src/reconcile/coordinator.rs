@@ -465,7 +465,10 @@ impl<D: DockerApi> Controller<D> {
                 Some(action.kind.resource_name()),
             )
             .await?;
-        let result = match self.service_secrets(&action.kind, &ownership).await {
+        let result = match self
+            .service_secrets(action.kind.secrets(), &ownership)
+            .await
+        {
             Ok(secrets) => match self.store.action_request(&journal, 1).await {
                 Ok(()) => self
                     .mutate_action(&action.kind, &ownership, &secrets)

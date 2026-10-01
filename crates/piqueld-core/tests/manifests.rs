@@ -883,3 +883,67 @@ generate = { type = "random", bytes = 8, encoding = "base64url" }
         ]
     );
 }
+
+#[test]
+fn jobs_keep_declared_order_and_reference_declared_services() {
+    let jobs = r#"
+[[spec.jobs]]
+name = "migrate"
+service = "web"
+command = ["notes", "migrate"]
+run = "before-rollout"
+[[spec.jobs]]
+name = "seed"
+service = "web"
+command = ["notes", "seed"]
+run = "before-rollout"
+timeout_seconds = 60
+"#;
+    let app = parse_toml(&(valid_manifest("notes") + jobs))
+        .unwrap()
+        .normalize(ApplicationId::parse("app-notes-01").unwrap());
+    let names = app
+        .spec()
+        .jobs
+        .iter()
+        .map(|job| (job.name.as_str(), job.timeout_seconds))
+        .collect::<Vec<_>>();
+    assert_eq!(names, [("migrate", 300), ("seed", 60)]);
+    let reparsed = parse_toml(&app.export_toml().unwrap())
+        .unwrap()
+        .normalize(app.id().clone());
+    assert_eq!(reparsed, app);
+    let without_jobs = parse_toml(&valid_manifest("notes"))
+        .unwrap()
+        .normalize(app.id().clone());
+    assert_ne!(app.spec_hash(), without_jobs.spec_hash());
+
+    let invalid = r#"
+[[spec.jobs]]
+name = "migrate"
+service = "api"
+command = [""]
+run = "before-rollout"
+timeout_seconds = 0
+[[spec.jobs]]
+name = "migrate"
+service = "web"
+command = ["notes"]
+run = "before-rollout"
+"#;
+    let error = parse_toml(&(valid_manifest("notes") + invalid)).unwrap_err();
+    let found = error
+        .0
+        .iter()
+        .map(|error| (error.code.as_str(), error.path.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            (codes::PROCESS_COMMAND_INVALID, "spec.jobs[0].command"),
+            (codes::JOB_SERVICE_MISSING, "spec.jobs[0].service"),
+            (codes::JOB_TIMEOUT_INVALID, "spec.jobs[0].timeout_seconds"),
+            (codes::JOB_NAME_DUPLICATE, "spec.jobs[1].name"),
+        ]
+    );
+}

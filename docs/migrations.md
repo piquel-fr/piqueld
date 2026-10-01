@@ -60,6 +60,9 @@ Build metadata is owned by the application rather than an operation, so pruning
 operation history cannot erase build history. Interrupted running records are
 recovered at coordinator startup; output retention leaves metadata intact.
 
+`0011_job_runs.sql` adds job names and exit codes to build records, so one-shot
+job runs share build output storage, paging, and retention.
+
 `0005_structured_build_logs.sql` adds capture timestamps and stdout/stderr
 identity to output chunks. Old unstructured output is marked expired because
 its missing provenance cannot be reconstructed; build metadata remains intact.

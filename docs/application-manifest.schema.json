@@ -6,6 +6,14 @@
       "additionalProperties": false,
       "description": "User-provided application resource lists.",
       "properties": {
+        "jobs": {
+          "default": [],
+          "description": "One-shot jobs, run in declared order at their deployment point.",
+          "items": {
+            "$ref": "#/definitions/Job"
+          },
+          "type": "array"
+        },
         "manifest": {
           "default": null,
           "oneOf": [
@@ -186,6 +194,51 @@
           "type": "object"
         }
       ]
+    },
+    "Job": {
+      "additionalProperties": false,
+      "description": "A container that runs to completion at a defined point in each deployment.",
+      "properties": {
+        "command": {
+          "description": "Command replacing the service's command and arguments.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Logical job name.",
+          "type": "string"
+        },
+        "run": {
+          "$ref": "#/definitions/JobRun",
+          "description": "Deployment point at which the job runs."
+        },
+        "service": {
+          "description": "Service whose prepared image, environment, secrets, and mounts the job reuses.",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "description": "Seconds the job may run before the deployment fails.",
+          "format": "int32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "service",
+        "command",
+        "run"
+      ],
+      "type": "object"
+    },
+    "JobRun": {
+      "description": "Deployment point at which a job runs.",
+      "enum": [
+        "before-rollout"
+      ],
+      "type": "string"
     },
     "ManifestRepository": {
       "description": "The literal `\"self\"`, selecting the manifest's own repository.",

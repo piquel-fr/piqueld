@@ -11,8 +11,8 @@ pub use event::Event;
 pub mod manifest;
 pub mod names;
 pub use names::{
-    ApplicationName, ApplicationNameError, ServiceName, ServiceNameError, VolumeName,
-    VolumeNameError,
+    ApplicationName, ApplicationNameError, JobName, JobNameError, ServiceName, ServiceNameError,
+    VolumeName, VolumeNameError,
 };
 pub mod operation;
 pub mod planner;
@@ -33,11 +33,12 @@ pub use planner::{
     PlanRequest, PlanSummary,
 };
 pub use resource::{
-    CompileError, Convergence, DesiredMount, DesiredNetwork, DesiredService, DesiredVolume,
-    InstanceId, InstanceIdError, ObservedApplication, ObservedNetwork, ObservedService,
-    ObservedTask, ObservedVolume, Ownership, OwnershipState, ResolutionRequirement, ResolutionSet,
-    ResolvedApplication, ResolvedSource, Sha256Digest, Sha256DigestError, TaskDiagnostic,
-    TaskState, compile_application, image_repository, preview_resolution, valid_logical_name,
+    CompileError, Convergence, DesiredJob, DesiredMount, DesiredNetwork, DesiredService,
+    DesiredVolume, InstanceId, InstanceIdError, ObservedApplication, ObservedNetwork,
+    ObservedService, ObservedTask, ObservedVolume, Ownership, OwnershipState,
+    ResolutionRequirement, ResolutionSet, ResolvedApplication, ResolvedSource, Sha256Digest,
+    Sha256DigestError, TaskDiagnostic, TaskState, compile_application, image_repository,
+    preview_resolution, valid_logical_name,
 };
 
 pub use operation::{ApplicationState, Operation, OperationKind, OperationState};

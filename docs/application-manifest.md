@@ -76,6 +76,8 @@ error whose message names the offending environment key where applicable:
 | Command / arguments elements | 128 each |
 | Command / arguments element size | 4,096 bytes |
 | Mounts per service | 32 |
+| Jobs per application | 16 |
+| Job timeout | 86,400 seconds |
 | Health-check interval | 3,600 seconds |
 | CPU limit | 1,048,576 millicores |
 
@@ -307,6 +309,36 @@ This is startup ordering only. It gives no runtime guarantee after rollout:
 a dependency that later becomes unhealthy does not stop or restart its
 dependents, and drift repair does not pass a dependency that is still
 converging.
+
+## Jobs
+
+Jobs run a container to completion at a defined point of every deployment,
+for example database migrations:
+
+```toml
+[[spec.jobs]]
+name = "migrate"
+service = "auth"             # reuse the new image, env, secrets and mounts
+command = ["auth-service", "migrate"]
+run = "before-rollout"
+timeout_seconds = 300        # default
+```
+
+A job reuses the prepared image, environment, secret files, volume mounts,
+resource limits, and private network of the referenced service in the same
+deployment. Its `command` replaces the service's command and arguments; health
+checks do not apply. `before-rollout` is currently the only run point: jobs run
+in declared order after every source is prepared and before the deployment is
+promoted or changes any service. Missing networks and volumes are created first.
+Because services have not changed yet, a first deployment's jobs cannot reach
+services that the same deployment creates.
+
+A non-zero exit, a rejected task, or exceeding `timeout_seconds` (1–86,400) fails
+the deployment with `job_failed` or `job_timeout`. The previous target keeps
+running and failed jobs are not retried automatically; deploy again after
+fixing the cause. Jobs run once per deployment: retrying a promoted deployment
+or repairing drift never runs them again. Each run and its bounded output is
+kept in the application's build history.
 
 ## Public routes
 

@@ -928,6 +928,7 @@ fn planner_rejects_wrong_resource_roles_before_use_or_deletion() {
                     .insert(SERVICE_LABEL.into(), "INVALID".into());
                 service.name = docker_resource_name(&desired.id, role, Some("INVALID"));
             }
+            ResourceKind::Job => unreachable!("observation never reports jobs"),
         }
         let deletion = Plan::from_request(
             &PlanRequest::Delete {
@@ -963,4 +964,44 @@ fn planner_rejects_wrong_resource_roles_before_use_or_deletion() {
         &snapshot,
     );
     assert!(deletion.is_blocked());
+}
+
+#[test]
+fn jobs_reuse_their_service_container_under_a_distinct_identity() {
+    let app = parse_toml(&format!(
+        "{}\n[spec.services.environment]\nRUST_LOG = \"info\"\n\
+         [[spec.jobs]]\nname = \"migrate\"\nservice = \"web\"\n\
+         command = [\"notes\", \"migrate\"]\nrun = \"before-rollout\"\n",
+        include_str!("fixtures/manifests/prebuilt.toml")
+    ))
+    .unwrap()
+    .normalize(ApplicationId::parse("app-notes-01").unwrap());
+    let desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let (service, job) = (&desired.services[0], &desired.jobs[0]);
+    assert!(job.has_valid_identity());
+    assert_ne!(job.container.name, service.name);
+    assert_eq!(job.container.image, service.image);
+    assert_eq!(job.container.environment, service.environment);
+    assert_eq!(job.container.mounts, service.mounts);
+    assert_eq!(job.container.networks, service.networks);
+    assert_eq!(job.container.command, ["notes", "migrate"]);
+    assert!(job.container.healthcheck.is_none());
+    assert!(!job.container.labels.contains_key("io.piqueld.service"));
+    assert_eq!(
+        job.container
+            .labels
+            .get("io.piqueld.job")
+            .map(String::as_str),
+        Some("migrate")
+    );
+    assert_eq!(
+        piqueld_core::OwnershipState::for_resource(
+            &job.container.labels,
+            &instance(),
+            app.id(),
+            piqueld_core::ResourceKind::Job,
+            job.container.name.as_str(),
+        ),
+        piqueld_core::OwnershipState::Owned
+    );
 }

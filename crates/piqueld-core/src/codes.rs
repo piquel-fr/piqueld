@@ -75,6 +75,14 @@ pub const PROCESS_ARGUMENT_INVALID: &str = "process_argument_invalid";
 pub const SERVICE_COUNT_EXCESSIVE: &str = "service_count_excessive";
 /// Application declares more volumes than allowed.
 pub const VOLUME_COUNT_EXCESSIVE: &str = "volume_count_excessive";
+/// Application declares more jobs than allowed.
+pub const JOB_COUNT_EXCESSIVE: &str = "job_count_excessive";
+/// Job logical name is duplicated.
+pub const JOB_NAME_DUPLICATE: &str = "job_name_duplicate";
+/// Job references an undeclared service.
+pub const JOB_SERVICE_MISSING: &str = "job_service_missing";
+/// Job timeout is outside its supported range.
+pub const JOB_TIMEOUT_INVALID: &str = "job_timeout_invalid";
 
 /// Service source has no immutable resolution yet.
 pub const SOURCE_UNRESOLVED: &str = "source_unresolved";

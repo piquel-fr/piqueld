@@ -1,12 +1,14 @@
 //! Backend-neutral desired, resolved, and observed Docker resource contracts.
 
-use crate::manifest::domain::{ValidatedMount as Mount, ValidatedService as Service};
+use crate::manifest::domain::{
+    ValidatedJob as Job, ValidatedMount as Mount, ValidatedService as Service,
+};
 use crate::names::validated_string;
 use crate::{
     ApplicationId, ApplicationName, DockerNetworkName, DockerServiceName, DockerVolumeName,
-    ResourceKind, ServiceName, VolumeName, docker_resource_name,
+    JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name,
     manifest::{
-        HealthCheck, NormalizedApplication, ResourceLimits, Source, SourceRepository,
+        HealthCheck, JobRun, NormalizedApplication, ResourceLimits, Source, SourceRepository,
         valid_image_reference,
     },
 };
@@ -25,6 +27,8 @@ pub const APPLICATION_LABEL: &str = "io.piqueld.application";
 pub const SERVICE_LABEL: &str = "io.piqueld.service";
 /// Label carrying the normalized application spec hash.
 pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
+/// Label carrying the logical job identity of a one-shot job service.
+pub const JOB_LABEL: &str = "io.piqueld.job";
 
 validated_string!(
     /// Stable control-plane instance identity.
@@ -107,6 +111,17 @@ impl ResolvedSource {
                 digest_reference, ..
             } => digest_reference.clone().into(),
             Self::Git { image_id, .. } => image_id.clone().into(),
+        }
+    }
+
+    /// Returns the source the user requested before resolution.
+    #[must_use]
+    pub fn requested(&self) -> Source {
+        match self {
+            Self::Image { requested, .. } => Source::Image {
+                image: requested.to_string(),
+            },
+            Self::Git { requested, .. } => requested.clone(),
         }
     }
 
@@ -414,6 +429,35 @@ impl DesiredService {
     }
 }
 
+/// Desired one-shot job, run as a Swarm replicated job before its deployment point.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DesiredJob {
+    /// Manifest-level job name.
+    pub logical_name: JobName,
+    /// Deployment point at which the job runs.
+    pub run: JobRun,
+    /// Seconds the job may run before the deployment fails.
+    pub timeout_seconds: u32,
+    /// The referenced service's container settings with the job's command,
+    /// Docker name, and labels. Health checks never apply to jobs.
+    pub container: DesiredService,
+}
+
+impl DesiredJob {
+    /// Returns whether the job has a canonical name and identity.
+    #[must_use]
+    pub fn has_valid_identity(&self) -> bool {
+        let labels = &self.container.labels;
+        let Some((application, _)) = desired_application_from_labels(labels) else {
+            return false;
+        };
+        !labels.contains_key(SERVICE_LABEL)
+            && labels.get(JOB_LABEL).map(String::as_str) == Some(self.logical_name.as_str())
+            && self.container.name == DockerServiceName::for_job(&application, &self.logical_name)
+    }
+}
+
 /// Desired state for an application and its resources.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -438,6 +482,9 @@ pub struct ResolvedApplication {
     /// Deployed public route intent, including when ingress is disabled.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<crate::manifest::ValidatedRoute>,
+    /// One-shot jobs in declared execution order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<DesiredJob>,
 }
 
 impl ResolvedApplication {
@@ -620,7 +667,19 @@ pub fn compile_application(
         spec_hash: digest.as_str().to_owned(),
     };
     let private_network = DockerNetworkName::for_application(app.id());
+    let services = app
+        .spec()
+        .services
+        .iter()
+        .map(|service| compile_service(service, app, resolutions, &ownership, &private_network))
+        .collect::<Vec<_>>();
     Ok(ResolvedApplication {
+        jobs: app
+            .spec()
+            .jobs
+            .iter()
+            .map(|job| compile_job(job, app, &services, &ownership))
+            .collect(),
         secret_names: resolutions.secret_names.clone(),
         routes: app.spec().routes.clone(),
         id: app.id().clone(),
@@ -645,12 +704,7 @@ pub fn compile_application(
                 labels: ownership.labels(),
             })
             .collect(),
-        services: app
-            .spec()
-            .services
-            .iter()
-            .map(|service| compile_service(service, app, resolutions, &ownership, &private_network))
-            .collect(),
+        services,
     })
 }
 
@@ -789,6 +843,35 @@ fn compile_service(
         networks: vec![private_network.clone()],
         labels: ownership.labels(),
         depends_on: service.depends_on.clone(),
+    }
+}
+
+/// Validation guarantees that every job references a declared service.
+fn compile_job(
+    job: &Job,
+    app: &NormalizedApplication,
+    services: &[DesiredService],
+    application_ownership: &Ownership,
+) -> DesiredJob {
+    let mut container = services
+        .iter()
+        .find(|service| service.logical_name == job.service)
+        .expect("validated jobs reference declared services")
+        .clone();
+    container.name = DockerServiceName::for_job(app.id(), &job.name);
+    container.replicas = 1;
+    container.command.clone_from(&job.command);
+    container.arguments.clear();
+    container.healthcheck = None;
+    container.labels = application_ownership.labels();
+    container
+        .labels
+        .insert(JOB_LABEL.into(), job.name.to_string());
+    DesiredJob {
+        logical_name: job.name.clone(),
+        run: job.run,
+        timeout_seconds: job.timeout_seconds,
+        container,
     }
 }
 
@@ -1202,6 +1285,13 @@ impl OwnershipState {
                         .is_ok_and(|name| name.is_for_application(application))
             }
             ResourceKind::Volume => !labels.contains_key(SERVICE_LABEL),
+            ResourceKind::Job => {
+                !labels.contains_key(SERVICE_LABEL)
+                    && labels.get(JOB_LABEL).is_some_and(|job| {
+                        JobName::parse(job.clone()).is_ok()
+                            && name == docker_resource_name(application, kind, Some(job))
+                    })
+            }
         };
         if valid_role {
             Self::Owned

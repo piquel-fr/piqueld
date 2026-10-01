@@ -153,6 +153,15 @@ impl ActionKind {
         }
     }
 
+    /// Pinned secret files the action's service mounts; empty for other actions.
+    #[must_use]
+    pub fn secrets(&self) -> &[crate::resource::SecretFile] {
+        match self {
+            Self::EnsureService { service } => &service.secrets,
+            _ => &[],
+        }
+    }
+
     /// Classifies the effect of executing this action.
     #[must_use]
     pub const fn risk(&self) -> ActionRisk {

@@ -12,8 +12,8 @@ use domain::{ValidatedMetadata, ValidatedSpec};
 pub mod validation;
 
 pub use input::{
-    ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, HealthExecution,
-    ManifestRepository, ManifestRevision, Metadata, Mount, Redirect, RepositoryManifest,
+    ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, HealthExecution, Job,
+    JobRun, ManifestRepository, ManifestRevision, Metadata, Mount, Redirect, RepositoryManifest,
     ResourceLimits, Route, SecretDeclaration, SecretEncoding, SecretGenerator, SecretMount,
     Service, Source, SourceRepository, Volume,
 };
