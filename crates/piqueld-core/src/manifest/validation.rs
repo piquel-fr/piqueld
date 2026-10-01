@@ -19,16 +19,57 @@ use utoipa::ToSchema;
 const MAX_ROUTES: usize = 64;
 const MAX_SERVICES: usize = 64;
 const MAX_VOLUMES: usize = 64;
-const MAX_ENVIRONMENT_ENTRIES: usize = 256;
-/// Environment keys share the common 255-byte identifier bound so one entry
-/// cannot dominate a manifest or a container environment list.
-const MAX_ENVIRONMENT_KEY_BYTES: usize = 255;
-const MAX_ENVIRONMENT_VALUE_BYTES: usize = 65_536;
+const MAX_VARIABLE_ENTRIES: usize = 256;
+/// Variable keys and build targets share the common 255-byte identifier bound so one entry
+/// cannot dominate a manifest, a container environment list, or a build command.
+const MAX_IDENTIFIER_BYTES: usize = 255;
+const MAX_VARIABLE_VALUE_BYTES: usize = 65_536;
 const MAX_PROCESS_ELEMENTS: usize = 128;
 const MAX_PROCESS_ELEMENT_BYTES: usize = 4_096;
 const MAX_MOUNTS_PER_SERVICE: usize = 32;
 const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
 const MAX_CPU_MILLIS: u32 = 1_048_576;
+
+impl Build {
+    /// Validates build inputs without reading the checkout.
+    ///
+    /// Appends errors at `path` for Dockerfile or context paths that are not
+    /// relative or leave the repository, build arguments that break the
+    /// environment variable name, count, and size rules, and targets that are
+    /// not Docker stage names.
+    pub fn validate(&self, path: &str, errors: &mut Vec<ValidationError>) {
+        let Self::Docker {
+            dockerfile,
+            context,
+            args,
+            target,
+        } = self;
+        for (field, value) in [("dockerfile", dockerfile), ("context", context)] {
+            if !valid_repository_path(value) {
+                error(
+                    errors,
+                    "repository_path_invalid",
+                    &format!("{path}.{field}"),
+                    "path must be relative to the repository root and remain within it",
+                );
+            }
+        }
+        VariableMap::BUILD_ARGS.validate(args, path, errors);
+        if target
+            .as_deref()
+            .is_some_and(|target| !valid_build_target(target))
+        {
+            error(
+                errors,
+                codes::BUILD_TARGET_INVALID,
+                &format!("{path}.target"),
+                &format!(
+                    "build target must start with a letter, use letters, digits, '-', '_', or '.', and be at most {MAX_IDENTIFIER_BYTES} bytes"
+                ),
+            );
+        }
+    }
+}
 
 impl GitRepository {
     /// Validates Git arguments without executing Git.
@@ -244,6 +285,7 @@ pub fn safe_decode_path(path: &str) -> String {
         "build",
         "dockerfile",
         "context",
+        "args",
         "volume",
         "target",
         "read_only",
@@ -498,26 +540,9 @@ fn validate_services(
                 "image must be a valid registry reference without credentials or a URL scheme",
             );
         }
-        if let Source::Git {
-            repository,
-            build:
-                Build::Docker {
-                    dockerfile,
-                    context,
-                },
-        } = &service.source
-        {
+        if let Source::Git { repository, build } = &service.source {
             repository.validate(&format!("{base}.source.repository"), errors);
-            for (field, value) in [("dockerfile", dockerfile), ("context", context)] {
-                if !valid_repository_path(value) {
-                    error(
-                        errors,
-                        "repository_path_invalid",
-                        &format!("{base}.source.build.{field}"),
-                        "path must be relative to the repository root and remain within it",
-                    );
-                }
-            }
+            build.validate(&format!("{base}.source.build"), errors);
         }
         let mut targets = service
             .mounts
@@ -545,7 +570,7 @@ fn validate_services(
                 "at most 64 secret file mounts per service",
             );
         }
-        validate_environment(&service.environment, &base, errors);
+        VariableMap::ENVIRONMENT.validate(&service.environment, &base, errors);
         validate_mounts(&service.mounts, &base, volume_names, errors);
         validate_process_arguments(
             &service.command,
@@ -578,52 +603,88 @@ fn validate_services(
     }
 }
 
-/// Checks environment entry count, key syntax and length, and value content
-/// and size.
-fn validate_environment(
-    environment: &BTreeMap<String, String>,
-    base: &str,
-    errors: &mut Vec<ValidationError>,
-) {
-    if environment.len() > MAX_ENVIRONMENT_ENTRIES {
-        error(
-            errors,
-            codes::ENVIRONMENT_COUNT_EXCESSIVE,
-            &format!("{base}.environment"),
-            &format!(
-                "a service must declare at most {MAX_ENVIRONMENT_ENTRIES} environment entries"
-            ),
-        );
-    }
-    for (key, value) in environment {
-        let key_echo = safe_key_echo(key);
-        if !valid_env_name(key) || key.len() > MAX_ENVIRONMENT_KEY_BYTES {
+/// Rules for a validated name/value map passed to a process, such as a
+/// container environment or Docker build arguments.
+struct VariableMap {
+    /// Human-readable entry kind used in messages.
+    noun: &'static str,
+    /// Field name below the validated path.
+    field: &'static str,
+    // Error codes reported for each rule.
+    name_invalid: &'static str,
+    value_invalid: &'static str,
+    count_excessive: &'static str,
+    value_excessive: &'static str,
+}
+
+impl VariableMap {
+    /// Service environment, validated at `<service>.environment`.
+    const ENVIRONMENT: Self = Self {
+        noun: "environment",
+        field: "environment",
+        name_invalid: codes::ENVIRONMENT_NAME_INVALID,
+        value_invalid: codes::ENVIRONMENT_VALUE_INVALID,
+        count_excessive: codes::ENVIRONMENT_COUNT_EXCESSIVE,
+        value_excessive: codes::ENVIRONMENT_VALUE_EXCESSIVE,
+    };
+    /// Docker build arguments, validated at `<build>.args`.
+    const BUILD_ARGS: Self = Self {
+        noun: "build argument",
+        field: "args",
+        name_invalid: codes::BUILD_ARG_NAME_INVALID,
+        value_invalid: codes::BUILD_ARG_VALUE_INVALID,
+        count_excessive: codes::BUILD_ARG_COUNT_EXCESSIVE,
+        value_excessive: codes::BUILD_ARG_VALUE_EXCESSIVE,
+    };
+
+    /// Appends errors at `base.field` when `values` has too many entries, a
+    /// name is not a POSIX-style identifier or exceeds the identifier bound, or
+    /// a value contains NUL or exceeds its byte budget.
+    fn validate(
+        &self,
+        values: &BTreeMap<String, String>,
+        base: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Self { noun, field, .. } = self;
+        if values.len() > MAX_VARIABLE_ENTRIES {
             error(
                 errors,
-                codes::ENVIRONMENT_NAME_INVALID,
-                &format!("{base}.environment.name"),
-                &format!(
-                    "environment key {key_echo} is invalid: names must use letters, digits, and underscores, cannot start with a digit, and must be at most {MAX_ENVIRONMENT_KEY_BYTES} bytes"
-                ),
+                self.count_excessive,
+                &format!("{base}.{field}"),
+                &format!("a service must declare at most {MAX_VARIABLE_ENTRIES} {noun} entries"),
             );
         }
-        if value.contains('\0') {
-            error(
-                errors,
-                codes::ENVIRONMENT_VALUE_INVALID,
-                &format!("{base}.environment.value"),
-                &format!("environment value for key {key_echo} cannot contain NUL"),
-            );
-        }
-        if value.len() > MAX_ENVIRONMENT_VALUE_BYTES {
-            error(
-                errors,
-                codes::ENVIRONMENT_VALUE_EXCESSIVE,
-                &format!("{base}.environment.value"),
-                &format!(
-                    "environment value for key {key_echo} must be at most {MAX_ENVIRONMENT_VALUE_BYTES} bytes"
-                ),
-            );
+        for (key, value) in values {
+            let key_echo = safe_key_echo(key);
+            if !valid_env_name(key) || key.len() > MAX_IDENTIFIER_BYTES {
+                error(
+                    errors,
+                    self.name_invalid,
+                    &format!("{base}.{field}.name"),
+                    &format!(
+                        "{noun} key {key_echo} is invalid: names must use letters, digits, and underscores, cannot start with a digit, and must be at most {MAX_IDENTIFIER_BYTES} bytes"
+                    ),
+                );
+            }
+            if value.contains('\0') {
+                error(
+                    errors,
+                    self.value_invalid,
+                    &format!("{base}.{field}.value"),
+                    &format!("{noun} value for key {key_echo} cannot contain NUL"),
+                );
+            }
+            if value.len() > MAX_VARIABLE_VALUE_BYTES {
+                error(
+                    errors,
+                    self.value_excessive,
+                    &format!("{base}.{field}.value"),
+                    &format!(
+                        "{noun} value for key {key_echo} must be at most {MAX_VARIABLE_VALUE_BYTES} bytes"
+                    ),
+                );
+            }
         }
     }
 }
@@ -1078,7 +1139,20 @@ fn validate_absolute_path(value: &str, path: &str, errors: &mut Vec<ValidationEr
     }
 }
 
-/// Whether an environment key is a POSIX-style identifier (`[A-Za-z_][A-Za-z0-9_]*`).
+/// Docker stage names: a leading letter, then letters, digits, `-`, `_`, or `.`.
+fn valid_build_target(value: &str) -> bool {
+    value.len() <= MAX_IDENTIFIER_BYTES
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+/// Whether an environment key or build argument name is a POSIX-style identifier
+/// (`[A-Za-z_][A-Za-z0-9_]*`).
 fn valid_env_name(value: &str) -> bool {
     !value.is_empty()
         && !value.as_bytes()[0].is_ascii_digit()

@@ -32,7 +32,7 @@ use piqueld_core::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -84,6 +84,40 @@ mod secrets;
 mod spec;
 pub use errors::DockerError;
 
+/// Resolved inputs for one local Docker image build.
+#[derive(Debug)]
+pub struct ImageBuild<'a> {
+    /// Dockerfile inside a checkout.
+    pub dockerfile: PathBuf,
+    /// Build context directory inside a checkout.
+    pub context: PathBuf,
+    /// Values passed as `--build-arg`.
+    pub args: &'a BTreeMap<String, String>,
+    /// Optional multi-stage target.
+    pub target: Option<&'a str>,
+}
+
+impl ImageBuild<'_> {
+    /// Docker CLI options selecting build arguments, in name order and passed
+    /// verbatim, followed by the target stage.
+    ///
+    /// ```text
+    /// args {A: "1", B: "x=y"}, target "runtime"
+    ///   -> --build-arg A=1 --build-arg B=x=y --target runtime
+    /// ```
+    fn options(&self) -> impl Iterator<Item = String> {
+        let args = self
+            .args
+            .iter()
+            .flat_map(|(key, value)| ["--build-arg".into(), format!("{key}={value}")]);
+        let target = self
+            .target
+            .into_iter()
+            .flat_map(|target| ["--target".into(), target.to_owned()]);
+        args.chain(target)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// The result of checking or initializing the local Swarm.
 pub enum SwarmState {
@@ -119,11 +153,10 @@ pub trait DockerApi: Send + Sync + 'static {
     /// [`DockerApi::build_image`].
     async fn build_image_recorded(
         &self,
-        dockerfile: &Path,
-        context: &Path,
+        build: &ImageBuild<'_>,
         _log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        self.build_image(dockerfile, context).await
+        self.build_image(build).await
     }
     /// Provisions an immutable secret with the expected application ownership.
     /// The default reports secrets as unsupported.
@@ -151,8 +184,7 @@ pub trait DockerApi: Send + Sync + 'static {
     /// Builds a local image without persisting output.
     async fn build_image(
         &self,
-        dockerfile: &Path,
-        context: &Path,
+        build: &ImageBuild<'_>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError>;
     /// Reads the resources managed for one application.
     async fn observe(
@@ -268,4 +300,34 @@ async fn matching_repo_digests(
                 && BollardDocker::valid_digest(digest)
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_build_options_pass_arguments_verbatim_and_target_last() {
+        let args = BTreeMap::from([
+            ("ORIGIN".to_owned(), "https://a=b c".to_owned()),
+            ("EMPTY".to_owned(), String::new()),
+        ]);
+        let build = ImageBuild {
+            dockerfile: PathBuf::from("Dockerfile"),
+            context: PathBuf::from("."),
+            args: &args,
+            target: Some("runtime"),
+        };
+        assert_eq!(
+            build.options().collect::<Vec<_>>(),
+            [
+                "--build-arg",
+                "EMPTY=",
+                "--build-arg",
+                "ORIGIN=https://a=b c",
+                "--target",
+                "runtime"
+            ]
+        );
+    }
 }

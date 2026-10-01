@@ -152,11 +152,17 @@ impl Checkout {
         let piqueld_core::manifest::Build::Docker {
             dockerfile,
             context,
+            args,
+            target,
         } = build;
-        let dockerfile = checkout.path(dockerfile).await?;
-        let context = checkout.path(context).await?;
+        let build = crate::docker::ImageBuild {
+            dockerfile: checkout.path(dockerfile).await?,
+            context: checkout.path(context).await?,
+            args,
+            target: target.as_deref(),
+        };
         let image = docker
-            .build_image_recorded(&dockerfile, &context, log)
+            .build_image_recorded(&build, log)
             .await
             .context("build Git source image")?;
         Ok((checkout.commit, image))

@@ -131,6 +131,7 @@ impl From<&Service> for ServiceForm {
                     Build::Docker {
                         dockerfile,
                         context,
+                        ..
                     },
             } => {
                 form.source_kind = "git".into();
@@ -170,29 +171,45 @@ impl From<&Service> for ServiceForm {
     }
 }
 impl ServiceForm {
+    /// Builds the edited source. The form does not edit Docker build arguments
+    /// or targets, so they are taken from the saved Git source.
+    fn source(&self, saved: &mut Source) -> Result<Source, String> {
+        Ok(match self.source_kind.as_str() {
+            "image" => Source::Image {
+                image: self.image.clone(),
+            },
+            "git" => {
+                let (args, target) = match saved {
+                    Source::Git {
+                        build: Build::Docker { args, target, .. },
+                        ..
+                    } => (std::mem::take(args), target.take()),
+                    Source::Image { .. } => Default::default(),
+                };
+                Source::Git {
+                    repository: GitRepository {
+                        url: self.repository.clone(),
+                        branch: self.branch.clone(),
+                        commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
+                    },
+                    build: Build::Docker {
+                        dockerfile: self.dockerfile.clone(),
+                        context: self.context.clone(),
+                        args,
+                        target,
+                    },
+                }
+            }
+            _ => return Err("Choose image or Git as the source.".into()),
+        })
+    }
     /// Applies a single group to a fresh copy of saved configuration.
     /// # Errors
     /// Returns actionable errors for malformed numeric fields or duplicate environment keys.
     pub fn patch(&self, section: Section, service: &mut Service) -> Result<(), String> {
         match section {
             Section::General => {
-                service.source = match self.source_kind.as_str() {
-                    "image" => Source::Image {
-                        image: self.image.clone(),
-                    },
-                    "git" => Source::Git {
-                        repository: GitRepository {
-                            url: self.repository.clone(),
-                            branch: self.branch.clone(),
-                            commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
-                        },
-                        build: Build::Docker {
-                            dockerfile: self.dockerfile.clone(),
-                            context: self.context.clone(),
-                        },
-                    },
-                    _ => return Err("Choose image or Git as the source.".into()),
-                };
+                service.source = self.source(&mut service.source)?;
                 service.replicas = self
                     .replicas
                     .parse()
@@ -346,6 +363,8 @@ mod tests {
             build: Build::Docker {
                 dockerfile: "infra/Dockerfile".into(),
                 context: "app".into(),
+                args: [("ORIGIN".into(), "https://example.com".into())].into(),
+                target: Some("runtime".into()),
             },
         };
         let source = saved.source.clone();

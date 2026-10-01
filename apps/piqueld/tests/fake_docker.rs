@@ -8,7 +8,9 @@ mod application_fixture;
 use application_fixture::TestApplications;
 
 use async_trait::async_trait;
-use piqueld::docker::{DockerApi, DockerError, ImageSource, SwarmState, resolve_image_digest};
+use piqueld::docker::{
+    DockerApi, DockerError, ImageBuild, ImageSource, SwarmState, resolve_image_digest,
+};
 use piqueld::reconcile::Controller;
 use piqueld::store::Store;
 use piqueld_core::Sha256Digest;
@@ -267,13 +269,9 @@ impl DockerApi for FakeDocker {
         Ok(SwarmState::Ready)
     }
 
-    async fn build_image(
-        &self,
-        dockerfile: &std::path::Path,
-        context: &std::path::Path,
-    ) -> Result<Sha256Digest, DockerError> {
-        assert!(context.is_dir());
-        let contents = tokio::fs::read_to_string(dockerfile).await.unwrap();
+    async fn build_image(&self, build: &ImageBuild<'_>) -> Result<Sha256Digest, DockerError> {
+        assert!(build.context.is_dir());
+        let contents = tokio::fs::read_to_string(&build.dockerfile).await.unwrap();
         if contents.contains("build-fails") {
             return Err(DockerError::Request("build Docker image"));
         }
@@ -2076,6 +2074,8 @@ mod repository_deployments {
             build: piqueld_core::manifest::Build::Docker {
                 dockerfile: "Dockerfile".into(),
                 context: ".".into(),
+                args: std::collections::BTreeMap::new(),
+                target: None,
             },
         };
         repository.write("app.json", &fetched);
