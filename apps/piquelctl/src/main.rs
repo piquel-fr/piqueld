@@ -5,6 +5,7 @@ mod cli;
 mod commands;
 mod editing;
 mod error;
+mod exec;
 mod output;
 mod profiles;
 
@@ -35,24 +36,35 @@ async fn main() -> ExitCode {
             command: cli::AppCommand::Validate { file },
         } = &cli.command
         {
-            return commands::validate(&mut console, file).await;
+            return commands::validate(&mut console, file)
+                .await
+                .map(|()| ExitCode::SUCCESS);
         }
         let profiles = profiles::Profiles::load(&cli)?;
         if matches!(cli.command, cli::Command::Profiles) {
-            return console.emit(&ProfilesReport {
-                profiles: profiles.summaries(),
-            });
+            return console
+                .emit(&ProfilesReport {
+                    profiles: profiles.summaries(),
+                })
+                .map(|()| ExitCode::SUCCESS);
         }
         profiles.resolve(&mut cli, &matches)?;
-        if matches!(cli.command, cli::Command::Login) {
-            let client = commands::build_client(&cli)?;
-            return auth::login(&cli, &client, &mut console).await;
+        match &cli.command {
+            cli::Command::Login => {
+                let client = commands::build_client(&cli)?;
+                auth::login(&cli, &client, &mut console).await?;
+            }
+            // A command session is not bounded by the command timeout.
+            cli::Command::App {
+                command: cli::AppCommand::Exec(args),
+            } => return args.run(&commands::build_client(&cli)?).await,
+            _ => run_with_timeout(&cli, &mut console).await?,
         }
-        run_with_timeout(&cli, &mut console).await
+        Ok(ExitCode::SUCCESS)
     }
     .await;
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             console.error(&ErrorReport::new(&error, &cli));
             let code = error.exit_code();
@@ -170,6 +182,18 @@ mod tests {
             ],
             vec!["piquelctl", "app", "delete", "notes", "--yes", "--no-wait"],
             vec!["piquelctl", "operation", "operation-01", "--no-wait"],
+            vec![
+                "piquelctl",
+                "app",
+                "exec",
+                "piquel-fr",
+                "auth",
+                "-it",
+                "--",
+                "sh",
+                "-c",
+                "id",
+            ],
         ];
         for arguments in cases {
             Cli::try_parse_from(arguments).expect("command parses");
@@ -192,6 +216,11 @@ mod tests {
         assert!(Cli::try_parse_from(["piquelctl", "--timeout", "zero", "status"]).is_err());
         assert!(Cli::try_parse_from(["piquelctl", "--timeout", "0s", "status"]).is_err());
         assert!(Cli::try_parse_from(["piquelctl", "app", "plan", "status"]).is_err());
+        // Commands follow `--`, and services are validated logical names.
+        assert!(Cli::try_parse_from(["piquelctl", "app", "exec", "notes", "web"]).is_err());
+        assert!(
+            Cli::try_parse_from(["piquelctl", "app", "exec", "notes", "Web", "--", "id"]).is_err()
+        );
     }
 
     #[test]

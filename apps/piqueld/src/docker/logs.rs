@@ -35,7 +35,7 @@ impl BollardDocker {
         since: u32,
         stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<ApplicationLogs, DockerError> {
-        let services = self.log_services(instance, application, service).await?;
+        let services = self.owned_services(instance, application, service).await?;
         if services.is_empty() {
             return Ok(ApplicationLogs::default());
         }
@@ -153,8 +153,9 @@ impl BollardDocker {
     }
 
     /// Maps service IDs to logical service names for the application's
-    /// managed services, filtered to `service` when one is requested.
-    async fn log_services(
+    /// managed services, filtered to `service` when one is requested. Shared by
+    /// log collection and exec task selection.
+    pub(super) async fn owned_services(
         &self,
         instance: &InstanceId,
         application: &ApplicationId,
@@ -175,7 +176,7 @@ impl BollardDocker {
                     .build(),
             ))
             .await
-            .map_err(|e| DockerError::request("list log services", e))?
+            .map_err(|e| DockerError::request("list owned services", e))?
             .into_iter()
             .filter_map(|s| {
                 let id = s.id?;

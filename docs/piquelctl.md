@@ -38,6 +38,7 @@ piquelctl app list
 piquelctl app show <name-or-id>
 piquelctl app logs <name-or-id> [--service <name>]
 piquelctl app validate --file application.toml
+piquelctl app exec <name-or-id> <service> [-i] [-t] -- <command>...
 piquelctl app plan --file application.toml
 piquelctl app apply --file application.toml
 piquelctl app apply --file application.toml --deploy
@@ -83,6 +84,7 @@ written to stderr, so stdout remains valid JSON.
 | `app show` | `{ "application": ApplicationView, "status": ApplicationStatusView }` |
 | `app logs` | `ApplicationLogs` |
 | `app validate` | `{ "application": string }` |
+| `app exec` | None; the command's raw output |
 | `app plan` | `PlanView` |
 | `app create` / `app rename` / field edits | `SavedApplication`; `--deploy` uses the same output as `app apply --deploy` |
 | `app manifest` | Saved TOML as a JSON string |
@@ -193,6 +195,31 @@ piquelctl app repository branch notes release --yes
 piquelctl app repository path notes corrected/app.toml --yes
 piquelctl app repository disconnect notes --yes
 ```
+
+## Running commands
+
+`app exec` runs a one-off command in a running task of a deployed service, for
+administrative work such as creating an invitation or opening a console:
+
+```console
+piquelctl app exec piquel-fr auth -- auth-service invite create
+piquelctl app exec piquel-fr db -i -- psql < dump.sql
+piquelctl app exec piquel-fr auth -it -- /bin/sh
+```
+
+The command runs inside the task, so it shares the task's image, environment,
+secrets, mounts and networks. It works over every transport, uses account
+authentication and needs no SSH access. Output streams to stdout and stderr, and
+`piquelctl` exits with the command's exit code. `-i` forwards standard input.
+`-t` allocates a terminal, implies `-i`, requires a terminal on standard input
+and puts it in raw mode, so Ctrl-C reaches the command. `--timeout` bounds the
+connection requests, not the session.
+
+The service needs a running task; otherwise the command fails with
+`service_not_running`. Application history records `command_started` and
+`command_finished` events with the account, task and exit code, never the
+command. Ending `piquelctl` early closes the stream, but the command may keep
+running in the task.
 
 ## Mutation safety
 

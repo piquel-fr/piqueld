@@ -116,6 +116,23 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
             .await?;
         Ok(())
     }
+    async fn create_exec(
+        &self,
+        application: &piqueld_core::ApplicationId,
+        request: &piqueld_core::exec::ExecRequest,
+    ) -> Result<Option<crate::docker::Exec>, BoundaryError> {
+        Ok(self
+            .docker
+            .create_exec(&self.instance_id, application, request)
+            .await?)
+    }
+    async fn run_exec(
+        &self,
+        exec: &crate::docker::Exec,
+        io: crate::docker::ExecIo,
+    ) -> Result<i64, BoundaryError> {
+        Ok(self.docker.run_exec(exec, io).await?)
+    }
     fn trigger_reconciliation(&self) {
         self.wake.notify_one();
     }

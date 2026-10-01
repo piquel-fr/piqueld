@@ -4,7 +4,7 @@ mod runtime;
 pub use runtime::ApplicationRuntime;
 
 use crate::{
-    docker::DockerError,
+    docker::{DockerError, Exec, ExecIo},
     store::{StoreError, StoredApplication},
 };
 use async_trait::async_trait;
@@ -65,6 +65,19 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
         } else {
             Err(DockerError::Unavailable("secret removal").into())
         }
+    }
+    /// Creates a command in one running task of the application's service.
+    /// Returns `None` when the service has no running task.
+    async fn create_exec(
+        &self,
+        _application: &ApplicationId,
+        _request: &piqueld_core::exec::ExecRequest,
+    ) -> Result<Option<Exec>, BoundaryError> {
+        Err(DockerError::Unavailable("create exec").into())
+    }
+    /// Streams a created command until it exits and returns its exit code.
+    async fn run_exec(&self, _exec: &Exec, _io: ExecIo) -> Result<i64, BoundaryError> {
+        Err(DockerError::Unavailable("run exec").into())
     }
     /// Wakes the reconciler after a mutation requests an immediate scan.
     fn trigger_reconciliation(&self) {}

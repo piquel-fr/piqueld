@@ -70,6 +70,40 @@ impl RuntimeBoundary for FakeRuntime {
         })
     }
 
+    /// Only `web` has a running task.
+    async fn create_exec(
+        &self,
+        _application: &piqueld_core::ApplicationId,
+        request: &piqueld_core::exec::ExecRequest,
+    ) -> Result<Option<piqueld::docker::Exec>, BoundaryError> {
+        Ok(
+            (request.service.as_str() == "web").then(|| piqueld::docker::Exec {
+                id: "exec-1".into(),
+                task: "task-1".into(),
+                tty: request.tty.is_some(),
+            }),
+        )
+    }
+
+    /// Echoes standard input, then reports how many bytes it read as the exit code.
+    async fn run_exec(
+        &self,
+        _exec: &piqueld::docker::Exec,
+        mut io: piqueld::docker::ExecIo,
+    ) -> Result<i64, BoundaryError> {
+        use piqueld_core::exec::{ExecInput, ExecOutput};
+        let mut read = 0;
+        while let Some(ExecInput::Stdin(data)) = io.input.recv().await {
+            read += data.len();
+            io.output.send(ExecOutput::Stdout(data)).await.unwrap();
+        }
+        io.output
+            .send(ExecOutput::Stderr(b"closed".to_vec()))
+            .await
+            .unwrap();
+        Ok(i64::try_from(read).unwrap())
+    }
+
     async fn readiness(&self) -> (bool, bool) {
         (
             true,
@@ -2575,6 +2609,7 @@ async fn routed_statuses_and_media_types_are_documented_in_openapi() {
         (Method::GET, "/operations/{id}", 404),
         (Method::POST, "/applications/apply", 400),
         (Method::POST, "/applications/plan", 400),
+        (Method::POST, "/applications/{id}/exec", 426),
     ];
     for (method, suffix, status) in cases {
         let path = format!("/api/v1{suffix}");
@@ -2667,6 +2702,83 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
         );
     }
     server.abort();
+}
+
+#[tokio::test]
+async fn exec_streams_over_both_transports_and_records_history_without_the_command() {
+    use piqueld_client::exec::{ExecCommand, ExecInput, ExecOutput, ExecRequest};
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(&temp).await;
+    let socket_dir = tempfile::tempdir().unwrap();
+    let socket = socket_dir.path().join("exec.sock");
+    let unix = tokio::net::UnixListener::bind(&socket).unwrap();
+    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = tcp.local_addr().unwrap();
+    let servers = [
+        tokio::spawn(serve(unix, api_router(state.clone(), FakeAuth)).into_future()),
+        tokio::spawn(serve(tcp, router(state, FakeAuth)).into_future()),
+    ];
+    let request = |service: &str| ExecRequest {
+        service: service.parse().unwrap(),
+        command: ExecCommand::parse(vec!["invite".into(), "create".into()]).unwrap(),
+        stdin: true,
+        tty: None,
+    };
+    let app = create_and_inspect(&Client::unix(&socket), &manifest()).await;
+    for client in [
+        Client::unix(&socket),
+        Client::tcp(&format!("http://{address}/")).unwrap(),
+    ] {
+        let (mut output, mut input) = client
+            .exec(&app.application_id, &request("web"))
+            .await
+            .unwrap();
+        input
+            .send(&ExecInput::Stdin(b"hello".to_vec()))
+            .await
+            .unwrap();
+        assert!(
+            matches!(output.next().await, Ok(Some(ExecOutput::Stdout(data))) if data == b"hello")
+        );
+        input.send(&ExecInput::CloseStdin).await.unwrap();
+        assert!(
+            matches!(output.next().await, Ok(Some(ExecOutput::Stderr(data))) if data == b"closed")
+        );
+        assert!(matches!(output.next().await, Ok(Some(ExecOutput::Exit(5)))));
+        assert!(matches!(output.next().await, Ok(None)));
+
+        let error = client
+            .exec(&app.application_id, &request("worker"))
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error,
+            piqueld_client::ClientError::Api { status, error }
+                if status.as_u16() == 409 && error.code == "service_not_running"
+        ));
+    }
+    // Completion is recorded before the final frame is sent.
+    let commands = Client::unix(&socket)
+        .events(Some(&app.application_id), None, 100)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .filter(|event| event.kind.starts_with("command_"))
+        .collect::<Vec<_>>();
+    assert_eq!(commands.len(), 4);
+    for event in &commands {
+        assert_eq!(event.resource.as_deref(), Some("web"));
+        assert!(!event.message.as_deref().unwrap().contains("invite"));
+    }
+    assert_eq!(
+        commands[1].message.as_deref(),
+        Some("Command in task task-1 exited with code 5")
+    );
+    for server in servers {
+        server.abort();
+    }
 }
 
 #[tokio::test]

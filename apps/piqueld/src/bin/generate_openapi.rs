@@ -183,6 +183,12 @@ impl Generator {
             .get_mut("paths")
             .and_then(Value::as_object_mut)
             .context("OpenAPI document has no paths object")?;
+        // Progenitor only upgrades Dropshot WebSocket operations, so the exec
+        // upgrade is implemented by hand in `piqueld_client::exec`.
+        ensure!(
+            paths.remove("/api/v1/applications/{id}/exec").is_some(),
+            "missing exec operation"
+        );
         // Readiness uses a typed readiness body for 503. Progenitor cannot
         // generate two different error-body types for one operation; preserve
         // its existing readiness decoder and let middleware errors use the

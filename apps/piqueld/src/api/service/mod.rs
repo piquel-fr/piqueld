@@ -1,5 +1,6 @@
 //! Shared daemon operations, independent of transport adapters.
 
+mod exec;
 mod history;
 mod notification_worker;
 mod observability;
@@ -12,6 +13,7 @@ use crate::{
     application::{BoundaryError, RuntimeBoundary},
     store::{Store, StoreError},
 };
+pub use exec::ExecSession;
 pub use history::ManifestExport;
 use piqueld_core::{
     ApplicationId, NormalizedApplication, ValidatedApplication, api::SecretMetadata,
@@ -30,6 +32,9 @@ pub enum ApplicationError {
     /// Workload log bounds or service filter are invalid.
     #[error("invalid log query")]
     InvalidLogQuery,
+    /// The requested service has no running task to execute a command in.
+    #[error("service has no running task")]
+    ServiceNotRunning,
     /// No effective host configuration was attached to this service.
     #[error("effective host configuration is unavailable")]
     ConfigurationUnavailable,
