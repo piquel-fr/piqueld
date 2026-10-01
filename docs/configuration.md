@@ -56,6 +56,10 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
 
 Reconciliation intervals and timeouts are bounded to `1..=86400` seconds.
+The convergence timeout bounds how long a deployment waits without progress:
+it restarts each time a service converges, so each link of a
+[startup dependency](application-manifest.md#startup-dependencies) chain gets
+the full timeout.
 One async controller overlaps pending work. Internal global limits allow two
 image resolutions, eight observations, and one resource mutation request. Timers
 consume no I/O slot. These limits are not configurable.

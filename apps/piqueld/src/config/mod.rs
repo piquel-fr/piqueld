@@ -388,7 +388,7 @@ pub struct ReconciliationConfig {
     pub scan_interval_seconds: u64,
     /// Outer budget for resolving one application's inputs before persistence.
     pub prepare_timeout_seconds: u64,
-    /// Maximum time spent waiting for runtime convergence per operation.
+    /// Maximum time an operation waits without a service converging.
     pub convergence_timeout_seconds: u64,
 }
 

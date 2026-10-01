@@ -42,6 +42,10 @@ struct FakeDocker {
     deny_network_removal: Arc<AtomicBool>,
     fail_observations: Arc<AtomicBool>,
     stall_convergence: Arc<AtomicBool>,
+    /// Logical services that stay updating for this many observations after an ensure.
+    slow_services: Arc<Mutex<BTreeMap<String, usize>>>,
+    /// Service ensures and convergences as `ensure name` / `converged name`, in order.
+    rollout: Arc<Mutex<Vec<String>>>,
     incompatible_swarm: Arc<AtomicBool>,
     resolution_gate: Option<Arc<ResolutionGate>>,
     isolate_observations: bool,
@@ -305,7 +309,24 @@ impl DockerApi for FakeDocker {
         if self.fail_observations.load(Ordering::SeqCst) {
             return Err(DockerError::Unavailable("observing application"));
         }
-        let mut observed = self.observed.lock().await.clone();
+        let mut observed = self.observed.lock().await;
+        let mut slow = self.slow_services.lock().await;
+        for service in &mut observed.services {
+            let Some(name) = service.labels.get(SERVICE_LABEL) else {
+                continue;
+            };
+            if let Some(remaining) = slow.get_mut(name)
+                && service.convergence == Convergence::Updating
+            {
+                *remaining = remaining.saturating_sub(1);
+                if *remaining == 0 {
+                    service.convergence = Convergence::Converged;
+                    self.rollout.lock().await.push(format!("converged {name}"));
+                }
+            }
+        }
+        drop(slow);
+        let mut observed = observed.clone();
         if self.isolate_observations {
             let belongs = |labels: &BTreeMap<String, String>| {
                 labels
@@ -395,10 +416,14 @@ impl DockerApi for FakeDocker {
             .services
             .retain(|service| service.name != desired.name.as_str());
         let mut service = observed_service(desired);
-        if self.stall_convergence.load(Ordering::SeqCst) {
+        let logical = desired.logical_name.to_string();
+        if self.stall_convergence.load(Ordering::SeqCst)
+            || self.slow_services.lock().await.get(&logical) > Some(&0)
+        {
             service.convergence = Convergence::Updating;
         }
         observed.services.push(service);
+        self.rollout.lock().await.push(format!("ensure {logical}"));
         Ok(())
     }
 
@@ -1651,6 +1676,119 @@ async fn convergence_timeout_closes_the_waiting_action_as_failed() {
         !events
             .iter()
             .any(|event| event.kind == "action_outcome_unknown")
+    );
+}
+
+/// Deploys image services given as `(name, depends_on)`, where each `slow`
+/// service stays updating for that many observations after its ensure.
+/// Returns the operation's final state and Docker's rollout log.
+async fn deploy_dependents(
+    services: &[(&str, &[&str])],
+    slow: &[(&str, usize)],
+    convergence_timeout: std::time::Duration,
+) -> (OperationState, Vec<String>) {
+    use std::fmt::Write;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        Store::open(directory.path().join("control-plane.db"))
+            .await
+            .unwrap(),
+    );
+    let mut manifest = String::from(
+        "api_version = \"piqueld.dev/v1alpha1\"\nkind = \"Application\"\n[metadata]\nname = \"notes\"\n",
+    );
+    for (name, depends_on) in services {
+        write!(
+            manifest,
+            "[[spec.services]]\nname = \"{name}\"\ndepends_on = {depends_on:?}\n[spec.services.source]\ntype = \"image\"\nimage = \"ghcr.io/example/notes:1.4.0\"\n"
+        )
+        .unwrap();
+    }
+    let application = parse_toml(&manifest)
+        .unwrap()
+        .normalize(ApplicationId::parse("app-dependents-01").unwrap());
+    let source = ResolvedSource::parse_image(
+        "ghcr.io/example/notes:1.4.0",
+        format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64)),
+    )
+    .unwrap();
+    let resolutions = ResolutionSet {
+        secret_names: BTreeMap::default(),
+        sources: application
+            .spec()
+            .services
+            .iter()
+            .map(|service| (service.name.clone(), source.clone()))
+            .collect(),
+    };
+    let resolved = compile_application(
+        &application,
+        InstanceId::parse(store.instance_id()).unwrap(),
+        &resolutions,
+    )
+    .unwrap();
+    let docker = Arc::new(FakeDocker::default());
+    docker.slow_services.lock().await.extend(
+        slow.iter()
+            .map(|(name, observations)| ((*name).to_owned(), *observations)),
+    );
+    let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store)).with_retry_policy(
+        piqueld::reconcile::RetryPolicy {
+            convergence_timeout,
+            ..piqueld::reconcile::RetryPolicy::default()
+        },
+    );
+    let created = store
+        .save_application(&application, Some(&resolved), None)
+        .await
+        .unwrap();
+    controller.scan(&CancellationToken::new()).await.unwrap();
+    let state = store.operation(&created.id).await.unwrap().state;
+    (state, docker.rollout.lock().await.clone())
+}
+
+#[tokio::test]
+async fn dependents_roll_out_once_their_dependencies_converge() {
+    // `worker` is independent and sorts after the dependent `server`.
+    let rollout = deploy_dependents(
+        &[("db", &[]), ("server", &["db"]), ("worker", &[])],
+        &[("db", 3)],
+        std::time::Duration::from_mins(2),
+    )
+    .await;
+    assert_eq!(
+        rollout,
+        (
+            OperationState::Succeeded,
+            vec![
+                "ensure db".to_owned(),
+                "ensure worker".to_owned(),
+                "converged db".to_owned(),
+                "ensure server".to_owned(),
+            ]
+        )
+    );
+}
+
+#[tokio::test]
+async fn each_dependency_gets_the_full_convergence_timeout() {
+    // Each link converges in about 1.25s of 250ms polls: well within the 3s
+    // timeout alone, but the chain as a whole takes longer.
+    let rollout = deploy_dependents(
+        &[("db", &[]), ("api", &["db"]), ("web", &["api"])],
+        &[("db", 6), ("api", 6), ("web", 6)],
+        std::time::Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(
+        rollout,
+        (
+            OperationState::Succeeded,
+            ["db", "api", "web"]
+                .iter()
+                .flat_map(|name| [format!("ensure {name}"), format!("converged {name}")])
+                .collect()
+        )
     );
 }
 

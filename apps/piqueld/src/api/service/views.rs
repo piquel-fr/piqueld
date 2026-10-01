@@ -87,7 +87,7 @@ pub(super) fn observed_view(
                             Some(service.image.clone()),
                             service.replicas,
                             healthy_replicas(service),
-                            service.convergence.clone(),
+                            service.convergence,
                             service_diagnostics(service),
                         )
                     },

@@ -107,6 +107,9 @@ pub(crate) enum ServiceCommand {
     Command(StringsArgs),
     /// Set argument elements after --; omit elements to clear.
     Arguments(StringsArgs),
+    /// Set services that must be healthy before this one rolls out, after --;
+    /// omit services to clear.
+    DependsOn(StringsArgs),
     /// Add, replace, or remove a volume mount by target path.
     Mount {
         #[command(subcommand)]
@@ -412,6 +415,7 @@ impl ServiceCommand {
                     secrets: Vec::new(),
                     healthcheck: None,
                     resources: None,
+                    depends_on: Vec::new(),
                 };
                 return save(
                     cli,
@@ -419,7 +423,7 @@ impl ServiceCommand {
                     console,
                     &args.target.app,
                     &args.target.flags,
-                    &ApplicationEdit::AddService(service),
+                    &ApplicationEdit::AddService(Box::new(service)),
                 )
                 .await;
             }
@@ -440,6 +444,7 @@ impl ServiceCommand {
             Self::Env { command } => command.edit(),
             Self::Command(args) => (&args.target, ServiceEdit::Command(args.value.clone())),
             Self::Arguments(args) => (&args.target, ServiceEdit::Arguments(args.value.clone())),
+            Self::DependsOn(args) => (&args.target, ServiceEdit::DependsOn(args.value.clone())),
             Self::Mount { command } => command.edit(),
             Self::Health { command } => command.edit(),
             Self::Cpu(args) => (&args.target, ServiceEdit::Cpu(args.value)),

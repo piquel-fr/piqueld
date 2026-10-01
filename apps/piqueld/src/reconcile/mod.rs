@@ -98,7 +98,7 @@ pub struct RetryPolicy {
     pub initial_delay: Duration,
     /// Upper bound for exponential retry delay.
     pub max_delay: Duration,
-    /// Maximum time spent waiting for runtime convergence.
+    /// Maximum time an operation waits without a service converging.
     pub convergence_timeout: Duration,
 }
 
