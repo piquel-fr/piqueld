@@ -326,13 +326,12 @@ impl From<ApplicationIdError> for ApiError {
 
 impl From<piqueld_core::ValidationErrors> for ApiError {
     /// Reports pure decode failures as `toml_malformed` (400) and semantic
-    /// validation failures as `manifest_validation_failed` (422) with the
-    /// individual errors in `details.errors`.
-    fn from(errors: piqueld_core::ValidationErrors) -> Self {
-        if errors
-            .0
+    /// validation failures as `manifest_validation_failed` (422). Both list
+    /// the individual errors in `details.errors`.
+    fn from(piqueld_core::ValidationErrors(errors): piqueld_core::ValidationErrors) -> Self {
+        let error = if errors
             .iter()
-            .all(|error| error.code == "manifest_decode_failed")
+            .all(|error| error.code == piqueld_core::codes::MANIFEST_DECODE_FAILED)
         {
             ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -340,14 +339,13 @@ impl From<piqueld_core::ValidationErrors> for ApiError {
                 "request TOML is malformed or does not match the application schema",
             )
         } else {
-            let piqueld_core::ValidationErrors(errors) = errors;
             Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "manifest_validation_failed",
                 "application manifest failed validation",
             )
-            .details(json!({"errors": errors}))
-        }
+        };
+        error.details(json!({"errors": errors}))
     }
 }
 

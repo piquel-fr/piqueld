@@ -3,6 +3,11 @@
 The supported document is a strict TOML or JSON
 `piqueld.dev/v1alpha1` `Application`. Unknown fields and unsupported source
 types are errors. Services explicitly select a prebuilt Docker/OCI image or a Git build source.
+Decode errors name the rejected field and its line and column, and may quote a
+mistyped value, e.g.
+``unknown field `routes`, expected ... at line 14 column 1``. For TOML requests,
+the API returns them, like validation errors, as `details.errors` entries with a
+path and message; JSON request bodies report only `json_malformed`.
 
 ```toml
 api_version = "piqueld.dev/v1alpha1"

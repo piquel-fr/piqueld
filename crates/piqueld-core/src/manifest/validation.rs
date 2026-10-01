@@ -6,7 +6,6 @@ use super::{
 };
 use crate::{codes, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
-use serde_path_to_error::Path;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -170,39 +169,55 @@ impl std::error::Error for ValidationErrors {}
 /// Parses and validates strict TOML without performing I/O.
 ///
 /// # Errors
-/// Returns validation errors, or one safe decode error for malformed input.
+/// Returns validation errors, or one decode error naming the rejected input
+/// and its location.
 pub fn parse_toml(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
-    let manifest = serde_path_to_error::deserialize(toml::Deserializer::new(input))
-        .map_err(|error| decode_error(error.path()))?;
+    let manifest =
+        serde_path_to_error::deserialize(toml::Deserializer::new(input)).map_err(|error| {
+            let decoded = error.inner();
+            // Syntax messages span lines; keep each error on one line.
+            let message = decoded.message().lines().collect::<Vec<_>>().join("; ");
+            let message = match decoded.span() {
+                Some(span) => {
+                    let before = input.get(..span.start).unwrap_or(input);
+                    let line = before.matches('\n').count() + 1;
+                    let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+                    format!("{message} at line {line} column {column}")
+                }
+                None => message,
+            };
+            ValidationErrors::decode(&error.path().to_string(), message)
+        })?;
     ApplicationManifest::validate(manifest)
 }
 
 /// Parses and validates strict JSON without performing I/O.
 ///
 /// # Errors
-/// Returns validation errors, or one safe decode error for malformed input.
+/// Returns validation errors, or one decode error naming the rejected input
+/// and its location.
 pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
     let mut deserializer = serde_json::Deserializer::from_str(input);
-    let manifest = serde_path_to_error::deserialize(&mut deserializer)
-        .map_err(|error| decode_error(error.path()))?;
-    deserializer.end().map_err(|_| {
-        ValidationErrors(vec![ValidationError {
-            code: codes::MANIFEST_DECODE_FAILED.into(),
-            path: "$".into(),
-            message: "manifest contains trailing JSON data".into(),
-        }])
+    let manifest = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+        ValidationErrors::decode(&error.path().to_string(), error.inner().to_string())
     })?;
+    deserializer
+        .end()
+        .map_err(|error| ValidationErrors::decode("$", error.to_string()))?;
     ApplicationManifest::validate(manifest)
 }
 
-/// Builds the single decode error returned for malformed input, with a redacted path.
-fn decode_error(path: &Path) -> ValidationErrors {
-    ValidationErrors(vec![ValidationError {
-        code: codes::MANIFEST_DECODE_FAILED.into(),
-        path: safe_decode_path(&path.to_string()),
-        message: "manifest does not match the strict piqueld.dev/v1alpha1 Application schema"
-            .into(),
-    }])
+impl ValidationErrors {
+    /// One decode failure. Serde messages carry the rejected field and
+    /// location, and may echo a mistyped value back to its submitter.
+    /// Manifests reference secrets by name only, so they are safe to return.
+    fn decode(path: &str, message: String) -> Self {
+        Self(vec![ValidationError {
+            code: codes::MANIFEST_DECODE_FAILED.into(),
+            path: safe_decode_path(path),
+            message,
+        }])
+    }
 }
 
 /// Redacts map keys and unknown components from a serde decode path.

@@ -189,11 +189,16 @@ image = "nginx:1.27"
 "#,
     )
     .unwrap_err();
+    let [error] = error.0.as_slice() else {
+        panic!("expected one decode error: {error}");
+    };
+    assert_eq!(error.code, codes::MANIFEST_DECODE_FAILED);
+    assert_eq!(error.path, "spec.services[0]");
     assert!(
-        error
-            .0
-            .iter()
-            .all(|error| error.code == codes::MANIFEST_DECODE_FAILED)
+        error.message.starts_with("unknown field `ports`")
+            && error.message.ends_with(" at line 8 column 1"),
+        "{}",
+        error.message
     );
 }
 

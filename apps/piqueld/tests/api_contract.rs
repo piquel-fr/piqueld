@@ -1124,6 +1124,13 @@ image = ""
     )
     .await;
     malformed_toml.assert_error(StatusCode::BAD_REQUEST, "toml_malformed");
+    let message = malformed_toml.body["details"]["errors"][0]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains(" at line 1 column ") && !message.contains('\n'),
+        "{message}"
+    );
     let unknown_field = serde_json::json!({
         "manifest": manifest(),
         "surprise": true
