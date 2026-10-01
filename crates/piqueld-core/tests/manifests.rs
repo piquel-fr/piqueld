@@ -683,3 +683,39 @@ proptest! {
         let _ = piqueld_core::ImageReference::parse(format!("a{input}a"));
     }
 }
+
+#[test]
+fn manifest_json_schema_is_self_contained() {
+    fn references(value: &serde_json::Value, found: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(reference) = object.get("$ref").and_then(|r| r.as_str()) {
+                    found.push(reference.to_owned());
+                }
+                for value in object.values() {
+                    references(value, found);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    references(value, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let schema = piqueld_core::manifest::ApplicationManifest::json_schema();
+    let mut found = Vec::new();
+    references(&schema, &mut found);
+    assert!(!found.is_empty());
+    for reference in found {
+        let name = reference
+            .strip_prefix("#/definitions/")
+            .unwrap_or_else(|| panic!("{reference} must point into the schema's definitions"));
+        assert!(
+            schema["definitions"].get(name).is_some(),
+            "{reference} has no definition"
+        );
+    }
+}

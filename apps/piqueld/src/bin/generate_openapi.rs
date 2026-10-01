@@ -1,7 +1,9 @@
-//! Generates or checks the `OpenAPI` specification and its Rust client bindings.
+//! Generates or checks the `OpenAPI` specification, its Rust client bindings,
+//! and the standalone application manifest JSON Schema.
 
 use anyhow::{Context, Result, anyhow, ensure};
 use piqueld::api::http::openapi_document;
+use piqueld_core::manifest::ApplicationManifest;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
@@ -52,9 +54,14 @@ impl Generator {
         .context("parse Progenitor configuration")?;
         let client = self.generate_client(document.clone(), &config)?;
         let document = format!("{}\n", serde_json::to_string_pretty(&document)?);
+        let manifest_schema = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&ApplicationManifest::json_schema())?
+        );
 
         let artifacts = [
             ("docs/openapi-v1.json", document),
+            ("docs/application-manifest.schema.json", manifest_schema),
             ("crates/piqueld-client/src/generated.rs", client),
         ];
         let mut stale = Vec::new();

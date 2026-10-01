@@ -88,6 +88,36 @@ an existing deployment. Deploy resolves and builds the saved configuration's sou
 Resolved runtime state remains separate from portable manifests. Generations
 advance on saves, changed names, and deletion intent.
 
+## Validation and editor support
+
+`piquelctl app validate --file application.toml` applies the same parser and
+validation as the daemon, without contacting one, and lists every error with
+its field path. Validation runs against the CLI's version of `piqueld-core`;
+`app plan` checks the manifest against the connected daemon's version.
+
+[`application-manifest.schema.json`](application-manifest.schema.json) is a
+JSON Schema (draft 7) generated from the manifest types by `just generate`, and
+it ships with each set of release binaries. It describes structure, field types, and
+documentation. Names, budgets, and cross-references are left to
+`app validate`. Editors that use [Taplo](https://taplo.tamasfe.dev/), such as
+VS Code with Even Better TOML, give completion, hover documentation, and inline
+errors when a manifest starts with a schema directive:
+
+```toml
+#:schema https://raw.githubusercontent.com/piquel-fr/piqueld/main/docs/application-manifest.schema.json
+api_version = "piqueld.dev/v1alpha1"
+```
+
+Replace `main` with the commit your daemon runs, or point the directive at a
+local copy of the schema. To apply the schema without directives, add a
+`.taplo.toml` rule:
+
+```toml
+[[rule]]
+include = ["deploy/**/*.toml"]
+schema.path = "https://raw.githubusercontent.com/piquel-fr/piqueld/main/docs/application-manifest.schema.json"
+```
+
 ## Git build sources
 
 A service may explicitly build from Git instead of pulling a prebuilt image:

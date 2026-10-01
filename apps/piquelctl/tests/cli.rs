@@ -959,6 +959,47 @@ fn manifest_input_is_missing_or_oversized_before_network_use() {
 }
 
 #[test]
+fn validate_checks_manifests_without_a_daemon_or_profiles() {
+    let directory = tempdir().expect("manifest directory");
+    let valid = write_manifest(&directory);
+    let invalid = directory.path().join("invalid.toml");
+    fs::write(
+        &invalid,
+        MANIFEST
+            .replace("v1alpha1", "v2")
+            .replace("name = \"web\"", "name = \"Web!\""),
+    )
+    .expect("invalid manifest");
+    let validate = |path: &PathBuf| {
+        support::command()
+            // Neither the daemon nor the profiles file is consulted.
+            .env(
+                "PIQUELD_PROFILES_FILE",
+                directory.path().join("absent.toml"),
+            )
+            .args(["--socket", "/nonexistent/piqueld.sock", "--json"])
+            .args(["app", "validate", "--file"])
+            .arg(path)
+            .output()
+            .expect("piquelctl process")
+    };
+
+    let value = assert_json_success(&validate(&valid));
+    assert_eq!(value, json!({"application": "notes"}));
+
+    let output = validate(&invalid);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed validation with 2 error(s)"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("  api_version: "), "{stderr}");
+    assert!(stderr.contains("  spec.services[0].name: "), "{stderr}");
+}
+
+#[test]
 fn delete_reports_named_volume_retention_and_operation_completion() {
     for unix in [false, true] {
         let mut deleting = false;
