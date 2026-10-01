@@ -492,9 +492,21 @@ fn finish_router(
                         path = %request.uri().path(),
                     )
                 })
-                .on_response(|response: &Response, latency: std::time::Duration, _: &tracing::Span| {
-                    tracing::info!(status = %response.status(), latency_ms = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX), "request completed");
-                }),
+                // Successful requests (dashboard assets, polling) are routine,
+                // so only failures are logged at the default level.
+                .on_response(
+                    |response: &Response, latency: std::time::Duration, _: &tracing::Span| {
+                        let (status, latency_ms) = (
+                            response.status(),
+                            u64::try_from(latency.as_millis()).unwrap_or(u64::MAX),
+                        );
+                        if status.is_client_error() || status.is_server_error() {
+                            tracing::info!(%status, latency_ms, "request completed");
+                        } else {
+                            tracing::debug!(%status, latency_ms, "request completed");
+                        }
+                    },
+                ),
         )
 }
 
