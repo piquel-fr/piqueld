@@ -394,6 +394,8 @@ pub struct TomlDiagnostic {
 }
 
 impl TomlDiagnostic {
+    /// Converts `error` into a line and column within `source`, keeping only
+    /// the parser message. Errors without a usable span report line 1, column 1.
     fn new(source: &str, error: &toml::de::Error) -> Self {
         let before = error
             .span()
