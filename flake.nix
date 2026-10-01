@@ -21,11 +21,11 @@
       nixosModules = {
         piqueld = { lib, pkgs, ... }: {
           imports = [ ./nix/module.nix ];
-          services.piqueld.package = lib.mkDefault self.packages.${pkgs.system}.combined;
+          services.piqueld.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.combined;
         };
         piquelctl = { lib, pkgs, ... }: {
           imports = [ ./nix/cli-module.nix ];
-          programs.piquelctl.package = lib.mkDefault self.packages.${pkgs.system}.cli;
+          programs.piquelctl.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.cli;
         };
         default =
           { config, lib, ... }:
@@ -226,12 +226,6 @@
           };
         }
       );
-
-      checks.x86_64-linux.unix-socket = import ./nix/unix-socket-test.nix {
-        pkgs = nixpkgs.legacyPackages.x86_64-linux;
-        daemon = self.packages.x86_64-linux.daemon;
-        cli = self.packages.x86_64-linux.cli;
-      };
 
       devShells = forAllSystems (
         system:

@@ -4,6 +4,7 @@ mod listeners;
 mod observability;
 pub use observability::{MetricsConfig, NotificationConfig, WebhookDestination, WebhookKind};
 
+use piqueld_core::TomlDiagnostic;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -65,7 +66,8 @@ impl DaemonConfig {
     /// Returns [`ConfigError`] when the document is malformed or violates a
     /// host configuration invariant.
     pub fn from_toml(source: &str) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(source).map_err(ConfigError::Parse)?;
+        let config: Self = toml::from_str(source)
+            .map_err(|error| ConfigError::Parse(TomlDiagnostic::new(source, &error)))?;
         config.validate()?;
         Ok(config)
     }
@@ -368,9 +370,9 @@ pub enum ConfigError {
     #[error("could not read configuration")]
     Read(#[source] std::io::Error),
     /// The TOML document was syntactically malformed, had the wrong shape, or
-    /// contained unknown keys.
+    /// contained unknown keys. Never carries configuration source text.
     #[error("configuration is not valid TOML")]
-    Parse(#[source] toml::de::Error),
+    Parse(#[source] TomlDiagnostic),
     /// A parsed setting violated a semantic invariant.
     #[error("configuration is invalid: {0}")]
     Invalid(String),

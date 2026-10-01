@@ -122,10 +122,56 @@ in
             default = [ ];
             description = "Metrics-only socket addresses; empty disables exposure.";
           };
+          notifications.enabled = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Deliver webhook notifications. Destinations come from notificationDestinationsFile. Re-enabling never replays old events.";
+          };
+          notifications.build_failures = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Notify on build failures.";
+          };
+          notifications.deployment_failures = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Notify on deployment attempt failures.";
+          };
+          notifications.service_degradation = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Notify on sustained service degradation.";
+          };
+          notifications.daemon_failures = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Notify on shared dependency and internal daemon failures.";
+          };
+          notifications.recovery = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Notify when an alerted condition clears.";
+          };
+          notifications.failure_threshold_seconds = lib.mkOption {
+            type = lib.types.ints.between 0 86400;
+            default = 120;
+            description = "Seconds a dependency or service failure must be continuously observed before notifying.";
+          };
+          notifications.retry_window_seconds = lib.mkOption {
+            type = lib.types.ints.between 1 604800;
+            default = 86400;
+            description = "Maximum automatic delivery retry window in seconds.";
+          };
         };
       };
       default = { };
       description = "Typed daemon TOML settings. dataDir and runtimeDir control server.data_dir and server.runtime_dir. Never put credentials here: these settings enter the Nix store.";
+    };
+    notificationDestinationsFile = lib.mkOption {
+      type = lib.types.nullOr (lib.types.strMatching "/.+");
+      default = null;
+      example = "/run/secrets/piqueld-destinations.toml";
+      description = "Absolute path to a private TOML file containing only [[notifications.destinations]] entries. It is read through systemd credentials at service start and never enters the Nix store, so it may be root-owned.";
     };
   };
   config = lib.mkIf cfg.enable {
@@ -167,7 +213,19 @@ in
       ]
       ++ lib.optional usesTailscale config.services.tailscale.package;
       serviceConfig = {
-        ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
+        ExecStart =
+          if cfg.notificationDestinationsFile == null then
+            "${cfg.package}/bin/piqueld --config ${configuration}"
+          else
+            # Destinations are appended in the unit's private /tmp, never the store.
+            pkgs.writeShellScript "piqueld-start" ''
+              set -eu
+              { cat ${configuration}; echo; cat "$CREDENTIALS_DIRECTORY/notification-destinations"; } > /tmp/piqueld.toml
+              exec ${cfg.package}/bin/piqueld --config /tmp/piqueld.toml
+            '';
+        LoadCredential = lib.optional (
+          cfg.notificationDestinationsFile != null
+        ) "notification-destinations:${cfg.notificationDestinationsFile}";
         User = "piqueld";
         Group = "piqueld";
         SupplementaryGroups = [ "docker" ];
