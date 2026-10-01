@@ -192,6 +192,32 @@ pub(super) fn notice(tone: Tone, content: impl IntoView) -> View {
     .into_view()
 }
 
+/// Stat tile with a label, a large value, and an optional footnote.
+pub(super) fn metric(
+    label: &'static str,
+    value: impl IntoView,
+    detail: Option<impl IntoView>,
+) -> View {
+    view! {
+        <div class="metric">
+            <span>{label}</span>
+            <strong>{value}</strong>
+            {detail.map(|detail| view! { <small>{detail}</small> })}
+        </div>
+    }
+    .into_view()
+}
+
+/// Ghost "Remove" button for one row of an editable list.
+pub(super) fn remove_button(remove: impl Fn() + 'static) -> View {
+    view! {
+        <button type="button" class="btn btn-ghost" on:click={move |_| remove()}>
+            "Remove"
+        </button>
+    }
+    .into_view()
+}
+
 pub(super) fn empty(message: impl Into<String>) -> View {
     view! { <p class="empty">{message.into()}</p> }.into_view()
 }

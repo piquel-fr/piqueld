@@ -509,15 +509,12 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
     view! {
         <div class="stack-sm">
             {move || failure.get().map(|error| notice(Tone::Bad, error))}
+            {move || loading.get().then(|| empty("Loading attempts…"))}
             {move || {
                 if visible_attempts.with(Vec::is_empty) {
-                    if loading.get() {
-                        empty("Loading attempts…")
-                    } else if failure.get().is_none() {
-                        empty("No attempts yet.")
-                    } else {
-                        ().into_view()
-                    }
+                    (!loading.get() && failure.get().is_none())
+                        .then(|| empty("No attempts yet."))
+                        .into_view()
                 } else {
                     view! {
                         <div class="table-wrap">

@@ -1,5 +1,5 @@
 //! Saved configuration forms and service editors.
-use super::super::ui::{Icon, Modal, Tone, icon, notice, text_input};
+use super::super::ui::{Icon, Modal, Tone, icon, notice, remove_button, text_input};
 use super::{dirty_group, editor, save_actions};
 use crate::editor::{Section, ServiceForm};
 use leptos::{
@@ -249,15 +249,6 @@ fn add_button(label: &'static str, add: impl Fn() + 'static) -> View {
         <button type="button" class="btn btn-sm" on:click={move |_| add()}>
             {icon(Icon::Plus)}
             {label}
-        </button>
-    }
-    .into_view()
-}
-
-fn remove_button(remove: impl Fn() + 'static) -> View {
-    view! {
-        <button type="button" class="btn btn-ghost" on:click={move |_| remove()}>
-            "Remove"
         </button>
     }
     .into_view()

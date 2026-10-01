@@ -96,7 +96,7 @@ fn detail_view(detail: &ApplicationDetailView, signals: DashboardSignals, client
                 </header>
                 <dl class="kv">
                     <dt>"State"</dt>
-                    <dd>{health_badge(health)}</dd>
+                    <dd>{badge(health.tone(), status.state.to_string())}</dd>
                     <dt>"Runtime health"</dt>
                     <dd>{status.runtime_health.clone().unwrap_or_else(|| "unknown".into())}</dd>
                     <dt>"Latest operation"</dt>

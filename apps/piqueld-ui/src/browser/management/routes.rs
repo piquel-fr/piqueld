@@ -1,5 +1,5 @@
 //! Application-owned public route editing and independent HTTPS readiness.
-use super::super::ui::{Icon, Tone, badge, empty, icon, notice};
+use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button};
 use super::{dirty_group, editor, save_actions};
 use leptos::{
     Callback, CollectView, For, IntoView, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate,
@@ -175,17 +175,11 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                     }}
                                                 />
                                             </label>
-                                            <button
-                                                type="button"
-                                                class="btn btn-ghost"
-                                                on:click={move |_| {
-                                                    draft.update(|rows| {
-                                                        rows.remove(index);
-                                                    });
-                                                }}
-                                            >
-                                                "Remove"
-                                            </button>
+                                            {remove_button(move || {
+                                                draft.update(|rows| {
+                                                    rows.remove(index);
+                                                });
+                                            })}
                                         </div>
                                     }
                                 }}

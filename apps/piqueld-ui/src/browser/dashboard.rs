@@ -1,6 +1,6 @@
 //! Sidebar navigation, overview metrics, application directory, and recent deployments.
 use super::ui::{
-    Icon, PageHeader, Tone, badge, empty, health_badge, icon, notice, operation_badge, when,
+    Icon, PageHeader, Tone, badge, empty, health_badge, icon, metric, notice, operation_badge, when,
 };
 use super::{ApplicationRow, connection_label, dashboard_context, management, row_health};
 use crate::state::{ApplicationHealth, ConnectionState, DataState};
@@ -118,33 +118,29 @@ pub(super) fn OverviewPage() -> impl IntoView {
                     <span>"Applications"</span>
                     <strong>{move || signals.applications.get().len()}</strong>
                 </A>
-                <div class="metric">
-                    <span>"Healthy"</span>
-                    <strong>{move || count(|health| health == ApplicationHealth::Converged)}</strong>
-                </div>
-                <div class="metric">
-                    <span>"Needs attention"</span>
-                    <strong>
-                        {move || {
-                            count(|health| {
-                                matches!(health, ApplicationHealth::Failed | ApplicationHealth::Degraded)
-                            })
-                        }}
-                    </strong>
-                </div>
-                <div class="metric">
-                    <span>"Daemon"</span>
-                    <strong>
-                        {move || {
-                            signals.system.get().map_or_else(|| "—".into(), |system| system.daemon_version)
-                        }}
-                    </strong>
-                    <small>
-                        {move || {
-                            signals.system.get().map(|system| format!("API {}", system.api_version))
-                        }}
-                    </small>
-                </div>
+                {metric(
+                    "Healthy",
+                    move || count(|health| health == ApplicationHealth::Converged),
+                    None::<&str>,
+                )}
+                {metric(
+                    "Needs attention",
+                    move || {
+                        count(|health| {
+                            matches!(health, ApplicationHealth::Failed | ApplicationHealth::Degraded)
+                        })
+                    },
+                    None::<&str>,
+                )}
+                {metric(
+                    "Daemon",
+                    move || {
+                        signals.system.get().map_or_else(|| "—".into(), |system| system.daemon_version)
+                    },
+                    Some(move || {
+                        signals.system.get().map(|system| format!("API {}", system.api_version))
+                    }),
+                )}
             </div>
             <ReadinessPanel />
             <RecentDeployments />

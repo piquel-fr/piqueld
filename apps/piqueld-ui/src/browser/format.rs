@@ -33,8 +33,8 @@ pub(super) fn relative(milliseconds: i64) -> String {
                 "just now".into()
             };
         }
-        45..=3_599 => format!("{} min", (seconds + 30) / 60),
-        3_600..=86_399 => format!("{} h", seconds / 3_600),
+        45..=3_569 => format!("{} min", (seconds + 30) / 60),
+        3_570..=86_399 => format!("{} h", (seconds / 3_600).max(1)),
         86_400..=604_799 => format!("{} d", seconds / 86_400),
         _ => {
             return js_sys::Date::new(&JsValue::from_f64(milliseconds as f64))
@@ -54,13 +54,10 @@ pub(super) fn duration(milliseconds: i64) -> String {
     let milliseconds = milliseconds.max(0);
     match milliseconds {
         0..=999 => format!("{milliseconds} ms"),
-        1_000..=59_999 => format!("{:.1} s", milliseconds as f64 / 1_000.0),
-        60_000..=3_599_999 => {
-            format!(
-                "{} min {} s",
-                milliseconds / 60_000,
-                (milliseconds % 60_000) / 1_000
-            )
+        1_000..=59_949 => format!("{:.1} s", milliseconds as f64 / 1_000.0),
+        59_950..=3_599_999 => {
+            let seconds = (milliseconds + 500) / 1_000;
+            format!("{} min {} s", seconds / 60, seconds % 60)
         }
         _ => format!(
             "{} h {} min",

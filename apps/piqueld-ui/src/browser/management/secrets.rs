@@ -1,5 +1,5 @@
 //! Write-only secret values and saved file references.
-use super::super::ui::{Icon, Tone, badge, empty, icon, notice, text_input, when};
+use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button, text_input, when};
 use super::{client_error_message, diagnostic_id, dirty_group, editor, save_actions};
 use leptos::{
     Callable, Callback, CollectView, For, IntoView, SignalGet, SignalGetUntracked, SignalSet,
@@ -248,7 +248,13 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                     <div class="table-wrap">
                         {move || {
                             if metadata.with(Vec::is_empty) {
-                                empty(if ready.get() { "No secrets stored for this application." } else { "Loading secrets…" })
+                                if loading.get() {
+                                    empty("Loading secrets…")
+                                } else if ready.get() {
+                                    empty("No secrets stored for this application.")
+                                } else {
+                                    ().into_view()
+                                }
                             } else {
                                 view! {
                                     <table class="table">
@@ -409,17 +415,11 @@ fn SecretFiles(service_name: String) -> impl IntoView {
                                         }}
                                     />
                                 </label>
-                                <button
-                                    type="button"
-                                    class="btn btn-ghost"
-                                    on:click={move |_| {
-                                        mounts.update(|items| {
-                                            items.remove(index);
-                                        });
-                                    }}
-                                >
-                                    "Remove"
-                                </button>
+                                {remove_button(move || {
+                                    mounts.update(|items| {
+                                        items.remove(index);
+                                    });
+                                })}
                             </div>
                         }
                     }}

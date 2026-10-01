@@ -1,7 +1,7 @@
 //! Event history, diagnostics, daemon statistics, analytics, and notification deliveries.
 use super::client_error_message;
 use super::format::{bytes, duration, duration_f64, duration_secs, now_ms, timestamp};
-use super::ui::{Icon, PageHeader, Tone, badge, empty, icon, notice, when};
+use super::ui::{Icon, PageHeader, Tone, badge, empty, icon, metric, notice, when};
 use leptos::{
     CollectView, IntoView, RwSignal, Show, SignalGet, SignalSet, SignalUpdate, SignalWith, View,
     component, create_effect, create_local_resource, create_rw_signal, event_target_checked,
@@ -46,11 +46,15 @@ impl Refresh {
     }
 }
 
-fn period_select(days: RwSignal<u32>, all: bool) -> View {
+/// Period picker; `changed` runs after the selection so lists can restart at the newest page.
+fn period_select(days: RwSignal<u32>, all: bool, changed: impl Fn() + 'static) -> View {
     view! {
         <label class="field">
             <span>"Period"</span>
-            <select on:change={move |e| days.set(event_target_value(&e).parse().unwrap_or(30))}>
+            <select on:change={move |e| {
+                days.set(event_target_value(&e).parse().unwrap_or(30));
+                changed();
+            }}>
                 <option value="1">"24 hours"</option>
                 <option value="7">"7 days"</option>
                 <option value="30" selected>"30 days"</option>
@@ -152,7 +156,7 @@ pub(super) fn EventHistory(
     let reset = move || cursor.set(None);
     view! {
         <div class="toolbar">
-            {period_select(days, true)}
+            {period_select(days, true, reset)}
             <Show when={move || !scoped}>
                 <label class="field">
                     <span>"Scope"</span>
@@ -292,12 +296,11 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
             .duration_ms
             .map(|ms| duration(i64::try_from(ms).unwrap_or(i64::MAX))),
         event.error_code.clone(),
+        event.action_id.clone().map(|id| format!("action {id}")),
     ];
     view! {
         <article class="event">
-            <span class="event-time" title={timestamp(event.created_at_ms)}>
-                {when(event.created_at_ms)}
-            </span>
+            <span class="event-time">{when(event.created_at_ms)}</span>
             <div>
                 <div class="event-title">
                     {kind_badge(&event)}
@@ -478,17 +481,6 @@ pub(super) fn SystemPage() -> impl IntoView {
     }
 }
 
-fn metric(label: &'static str, value: String, detail: Option<String>) -> View {
-    view! {
-        <div class="metric">
-            <span>{label}</span>
-            <strong>{value}</strong>
-            {detail.map(|detail| view! { <small>{detail}</small> })}
-        </div>
-    }
-    .into_view()
-}
-
 fn resource_stats(stats: &DaemonStats) -> View {
     let unavailable = || "Unavailable".to_owned();
     let counters = [
@@ -505,12 +497,12 @@ fn resource_stats(stats: &DaemonStats) -> View {
     ];
     view! {
         <div class="metrics">
-            {metric("Uptime", duration_secs(stats.uptime_seconds), None)}
-            {metric("Memory", stats.memory_bytes.map_or_else(unavailable, bytes), Some("resident".into()))}
+            {metric("Uptime", duration_secs(stats.uptime_seconds), None::<&str>)}
+            {metric("Memory", stats.memory_bytes.map_or_else(unavailable, bytes), Some("resident"))}
             {metric(
                 "CPU",
                 stats.cpu_percent.map_or_else(|| "Collecting".into(), |v| format!("{v:.1}%")),
-                Some("100% is one core".into()),
+                Some("100% is one core"),
             )}
             {metric(
                 "Database",
@@ -520,7 +512,7 @@ fn resource_stats(stats: &DaemonStats) -> View {
             {metric(
                 "Available disk",
                 stats.available_disk_bytes.map_or_else(unavailable, bytes),
-                Some("data directory".into()),
+                Some("data directory"),
             )}
         </div>
         <section class="card">
@@ -566,7 +558,7 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
             title="Analytics"
             description="Deployment outcomes and action timings derived from retained history."
         >
-            {period_select(days, false)}
+            {period_select(days, false, || {})}
         </PageHeader>
         {move || match data.get() {
             None => empty("Loading analytics…"),
@@ -583,19 +575,19 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
                                 )
                             })}
                         <div class="metrics">
-                            {metric("Deployments", a.deployments.to_string(), Some("with terminal attempts".into()))}
-                            {metric("Succeeded", a.succeeded.to_string(), Some("latest attempt".into()))}
-                            {metric("Failed", a.failed.to_string(), Some("latest attempt".into()))}
+                            {metric("Deployments", a.deployments.to_string(), Some("with terminal attempts"))}
+                            {metric("Succeeded", a.succeeded.to_string(), Some("latest attempt"))}
+                            {metric("Failed", a.failed.to_string(), Some("latest attempt"))}
                             {metric(
                                 "Mean attempt",
                                 a.mean_duration_ms.map_or_else(|| "—".into(), duration_f64),
-                                Some("completed deployment attempts".into()),
+                                Some("completed deployment attempts"),
                             )}
                         </div>
                         <div class="metrics">
-                            {metric("Failed attempts", a.failed_attempts.to_string(), Some("including later recoveries".into()))}
-                            {metric("Retry attempts", a.retry_attempts.to_string(), Some("attempts beyond the first".into()))}
-                            {metric("Action retries", a.action_retries.to_string(), Some("Docker actions retried".into()))}
+                            {metric("Failed attempts", a.failed_attempts.to_string(), Some("including later recoveries"))}
+                            {metric("Retry attempts", a.retry_attempts.to_string(), Some("attempts beyond the first"))}
+                            {metric("Action retries", a.action_retries.to_string(), Some("Docker actions retried"))}
                         </div>
                         <section class="card card-flush">
                             <header>

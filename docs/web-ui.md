@@ -3,7 +3,7 @@
 The Leptos dashboard manages application configuration through forms. Create an
 empty application in a modal, add services in a modal and declare named volumes, and edit images, replicas,
 environment variables, commands, arguments, mounts, health checks, and resource
-limits. Each settings group has its own **Save Changes** button. Saving updates
+limits. Each settings group has its own **Save changes** button. Saving updates
 the database without changing running containers.
 
 **Preview** opens a dialog with the planned changes and actions. **Deploy** captures the saved configuration

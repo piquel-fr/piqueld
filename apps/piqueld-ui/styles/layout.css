@@ -15,15 +15,6 @@
         top: 1rem;
     }
 
-    .sr-only {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        overflow: hidden;
-        clip: rect(0 0 0 0);
-        white-space: nowrap;
-    }
-
     .sidebar {
         position: fixed;
         inset: 0 auto 0 0;
@@ -250,12 +241,6 @@
     .detail-title h1 {
         font-size: 24px;
         overflow-wrap: anywhere;
-    }
-
-    .detail-title .path-separator {
-        color: var(--muted);
-        font-size: 22px;
-        font-weight: 300;
     }
 
     .detail-title a {

@@ -1,12 +1,11 @@
 //! Browser login gate and account management. The small JavaScript bridge only
 //! translates `WebAuthn` binary fields; all network/state handling stays in Rust.
-use super::format::timestamp;
 use super::ui::{Icon, PageHeader, Tone, badge, empty, icon, notice, text_input, when};
 use leptos::{
     CollectView, IntoView, RwSignal, Show, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate,
-    StoredValue, View, component, create_effect, create_rw_signal, ev, event_target_value,
-    on_cleanup, provide_context, spawn_local, store_value, use_context, view, wasm_bindgen,
-    web_sys, window_event_listener,
+    SignalWith, StoredValue, View, component, create_effect, create_rw_signal, ev,
+    event_target_value, on_cleanup, provide_context, spawn_local, store_value, use_context, view,
+    wasm_bindgen, web_sys, window_event_listener,
 };
 use piqueld_client::{
     Client,
@@ -420,7 +419,15 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
                 "You have been invited to this piqueld host. Choose a username and register a passkey to finish."
             </p>
             <div class="stack-sm">
-                {text_input("Username", username, String::clone, |v, s| *v = s)}
+                <label class="field">
+                    <span>"Username"</span>
+                    <input
+                        type="text"
+                        autocomplete="username"
+                        prop:value={move || username.get()}
+                        on:input={move |event| username.set(event_target_value(&event))}
+                    />
+                </label>
                 {text_input("Display name (optional)", display_name, String::clone, |v, s| *v = s)}
                 {text_input("Passkey name", name, String::clone, |v, s| *v = s)}
             </div>
@@ -725,7 +732,7 @@ pub(super) fn AccountsPage() -> impl IntoView {
                     directory
                         .get()
                         .map_or_else(
-                            || empty("Loading accounts…"),
+                            || feedback.error.with(String::is_empty).then(|| empty("Loading accounts…")).into_view(),
                             |data| {
                                 view! {
                                     {data
@@ -1014,7 +1021,7 @@ fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoVie
                                                         .expires_at
                                                         .map_or_else(
                                                             || "Never".into_view(),
-                                                            |t| view! { <span title={timestamp(t * 1000)}>{when(t * 1000)}</span> }.into_view(),
+                                                            |t| when(t * 1000),
                                                         )}
                                                 </td>
                                                 <td class="actions">

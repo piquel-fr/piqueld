@@ -38,6 +38,7 @@ pub(super) fn ServiceList() -> impl IntoView {
                         (
                             ApplicationHealth::from_convergence(&service.convergence),
                             service.healthy_replicas,
+                            service.desired_replicas,
                         )
                     })
             })
@@ -77,10 +78,10 @@ pub(super) fn ServiceList() -> impl IntoView {
                                     {runtime
                                         .map_or_else(
                                             || format!("{} replicas", service.replicas),
-                                            |(_, healthy)| format!("{healthy} / {} healthy", service.replicas),
+                                            |(_, healthy, desired)| format!("{healthy} / {desired} healthy"),
                                         )}
                                 </span>
-                                {runtime.map(|(health, _)| health_badge(health))}
+                                {runtime.map(|(health, ..)| health_badge(health))}
                                 <span class="chevron" aria-hidden="true">
                                     {icon(Icon::ChevronRight)}
                                 </span>

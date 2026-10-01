@@ -80,7 +80,7 @@ readiness (`ready`) continues to describe database/Docker/Swarm; ingress has its
 
 Every gateway change (network, image pull, start, replacement, recovery, route
 reload, stop) is a daemon-scoped journal action with an `ingress_*` phase, so it
-appears in History with its outcome. Reconciliation passes that change nothing
+appears in Events with its outcome. Reconciliation passes that change nothing
 record no history. Health changes are recorded as `ingress_unavailable`
 diagnostics. With `daemon_failures` notifications enabled, a gateway that stays
 unhealthy past the failure threshold notifies, and its recovery follows; see
