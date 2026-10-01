@@ -21,6 +21,10 @@ reported as a Docker error. Lost-key recovery records a daemon-scoped
 `secret_key_recovered` event with value counts, and `secret_values_discarded` in
 each affected application's history.
 
+Commands run with `app exec` record `command_started`, naming the account and
+task, and `command_finished` with its exit code. Their resource is the logical
+service. Commands are never recorded because their arguments can contain secrets.
+
 An operation groups execution attempts; an attempt groups actions. Action events
 carry an action ID, operation ID, application ID, generation, attempt, phase,
 resource, request/retry number, and completed duration where applicable. Source

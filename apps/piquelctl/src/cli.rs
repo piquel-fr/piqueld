@@ -153,6 +153,8 @@ pub(crate) enum AppCommand {
         #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
         since_seconds: u32,
     },
+    /// Run a one-off command in a running task of a service, streaming its output.
+    Exec(crate::exec::ExecArgs),
     /// Manage application-scoped secret values and metadata.
     Secret {
         /// Application name or stable ID.

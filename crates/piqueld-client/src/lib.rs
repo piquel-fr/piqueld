@@ -21,6 +21,9 @@ pub mod system;
 
 /// Passkey login and account management.
 pub mod auth;
+/// One-off commands in running service tasks.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod exec;
 
 mod generated;
 
@@ -41,7 +44,8 @@ pub use piqueld_core::manifest::{
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{
-    ApplicationId, ApplicationName, ValidatedApplication, ValidationError, ValidationErrors,
+    ApplicationId, ApplicationName, ServiceName, ValidatedApplication, ValidationError,
+    ValidationErrors,
 };
 pub use piqueld_core::{
     ApplicationState, Convergence, Event, Operation, OperationKind, OperationState,

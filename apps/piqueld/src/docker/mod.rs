@@ -72,6 +72,8 @@ pub struct BollardDocker {
 mod timeout;
 pub(crate) use timeout::DockerTimeout;
 mod engine;
+mod exec;
+pub use exec::{Exec, ExecIo};
 mod limited;
 mod logs;
 pub(crate) use limited::LimitedDocker;
@@ -147,6 +149,20 @@ pub trait DockerApi: Send + Sync + 'static {
         } else {
             Err(DockerError::Unavailable("secret removal"))
         }
+    }
+    /// Creates a command in one running task of an owned service.
+    /// Returns `None` when the service has no running task.
+    async fn create_exec(
+        &self,
+        _instance: &InstanceId,
+        _application: &ApplicationId,
+        _request: &piqueld_core::exec::ExecRequest,
+    ) -> Result<Option<Exec>, DockerError> {
+        Err(DockerError::Unavailable("create exec"))
+    }
+    /// Streams a created command until it exits and returns its exit code.
+    async fn run_exec(&self, _exec: &Exec, _io: ExecIo) -> Result<i64, DockerError> {
+        Err(DockerError::Unavailable("run exec"))
     }
     /// Builds a local image without persisting output.
     async fn build_image(
