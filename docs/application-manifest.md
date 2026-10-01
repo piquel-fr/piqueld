@@ -38,7 +38,8 @@ name = "data"
 Services support replicas, environment variables, command and argument arrays,
 health checks, CPU/memory limits, mounts of declared named volumes, and file
 references to application secrets. Named volumes are retained when an application
-is deleted. Secret values are never manifest fields, and there are no manifest
+is deleted. Secret values are never manifest fields (manifests may only ask piqueld to
+generate them), and there are no manifest
 fields for directly published ports. Exact-host HTTP routes are declared in
 `spec.routes`; see [managed ingress](ingress.md).
 
@@ -63,6 +64,7 @@ error whose message names the offending environment key where applicable:
 | --- | --- |
 | Services per application | 64 |
 | Named volumes per application | 64 |
+| Generated secrets per application | 64 |
 | Environment entries per service | 256 |
 | Environment key size | 255 bytes |
 | Environment value size | 65,536 bytes |
@@ -224,6 +226,30 @@ target = "/run/secrets/database-password"
 References contain names and paths, never values. A service supports up to 64
 secret mounts, with unique normalized paths under `/run/secrets`. Values are set
 separately, and must exist when effective deployment inputs are prepared.
+
+An application can declare secrets whose values piqueld generates, so a new
+application deploys in one `apply --deploy` step:
+
+```toml
+[[spec.secrets]]
+name = "database-password"
+generate = { type = "random", bytes = 32, encoding = "hex" }
+
+[[spec.secrets]]
+name = "signing-key"
+generate = { type = "rsa", bits = 3072 }
+```
+
+Random secrets use 16–512 bytes from the operating system, encoded as lowercase
+`hex` (the default) or unpadded `base64url`. RSA secrets are 2048-, 3072-, or
+4096-bit private keys in PKCS#8 PEM.
+
+A value is generated when a deployment prepares its inputs, a service mounts
+the secret, and it has no stored value. Declarations that no service mounts are
+not generated, so they never count against secret quotas. A value is never
+changed afterwards: later applies, deploys, and edits to the declaration keep
+it. Values set manually with `piquelctl app secret` are kept too, so rotation
+stays explicit. Removing a declaration retains the stored value.
 
 ## Public routes
 

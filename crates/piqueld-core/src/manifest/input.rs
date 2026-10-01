@@ -83,6 +83,9 @@ pub struct ApplicationSpec {
     /// Exact public HTTP routes, activated on deployment.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
+    /// Application secrets whose values piqueld generates once.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<SecretDeclaration>,
 }
 
 /// Independently selects the manifest used by a manual deployment.
@@ -319,6 +322,49 @@ pub struct SecretMount {
     pub name: String,
     /// Absolute normalized destination under /run/secrets.
     pub target: String,
+}
+
+/// An application secret whose value piqueld generates when a deployment first
+/// needs it. A stored value, generated or set manually, is never replaced.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretDeclaration {
+    /// Application-scoped logical secret name.
+    pub name: String,
+    /// How the value is generated.
+    pub generate: SecretGenerator,
+}
+
+/// The exhaustive set of secret value generators.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+pub enum SecretGenerator {
+    /// Random bytes from the operating system, encoded as text.
+    Random {
+        /// Number of random bytes before encoding.
+        bytes: u16,
+        /// Text encoding of the random bytes.
+        #[serde(default)]
+        encoding: SecretEncoding,
+    },
+    /// RSA private key in PKCS#8 PEM.
+    Rsa {
+        /// Modulus size in bits.
+        bits: u16,
+    },
+}
+
+/// Text encoding of generated random bytes.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretEncoding {
+    /// Lowercase hexadecimal.
+    #[default]
+    Hex,
+    /// URL-safe base64 without padding.
+    Base64url,
 }
 
 /// Public HTTP route input, validated independently of ingress enablement.

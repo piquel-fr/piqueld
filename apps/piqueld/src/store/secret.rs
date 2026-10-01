@@ -3,9 +3,10 @@ mod deletion;
 mod key;
 
 use super::{ApplicationId, NormalizedApplication, Store, StoreError, now_ms};
-use crate::secrets::{Envelope, SecretCipher};
+use crate::secrets::{Envelope, Generate, SecretCipher};
+use anyhow::Context;
 use piqueld_core::api::SecretMetadata;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
 impl Store {
@@ -110,12 +111,63 @@ impl Store {
             Err(StoreError::SecretVersionConflict { expected, actual })
         }
     }
-    /// Pins the secret versions a deployment uses in its own transaction; see `pin_secrets_on`.
+    /// Stores values for declared secrets that a service mounts and that have
+    /// none; unmounted declarations wait until a service needs them. A stored
+    /// value, generated or set manually, is never replaced, so deploys never
+    /// rotate it.
+    /// Call before pinning, outside the writer lock: RSA generation takes time.
+    /// Each value is stored as generation 1 with `put_secret`; losing a race to
+    /// a concurrent write keeps the other value.
+    ///
+    /// # Errors
+    /// Returns `SecretSource` when generation fails, and other `put_secret`
+    /// errors (count or byte quotas, application deletion, key or database
+    /// errors) unchanged.
+    pub(crate) async fn generate_secrets(
+        &self,
+        app: &NormalizedApplication,
+    ) -> Result<(), StoreError> {
+        let id = app.id();
+        let id_str = id.as_str();
+        let existing = sqlx::query_scalar!(
+            "SELECT name FROM application_secrets WHERE application_id=?1",
+            id_str
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        let mounted = app.spec().mounted_secret_names();
+        for secret in &app.spec().secrets {
+            if existing.contains(&secret.name) || !mounted.contains(secret.name.as_str()) {
+                continue;
+            }
+            let generator = secret.generate.clone();
+            let mut value = tokio::task::spawn_blocking(move || generator.generate())
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|value| value)
+                .with_context(|| format!("generate secret {}", secret.name))
+                .map_err(StoreError::SecretSource)?;
+            match self
+                .put_secret(id, &secret.name, 0, std::mem::take(&mut *value))
+                .await
+            {
+                // A value set concurrently wins over the generated one.
+                Ok(_) | Err(StoreError::SecretVersionConflict { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+    /// Generates values for mounted declared secrets that have none (see
+    /// `generate_secrets`), then pins the secret versions a deployment uses in
+    /// its own transaction; see `pin_secrets_on`.
     pub(crate) async fn pin_secrets(
         &self,
         operation: &str,
         app: &NormalizedApplication,
     ) -> Result<BTreeMap<String, String>, StoreError> {
+        self.generate_secrets(app).await?;
         let _writer = self.writers.lock().await;
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let pins = Self::pin_secrets_on(&mut tx, operation, app).await?;
@@ -143,13 +195,7 @@ impl Store {
         .is_some();
         let id = app.id().as_str();
         if !prepared {
-            let names = app
-                .spec()
-                .services
-                .iter()
-                .flat_map(|s| s.secrets.iter().map(|s| s.name.as_str()))
-                .collect::<BTreeSet<_>>();
-            for name in names {
+            for name in app.spec().mounted_secret_names() {
                 let changed=sqlx::query!("INSERT INTO deployment_secret_pins(operation_id,application_id,name,generation) SELECT ?1,application_id,name,generation FROM application_secrets WHERE application_id=?2 AND name=?3",operation,id,name).execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
                 if changed != 1 {
                     return Err(StoreError::InvalidInput);

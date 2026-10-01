@@ -519,6 +519,14 @@
             },
             "type": "array"
           },
+          "secrets": {
+            "default": [],
+            "description": "Application secrets whose values piqueld generates once.",
+            "items": {
+              "$ref": "#/components/schemas/SecretDeclaration"
+            },
+            "type": "array"
+          },
           "services": {
             "default": [],
             "description": "Declared services.",
@@ -5133,6 +5141,33 @@
         ],
         "type": "object"
       },
+      "SecretDeclaration": {
+        "additionalProperties": false,
+        "description": "An application secret whose value piqueld generates when a deployment first\nneeds it. A stored value, generated or set manually, is never replaced.",
+        "properties": {
+          "generate": {
+            "$ref": "#/components/schemas/SecretGenerator",
+            "description": "How the value is generated."
+          },
+          "name": {
+            "description": "Application-scoped logical secret name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "generate"
+        ],
+        "type": "object"
+      },
+      "SecretEncoding": {
+        "description": "Text encoding of generated random bytes.",
+        "enum": [
+          "hex",
+          "base64url"
+        ],
+        "type": "string"
+      },
       "SecretFile": {
         "additionalProperties": false,
         "description": "A Docker secret name and its file destination, with no secret value.",
@@ -5151,6 +5186,59 @@
           "target"
         ],
         "type": "object"
+      },
+      "SecretGenerator": {
+        "description": "The exhaustive set of secret value generators.",
+        "oneOf": [
+          {
+            "description": "Random bytes from the operating system, encoded as text.",
+            "properties": {
+              "bytes": {
+                "description": "Number of random bytes before encoding.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "encoding": {
+                "$ref": "#/components/schemas/SecretEncoding",
+                "description": "Text encoding of the random bytes."
+              },
+              "type": {
+                "enum": [
+                  "random"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "bytes",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "RSA private key in PKCS#8 PEM.",
+            "properties": {
+              "bits": {
+                "description": "Modulus size in bits.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "rsa"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "bits",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "SecretKeyRecovery": {
         "description": "Metadata-only result of lost-key recovery. Never rotates application credentials.",
@@ -5745,6 +5833,13 @@
             "description": "Exact public HTTP routes.",
             "items": {
               "$ref": "#/components/schemas/ValidatedRoute"
+            },
+            "type": "array"
+          },
+          "secrets": {
+            "description": "Secrets whose values piqueld generates once.",
+            "items": {
+              "$ref": "#/components/schemas/SecretDeclaration"
             },
             "type": "array"
           },

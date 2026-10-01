@@ -384,3 +384,51 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
         Err(StoreError::SecretKeyUsable)
     ));
 }
+
+#[tokio::test]
+async fn mounted_declared_secrets_are_generated_once_and_never_replace_values() {
+    use piqueld_core::manifest::{SecretDeclaration, SecretEncoding, SecretGenerator, SecretMount};
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let mut manifest = with_secret(&application()).to_manifest();
+    manifest.spec.services[0].secrets.push(SecretMount {
+        name: "manual".into(),
+        target: "/run/secrets/manual".into(),
+    });
+    // "unused" is declared but not mounted, so it is not generated.
+    for name in ["token", "manual", "unused"] {
+        manifest.spec.secrets.push(SecretDeclaration {
+            name: name.into(),
+            generate: SecretGenerator::Random {
+                bytes: 16,
+                encoding: SecretEncoding::Hex,
+            },
+        });
+    }
+    let app = manifest
+        .validate()
+        .unwrap()
+        .normalize(application().id().clone());
+    let first = store.save_application(&app, None, None).await.unwrap();
+    store
+        .put_secret(app.id(), "manual", 0, b"chosen".to_vec())
+        .await
+        .unwrap();
+    let pins = store.pin_secrets(&first.id, &app).await.unwrap();
+    let value = store
+        .secret_plaintext(app.id(), &pins["token"])
+        .await
+        .unwrap();
+    assert_eq!(value.len(), 32);
+
+    let second = store.save_application(&app, None, Some(1)).await.unwrap();
+    assert_eq!(store.pin_secrets(&second.id, &app).await.unwrap(), pins);
+    let generations = store
+        .secrets(app.id())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|secret| (secret.name, secret.generation))
+        .collect::<Vec<_>>();
+    assert_eq!(generations, [("manual".into(), 1), ("token".into(), 1)]);
+}

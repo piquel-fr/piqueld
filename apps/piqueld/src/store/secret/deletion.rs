@@ -28,10 +28,7 @@ impl Store {
 
     /// Whether any service in `app` mounts the named secret.
     fn references_secret(app: &NormalizedApplication, name: &str) -> bool {
-        app.spec()
-            .services
-            .iter()
-            .any(|s| s.secrets.iter().any(|s| s.name == name))
+        app.spec().mounted_secret_names().contains(name)
     }
 
     /// Reserves a secret for deletion and returns the runtime versions to remove.
