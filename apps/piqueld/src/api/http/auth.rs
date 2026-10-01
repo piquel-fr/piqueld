@@ -102,7 +102,24 @@ pub(super) fn is_public(path: &str) -> bool {
             | "/api/v1/auth/device/poll"
     )
 }
-/// Authentication middleware for API paths; other paths pass through.
+/// Authentication middleware for API paths; other paths pass through. Every API
+/// response, including rejections, is marked `Cache-Control: no-store`.
+async fn authenticate(
+    axum::extract::State(auth): axum::extract::State<Auth>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !super::ui::is_api_path(request.uri().path()) {
+        return next.run(request).await;
+    }
+    let mut response = authorize(&auth, request, next).await;
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+/// Authenticates one API request before running the handler:
 ///
 /// 1. Throttles ceremony start endpoints per peer IP (429 with `Retry-After`).
 /// 2. Takes the credential from `Authorization: Bearer`, else the session cookie.
@@ -111,16 +128,7 @@ pub(super) fn is_public(path: &str) -> bool {
 ///    configured origin.
 /// 4. Inserts the resolved `Identity` as an extension. Invalid credentials on
 ///    public routes are ignored; missing or invalid ones elsewhere yield 401.
-/// 5. Marks throttled and handler responses `Cache-Control: no-store`; the
-///    middleware's own 401/403 rejections are returned without it.
-async fn authenticate(
-    axum::extract::State(auth): axum::extract::State<Auth>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    if !super::ui::is_api_path(request.uri().path()) {
-        return next.run(request).await;
-    }
+async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
     let public = is_public(request.uri().path());
     if request.method() == Method::POST
         && matches!(
@@ -139,10 +147,6 @@ async fn authenticate(
             response
                 .headers_mut()
                 .insert(header::RETRY_AFTER, header::HeaderValue::from_static("60"));
-            response.headers_mut().insert(
-                header::CACHE_CONTROL,
-                header::HeaderValue::from_static("no-store"),
-            );
             return response;
         }
     }
@@ -185,12 +189,7 @@ async fn authenticate(
     } else if !public {
         return ApiError::from(AuthError::Unauthorized).into_response();
     }
-    let mut response = next.run(request).await;
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        header::HeaderValue::from_static("no-store"),
-    );
-    response
+    next.run(request).await
 }
 /// Returns the user as JSON, setting a seven-day session cookie when a new
 /// session `token` was issued.

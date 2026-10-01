@@ -88,7 +88,8 @@ impl Credentials {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    if file.metadata()?.permissions().mode() & 0o077 != 0 {
+                    let metadata = file.metadata().map_err(|e| Self::io_error(path, &e))?;
+                    if metadata.permissions().mode() & 0o077 != 0 {
                         return Err(CliError::new(
                             ErrorKind::Input,
                             "credentials file must be readable only by its owner (chmod 600)",
@@ -100,19 +101,33 @@ impl Credentials {
                 })
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(Self::io_error(path, &error)),
         }
+    }
+    /// Reports a credential-file I/O failure with the file's path, so it is not
+    /// mistaken for an output write error.
+    fn io_error(path: &Path, error: &std::io::Error) -> CliError {
+        CliError::new(
+            ErrorKind::General,
+            format!("credentials file {}: {error}", path.display()),
+        )
     }
     /// Lock a stable sidecar (never the atomically replaced credentials inode)
     /// across the whole read/modify/write. Network requests happen outside it.
     /// The new contents are written to a synced temp file and renamed over `path`,
     /// so readers never observe a partial file.
     fn update_at(path: &Path, update: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| std::path::Path::new("."));
-        std::fs::create_dir_all(parent)?;
+        let _lock = Self::lock_at(path).map_err(|e| Self::io_error(path, &e))?;
+        let mut credentials = Self::read_at(path)?;
+        update(&mut credentials)?;
+        credentials
+            .write_at(path)
+            .map_err(|e| Self::io_error(path, &e))
+    }
+    /// Creates the parent directory and takes an exclusive lock on the sidecar
+    /// `<path>.lock`, held until the returned file is dropped.
+    fn lock_at(path: &Path) -> std::io::Result<std::fs::File> {
+        std::fs::create_dir_all(Self::parent(path))?;
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
@@ -124,14 +139,22 @@ impl Credentials {
         lock_path.push(".lock");
         let lock = options.open(PathBuf::from(lock_path))?;
         lock.lock()?;
-        let mut credentials = Self::read_at(path)?;
-        update(&mut credentials)?;
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        serde_json::to_writer(&mut file, &credentials).map_err(std::io::Error::other)?;
+        Ok(lock)
+    }
+    /// Writes to a synced temp file beside `path`, then renames it over `path`.
+    fn write_at(&self, path: &Path) -> std::io::Result<()> {
+        let mut file = tempfile::NamedTempFile::new_in(Self::parent(path))?;
+        serde_json::to_writer(&mut file, self).map_err(std::io::Error::other)?;
         file.flush()?;
         file.as_file().sync_all()?;
         file.persist(path).map_err(|e| e.error)?;
         Ok(())
+    }
+    /// Directory holding `path`, or `.` for a bare file name.
+    fn parent(path: &Path) -> &Path {
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
     }
     /// Removes account `id` under endpoint `key` only if it still holds `token`,
     /// then reselects the first remaining account if the selected one is gone.
@@ -318,6 +341,21 @@ pub(crate) async fn logout(cli: &Cli, client: &Client, console: &mut Console) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_io_errors_name_the_credentials_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-directory");
+        std::fs::write(&blocker, "").unwrap();
+        let path = blocker.join("credentials.json");
+        let error = Credentials::update_at(&path, |_| Ok(())).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("credentials file {}: ", path.display())),
+            "{error}"
+        );
+    }
 
     #[test]
     fn concurrent_credential_updates_preserve_every_login() {
