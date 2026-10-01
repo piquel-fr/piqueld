@@ -86,20 +86,23 @@ fn removed_data_directory_is_not_accepted_as_configuration() {
 }
 
 #[test]
-fn parse_failures_retain_the_underlying_toml_diagnostic() {
-    let error = DaemonConfig::from_toml("[server]\nunknown_key = true").unwrap_err();
-    let ConfigError::Parse(source) = &error else {
+fn parse_failures_keep_the_diagnostic_but_not_the_source_line() {
+    let error = DaemonConfig::from_toml(
+        "[server]\nport = 7845\n\n[[notifications.destinations]]\nname = 'ops'\nurl = 'https://hooks.example/secret-token'\nunknown_key = true",
+    )
+    .unwrap_err();
+    let ConfigError::Parse(diagnostic) = &error else {
         panic!("expected a parse error, got {error:?}");
     };
-    let rendered = source.to_string();
     assert!(
-        rendered.contains("unknown field"),
-        "diagnostic should name the offending field: {rendered}"
+        diagnostic.message.contains("unknown field") && diagnostic.message.contains("unknown_key"),
+        "diagnostic should name the offending field: {diagnostic}"
     );
-    assert!(rendered.contains("unknown_key"));
+    assert_eq!((diagnostic.line, diagnostic.column), (7, 1));
+    let rendered = format!("{:?}", anyhow::Error::new(error));
     assert!(
-        std::error::Error::source(&error).is_some(),
-        "parse errors must retain their source"
+        !rendered.contains("secret-token"),
+        "diagnostic must not echo configuration source: {rendered}"
     );
 }
 

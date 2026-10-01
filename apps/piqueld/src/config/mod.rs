@@ -65,7 +65,8 @@ impl DaemonConfig {
     /// Returns [`ConfigError`] when the document is malformed or violates a
     /// host configuration invariant.
     pub fn from_toml(source: &str) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(source).map_err(ConfigError::Parse)?;
+        let config: Self = toml::from_str(source)
+            .map_err(|error| ConfigError::Parse(TomlDiagnostic::new(source, &error)))?;
         config.validate()?;
         Ok(config)
     }
@@ -370,10 +371,41 @@ pub enum ConfigError {
     /// The TOML document was syntactically malformed, had the wrong shape, or
     /// contained unknown keys.
     #[error("configuration is not valid TOML")]
-    Parse(#[source] toml::de::Error),
+    Parse(#[source] TomlDiagnostic),
     /// A parsed setting violated a semantic invariant.
     #[error("configuration is invalid: {0}")]
     Invalid(String),
+}
+
+/// TOML parser message and location, without the offending source line.
+///
+/// `toml::de::Error` renders that line verbatim, and configuration files may
+/// hold credentials such as webhook URLs, so the snippet is dropped before the
+/// error can reach logs.
+#[derive(Debug, Error)]
+#[error("line {line}, column {column}: {message}")]
+pub struct TomlDiagnostic {
+    /// One-based line of the failure.
+    pub line: usize,
+    /// One-based character column of the failure.
+    pub column: usize,
+    /// Parser or deserializer message.
+    pub message: String,
+}
+
+impl TomlDiagnostic {
+    fn new(source: &str, error: &toml::de::Error) -> Self {
+        let before = error
+            .span()
+            .and_then(|span| source.get(..span.start))
+            .unwrap_or_default();
+        let line_start = before.rfind('\n').map_or(0, |index| index + 1);
+        Self {
+            line: before.matches('\n').count() + 1,
+            column: before[line_start..].chars().count() + 1,
+            message: error.message().to_owned(),
+        }
+    }
 }
 
 /// Installs tracing filtered by `RUST_LOG` when present.

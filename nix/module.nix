@@ -219,6 +219,7 @@ in
           else
             # Destinations are appended in the unit's private /tmp, never the store.
             pkgs.writeShellScript "piqueld-start" ''
+              set -eu
               { cat ${configuration}; echo; cat "$CREDENTIALS_DIRECTORY/notification-destinations"; } > /tmp/piqueld.toml
               exec ${cfg.package}/bin/piqueld --config /tmp/piqueld.toml
             '';
