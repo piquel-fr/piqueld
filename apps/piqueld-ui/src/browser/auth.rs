@@ -455,8 +455,9 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
         view! {
             <h2>"Set up piqueld"</h2>
             <p class="hint">
-                "No account exists yet. Open the setup link saved in the daemon’s data directory, in the "
-                <code>"setup-link"</code> " file, to create the first account."
+                "No account exists yet. Run " <code>"piquelctl setup-link"</code>
+                " on the daemon host and open the link it prints to create the first account. It is also saved in the "
+                <code>"setup-link"</code> " file in the daemon’s data directory."
             </p>
             <div class="form-actions">
                 <button type="button" class="btn" on:click={move |_| reload()}>

@@ -21,10 +21,11 @@ developer.
 
 ## Inspect and operate
 
-Open the link in `/tmp/piqueld-dev/setup-link` in your browser and create an
-account with a passkey. Then, in a second terminal:
+In a second terminal, open the first-account setup link and create an account
+with a passkey, then sign in:
 
 ```console
+just run --socket /tmp/piqueld-dev-run/piqueld.sock setup-link --open
 just run --socket /tmp/piqueld-dev-run/piqueld.sock login
 just run --socket /tmp/piqueld-dev-run/piqueld.sock status
 just run --url http://localhost:7845 login

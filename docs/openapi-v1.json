@@ -5395,6 +5395,19 @@
         ],
         "type": "object"
       },
+      "SetupLink": {
+        "description": "First-account setup link, served only over the daemon's Unix socket.",
+        "properties": {
+          "url": {
+            "description": "Dashboard URL carrying the single-use setup secret.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
       "Sha256Digest": {
         "description": "Explicitly tagged lowercase SHA-256 digest.",
         "type": "string"
@@ -15686,6 +15699,56 @@
         },
         "security": [],
         "summary": "Starts passkey registration."
+      }
+    },
+    "/api/v1/auth/setup-link": {
+      "get": {
+        "description": "Public, but served only over the Unix socket, whose group access is the trust boundary; other transports return 404. Returns 409 once the first account exists.",
+        "operationId": "authSetupLink",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupLink"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "security": [],
+        "summary": "Gets the first-account setup link."
       }
     },
     "/api/v1/auth/status": {

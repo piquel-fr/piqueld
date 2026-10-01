@@ -20,6 +20,7 @@ use utoipa::{OpenApi, ToResponse};
         ErrorBody,
         piqueld_core::auth::User,
         piqueld_core::auth::AuthStatus,
+        piqueld_core::auth::SetupLink,
         piqueld_core::auth::RegistrationStart,
         piqueld_core::auth::Ceremony,
         piqueld_core::auth::CeremonyFinish,

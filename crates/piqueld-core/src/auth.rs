@@ -20,6 +20,12 @@ pub struct AuthStatus {
     /// Canonical website origin.
     pub public_url: String,
 }
+/// First-account setup link, served only over the daemon's Unix socket.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct SetupLink {
+    /// Dashboard URL carrying the single-use setup secret.
+    pub url: String,
+}
 /// New account information and its single-use invitation or setup secret.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct RegistrationStart {

@@ -10,7 +10,7 @@ mod tests;
 
 use crate::store::{CredentialKind, NewCredential, now_secs};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use piqueld_core::auth::{AuthStatus, User};
+use piqueld_core::auth::{AuthStatus, SetupLink, User};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -44,6 +44,9 @@ pub enum AuthError {
     /// Cryptographic authentication proof was rejected.
     #[error("passkey verification failed")]
     Webauthn(#[from] webauthn_rs_core::error::WebauthnError),
+    /// First-account setup is closed, so no setup link exists.
+    #[error("first-account setup is already completed")]
+    SetupCompleted,
     /// Operating-system entropy was unavailable.
     #[error("could not generate an authentication secret: {0}")]
     Random(String),
@@ -67,13 +70,15 @@ struct Inner {
     /// Pending CLI device logins keyed by the hash of their device code.
     devices: Mutex<HashMap<String, sessions::Device>>,
     throttle: Mutex<throttle::Throttle>,
+    /// Link written by [`Auth::prepare_setup`] while the installation is unclaimed.
+    setup_link: Mutex<Option<String>>,
 }
 
 impl Auth {
-    /// Initializes authentication and reports where to retrieve first-account setup.
+    /// Initializes authentication and logs how to retrieve first-account setup.
     ///
-    /// The setup link is written to `setup-link` in the data directory while no
-    /// account exists.
+    /// While no account exists, the setup link is written to `setup-link` in the
+    /// data directory and served to `piquelctl setup-link` over the Unix socket.
     /// # Errors
     /// Returns configuration, database, or setup-file errors.
     pub async fn initialize(
@@ -83,8 +88,11 @@ impl Auth {
         let auth = Self::new(store, &config.auth.public_url)?;
         let path = config.server.data_dir.join("setup-link");
         auth.prepare_setup(&path).await?;
-        if path.exists() {
-            tracing::info!(path = %path.display(), "first account setup link is available locally");
+        if auth.0.setup_link.lock().await.is_some() {
+            tracing::info!(
+                file = %path.display(),
+                "first-account setup is open; run `piquelctl setup-link` to get its link"
+            );
         }
         Ok(auth)
     }
@@ -113,6 +121,7 @@ impl Auth {
             ceremonies: Mutex::new(HashMap::new()),
             devices: Mutex::new(HashMap::new()),
             throttle: Mutex::new(throttle::Throttle::default()),
+            setup_link: Mutex::new(None),
         })))
     }
 
@@ -147,9 +156,10 @@ impl Auth {
         Ok(url)
     }
 
-    /// Creates a private setup link on disk while the installation is unclaimed.
-    /// Repeated startup preserves an existing valid link; initialized daemons
-    /// never reopen setup, even if the user table is manually emptied.
+    /// Creates a private setup link on disk while the installation is unclaimed,
+    /// and keeps it in memory for [`Auth::setup_link`]. Repeated startup
+    /// preserves an existing valid link; initialized daemons never reopen
+    /// setup, even if the user table is manually emptied.
     /// # Errors
     /// Returns filesystem or database errors with their underlying cause.
     pub async fn prepare_setup(&self, path: &Path) -> anyhow::Result<()> {
@@ -167,18 +177,39 @@ impl Auth {
             && let Some((_, secret)) = existing.trim().split_once("#invite=")
             && self.invitation_valid(secret).await?
         {
+            *self.0.setup_link.lock().await = Some(existing.trim().to_owned());
             return Ok(());
         }
         let secret = Self::secret()?;
+        let link = format!("{}/dashboard/auth#invite={secret}", self.0.origin);
         let mut file = tempfile::NamedTempFile::new_in(
             path.parent()
                 .context("setup file needs a parent directory")?,
         )?;
-        writeln!(file, "{}/dashboard/auth#invite={secret}", self.0.origin)?;
+        writeln!(file, "{link}")?;
         file.as_file().sync_all()?;
         self.0.store.set_setup_secret(&Self::hash(&secret)).await?;
         file.persist(path).context("persist private setup link")?;
+        *self.0.setup_link.lock().await = Some(link);
         Ok(())
+    }
+
+    /// Returns the first-account setup link while setup is open.
+    /// # Errors
+    /// Returns [`AuthError::SetupCompleted`] once the first account exists.
+    pub(crate) async fn setup_link(&self) -> Result<SetupLink> {
+        if self.0.store.auth_initialized().await? {
+            return Err(AuthError::SetupCompleted);
+        }
+        self.0
+            .setup_link
+            .lock()
+            .await
+            .clone()
+            .map(|url| SetupLink { url })
+            .ok_or(AuthError::Invalid(
+                "first-account setup link is unavailable",
+            ))
     }
 
     /// Charges one public ceremony or device start against the peer's throttle

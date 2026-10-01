@@ -76,6 +76,12 @@ pub(crate) enum Command {
     Logout,
     /// Show the authenticated account.
     Whoami,
+    /// Print the first-account setup link (Unix socket only).
+    SetupLink {
+        /// Also open the link in the default browser.
+        #[arg(long)]
+        open: bool,
+    },
     /// List effective connection profile names and endpoints without contacting a daemon.
     Profiles,
     /// Manage the encryption key for all application secrets on this daemon.

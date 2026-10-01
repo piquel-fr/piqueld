@@ -35,6 +35,7 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         Command::Login => unreachable!("login has its own interactive deadline"),
         Command::Logout => crate::auth::logout(cli, client, console).await,
         Command::Whoami => console.emit(&crate::auth::AccountReport(client.auth_me().await?)),
+        Command::SetupLink { open } => crate::auth::setup_link(cli, client, console, *open).await,
         Command::Profiles => unreachable!("profiles are listed before connecting"),
         Command::Secrets { action } => action.run(cli, client, console).await,
         Command::Status => status(cli, client, console).await,
