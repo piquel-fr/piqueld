@@ -126,12 +126,3 @@ Never put credential values into Nix settings, which are stored in the Nix store
 Nix packages and development shells support x86_64 Linux. Configuration and
 package changes require rebuilding NixOS; application state remains under
 `dataDir`.
-
-The focused permissions integration test is available with:
-
-```console
-nix build .#checks.x86_64-linux.unix-socket
-```
-
-It starts the real service in a NixOS VM and checks member/nonmember access,
-private-state isolation, socket recovery, and the absence of an extra socket unit.
