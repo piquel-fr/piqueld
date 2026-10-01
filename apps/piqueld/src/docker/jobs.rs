@@ -91,10 +91,7 @@ impl BollardDocker {
         self.wait_jobs_stopped(ownership, Some(job.logical_name.as_str()), JobRuns::All)
             .await?;
         let node_id = self.local_node_id().await?;
-        let spec = Self::job_spec(
-            self.service_spec_with_secrets(&job.container, &node_id)
-                .await?,
-        );
+        let spec = Self::job_spec(self.runtime_service_spec(&job.container, &node_id).await?);
         self.create_service_wire(&spec).await
     }
 

@@ -1,31 +1,68 @@
 use super::{
-    BollardDocker, DesiredService, DockerError, HEALTH_RETRIES, HealthCheck, HealthConfig, Limit,
-    Mount, MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND, NetworkAttachmentConfig,
-    RESTART_DELAY, ResourceLimits, ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated,
-    ServiceSpecUpdateConfig, ServiceSpecUpdateConfigFailureActionEnum,
-    ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec, TaskSpecResources,
-    TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
+    BollardDocker, DesiredService, DockerError, HEALTH_RETRIES, HealthCheck, HealthConfig,
+    INGRESS_PROXIES_ENV, Limit, Mount, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
+    NANOSECONDS_PER_SECOND, NetworkAttachmentConfig, RESTART_DELAY, ResourceLimits, ServiceSpec,
+    ServiceSpecMode, ServiceSpecModeReplicated, ServiceSpecUpdateConfig,
+    ServiceSpecUpdateConfigFailureActionEnum, ServiceSpecUpdateConfigOrderEnum, TaskSpec,
+    TaskSpecContainerSpec, TaskSpecResources, TaskSpecRestartPolicy,
+    TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
 };
 
 impl BollardDocker {
-    /// Builds the service specification pinned to `node_id`, resolving each
-    /// pinned secret into its immutable Docker secret ID reference.
-    pub(super) async fn service_spec_with_secrets(
+    /// Builds the service specification pinned to `node_id`, then resolves
+    /// the inputs Docker assigns: each pinned secret becomes its immutable
+    /// Docker secret ID reference, and services attached to the application's
+    /// ingress network get `INGRESS_PROXIES_ENV` set to that network's subnets.
+    ///
+    /// Fails when a secret version is missing, or when the ingress network is
+    /// missing or has no subnet.
+    pub(super) async fn runtime_service_spec(
         &self,
         desired: &DesiredService,
         node_id: &str,
     ) -> Result<ServiceSpec, DockerError> {
         let mut spec = Self::service_spec(desired, node_id)?;
+        let container = spec
+            .task_template
+            .as_mut()
+            .expect("task spec")
+            .container_spec
+            .as_mut()
+            .expect("container spec");
         if !desired.secrets.is_empty() {
-            spec.task_template
-                .as_mut()
-                .expect("task spec")
-                .container_spec
-                .as_mut()
-                .expect("container spec")
-                .secrets = Some(self.secret_references(desired).await?);
+            container.secrets = Some(self.secret_references(desired).await?);
+        }
+        if let Some(network) = desired.ingress_network() {
+            let proxies = self
+                .inspect_network_complete(network.as_str())
+                .await?
+                .as_ref()
+                .and_then(Self::ingress_proxies)
+                .ok_or(DockerError::Request("read ingress network subnet"))?;
+            container
+                .env
+                .get_or_insert_default()
+                .push(format!("{INGRESS_PROXIES_ENV}={proxies}"));
         }
         Ok(spec)
+    }
+
+    /// Lists a network's Docker-assigned subnets as comma-separated CIDRs, or
+    /// `None` when it has none.
+    ///
+    /// ```text
+    /// 10.0.1.0/24,fd00:1::/64
+    /// ```
+    pub(super) fn ingress_proxies(network: &bollard::models::Network) -> Option<String> {
+        let subnets = network
+            .ipam
+            .as_ref()?
+            .config
+            .iter()
+            .flatten()
+            .filter_map(|config| config.subnet.as_deref().filter(|subnet| !subnet.is_empty()))
+            .collect::<Vec<_>>();
+        (!subnets.is_empty()).then(|| subnets.join(","))
     }
 
     /// Builds the complete Docker service specification from desired state.

@@ -59,8 +59,10 @@ Image references reject URL schemes, credentials, malformed tags, and malformed
 digests; registry hostnames are validated case-insensitively and canonicalized
 to lowercase (IPv6 literal hosts are not accepted). Mount targets are normalized
 absolute paths below `/`; environment names and runtime strings reject invalid
-control data. Health-check paths are absolute, and resource limits must specify
-CPU, memory, or both.
+control data. `PIQUELD_INGRESS_PROXIES` is reserved; piqueld injects it into
+routed services (see [managed ingress](ingress.md#client-addresses)).
+Health-check paths are absolute, and resource limits must specify CPU, memory,
+or both.
 
 Explicit budgets bound every manifest; exceeding one is a distinct validation
 error whose message names the offending environment key where applicable:

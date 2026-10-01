@@ -779,6 +779,14 @@ fn validate_environment(
                 ),
             );
         }
+        if key == crate::resource::INGRESS_PROXIES_ENV {
+            error(
+                errors,
+                codes::ENVIRONMENT_NAME_INVALID,
+                &format!("{base}.environment.name"),
+                &format!("environment key {key_echo} is reserved for piqueld ingress"),
+            );
+        }
         if value.contains('\0') {
             error(
                 errors,

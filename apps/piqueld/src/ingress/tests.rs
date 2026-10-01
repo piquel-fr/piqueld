@@ -139,6 +139,7 @@ impl Scenario {
             .resolve("one.example.test", "127.0.0.1:443".parse().unwrap())
             .resolve("two.example.test", "127.0.0.1:443".parse().unwrap())
             .resolve("www.example.test", "127.0.0.1:443".parse().unwrap())
+            .resolve("three.example.test", "127.0.0.1:443".parse().unwrap())
             .build()
             .unwrap();
         Self {
@@ -837,6 +838,54 @@ impl Scenario {
         assert_eq!(self.body("one.example.test").await, "replacement backend");
     }
 
+    /// Backends see Caddy's forwarded client address from a peer inside the
+    /// injected ingress range; a client-supplied forwarding header is discarded.
+    async fn forwarded_client_addresses(&self) {
+        let id = deploy(
+            &self.store,
+            &self.controller,
+            application(
+                "three",
+                "three.example.test",
+                "{http.request.remote.host} {http.request.header.X-Forwarded-For} {env.PIQUELD_INGRESS_PROXIES}",
+            ),
+        )
+        .await;
+        let body = self
+            .client
+            .get(self.url("three.example.test"))
+            .header("X-Forwarded-For", "203.0.113.9")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let [peer, forwarded, proxies] = body.split(' ').collect::<Vec<_>>()[..] else {
+            panic!("unexpected backend response: {body}");
+        };
+        let peer: std::net::Ipv4Addr = peer.parse().unwrap();
+        forwarded.parse::<std::net::IpAddr>().unwrap();
+        assert_ne!(
+            forwarded, "203.0.113.9",
+            "client-supplied header reached the backend"
+        );
+        let (network, prefix) = proxies.split_once('/').unwrap();
+        let mask = u32::MAX << (32 - prefix.parse::<u32>().unwrap());
+        assert_eq!(
+            u32::from(peer) & mask,
+            u32::from(network.parse::<std::net::Ipv4Addr>().unwrap()),
+            "{peer} is outside {proxies}"
+        );
+        let observed = self.docker.observe(&id).await.unwrap();
+        assert!(observed.services[0].runtime_configuration_matches);
+        assert!(
+            !observed.services[0]
+                .environment
+                .contains_key(piqueld_core::resource::INGRESS_PROXIES_ENV)
+        );
+    }
+
     async fn disable_and_restore_deployed_routes(&self) {
         let disabled = Arc::new(
             Ingress::new(
@@ -1051,6 +1100,7 @@ async fn ingress_caddy_routes_tls_network_changes_and_disable() {
         .await;
     scenario.restart_without_daemon().await;
     scenario.repoint_after_backend_convergence().await;
+    scenario.forwarded_client_addresses().await;
     scenario.disable_and_restore_deployed_routes().await;
 }
 
