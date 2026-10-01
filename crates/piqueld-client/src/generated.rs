@@ -6749,6 +6749,10 @@ impl Client {
     }
     /*Get daemon status
 
+    Reports the daemon version, API version, instance ID, and the recency of the
+    last successful `piqueld backup`. Returns 503 when control-plane storage
+    cannot be read.
+
     Sends a `GET` request to `/api/v1/system/status`
 
     */
@@ -6784,6 +6788,9 @@ impl Client {
         match response.status().as_u16() {
             200u16 => crate::client::decode_response(response).await,
             403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             _ => Err(Error::UnexpectedResponse(response)),

@@ -11,9 +11,9 @@ The first account has no special privileges. There is no account recovery flow.
 1. Choose the stable HTTPS hostname and configure `auth.public_url` before creating
    any passkeys. Arrange TLS termination and verify that the browser can reach it.
    Tailscale users still need HTTPS for the browser; see the transport notes below.
-2. Stop the daemon and back up its entire data directory, including `piqueld.db`
-   and any SQLite `-wal`/`-shm` files. Keep the previous binary and configuration.
-   The new daemon migrates the database on startup; an older binary rejects the
+2. Back up the data directory (see [backup and restore](backups.md)). Keep the
+   previous binary and configuration. The new daemon writes a pre-migration
+   backup and migrates the database on startup; an older binary rejects the
    newer schema. Replacing the binary alone is not a supported rollback.
 3. Start the upgraded daemon, open its private `setup-link`, and create the first
    account. Existing applications continue reconciling, but all API clients now
@@ -23,8 +23,8 @@ The first account has no special privileges. There is no account recovery flow.
    anonymous access. TCP `/health` remains public. Verify a browser edit and an
    authenticated CLI command before declaring the upgrade complete.
 
-To roll back, stop the new daemon and restore the complete pre-upgrade data
-directory, previous binary, and configuration together. This discards database
+To roll back, stop the new daemon and restore the pre-upgrade backup with the
+previous binary and configuration together. This discards database
 changes made since the backup, including accounts and application edits. Running
 Docker resources may have changed in the meantime; check them against the restored
 desired state before restarting reconciliation. Never restore a live database or

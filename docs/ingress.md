@@ -117,8 +117,8 @@ application deployments can proceed while routing is waiting.
 Disabling ingress in TOML and restarting stops public routing, retains certificate
 and route state, and continues accepting route-bearing manifests. Re-enabling exposes
 only deployed route intent. A normal daemon shutdown leaves Caddy serving and renewing
-certificates independently. Back up the private daemon data directory, including
-`ingress/data` and `ingress/config`, together with SQLite.
+certificates independently. `piqueld backup` archives `ingress/data` and
+`ingress/config` together with SQLite; see [backup and restore](backups.md).
 
 ## Validation
 

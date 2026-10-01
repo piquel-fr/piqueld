@@ -9,6 +9,7 @@ use axum::{
 };
 use piqueld_client::{
     AcceptedOperation, Client, ClientError, Envelope, ListApplicationsOptions, SystemStatus,
+    system::BackupStatus,
 };
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 use tempfile::TempDir;
@@ -26,6 +27,7 @@ async fn status() -> Json<Envelope<SystemStatus>> {
             api_version: "v1".into(),
             daemon_version: "0.1.0".into(),
             instance_id: "instance-test".into(),
+            backup: BackupStatus::new(None, 0),
         },
     })
 }
@@ -197,7 +199,7 @@ async fn requests_use_origin_form_with_an_explicit_host_header() {
             .send(String::from_utf8_lossy(&buffer).into_owned())
             .await
             .unwrap();
-        let body = r#"{"data":{"status":"running","api_version":"v1","daemon_version":"0.1.0","instance_id":"i"}}"#;
+        let body = r#"{"data":{"status":"running","api_version":"v1","daemon_version":"0.1.0","instance_id":"i","backup":{"last_success_at_ms":null,"stale":true}}}"#;
         let _ = socket
             .write_all(&raw_response("HTTP/1.1 200 OK", "application/json", body))
             .await;

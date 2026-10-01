@@ -3,7 +3,7 @@ use super::{connection_label, dashboard_context, health_class, management, row_h
 use crate::state::{ApplicationHealth, ConnectionState, DataState};
 use leptos::{CollectView, IntoView, SignalGet, View, component, view};
 use leptos_router::A;
-use piqueld_client::system::DependencyStatus;
+use piqueld_client::system::{BackupStatus, DependencyStatus};
 use std::rc::Rc;
 
 /// Sidebar with the brand link, dashboard navigation and sign-out button.
@@ -120,6 +120,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                 }}
                 <div class="readiness-dependencies">
                     {move || connection_readiness(signals.connection.get())}
+                    {move || signals.system.get().map(|system| backup_readiness(&system.backup))}
                     {move || {
                         signals.readiness.get().map(|status| {
                             view! {
@@ -150,6 +151,20 @@ fn connection_readiness(state: ConnectionState) -> View {
         connection_label(state),
         message,
     )
+}
+
+/// Readiness card for backup recency, shown as pending once backups are stale.
+fn backup_readiness(status: &BackupStatus) -> View {
+    let now_ms = js_sys::Date::now()
+        .to_string()
+        .parse::<i64>()
+        .unwrap_or_default();
+    let (state, label) = if status.stale {
+        ("pending", "Stale")
+    } else {
+        ("ready", "Recent")
+    };
+    readiness_card("Backups", state, label, &status.summary(now_ms))
 }
 
 /// Readiness card for one daemon dependency.

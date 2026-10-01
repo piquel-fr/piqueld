@@ -34,6 +34,24 @@ in
       default = "/run/piqueld";
       description = "Runtime directory below /run containing piqueld.sock. Group members can connect; account authentication is still required.";
     };
+    backup = {
+      enable = lib.mkEnableOption "scheduled backups with `piqueld backup`, safe while the daemon runs";
+      schedule = lib.mkOption {
+        type = lib.types.str;
+        default = "daily";
+        description = "systemd OnCalendar expression; missed runs start at the next boot.";
+      };
+      directory = lib.mkOption {
+        type = lib.types.strMatching "/.+";
+        default = "/var/backups/piqueld";
+        description = "Private directory receiving timestamped archives. Archives contain the secret master key; copy them off the host.";
+      };
+      keep = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 7;
+        description = "Number of newest archives to retain in the directory.";
+      };
+    };
     settings = lib.mkOption {
       type = lib.types.submodule {
         options = {
@@ -191,6 +209,34 @@ in
           cfg.dataDir
           cfg.runtimeDir
         ];
+      };
+    };
+    systemd.tmpfiles.rules = lib.mkIf cfg.backup.enable [
+      "d ${cfg.backup.directory} 0700 piqueld piqueld -"
+    ];
+    systemd.services.piqueld-backup = lib.mkIf cfg.backup.enable {
+      description = "piqueld state backup";
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${cfg.package}/bin/piqueld --config ${configuration} backup --directory ${cfg.backup.directory} --keep ${toString cfg.backup.keep}";
+        User = "piqueld";
+        Group = "piqueld";
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ReadWritePaths = [
+          cfg.dataDir
+          cfg.backup.directory
+        ];
+      };
+    };
+    systemd.timers.piqueld-backup = lib.mkIf cfg.backup.enable {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnCalendar = cfg.backup.schedule;
+        Persistent = true;
       };
     };
   };

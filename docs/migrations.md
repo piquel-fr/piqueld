@@ -109,24 +109,31 @@ ID-based cursor and ordering. Filtered event/build queries use direct applicatio
 equality, and filtered output uses direct stream equality, so their existing
 compound indexes bound each page without scanning unrelated history.
 
+`0011_backups.sql` records the completion time of the last successful
+`piqueld backup` for status reporting. It is the first migration preceded by an
+automatic pre-migration backup.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer
-schema; reverting the binary alone is insufficient. Before upgrading, create a
-SQLite backup in a private directory, for example:
+schema; reverting the binary alone is insufficient. The daemon writes a
+pre-migration backup before applying any migration; see
+[backup and restore](backups.md#upgrades-and-rollback) to roll back with it.
+
+Binaries without `piqueld backup` need a manual SQLite backup in a private
+directory before upgrading, for example:
 
 ```sh
 sqlite3 /var/lib/piqueld/piqueld.db ".backup '/safe/location/piqueld-before-upgrade.db'"
 sqlite3 /safe/location/piqueld-before-upgrade.db 'PRAGMA integrity_check; PRAGMA user_version;'
 ```
 
-The SQLite backup command includes committed WAL data. Preserve the matching
-daemon configuration and previous binary too. To roll back, stop the upgraded
-daemon, restore the backup as `piqueld.db` in a fresh data directory, and configure
-the previous daemon to use that directory. Do not reuse WAL/SHM files from the
-upgraded database. Restore also reverts application edits and deployment history
-accepted after the backup; reconciliation observes the current Docker state
-against that restored intent.
+The SQLite backup command includes committed WAL data. Preserve `secrets.key`,
+`ingress/{data,config}`, the matching daemon configuration, and the previous
+binary too. To roll back, stop the upgraded daemon, restore the backup as
+`piqueld.db` in a fresh data directory, and configure the previous daemon to use
+that directory. Do not reuse WAL/SHM files from the upgraded database.
 
 The migration tests cover a populated schema-5 upgrade, retained event identity
-and notification activation, and restoration of the pre-upgrade snapshot.
+and notification activation, restoration of the pre-upgrade snapshot, and a
+restorable pre-migration archive.

@@ -38,6 +38,12 @@ impl Report for StatusReport<'_> {
             "daemon {} (version {}, API {}, instance {})",
             s.status, s.daemon_version, s.api_version, s.instance_id
         ))?;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+            });
+        out.label("Backup", s.backup.summary(now_ms))?;
         out.label("Transport", self.transport)
     }
 }
