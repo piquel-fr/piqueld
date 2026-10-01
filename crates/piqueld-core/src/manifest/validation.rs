@@ -174,19 +174,10 @@ impl std::error::Error for ValidationErrors {}
 pub fn parse_toml(input: &str) -> Result<ValidatedApplication, ValidationErrors> {
     let manifest =
         serde_path_to_error::deserialize(toml::Deserializer::new(input)).map_err(|error| {
-            let decoded = error.inner();
-            // Syntax messages span lines; keep each error on one line.
-            let message = decoded.message().lines().collect::<Vec<_>>().join("; ");
-            let message = match decoded.span() {
-                Some(span) => {
-                    let before = input.get(..span.start).unwrap_or(input);
-                    let line = before.matches('\n').count() + 1;
-                    let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-                    format!("{message} at line {line} column {column}")
-                }
-                None => message,
-            };
-            ValidationErrors::decode(&error.path().to_string(), message)
+            ValidationErrors::decode(
+                &error.path().to_string(),
+                crate::TomlDiagnostic::new(input, error.inner()).to_string(),
+            )
         })?;
     ApplicationManifest::validate(manifest)
 }

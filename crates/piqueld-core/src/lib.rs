@@ -55,5 +55,8 @@ pub mod edit;
 
 /// Passkey authentication and account management contracts.
 pub mod auth;
+/// Credential-safe TOML parse diagnostics.
+pub mod toml_diagnostic;
+pub use toml_diagnostic::{TomlDiagnostic, TomlLocation};
 /// Durable observability API contracts.
 pub mod observability;

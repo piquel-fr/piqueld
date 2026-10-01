@@ -225,18 +225,17 @@ impl Profiles {
     /// since source excerpts and offending values are not safe to print.
     fn parse_file(text: &str, path: &std::path::Path) -> Result<Self> {
         toml::from_str(text).map_err(|error: toml::de::Error| {
-            // Neither source excerpts nor schema error values are safe to print.
-            let prefix = text.get(..error.span().map_or(0, |span| span.start)).unwrap_or("");
-            let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
-            let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-            let reason = if error.message().starts_with("unknown field") {
+            let mut diagnostic = piqueld_client::TomlDiagnostic::new(text, &error);
+            // Schema messages can quote values, which are not safe to print.
+            diagnostic.message = if diagnostic.message.starts_with("unknown field") {
                 "unknown field (expected profiles containing socket, url, or timeout)"
-            } else if error.message().starts_with("invalid type") {
+            } else if diagnostic.message.starts_with("invalid type") {
                 "invalid field type (profiles must be tables; socket, url, and timeout must be strings)"
             } else {
                 "invalid TOML or profile schema"
-            };
-            Self::invalid(format!("Invalid profiles file {}: {reason} at line {line}, column {column}", path.display()))
+            }
+            .into();
+            Self::invalid(format!("Invalid profiles file {}: {diagnostic}", path.display()))
                 .configuration(format!("profiles file {}", path.display()))
         })
     }

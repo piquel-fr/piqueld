@@ -98,7 +98,10 @@ fn parse_failures_keep_the_diagnostic_but_not_the_source_line() {
         diagnostic.message.contains("unknown field") && diagnostic.message.contains("unknown_key"),
         "diagnostic should name the offending field: {diagnostic}"
     );
-    assert_eq!((diagnostic.line, diagnostic.column), (7, 1));
+    assert_eq!(
+        diagnostic.location,
+        Some(piqueld_core::TomlLocation { line: 7, column: 1 })
+    );
     let rendered = format!("{:?}", anyhow::Error::new(error));
     assert!(
         !rendered.contains("secret-token"),
