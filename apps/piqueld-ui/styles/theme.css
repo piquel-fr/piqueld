@@ -1,28 +1,43 @@
-/* Always-dark palette and shared element defaults. */
+/* Design tokens and element defaults. The dashboard ships one dark palette. */
 :root {
     color-scheme: dark;
-    --page: #0c0c0e;
-    --surface: #121214;
-    --surface-muted: #1a1a1e;
-    --ink: #ededf0;
-    --muted: #99999f;
-    --line: #28282e;
-    --accent: #b9a3ef;
-    --accent-strong: #7051b8;
-    --focus: #b9a3ef;
-    --ok: #8bcea7;
-    --ok-bg: #172820;
-    --warn: #dfbf7b;
-    --warn-bg: #302819;
-    --bad: #ef9c9c;
-    --bad-bg: #321d22;
-    --pending: #b0a9c1;
-    --pending-bg: #25222d;
-    --shadow-panel: none;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --page: #0b0b0e;
+    --surface: #121216;
+    --surface-muted: #18181d;
+    --surface-hover: #1e1e25;
+    --ink: #ececf1;
+    --ink-soft: #b6b6bf;
+    --muted: #85858f;
+    --line: #24242b;
+    --line-strong: #33333c;
+    --accent: #a78bfa;
+    --accent-strong: #7c5cd6;
+    --accent-bg: #211b34;
+    --focus: #a78bfa;
+    --ok: #7fd1a1;
+    --ok-bg: #13261c;
+    --ok-line: #24513a;
+    --warn: #e3c17a;
+    --warn-bg: #2b2415;
+    --warn-line: #5a4a20;
+    --bad: #f09a9a;
+    --bad-bg: #321c20;
+    --bad-line: #6a3038;
+    --pending: #b1a9c4;
+    --pending-bg: #23212c;
+    --pending-line: #3d3952;
+    --info: #8ec5f5;
+    --info-bg: #15222f;
+    --info-line: #24425f;
+    --radius: 8px;
+    --radius-sm: 6px;
+    --font-mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --shadow-panel: 0 18px 60px rgb(0 0 0 / 45%);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     font-size: 14px;
     line-height: 1.5;
     font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
 }
 
 @layer base {
@@ -40,37 +55,60 @@
         background: var(--page);
     }
 
-    button,
-    input,
-    select,
-    textarea {
-        font: inherit;
+    h1,
+    h2,
+    h3,
+    h4,
+    p {
+        margin: 0;
     }
 
-    button {
-        cursor: pointer;
-        border: 1px solid var(--line);
-        border-radius: .4rem;
-        background: var(--surface);
-        color: var(--ink);
-        padding: .5rem .85rem;
-        font-size: .85rem;
+    h1 {
+        font-size: 22px;
+        font-weight: 650;
+        letter-spacing: -.02em;
+    }
+
+    h2 {
+        font-size: 16px;
         font-weight: 600;
-        transition: background .12s,border-color .12s;
+    }
+
+    h3,
+    h4 {
+        font-size: 14px;
+        font-weight: 600;
     }
 
     a {
         color: var(--accent);
     }
 
-    code {
-        font-size: .9em;
+    button,
+    input,
+    select,
+    textarea {
+        font: inherit;
+        color: inherit;
+    }
+
+    code,
+    pre {
+        font-family: var(--font-mono);
+        font-size: .92em;
         overflow-wrap: anywhere;
     }
 
+    code {
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: var(--surface-muted);
+        color: var(--ink-soft);
+    }
+
     :focus-visible {
-        outline: 3px solid var(--focus);
-        outline-offset: 3px;
+        outline: 2px solid var(--focus);
+        outline-offset: 2px;
     }
 
     fieldset {
@@ -80,13 +118,15 @@
         min-width: 0;
     }
 
-    button:hover:not(:disabled) {
-        border-color: var(--accent);
+    ul,
+    ol {
+        margin: 0;
+        padding: 0;
+        list-style: none;
     }
 
-    button:disabled {
-        cursor: not-allowed;
-        opacity: .5;
+    dl {
+        margin: 0;
     }
 
     [hidden] {

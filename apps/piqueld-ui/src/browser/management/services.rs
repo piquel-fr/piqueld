@@ -1,59 +1,101 @@
 //! Service directory and individual service configuration pages.
+use super::super::ui::{Icon, Tabs, Tone, empty, health_badge, icon, notice};
 use super::{EditorFeedback, editor, settings::ServiceGroup};
 use crate::editor::Section;
+use crate::state::ApplicationHealth;
 use leptos::{
-    Callback, CollectView, IntoView, Show, SignalGet, SignalSet, SignalWith, SignalWithUntracked,
-    component, create_rw_signal, view, window,
+    Callback, CollectView, IntoView, Show, SignalGet, SignalWith, component, create_rw_signal,
+    view, window,
 };
 use leptos_router::{A, NavigateOptions, use_navigate};
 use piqueld_client::{Source, edit::ApplicationEdit};
+
+const SERVICE_TABS: [&str; 7] = [
+    Section::General.title(),
+    Section::Environment.title(),
+    Section::Process.title(),
+    Section::Storage.title(),
+    Section::Health.title(),
+    Section::Resources.title(),
+    "Logs",
+];
 
 /// Saved services of the application, each linking to its service editor page.
 #[component]
 pub(super) fn ServiceList() -> impl IntoView {
     let context = editor();
-    view! {
-        <div class="directory" aria-label="Services">
-            {move || {
-                context
-                    .saved
-                    .with(|app| {
-                        if app.application.to_manifest().spec.services.is_empty() {
-                            return view! { <p class="empty-state">"No services yet."</p> }
-                                .into_view();
-                        }
-                        app.application.to_manifest()
-                            .spec
-                            .services
-                            .clone()
-                            .into_iter()
-                            .map(|service| {
-                                let source = match &service.source {
-                                    Source::Image { image } => image.clone(),
-                                    Source::Git { repository, .. } => repository.url.clone(),
-                                };
-                                view! {
-                                    <A
-                                        class="application-row service-row"
-                                        href={format!(
-                                            "/dashboard/applications/{}/services/{}",
-                                            app.application.id(),
-                                            service.name,
-                                        )}
-                                    >
-                                        <strong>{service.name.clone()}</strong>
-                                        <span class="service-source">{source}</span>
-                                        <span class="tag">
-                                            {format!("{} replicas", service.replicas)}
-                                        </span>
-                                        <span class="row-arrow" aria-hidden="true">
-                                            "→"
-                                        </span>
-                                    </A>
-                                }
-                            })
-                            .collect_view()
+    let signals = context.dashboard.with_value(|d| d.signals);
+    // Observed runtime health for one saved service, when the detail has loaded.
+    let observed = move |name: &str| {
+        signals.detail.with(|detail| {
+            detail.as_ref().and_then(|detail| {
+                detail
+                    .observed
+                    .services
+                    .iter()
+                    .find(|service| service.name == name)
+                    .map(|service| {
+                        (
+                            ApplicationHealth::from_convergence(&service.convergence),
+                            service.healthy_replicas,
+                            service.desired_replicas,
+                        )
                     })
+            })
+        })
+    };
+    view! {
+        <div class="list" aria-label="Services">
+            {move || {
+                let manifest = context.manifest();
+                if manifest.spec.services.is_empty() {
+                    return empty(
+                        "No services yet. Add one to describe what this application runs.",
+                    );
+                }
+                let id = context.id();
+                manifest
+                    .spec
+                    .services
+                    .into_iter()
+                    .map(|service| {
+                        let source = match &service.source {
+                            Source::Image { image } => image.clone(),
+                            Source::Git { repository, .. } => format!("Git · {}", repository.url),
+                        };
+                        let runtime = observed(&service.name);
+                        view! {
+                            <A
+                                class="list-row"
+                                href={format!(
+                                    "/dashboard/applications/{id}/services/{}",
+                                    service.name,
+                                )}
+                            >
+                                <span class="app-icon" aria-hidden="true">
+                                    {icon(Icon::Package)}
+                                </span>
+                                <span class="title">
+                                    {service.name.clone()}
+                                    <small title={source.clone()}>{source}</small>
+                                </span>
+                                <span class="meta">
+                                    {runtime
+                                        .map_or_else(
+                                            || format!("{} replicas", service.replicas),
+                                            |(_, healthy, desired)| {
+                                                format!("{healthy} / {desired} healthy")
+                                            },
+                                        )}
+                                </span>
+                                {runtime.map(|(health, ..)| health_badge(health))}
+                                <span class="chevron" aria-hidden="true">
+                                    {icon(Icon::ChevronRight)}
+                                </span>
+                            </A>
+                        }
+                    })
+                    .collect_view()
             }}
         </div>
     }
@@ -65,22 +107,29 @@ pub(super) fn ServiceList() -> impl IntoView {
 #[component]
 pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let context = editor();
-    if !context.saved.with_untracked(|app| {
-        app.application
-            .to_manifest()
-            .spec
-            .services
-            .iter()
-            .any(|service| service.name == name)
-    }) {
-        return view! { <p class="empty-state">"Service not found."</p> }.into_view();
+    let app_href = format!("/dashboard/applications/{}?tab=services", context.id());
+    if !context
+        .manifest()
+        .spec
+        .services
+        .iter()
+        .any(|service| service.name == name)
+    {
+        return view! {
+            <div class="stack-sm">
+                {notice(
+                    Tone::Bad,
+                    format!("Service {name} is not part of the saved configuration."),
+                )} <div class="btn-group">
+                    <A class="btn" href={app_href}>
+                        {icon(Icon::ArrowLeft)}
+                        "Back to services"
+                    </A>
+                </div>
+            </div>
+        }
+        .into_view();
     }
-    let app_href = context.saved.with_untracked(|app| {
-        format!(
-            "/dashboard/applications/{}?tab=services",
-            app.application.id()
-        )
-    });
     let navigate = use_navigate();
     let remove_name = name.clone();
     let return_href = app_href.clone();
@@ -93,76 +142,56 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
             Callback::new(move |_| navigate(&href, NavigateOptions::default())),
         );
     };
-    let managed = move || {
-        context
-            .saved
-            .with(|app| app.application.to_manifest().spec.manifest.is_some())
-    };
-    let selected = create_rw_signal(Some(Section::General));
+    let selected = create_rw_signal(Section::General.title());
     let log_service = name.clone();
     let groups = Section::ALL
         .into_iter()
         .map(|section| {
             view! {
-                <div hidden={move || selected.get() != Some(section)}>
+                <div hidden={move || selected.get() != section.title()}>
                     <ServiceGroup name={name.clone()} section={section} />
                 </div>
             }
         })
         .collect_view();
     view! {
-        <header class="application-heading">
-            <h1 class="service-heading">
-                <A href={app_href}>
-                    {move || context.saved.with(|app| app.application.to_manifest().metadata.name.clone())}
-                </A>
-                <span class="path-separator">"/"</span>
-                {name}
-            </h1>
-            <button
-                class="danger"
-                disabled={move || { context.action_blocked() || managed() }}
-                on:click={remove}
-            >
-                "Remove service"
-            </button>
+        <nav class="breadcrumb" aria-label="Breadcrumb">
+            <A href="/dashboard/applications">"Applications"</A>
+            {icon(Icon::ChevronRight)}
+            <A href={app_href}>{move || context.name()}</A>
+            {icon(Icon::ChevronRight)}
+            <span>{log_service.clone()}</span>
+        </nav>
+        <header class="detail-head">
+            <div class="detail-title">
+                <h1>{name}</h1>
+            </div>
+            <div class="page-actions">
+                <button
+                    type="button"
+                    class="btn btn-danger"
+                    disabled={move || context.action_blocked() || context.managed()}
+                    on:click={remove}
+                >
+                    "Remove service"
+                </button>
+            </div>
         </header>
         <EditorFeedback />
-        <nav class="tabs" aria-label="Service sections">
-            {Section::ALL
-                .into_iter()
-                .map(|section| {
-                    view! {
-                        <button
-                            class:active={move || selected.get() == Some(section)}
-                            aria-current={move || {
-                                if selected.get() == Some(section) { "page" } else { "false" }
-                            }}
-                            on:click={move |_| selected.set(Some(section))}
-                        >
-                            {section.title()}
-                        </button>
-                    }
-                })
-                .collect_view()}
-            <button class:active=move ||selected.get().is_none()
-                aria-current=move ||if selected.get().is_none(){"page"}else{"false"}
-                on:click=move |_|selected.set(None)>"Logs"</button>
-        </nav>
-        <Show when=move ||selected.get().is_none()>
-            <super::logs::ApplicationLogs fixed_service=log_service.clone()/>
-        </Show>
-        {move || {
-            (managed() && selected.get().is_some())
-                .then(|| {
-                    view! {
-                        <p class="help">
-                            "Managed in Git. Edit this service in the repository manifest."
-                        </p>
-                    }
-                })
-        }}
-        {groups}
+        <Tabs label="Service sections" options={&SERVICE_TABS} selected={selected} />
+        <div class="stack">
+            {move || {
+                (context.managed() && selected.get() != "Logs")
+                    .then(|| {
+                        notice(
+                            Tone::Info,
+                            "This service is managed in Git. Edit it in the repository manifest.",
+                        )
+                    })
+            }} <Show when={move || selected.get() == "Logs"}>
+                <super::logs::ApplicationLogs fixed_service={log_service.clone()} />
+            </Show> {groups}
+        </div>
     }
     .into_view()
 }

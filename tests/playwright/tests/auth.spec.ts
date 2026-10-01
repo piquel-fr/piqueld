@@ -42,9 +42,9 @@ test('rejects assertion replay, substituted user handles, and downgraded user ve
 test('invitation signup permits cross-account profile editing and passkey enrollment', async ({ page, account, passkeys }) => {
   await page.goto('/dashboard/accounts');
   await page.getByRole('button', { name: 'Create invitation', exact: true }).click();
-  const secret = page.locator('.auth-secret');
+  const secret = page.locator('.secret-box');
   await expect(secret).toContainText('#invite=');
-  const link = (await secret.innerText()).split('\n').at(-1)!;
+  const link = (await secret.innerText()).trim();
   const bob = await register(page, link, 'bob');
   expect((await api(page, 'register/start', {
     invitation: link.split('#invite=')[1], user_id: null,
@@ -62,7 +62,7 @@ test('invitation signup permits cross-account profile editing and passkey enroll
   await passkeys.reset();
   await updated.getByLabel('New passkey name', { exact: true }).fill('Enrolled by Bob');
   await updated.getByRole('button', { name: 'Add passkey', exact: true }).click();
-  await expect(page.locator('.auth-secret')).toHaveText('Passkey added');
+  await expect(page.locator('.notice', { hasText: 'Passkey added.' })).toBeVisible();
   expect((await auth<User>(page, 'me')).id).toBe(bob.id);
 });
 

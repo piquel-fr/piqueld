@@ -1,40 +1,103 @@
-//! Dashboard navigation, application directory, and recent deployments.
-use super::{connection_label, dashboard_context, health_class, management, row_health};
+//! Sidebar navigation, overview metrics, application directory, and recent deployments.
+use super::ui::{
+    Icon, PageHeader, Tone, badge, empty, health_badge, icon, metric, notice, operation_badge, when,
+};
+use super::{ApplicationRow, connection_label, dashboard_context, management, row_health};
 use crate::state::{ApplicationHealth, ConnectionState, DataState};
 use leptos::{CollectView, IntoView, SignalGet, View, component, view};
 use leptos_router::A;
 use piqueld_client::system::DependencyStatus;
 use std::rc::Rc;
 
-/// Sidebar with the brand link, dashboard navigation and sign-out button.
-pub(super) fn dashboard_header() -> View {
+#[component]
+pub(super) fn Sidebar() -> impl IntoView {
+    let signals = dashboard_context().signals;
+    let user = super::auth::auth_user();
+    let display_name = move || {
+        user.get().map(|user| {
+            if user.display_name.is_empty() {
+                user.username
+            } else {
+                user.display_name
+            }
+        })
+    };
+    let initial = move || {
+        user.get()
+            .and_then(|user| user.username.chars().next())
+            .map_or_else(|| "?".to_owned(), |first| first.to_string())
+    };
     view! {
         <aside class="sidebar">
             <A class="brand" href="/dashboard/">
-                <span class="brand-mark">"p"</span>
+                <span class="brand-mark" aria-hidden="true">
+                    "p"
+                </span>
                 "piqueld"
             </A>
-            <nav aria-label="Dashboard navigation">
-                <A href="/dashboard/applications" class="nav-link" active_class="active">
-                    <span aria-hidden="true">"▤"</span>
-                    "Applications"
-                </A>
-                <A href="/dashboard/settings" class="nav-link" active_class="active">
-                    <span aria-hidden="true">"⚙"</span>
-                    "Host settings"
-                </A>
-                <A href="/dashboard/builds" class="nav-link" active_class="active">"Builds"</A>
-                <A href="/dashboard/events" class="nav-link" active_class="active">"Events"</A>
-                <A href="/dashboard/errors" class="nav-link" active_class="active">"Errors"</A>
-                <A href="/dashboard/system" class="nav-link" active_class="active">"Daemon status"</A>
-                <A href="/dashboard/analytics" class="nav-link" active_class="active">"Analytics"</A>
-                <A href="/dashboard/notifications" class="nav-link" active_class="active">"Notifications"</A>
-                <A href="/dashboard/accounts" class="nav-link" active_class="active">"Accounts"</A>
-                <super::auth::Logout />
+            <nav class="nav" aria-label="Dashboard navigation">
+                <div class="nav-group">
+                    {nav_link("/dashboard/", Icon::Home, "Overview", true)}
+                    {nav_link("/dashboard/applications", Icon::Apps, "Applications", false)}
+                    {nav_link("/dashboard/builds", Icon::Builds, "Builds", false)}
+                </div>
+                <div class="nav-group">
+                    <span class="nav-group-label">"Observe"</span>
+                    {nav_link("/dashboard/events", Icon::Events, "Events", false)}
+                    {nav_link("/dashboard/errors", Icon::Errors, "Errors", false)}
+                    {nav_link("/dashboard/analytics", Icon::Analytics, "Analytics", false)}
+                    {nav_link(
+                        "/dashboard/notifications",
+                        Icon::Notifications,
+                        "Notifications",
+                        false,
+                    )}
+                </div>
+                <div class="nav-group">
+                    <span class="nav-group-label">"System"</span>
+                    {nav_link("/dashboard/system", Icon::Daemon, "Daemon status", false)}
+                    {nav_link("/dashboard/settings", Icon::Settings, "Host settings", false)}
+                    {nav_link("/dashboard/accounts", Icon::Accounts, "Accounts", false)}
+                </div>
             </nav>
+            <div class="sidebar-footer">
+                <span class="connection">
+                    <span
+                        class="dot"
+                        data-tone={move || connection_tone(signals.connection.get())}
+                    ></span>
+                    {move || connection_label(signals.connection.get())}
+                </span>
+                <div class="user-row">
+                    <span class="avatar" aria-hidden="true">
+                        {initial}
+                    </span>
+                    <span class="user-name" title={display_name}>
+                        {display_name}
+                    </span>
+                    <super::auth::Logout compact=true />
+                </div>
+            </div>
         </aside>
     }
+}
+
+fn nav_link(href: &'static str, glyph: Icon, label: &'static str, exact: bool) -> View {
+    view! {
+        <A href={href} class="nav-link" active_class="active" exact={exact}>
+            {icon(glyph)}
+            {label}
+        </A>
+    }
     .into_view()
+}
+
+const fn connection_tone(state: ConnectionState) -> &'static str {
+    match state {
+        ConnectionState::Loading => "pending",
+        ConnectionState::Reachable => "ok",
+        ConnectionState::Failed | ConnectionState::Unreachable => "bad",
+    }
 }
 
 /// Overview page: application counts by health, system readiness and the
@@ -42,50 +105,60 @@ pub(super) fn dashboard_header() -> View {
 #[component]
 pub(super) fn OverviewPage() -> impl IntoView {
     let signals = dashboard_context().signals;
+    let count = move |predicate: fn(ApplicationHealth) -> bool| {
+        signals
+            .applications
+            .get()
+            .iter()
+            .filter(|row| predicate(row_health(row)))
+            .count()
+    };
     view! {
-        <header class="page-heading">
-            <h1>"Overview"</h1>
+        <PageHeader
+            title="Overview"
+            description="Application health, deployment readiness, and the latest activity on this host."
+        >
             <management::CreateApplication />
-        </header>
-        <div class="metrics">
-            <A href="/dashboard/applications" class="metric">
-                <span>"Applications"</span>
-                <strong>{move || signals.applications.get().len()}</strong>
-            </A>
-            <div class="metric">
-                <span>"Running"</span>
-                <strong>
-                    {move || {
+        </PageHeader>
+        <div class="stack">
+            <div class="metrics">
+                <A href="/dashboard/applications" class="metric">
+                    <span>"Applications"</span>
+                    <strong>{move || signals.applications.get().len()}</strong>
+                </A>
+                {metric(
+                    "Healthy",
+                    move || count(|health| health == ApplicationHealth::Converged),
+                    None::<&str>,
+                )}
+                {metric(
+                    "Needs attention",
+                    move || {
+                        count(|health| {
+                            matches!(
+                                health,
+                                ApplicationHealth::Failed | ApplicationHealth::Degraded
+                            )
+                        })
+                    },
+                    None::<&str>,
+                )}
+                {metric(
+                    "Daemon",
+                    move || {
                         signals
-                            .applications
+                            .system
                             .get()
-                            .iter()
-                            .filter(|row| row_health(row) == ApplicationHealth::Converged)
-                            .count()
-                    }}
-                </strong>
+                            .map_or_else(|| "—".into(), |system| system.daemon_version)
+                    },
+                    Some(move || {
+                        signals.system.get().map(|system| format!("API {}", system.api_version))
+                    }),
+                )}
             </div>
-            <div class="metric">
-                <span>"Needs attention"</span>
-                <strong>
-                    {move || {
-                        signals
-                            .applications
-                            .get()
-                            .iter()
-                            .filter(|row| {
-                                matches!(
-                                    row_health(row),
-                                    ApplicationHealth::Failed | ApplicationHealth::Degraded
-                                )
-                            })
-                            .count()
-                    }}
-                </strong>
-            </div>
+            <ReadinessPanel />
+            <RecentDeployments />
         </div>
-        <ReadinessPanel />
-        <RecentDeployments />
     }
 }
 
@@ -98,37 +171,51 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
     let refresh = Rc::clone(&context.refresh);
 
     view! {
-        <section class="readiness-panel" aria-labelledby="system-readiness-heading">
-            <header class="section-heading readiness-heading">
+        <section class="card" aria-labelledby="system-readiness-heading">
+            <header>
                 <div>
-                    <h2 id="system-readiness-heading">"System status"</h2>
+                    <h3 id="system-readiness-heading">"System status"</h3>
                     <p>"Daemon connectivity and the services required to deploy applications."</p>
                 </div>
                 <button
+                    type="button"
+                    class="btn btn-sm"
                     disabled={move || signals.refreshing.get()}
                     on:click={move |_| refresh()}
                 >
+                    {icon(Icon::Refresh)}
                     {move || if signals.refreshing.get() { "Refreshing…" } else { "Refresh" }}
                 </button>
             </header>
-            <div aria-live="polite">
+            <div class="stack-sm" aria-live="polite">
                 {move || {
                     signals
                         .readiness_error
                         .get()
-                        .map(|error| view! { <p class="readiness-error">"Readiness check failed: " {error}</p> })
+                        .map(|error| notice(Tone::Bad, format!("Readiness check failed: {error}")))
                 }}
-                <div class="readiness-dependencies">
+                <div class="status-grid">
                     {move || connection_readiness(signals.connection.get())}
                     {move || {
-                        signals.readiness.get().map(|status| {
-                            view! {
-                                {dependency_readiness("Database", status.database)}
-                                {dependency_readiness("Docker Engine", status.docker)}
-                                {dependency_readiness("Swarm manager", status.swarm)}
-                                {readiness_card("HTTP ingress", if status.ingress.healthy {"ready"} else {"failed"}, if !status.ingress.healthy {"Unhealthy"} else if !status.ingress.enabled {"Disabled"} else {"Ready"}, &status.ingress.message)}
-                            }
-                        })
+                        signals
+                            .readiness
+                            .get()
+                            .map(|status| {
+                                let ingress = &status.ingress;
+                                let (tone, label) = if !ingress.healthy {
+                                    (Tone::Bad, "Unhealthy")
+                                } else if !ingress.enabled {
+                                    (Tone::Neutral, "Disabled")
+                                } else {
+                                    (Tone::Ok, "Ready")
+                                };
+                                view! {
+                                    {dependency_readiness("Database", status.database)}
+                                    {dependency_readiness("Docker Engine", status.docker)}
+                                    {dependency_readiness("Swarm manager", status.swarm)}
+                                    {status_card("HTTPS ingress", tone, label, &ingress.message)}
+                                }
+                            })
                     }}
                 </div>
             </div>
@@ -138,44 +225,30 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
 
 /// Readiness card for the browser's connection to the daemon itself.
 fn connection_readiness(state: ConnectionState) -> View {
-    let (visual_state, message) = match state {
-        ConnectionState::Loading => ("pending", "Waiting for the daemon"),
-        ConnectionState::Reachable => ("ready", "The API is responding"),
-        ConnectionState::Failed => ("failed", "The daemon returned an error"),
-        ConnectionState::Unreachable => ("failed", "The dashboard cannot connect to piqueld"),
+    let (tone, message) = match state {
+        ConnectionState::Loading => (Tone::Pending, "Waiting for the daemon"),
+        ConnectionState::Reachable => (Tone::Ok, "The API is responding"),
+        ConnectionState::Failed => (Tone::Bad, "The daemon returned an error"),
+        ConnectionState::Unreachable => (Tone::Bad, "The dashboard cannot connect to piqueld"),
     };
-    readiness_card(
-        "piqueld daemon",
-        visual_state,
-        connection_label(state),
-        message,
-    )
+    status_card("piqueld daemon", tone, connection_label(state), message)
 }
 
 /// Readiness card for one daemon dependency.
 fn dependency_readiness(name: &'static str, status: DependencyStatus) -> View {
-    let (state, label, message) = match status {
-        DependencyStatus::Ready => ("ready", "Ready", "Available".to_owned()),
-        DependencyStatus::Failed { message } => ("failed", "Failed", message),
+    let (tone, label, message) = match status {
+        DependencyStatus::Ready => (Tone::Ok, "Ready", "Available".to_owned()),
+        DependencyStatus::Failed { message } => (Tone::Bad, "Failed", message),
     };
-    readiness_card(name, state, label, &message)
+    status_card(name, tone, label, &message)
 }
 
-/// One readiness card; `state` (`ready`, `pending`, `failed`) drives its `data-state` styling.
-fn readiness_card(
-    name: &'static str,
-    state: &'static str,
-    label: &'static str,
-    message: &str,
-) -> View {
+fn status_card(name: &'static str, tone: Tone, label: &'static str, message: &str) -> View {
     view! {
-        <article class="readiness-dependency" data-state={state}>
+        <article class="status-card" data-tone={tone.attr()}>
             <header>
                 <strong>{name}</strong>
-                <span class="readiness-state">
-                    <span class="readiness-dot" aria-hidden="true"></span>
-                    {label}
-                </span>
+                {badge(tone, label)}
             </header>
             <p>{message.to_owned()}</p>
         </article>
@@ -189,164 +262,179 @@ fn readiness_card(
 pub(super) fn ApplicationsPage() -> impl IntoView {
     let signals = dashboard_context().signals;
     view! {
-        <header class="page-heading">
-            <h1>"Applications"</h1>
+        <PageHeader
+            title="Applications"
+            description="Saved configuration, runtime health, and deployment history for every application."
+        >
             <management::CreateApplication />
-        </header>
-        <section class="directory" aria-label="Applications">
-            {move || {
-                signals
-                    .applications
-                    .get()
-                    .into_iter()
-                    .map(|row| {
-                        let health = row_health(&row);
-                        view! {
-                            <A
-                                class="application-row"
-                                href={format!("/dashboard/applications/{}", row.application.id)}
-                            >
-                                <span class="app-icon" aria-hidden="true">
-                                    "▤"
-                                </span>
-                                <strong>{row.application.name}</strong>
-                                <span class={health_class(health)}>{health.label()}</span>
-                                <span class="row-arrow" aria-hidden="true">
-                                    "→"
-                                </span>
-                            </A>
-                        }
-                    })
-                    .collect_view()
-            }}
-            {move || match signals.data_state.get() {
-                DataState::Loading => {
-                    view! {
-                        <p class="empty-state" role="status">
-                            "Loading applications…"
-                        </p>
-                    }
-                        .into_view()
-                }
-                DataState::Empty => {
-                    view! { <p class="empty-state">"No applications yet."</p> }.into_view()
-                }
-                _ => ().into_view(),
-            }}
-        </section>
-        <RecentDeployments />
+        </PageHeader>
+        <div class="stack">
+            <section class="list" aria-label="Applications">
+                {move || signals.applications.get().into_iter().map(application_row).collect_view()}
+                {move || match signals.data_state.get() {
+                    DataState::Loading => empty("Loading applications…"),
+                    DataState::Empty => empty("No applications yet. Create one to get started."),
+                    _ => ().into_view(),
+                }}
+            </section>
+            <RecentDeployments />
+        </div>
     }
 }
 
-/// The three newest deployments across all loaded applications, plus
-/// per-application deployment errors and an incomplete-list warning.
-/// Three snapshots per application are sufficient to find the three newest overall.
+fn application_row(row: ApplicationRow) -> View {
+    let health = row_health(&row);
+    let subtitle = if row.application.delete_intent {
+        "Deletion requested".to_owned()
+    } else {
+        row.status
+            .as_ref()
+            .and_then(|status| status.message.clone())
+            .unwrap_or_else(|| format!("Generation {}", row.application.generation))
+    };
+    let latest = row
+        .deployments
+        .iter()
+        .max_by_key(|deployment| deployment.operation.created_at_ms)
+        .map(|deployment| deployment.operation.created_at_ms);
+    view! {
+        <A class="list-row" href={format!("/dashboard/applications/{}", row.application.id)}>
+            <span class="app-icon" aria-hidden="true">
+                {icon(Icon::Package)}
+            </span>
+            <span class="title">{row.application.name.clone()} <small>{subtitle}</small></span>
+            <span class="meta">
+                {latest
+                    .map_or_else(
+                        || "Never deployed".into_view(),
+                        |ms| {
+                            view! {
+                                "Deployed "
+                                {when(ms)}
+                            }
+                                .into_view()
+                        },
+                    )}
+            </span>
+            {health_badge(health)}
+            <span class="chevron" aria-hidden="true">
+                {icon(Icon::ChevronRight)}
+            </span>
+        </A>
+    }
+    .into_view()
+}
+
+/// The newest deployments across applications; each application contributes its latest page.
 #[component]
 fn RecentDeployments() -> impl IntoView {
     let signals = dashboard_context().signals;
     view! {
-        <section class="recent-deployments">
-            <header class="section-heading">
-                <h2>"Recent deployments"</h2>
-            </header>
-            {move || {
-                signals
-                    .pagination_incomplete
-                    .get()
-                    .then(|| {
-                        view! {
-                            <p class="conflict-notice">
-                                "Application list is incomplete; some deployments may be missing."
-                            </p>
-                        }
-                    })
-            }}
-            {move || {
-                signals
-                    .applications
-                    .get()
-                    .iter()
-                    .filter_map(|row| {
-                        row.deployment_error
-                            .as_ref()
-                            .map(|error| {
-                                view! {
-                                    <p class="form-error" role="alert">
-                                        {format!("{}: {error}", row.application.name)}
-                                    </p>
-                                }
-                            })
-                    })
-                    .collect_view()
-            }}
-            <div class="deployment-table">
-                <div class="deployment-row table-heading">
-                    <span>"Application"</span>
-                    <span>"Status"</span>
-                    <span>"Revision"</span>
-                    <span>"Created"</span>
-                </div>
+        <section aria-labelledby="recent-deployments-heading">
+            <div class="section-header">
+                <h2 id="recent-deployments-heading">"Recent deployments"</h2>
+            </div>
+            <div class="stack-sm">
                 {move || {
-                    let mut deployments = signals
+                    signals
+                        .pagination_incomplete
+                        .get()
+                        .then(|| {
+                            notice(
+                                Tone::Warn,
+                                "Application list is incomplete; some deployments may be missing.",
+                            )
+                        })
+                }}
+                {move || {
+                    signals
                         .applications
                         .get()
-                        .into_iter()
-                        .flat_map(|row| {
-                            row.deployments
-                                .into_iter()
-                                .map(move |deployment| (row.application.name.clone(), deployment))
-                        })
-                        .collect::<Vec<_>>();
-                    deployments
-                        .sort_by(|a, b| {
-                            b.1
-                                .operation
-                                .created_at_ms
-                                .cmp(&a.1.operation.created_at_ms)
-                                .then_with(|| b.1.operation.id.cmp(&a.1.operation.id))
-                        });
-                    if deployments.is_empty() {
-                        return view! {
-                            <p class="empty-state">
-                                {if signals.data_state.get() == DataState::Loading {
-                                    "Loading deployments…"
-                                } else {
-                                    "No recent deployments."
-                                }}
-                            </p>
-                        }
-                            .into_view();
-                    }
-                    deployments
-                        .into_iter()
-                        .take(3)
-                        .map(|(name, deployment)| {
-                            view! { <RecentDeployment name={name} deployment={deployment} /> }
+                        .iter()
+                        .filter_map(|row| {
+                            row.deployment_error
+                                .as_ref()
+                                .map(|error| {
+                                    notice(Tone::Bad, format!("{}: {error}", row.application.name))
+                                })
                         })
                         .collect_view()
                 }}
+                <div class="table-wrap">
+                    {move || {
+                        let mut deployments = signals
+                            .applications
+                            .get()
+                            .into_iter()
+                            .flat_map(|row| {
+                                row.deployments
+                                    .into_iter()
+                                    .map(move |deployment| (
+                                        row.application.name.clone(),
+                                        deployment,
+                                    ))
+                            })
+                            .collect::<Vec<_>>();
+                        deployments
+                            .sort_by(|a, b| {
+                                b.1
+                                    .operation
+                                    .created_at_ms
+                                    .cmp(&a.1.operation.created_at_ms)
+                                    .then_with(|| b.1.operation.id.cmp(&a.1.operation.id))
+                            });
+                        if deployments.is_empty() {
+                            return empty(
+                                if signals.data_state.get() == DataState::Loading {
+                                    "Loading deployments…"
+                                } else {
+                                    "No deployments yet."
+                                },
+                            );
+                        }
+                        view! {
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>"Application"</th>
+                                        <th>"Status"</th>
+                                        <th class="num">"Revision"</th>
+                                        <th>"Phase"</th>
+                                        <th>"Started"</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {deployments
+                                        .into_iter()
+                                        .take(5)
+                                        .map(|(name, deployment)| {
+                                            let op = deployment.operation;
+                                            view! {
+                                                <tr>
+                                                    <td>
+                                                        <A href={format!(
+                                                            "/dashboard/applications/{}?deployment={}",
+                                                            op.application_id,
+                                                            op.id,
+                                                        )}>{name}</A>
+                                                    </td>
+                                                    <td>{operation_badge(op.state)}</td>
+                                                    <td class="num">{format!("#{}", op.generation)}</td>
+                                                    <td class="muted">
+                                                        {op.phase.unwrap_or_else(|| "—".into())}
+                                                    </td>
+                                                    <td class="muted">{when(op.created_at_ms)}</td>
+                                                </tr>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </tbody>
+                            </table>
+                        }
+                            .into_view()
+                    }}
+                </div>
             </div>
         </section>
-    }
-}
-
-/// Table row linking to the deployment on its application page.
-#[component]
-fn RecentDeployment(name: String, deployment: piqueld_client::DeploymentView) -> impl IntoView {
-    let op = deployment.operation;
-    view! {
-        <A
-            class="deployment-row"
-            href={format!("/dashboard/applications/{}?deployment={}", op.application_id, op.id)}
-        >
-            <strong>{name}</strong>
-            <span>
-                <span class="deployment-state" data-state={op.state.as_str()}>
-                    {op.state.as_str()}
-                </span>
-            </span>
-            <span>{format!("#{}", op.generation)}</span>
-            <span>{management::timestamp(op.created_at_ms)}</span>
-        </A>
     }
 }

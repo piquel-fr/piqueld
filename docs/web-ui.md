@@ -3,35 +3,38 @@
 The Leptos dashboard manages application configuration through forms. Create an
 empty application in a modal, add services in a modal and declare named volumes, and edit images, replicas,
 environment variables, commands, arguments, mounts, health checks, and resource
-limits. Each settings group has its own **Save Changes** button. Saving updates
+limits. Each settings group has its own **Save changes** button. Saving updates
 the database without changing running containers.
 
-**Preview** shows the planned changes. **Deploy** captures the saved configuration
+**Preview** opens a dialog with the planned changes and actions. **Deploy** captures the saved configuration
 in a persisted deployment and applies it. Both buttons require all local edits
 to be saved or discarded. Every deployment supersedes pending work and
 refreshes image resolution, including when configuration has not changed.
 Completed deployments retain their terminal state in history.
 Retries use the captured deployment, not subsequent configuration edits.
 
-The piqueld logo links to the home page. The sidebar links to Applications,
-Builds, and Host settings. The home page and
-Applications show the three most recent deployments across applications; each
-row opens that deployment in its application history. Applications also has a
-compact, clickable directory.
+The piqueld logo links to the home page. The sidebar groups Overview,
+Applications, and Builds; the Observe section (Events, Errors, Analytics,
+Notifications); and the System section (Daemon status, Host settings, Accounts).
+Its footer shows daemon connectivity and the signed-in account with a sign-out
+button. The home page and Applications show the five most recent deployments
+across applications; each row opens that deployment in its application history.
+Applications also has a clickable directory with each application's health and
+last deployment time.
 
-Applications have one main tab row: Overview (the default), Source, Services,
-Volumes, Routes, Deployments, Diagnostics, Builds, and Logs. The Routes tab edits public
-hostnames and shows each deployed route's HTTPS readiness and diagnostics.
-Saving routes updates only the route field; Deploy activates the change.
-Services contains the compact service list
-and observed runtime services. Reconciliation diagnostics appear in Diagnostics.
-Each service row opens a service page
-headed by application / service, with tabs for source and scaling, environment,
-command and arguments, volume mounts, health checks, resource limits, and logs.
-Service form drafts are retained when switching tabs. Selecting None for a
-health check hides its remaining fields.
-The pencil beside the application name opens its rename form. The Overview
-tab contains the application ID, state, generation, and runtime data.
+Applications have one main tab row: Overview (the default), Services, Source,
+Routes, Volumes, Secrets, Deployments, Builds, Logs, and Events. The Routes tab
+edits public hostnames and shows each deployed route's HTTPS readiness and
+diagnostics. Saving routes updates only the route field; Deploy activates the
+change. Services lists saved services with their observed health merged in.
+The Overview tab shows the runtime status, the latest operation, observed
+services, reconciliation diagnostics, and the delete action. The Events tab has
+an **Errors only** filter. Each service row opens a service page with a
+breadcrumb back to the application and tabs for source and scaling,
+environment, command and arguments, volume mounts, health checks, resource
+limits, and logs. Service form drafts are retained when switching tabs.
+Selecting None for a health check hides its remaining fields.
+The pencil beside the application name opens its rename form.
 The Deployments tab lists expandable deployment rows with Details, Snapshot,
 and Attempts sections. Attempts load when first opened; refresh and older-attempt
 controls appear below the list. Operation IDs appear only in deployment Details. Current target, last successful deployment, and observed runtime health
@@ -94,8 +97,10 @@ cargo check --package piqueld-ui --target wasm32-unknown-unknown
 ```
 
 The browser modules separate dashboard navigation and lists, editor state,
-configuration forms, deployment history, navigation guards, and shared controls.
-Styles are split into theme, dashboard layout, and editor rules. To format view
+configuration forms, deployment history, navigation guards, and shared
+presentation primitives (`browser/ui.rs` for icons, badges, notices, dialogs,
+and tabs; `browser/format.rs` for relative times, durations, and sizes).
+Styles are split into theme tokens, shell layout, and component rules. To format view
 macros as well as Rust, run `leptosfmt` from `apps/piqueld-ui` (it reads the local
 `leptosfmt.toml`), followed by `cargo fmt --all`.
 

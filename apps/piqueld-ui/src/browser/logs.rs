@@ -1,6 +1,11 @@
-//! Shared log viewer, stream filter, and persisted log display preferences.
+//! Shared log viewer, stream filter, and persisted display preferences.
 use crate::log_output::LogLine;
-use leptos::*;
+use leptos::{
+    CollectView, IntoView, RwSignal, Signal, SignalGet, SignalGetUntracked, SignalSet, SignalWith,
+    View, component, create_effect, create_node_ref, create_rw_signal, event_target_checked,
+    event_target_value, html, provide_context, request_animation_frame, store_value, use_context,
+    view, window,
+};
 use piqueld_client::LogStream;
 
 /// Log display toggles shared by every viewer and persisted in `localStorage`.
@@ -50,12 +55,24 @@ impl LogPreferences {
 #[component]
 pub(super) fn StreamFilter(stream: RwSignal<Option<LogStream>>) -> impl IntoView {
     view! {
-        <label class="log-filter">"Stream"
-            <select prop:value=move ||stream.get().map_or("", LogStream::as_str)
-                on:change=move |event|stream.set(match event_target_value(&event).as_str() {
-                    "stdout" => Some(LogStream::Stdout), "stderr" => Some(LogStream::Stderr), _ => None,
-                })>
-                <option value="">"Both"</option><option value="stdout">"stdout"</option><option value="stderr">"stderr"</option>
+        <label class="field">
+            <span>"Stream"</span>
+            <select
+                prop:value={move || stream.get().map_or("", LogStream::as_str)}
+                on:change={move |event| {
+                    stream
+                        .set(
+                            match event_target_value(&event).as_str() {
+                                "stdout" => Some(LogStream::Stdout),
+                                "stderr" => Some(LogStream::Stderr),
+                                _ => None,
+                            },
+                        );
+                }}
+            >
+                <option value="">"Both"</option>
+                <option value="stdout">"stdout"</option>
+                <option value="stderr">"stderr"</option>
             </select>
         </label>
     }
@@ -97,21 +114,27 @@ impl LogLine {
 /// Which preference set a `LogViewer` uses.
 #[derive(Clone, Copy, Default)]
 pub(super) enum LogKind {
-    /// Whole-application runtime logs.
     #[default]
     Application,
-    /// Runtime logs scoped to one service.
     Service,
-    /// Build output; never shows a service column.
     Build,
 }
 
+fn toggle(label: &'static str, value: RwSignal<bool>) -> View {
+    view! {
+        <label class="checkbox">
+            <input
+                type="checkbox"
+                prop:checked={move || value.get()}
+                on:change={move |e| value.set(event_target_checked(&e))}
+            />
+            {label}
+        </label>
+    }
+    .into_view()
+}
+
 /// A stable scroll container; refreshing rows never remounts the viewer.
-///
-/// Renders display toggles and the log rows. After each update it sticks to the
-/// bottom while the user is within 24px of it, otherwise keeps their position;
-/// when `prepend_revision` changes (older lines inserted above) it offsets the
-/// scroll by the added height so the visible lines stay put.
 #[component]
 pub(super) fn LogViewer(
     #[prop(into)] lines: Signal<Vec<LogLine>>,
@@ -167,33 +190,71 @@ pub(super) fn LogViewer(
         });
     });
     view! {
-        <div class="log-display-controls" role="group" aria-label="Log display">
-            <label><input type="checkbox" prop:checked=move ||timestamps.get() on:change=move |e|timestamps.set(event_target_checked(&e))/ >"Timestamp"</label>
-            {service.map(|service| view! {
-                <label><input type="checkbox" prop:checked=move ||service.get() on:change=move |e|service.set(event_target_checked(&e))/ >"Service"</label>
-            })}
-            <label><input type="checkbox" prop:checked=move ||preferences.wrap.get() on:change=move |e|preferences.wrap.set(event_target_checked(&e))/ >"Wrap lines"</label>
+        <div class="log-options" role="group" aria-label="Log display">
+            {toggle("Timestamps", timestamps)}
+            {service.map(|service| toggle("Service names", service))}
+            {toggle("Wrap lines", preferences.wrap)}
         </div>
-        <div class="application-logs" class:log-wrap=move ||preferences.wrap.get()
-            node_ref=container tabindex="0" role="region" aria-label=label
-            on:scroll=move |_|if let Some(node)=container.get() {
-                if updating.get_value() { return; }
-                position.set(node.scroll_top());
-                follow.set(node.scroll_height()-node.client_height()-node.scroll_top() <= 24);
-            }>
+        <div
+            class="terminal"
+            class:log-wrap={move || preferences.wrap.get()}
+            node_ref={container}
+            tabindex="0"
+            role="region"
+            aria-label={label}
+            on:scroll={move |_| {
+                if let Some(node) = container.get() {
+                    if updating.get_value() {
+                        return;
+                    }
+                    position.set(node.scroll_top());
+                    follow
+                        .set(node.scroll_height() - node.client_height() - node.scroll_top() <= 24);
+                }
+            }}
+        >
             <div class="log-rows">
-                {move || if lines.with(Vec::is_empty) {view!{<p class="log-empty">{empty.clone()}</p>}.into_view()} else {
-                    lines.get().into_iter().map(|line| {
-                        let severity=line.severity();
-                        let (time, full)=line.display_time();
-                        view!{<div class="log-line" data-severity=severity>
-                            <span class="log-metadata" hidden=move ||!timestamps.get() && !show_service.get()>
-                                <time class="log-time" title=full hidden=move ||!timestamps.get()>{time}</time>
-                                {service.map(|_| view! {<span class="log-service" hidden=move ||!show_service.get()>{line.service}</span>})}
-                            </span>
-                            <span class="log-message">{line.message}</span>
-                        </div>}
-                    }).collect_view()
+                {move || {
+                    if lines.with(Vec::is_empty) {
+                        view! { <p class="log-empty">{empty.clone()}</p> }.into_view()
+                    } else {
+                        lines
+                            .get()
+                            .into_iter()
+                            .map(|line| {
+                                let severity = line.severity();
+                                let (time, full) = line.display_time();
+                                view! {
+                                    <div class="log-line" data-severity={severity}>
+                                        <span
+                                            class="log-metadata"
+                                            hidden={move || !timestamps.get() && !show_service.get()}
+                                        >
+                                            <time
+                                                class="log-time"
+                                                title={full}
+                                                hidden={move || !timestamps.get()}
+                                            >
+                                                {time}
+                                            </time>
+                                            {service
+                                                .map(|_| {
+                                                    view! {
+                                                        <span
+                                                            class="log-service"
+                                                            hidden={move || !show_service.get()}
+                                                        >
+                                                            {line.service}
+                                                        </span>
+                                                    }
+                                                })}
+                                        </span>
+                                        <span class="log-message">{line.message}</span>
+                                    </div>
+                                }
+                            })
+                            .collect_view()
+                    }
                 }}
             </div>
         </div>

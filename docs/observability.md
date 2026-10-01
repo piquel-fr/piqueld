@@ -115,7 +115,7 @@ HTTP 410, or a terminal `history_expired` event if pruning happens during the
 stream. A terminal `stream_error` indicates a storage failure. Clients should
 refresh their snapshot before reconnecting after an expired history response.
 
-The dashboard adds History, Errors, Analytics, Notifications and Daemon status.
+The dashboard adds Events, Errors, Analytics, Notifications and Daemon status.
 Application pages include scoped history; diagnostics link to related operation
 history. Error feedback links to the specific diagnostic where available. Views
 refresh while visible. Configuration is displayed read-only, with destination

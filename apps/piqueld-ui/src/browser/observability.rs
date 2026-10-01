@@ -1,6 +1,12 @@
-//! Shared diagnostic views, operational history, resource usage and delivery controls.
-use super::{client_error_message, management::timestamp};
-use leptos::*;
+//! Event history, diagnostics, daemon statistics, analytics, and notification deliveries.
+use super::client_error_message;
+use super::format::{bytes, duration, duration_f64, duration_secs, now_ms, timestamp};
+use super::ui::{Icon, PageHeader, Tone, badge, empty, icon, metric, notice, when};
+use leptos::{
+    CollectView, IntoView, RwSignal, Show, SignalGet, SignalSet, SignalUpdate, SignalWith, View,
+    component, create_effect, create_local_resource, create_rw_signal, event_target_checked,
+    event_target_value, on_cleanup, set_interval_with_handle, spawn_local, store_value, view,
+};
 use leptos_router::{A, use_params_map, use_query_map};
 use piqueld_client::{
     Client, Event,
@@ -36,19 +42,57 @@ impl Refresh {
         if days == 0 {
             return None;
         }
-        let now = js_sys::Date::now().to_string().parse::<i64>().ok()?;
-        Some(now.saturating_sub(i64::from(days) * 86_400_000))
+        Some(now_ms().saturating_sub(i64::from(days) * 86_400_000))
     }
 }
+
+/// Period picker; `changed` runs after the selection so lists can restart at the newest page.
+fn period_select(days: RwSignal<u32>, all: bool, changed: impl Fn() + 'static) -> View {
+    view! {
+        <label class="field">
+            <span>"Period"</span>
+            <select on:change={move |e| {
+                days.set(event_target_value(&e).parse().unwrap_or(30));
+                changed();
+            }}>
+                <option value="1">"24 hours"</option>
+                <option value="7">"7 days"</option>
+                <option value="30" selected>
+                    "30 days"
+                </option>
+                {if all {
+                    view! { <option value="0">"All retained history"</option> }
+                } else {
+                    view! { <option value="365">"365 days"</option> }
+                }}
+            </select>
+        </label>
+    }
+    .into_view()
+}
+
 /// `/events` page: all retained events.
 #[component]
 pub(super) fn HistoryPage() -> impl IntoView {
-    view! {<header class="page-heading"><h1>"Event history"</h1></header><EventHistory/>}
+    view! {
+        <PageHeader
+            title="Events"
+            description="Retained control-plane history across every application and the daemon itself."
+        />
+        <EventHistory />
+    }
 }
+
 /// `/errors` page: events that carry an error.
 #[component]
 pub(super) fn ErrorsPage() -> impl IntoView {
-    view! {<header class="page-heading"><h1>"Errors"</h1></header><EventHistory errors_only=true/>}
+    view! {
+        <PageHeader
+            title="Errors"
+            description="Failures recorded by the daemon, with diagnostics explaining causes and next steps."
+        />
+        <EventHistory errors_only=true />
+    }
 }
 
 /// Filterable, paginated event list (50 per page), optionally scoped to one
@@ -60,6 +104,7 @@ pub(super) fn EventHistory(
     #[prop(optional)] errors_only: bool,
 ) -> impl IntoView {
     let refresh = Refresh::new();
+    let scoped = application.is_some();
     let application = store_value(application);
     let query = use_query_map();
     let cursor = create_rw_signal(None::<String>);
@@ -74,6 +119,7 @@ pub(super) fn EventHistory(
     let code = create_rw_signal(String::new());
     let scope = create_rw_signal(String::new());
     let days = create_rw_signal(30_u32);
+    let failures = create_rw_signal(errors_only);
     let data = create_local_resource(
         move || {
             (
@@ -83,10 +129,11 @@ pub(super) fn EventHistory(
                 code.get(),
                 scope.get(),
                 days.get(),
+                failures.get(),
                 query.get(),
             )
         },
-        move |(_, cursor, kind, code, scope, days, query)| async move {
+        move |(_, cursor, kind, code, scope, days, failures, query)| async move {
             let filter = EventFilter {
                 application_id: application.get_value(),
                 operation_id: query.get("operation").cloned(),
@@ -97,7 +144,7 @@ pub(super) fn EventHistory(
                     "application" => Some(EventScope::Application),
                     _ => None,
                 },
-                errors_only,
+                errors_only: failures,
                 since_ms: Refresh::since(days),
                 descending: true,
                 ..EventFilter::default()
@@ -108,60 +155,195 @@ pub(super) fn EventHistory(
                 .map_err(|e| client_error_message(&e))
         },
     );
+    let reset = move || cursor.set(None);
     view! {
-        <section class="observability-panel">
-            <div class="observability-filters">
-                <label>"Period"<select on:change=move |e|{days.set(event_target_value(&e).parse().unwrap_or(30));cursor.set(None);}>
-                    <option value="1">"24 hours"</option><option value="7">"7 days"</option><option value="30" selected>"30 days"</option><option value="0">"All retained history"</option>
-                </select></label>
-                <label>"Scope"<select on:change=move |e|{scope.set(event_target_value(&e));cursor.set(None);}>
-                    <option value="">"All"</option><option value="application">"Application"</option><option value="daemon">"Daemon"</option>
-                </select></label>
-                <label>"Event kind"<input placeholder="All kinds" on:change=move |e|{kind.set(event_target_value(&e));cursor.set(None);}/></label>
-                <label>"Error code"<input placeholder="All codes" on:change=move |e|{code.set(event_target_value(&e));cursor.set(None);}/></label>
-                <button on:click=move |_|{cursor.set(None);refresh.request();}>"Newest"</button>
+        <div class="toolbar">
+            {period_select(days, true, reset)} <Show when={move || !scoped}>
+                <label class="field">
+                    <span>"Scope"</span>
+                    <select on:change={move |e| {
+                        scope.set(event_target_value(&e));
+                        reset();
+                    }}>
+                        <option value="">"All"</option>
+                        <option value="application">"Application"</option>
+                        <option value="daemon">"Daemon"</option>
+                    </select>
+                </label>
+            </Show> <label class="field">
+                <span>"Event kind"</span>
+                <input
+                    placeholder="All kinds"
+                    on:change={move |e| {
+                        kind.set(event_target_value(&e));
+                        reset();
+                    }}
+                />
+            </label> <label class="field">
+                <span>"Error code"</span>
+                <input
+                    placeholder="All codes"
+                    on:change={move |e| {
+                        code.set(event_target_value(&e));
+                        reset();
+                    }}
+                />
+            </label> <Show when={move || !errors_only}>
+                <label class="checkbox" style="padding-bottom:8px">
+                    <input
+                        type="checkbox"
+                        prop:checked={move || failures.get()}
+                        on:change={move |e| {
+                            failures.set(event_target_checked(&e));
+                            reset();
+                        }}
+                    />
+                    "Errors only"
+                </label>
+            </Show>
+            <div class="toolbar-end">
+                {move || {
+                    query
+                        .with(|q| q.get("operation").cloned())
+                        .map(|operation| {
+                            view! {
+                                <span class="tag" title={operation}>
+                                    "Filtered by operation"
+                                </span>
+                            }
+                        })
+                }}
+                <button
+                    type="button"
+                    class="btn"
+                    on:click={move |_| {
+                        reset();
+                        refresh.request();
+                    }}
+                >
+                    {icon(Icon::Refresh)}
+                    "Newest"
+                </button>
             </div>
-            <p class="help">"Showing retained history. Application deletion removes its history; daemon diagnostics may retain application context."</p>
-            {move ||match data.get(){
-                None=>view!{<p role="status">"Loading history…"</p>}.into_view(),
-                Some(Err(error))=>view!{<p class="form-error" role="alert">{error}</p>}.into_view(),
-                Some(Ok(page))=>{
-                    let empty=page.items.is_empty();let next=page.next_cursor;
-                    view!{<div class="event-list">{empty.then(||view!{<p class="empty-state">"No matching events."</p>})}{page.items.into_iter().map(|event|view!{<EventCard event/>}).collect_view()}</div>
-                        {next.map(|next|view!{<button on:click=move |_|cursor.set(Some(next.clone()))>"Older events"</button>})}
-                    }.into_view()
+        </div>
+        {move || match data.get() {
+            None => empty("Loading history…"),
+            Some(Err(error)) => notice(Tone::Bad, error),
+            Some(Ok(page)) => {
+                let next = page.next_cursor;
+                view! {
+                    <div class="list">
+                        {if page.items.is_empty() {
+                            empty("No matching events.")
+                        } else {
+                            page.items
+                                .into_iter()
+                                .map(|event| view! { <EventCard event={event} scoped={scoped} /> })
+                                .collect_view()
+                        }}
+                    </div>
+                    {next
+                        .map(|next| {
+                            view! {
+                                <div class="btn-group" style="margin-top:12px">
+                                    <button
+                                        type="button"
+                                        class="btn"
+                                        on:click={move |_| cursor.set(Some(next.clone()))}
+                                    >
+                                        "Older events"
+                                    </button>
+                                </div>
+                            }
+                        })}
                 }
-            }}
-        </section>
+                    .into_view()
+            }
+        }}
+        <p class="hint" style="margin-top:12px">
+            "Application deletion removes its history; daemon diagnostics may retain application context."
+        </p>
     }
 }
+
+/// Stable event kinds read better as words; failures are highlighted.
+fn kind_badge(event: &Event) -> View {
+    let failure = event.error_code.is_some() || event.kind.contains("fail");
+    let tone = if failure {
+        Tone::Bad
+    } else if event.kind.contains("succeeded") || event.kind.contains("recover") {
+        Tone::Ok
+    } else {
+        Tone::Neutral
+    };
+    badge(tone, event.kind.replace('_', " "))
+}
+
 /// Summary card for one event, linking to related operation events and, when
 /// present, its diagnostic details.
 #[component]
-fn EventCard(event: Event) -> impl IntoView {
-    let summary = event
-        .message
-        .clone()
-        .unwrap_or_else(|| event.kind.replace('_', " "));
-    let context = format!(
-        "{} · {} · {}{}",
-        timestamp(event.created_at_ms),
-        event.scope.as_str(),
-        event.phase.as_deref().unwrap_or("control plane"),
-        event
-            .resource
-            .as_ref()
-            .map_or_else(String::new, |r| format!(" · {r}"))
-    );
+fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
     let diagnostic = event.diagnostic.as_ref().map(|d| d.id.clone());
-    view! {<article class="event-card"><p class="help">{context}</p><strong>{summary}</strong>
-        <p><code>{event.kind}</code>{event.attempt.map(|attempt|format!(" · attempt {attempt}"))}{event.retry.map(|retry|format!(" · request {retry}"))}{event.duration_ms.map(|ms|format!(" · {ms} ms"))}</p>
-        {event.application_id.map(|id|view!{<p class="help">"Application: "<code>{id.to_string()}</code></p>})}
-        {event.action_id.map(|id|view!{<p class="help">"Action: "<code>{id}</code></p>})}
-        {event.operation_id.map(|id|view!{<p><A href=format!("/dashboard/events?operation={id}")>"Related operation events"</A></p>})}
-        {diagnostic.map(|id|view!{<A href=format!("/dashboard/errors/{id}")>"Details"</A>})}
-    </article>}
+    let meta = [
+        Some(event.scope.as_str().to_owned()),
+        event.phase.clone(),
+        event.resource.clone(),
+        event.attempt.map(|attempt| format!("attempt {attempt}")),
+        event.retry.map(|retry| format!("request {retry}")),
+        event
+            .duration_ms
+            .map(|ms| duration(i64::try_from(ms).unwrap_or(i64::MAX))),
+        event.error_code.clone(),
+        event.action_id.clone().map(|id| format!("action {id}")),
+    ];
+    view! {
+        <article class="event">
+            <span class="event-time">{when(event.created_at_ms)}</span>
+            <div>
+                <div class="event-title">
+                    {kind_badge(&event)} <span>{event.message.clone().unwrap_or_default()}</span>
+                </div>
+                <div class="event-meta">
+                    {meta
+                        .into_iter()
+                        .flatten()
+                        .map(|item| view! { <span>{item}</span> })
+                        .collect_view()}
+                </div>
+                <div class="event-links">
+                    {(!scoped)
+                        .then(|| {
+                            event
+                                .application_id
+                                .map(|id| {
+                                    view! {
+                                        <A href={format!(
+                                            "/dashboard/applications/{id}",
+                                        )}>"Application"</A>
+                                    }
+                                })
+                        })}
+                    {event
+                        .operation_id
+                        .map(|id| {
+                            view! {
+                                <A href={format!(
+                                    "/dashboard/events?operation={id}",
+                                )}>"Operation events"</A>
+                            }
+                        })}
+                    {diagnostic
+                        .map(|id| {
+                            view! {
+                                <A href={format!("/dashboard/errors/{id}")}>"Diagnostic details"</A>
+                            }
+                        })}
+                </div>
+            </div>
+        </article>
+    }
 }
+
 /// `/errors/:id` page: loads one diagnostic event by ID.
 #[component]
 pub(super) fn DiagnosticPage() -> impl IntoView {
@@ -175,26 +357,131 @@ pub(super) fn DiagnosticPage() -> impl IntoView {
                 .map_err(|e| client_error_message(&e))
         },
     );
-    view! {<header class="page-heading"><h1>"Diagnostic details"</h1><A href="/dashboard/errors">"All errors"</A></header>
-        {move ||match data.get(){None=>view!{<p>"Loading diagnostic…"</p>}.into_view(),Some(Err(e))=>view!{<p class="form-error">{e}</p>}.into_view(),Some(Ok(event))=>view!{<DiagnosticDetails event/>}.into_view()}}
+    view! {
+        <nav class="breadcrumb" aria-label="Breadcrumb">
+            <A href="/dashboard/errors">"Errors"</A>
+            {icon(Icon::ChevronRight)}
+            <span>"Diagnostic"</span>
+        </nav>
+        <PageHeader title="Diagnostic details" />
+        {move || match data.get() {
+            None => empty("Loading diagnostic…"),
+            Some(Err(e)) => notice(Tone::Bad, e),
+            Some(Ok(event)) => view! { <DiagnosticDetails event={event} /> }.into_view(),
+        }}
     }
 }
+
 /// Full diagnostic view: event context, causes, suggested next action and retryability.
 #[component]
 fn DiagnosticDetails(event: Event) -> impl IntoView {
     let detail = event.diagnostic.clone();
     let operation = event.operation_id.clone();
-    view! {<section class="observability-panel"><EventCard event=event.clone()/>
-        <dl class="observability-values">
-            <dt>"Application"</dt><dd>{event.application_id.map_or_else(||"Daemon".into(),|id|id.to_string())}</dd>
-            <dt>"Operation"</dt><dd>{operation.clone().unwrap_or_else(||"None".into())}</dd>
-            <dt>"Action"</dt><dd>{event.action_id.unwrap_or_else(||"None".into())}</dd>
-            <dt>"Request"</dt><dd>{event.request_id.unwrap_or_else(||"None".into())}</dd>
-        </dl>
-        {detail.map(|d|view!{<h2>{d.code}</h2><p>{d.summary}</p><ul>{d.causes.into_iter().map(|cause|view!{<li>{cause}</li>}).collect_view()}</ul><p><strong>"Next action: "</strong>{d.next_action}</p><p>{if d.retryable{"Automatic recovery is supported; inspect related events for the latest outcome."}else{"Administrator intervention may be required."}}</p><p class="help">{format!("Diagnostic ID: {}",d.id)}</p>})}
-        {operation.map(|id|view!{<A href=format!("/dashboard/events?operation={id}")>"Related operation events"</A>})}
-    </section>}
+    view! {
+        <div class="stack">
+            {detail
+                .map(|d| {
+                    view! {
+                        <section class="card">
+                            <header>
+                                <div>
+                                    <h2>{d.code}</h2>
+                                    <p>{d.summary}</p>
+                                </div>
+                                {badge(
+                                    if d.retryable { Tone::Info } else { Tone::Warn },
+                                    if d.retryable { "retryable" } else { "needs attention" },
+                                )}
+                            </header>
+                            <div class="stack-sm">
+                                {(!d.causes.is_empty())
+                                    .then(|| {
+                                        view! {
+                                            <div>
+                                                <h3>"Causes"</h3>
+                                                <ul style="padding-left:1.2em;list-style:disc">
+                                                    {d
+                                                        .causes
+                                                        .into_iter()
+                                                        .map(|cause| view! { <li>{cause}</li> })
+                                                        .collect_view()}
+                                                </ul>
+                                            </div>
+                                        }
+                                    })}
+                                {notice(
+                                    Tone::Info,
+                                    view! {
+                                        <strong>"Next action"</strong>
+                                        {d.next_action}
+                                        {if d.retryable {
+                                            " Automatic recovery is supported; inspect related events for the latest outcome."
+                                        } else {
+                                            " Administrator intervention may be required."
+                                        }}
+                                    },
+                                )}
+                            </div>
+                        </section>
+                    }
+                })} <section class="card">
+                <header>
+                    <h3>"Context"</h3>
+                </header>
+                <dl class="kv">
+                    <dt>"Recorded"</dt>
+                    <dd>{timestamp(event.created_at_ms)}</dd>
+                    <dt>"Application"</dt>
+                    <dd>
+                        {event
+                            .application_id
+                            .clone()
+                            .map_or_else(
+                                || "Daemon".into_view(),
+                                |id| {
+                                    view! {
+                                        <A href={format!(
+                                            "/dashboard/applications/{id}",
+                                        )}>{id.to_string()}</A>
+                                    }
+                                        .into_view()
+                                },
+                            )}
+                    </dd>
+                    <dt>"Operation"</dt>
+                    <dd>
+                        {operation
+                            .clone()
+                            .map_or_else(
+                                || "None".into_view(),
+                                |id| {
+                                    view! {
+                                        <A href={format!(
+                                            "/dashboard/events?operation={id}",
+                                        )}>{id}</A>
+                                    }
+                                        .into_view()
+                                },
+                            )}
+                    </dd>
+                    <dt>"Action"</dt>
+                    <dd>{event.action_id.clone().unwrap_or_else(|| "None".into())}</dd>
+                    <dt>"Request"</dt>
+                    <dd>{event.request_id.clone().unwrap_or_else(|| "None".into())}</dd>
+                    <dt>"Diagnostic ID"</dt>
+                    <dd>
+                        <code>
+                            {event.diagnostic.as_ref().map(|d| d.id.clone()).unwrap_or_default()}
+                        </code>
+                    </dd>
+                </dl>
+            </section> <section class="list">
+                <EventCard event={event} />
+            </section>
+        </div>
+    }
 }
+
 /// `/system` page: readiness panel plus auto-refreshing daemon resource usage.
 #[component]
 pub(super) fn SystemPage() -> impl IntoView {
@@ -208,46 +495,89 @@ pub(super) fn SystemPage() -> impl IntoView {
                 .map_err(|e| client_error_message(&e))
         },
     );
-    view! {<header class="page-heading"><h1>"Daemon status"</h1><button on:click=move |_|refresh.request()>"Refresh"</button></header>
-        <super::dashboard::ReadinessPanel/>
-        {move ||match data.get(){None=>view!{<p>"Collecting resource usage…"</p>}.into_view(),Some(Err(e))=>view!{<p class="form-error">{e}</p>}.into_view(),Some(Ok(stats))=>view!{<ResourceStats stats/>}.into_view()}}
+    view! {
+        <PageHeader
+            title="Daemon status"
+            description="Deployment prerequisites and live resource usage of the piqueld process."
+        >
+            <button type="button" class="btn" on:click={move |_| refresh.request()}>
+                {icon(Icon::Refresh)}
+                "Refresh"
+            </button>
+        </PageHeader>
+        <div class="stack">
+            <super::dashboard::ReadinessPanel />
+            {move || match data.get() {
+                None => empty("Collecting resource usage…"),
+                Some(Err(e)) => notice(Tone::Bad, e),
+                Some(Ok(stats)) => resource_stats(&stats),
+            }}
+        </div>
     }
 }
-/// Definition list of daemon resource and queue statistics.
-#[component]
-fn ResourceStats(stats: DaemonStats) -> impl IntoView {
-    let bytes = |v: Option<u64>| {
-        v.map_or_else(
-            || "Unavailable".into(),
-            |v| format!("{v} bytes ({} MiB)", v / 1_048_576),
-        )
-    };
-    let fields = [
-        ("Uptime", format!("{} seconds", stats.uptime_seconds)),
-        ("Memory", bytes(stats.memory_bytes)),
-        (
-            "CPU",
-            stats.cpu_percent.map_or_else(
-                || "Collecting / unavailable".into(),
-                |v| format!("{v:.1}% (100% = one core)"),
-            ),
-        ),
-        ("Database", bytes(Some(stats.database_bytes))),
-        ("WAL", bytes(Some(stats.wal_bytes))),
-        ("Available disk", bytes(stats.available_disk_bytes)),
-        ("Events", stats.events.to_string()),
+
+fn resource_stats(stats: &DaemonStats) -> View {
+    let unavailable = || "Unavailable".to_owned();
+    let counters = [
+        ("Retained events", stats.events.to_string()),
         ("Diagnostic occurrences", stats.diagnostics.to_string()),
         (
-            "Build output",
-            format!("{} bytes", stats.build_output_bytes),
+            "Retained build output",
+            bytes(u64::try_from(stats.build_output_bytes).unwrap_or(0)),
         ),
         ("Running operations", stats.running_operations.to_string()),
         ("Queued operations", stats.queued_operations.to_string()),
         ("Pending deliveries", stats.pending_deliveries.to_string()),
         ("Failed deliveries", stats.failed_deliveries.to_string()),
     ];
-    view! {<section class="observability-panel"><p class="help">{format!("Measured {}. Historical resource graphs require an external metrics collector.",timestamp(stats.sampled_at_ms))}</p><dl class="observability-values">{fields.into_iter().map(|(label,value)|view!{<dt>{label}</dt><dd>{value}</dd>}).collect_view()}</dl></section>}
+    view! {
+        <div class="metrics">
+            {metric("Uptime", duration_secs(stats.uptime_seconds), None::<&str>)}
+            {metric("Memory", stats.memory_bytes.map_or_else(unavailable, bytes), Some("resident"))}
+            {metric(
+                "CPU",
+                stats.cpu_percent.map_or_else(|| "Collecting".into(), |v| format!("{v:.1}%")),
+                Some("100% is one core"),
+            )}
+            {metric(
+                "Database",
+                bytes(stats.database_bytes),
+                Some(format!("WAL {}", bytes(stats.wal_bytes))),
+            )}
+            {metric(
+                "Available disk",
+                stats.available_disk_bytes.map_or_else(unavailable, bytes),
+                Some("data directory"),
+            )}
+        </div>
+        <section class="card">
+            <header>
+                <div>
+                    <h3>"Counters"</h3>
+                    <p>
+                        {format!(
+                            "Measured {}. Historical graphs require an external metrics collector.",
+                            timestamp(stats.sampled_at_ms),
+                        )}
+                    </p>
+                </div>
+            </header>
+            <dl class="kv">
+                {counters
+                    .into_iter()
+                    .map(|(label, value)| {
+                        view! {
+                            <dt>{label}</dt>
+                            <dd>{value}</dd>
+                        }
+                    })
+                    .collect_view()}
+            </dl>
+        </section>
+    }
+    .into_view()
 }
+
 /// `/analytics` page: deployment outcome, retry, duration and failure-code
 /// aggregates over a selectable period.
 #[component]
@@ -263,17 +593,136 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
                 .map_err(|e| client_error_message(&e))
         },
     );
-    view! {<header class="page-heading"><h1>"Deployment analytics"</h1><select aria-label="Analytics period" on:change=move |e|days.set(event_target_value(&e).parse().unwrap_or(30))><option value="1">"24 hours"</option><option value="7">"7 days"</option><option value="30" selected>"30 days"</option><option value="365">"365 days"</option></select></header>
-        {move ||match data.get(){None=>view!{<p>"Loading analytics…"</p>}.into_view(),Some(Err(e))=>view!{<p class="form-error">{e}</p>}.into_view(),Some(Ok(a))=>view!{<section class="observability-panel">
-            {a.incomplete.then(||view!{<p class="conflict-notice">"This interval includes unavailable detailed history. Counts describe retained applications and records only."</p>})}
-            <p>{format!("{} deployments · {} succeeded · {} failed at their last attempt in this interval",a.deployments,a.succeeded,a.failed)}</p>
-            <p>{format!("{} failed attempts · {} retry attempts · {} action retries",a.failed_attempts,a.retry_attempts,a.action_retries)}</p>
-            <p>{a.mean_duration_ms.map_or_else(||"No measured deployment durations".into(),|v|format!("Mean deployment attempt: {:.2} seconds",v/1000.0))}</p>
-            <h2>"Action durations"</h2><ul>{a.actions.into_iter().map(|r|view!{<li>{format!("{}: {:.2} seconds mean across {} actions",r.phase,r.mean_ms/1000.0,r.count)}</li>}).collect_view()}</ul>
-            <h2>"Common failures"</h2><ul>{a.failures.into_iter().map(|r|view!{<li><code>{r.code}</code>{format!(": {} occurrences",r.count)}</li>}).collect_view()}</ul>
-        </section>}.into_view()}}
+    view! {
+        <PageHeader
+            title="Analytics"
+            description="Deployment outcomes and action timings derived from retained history."
+        >
+            {period_select(days, false, || {})}
+        </PageHeader>
+        {move || match data.get() {
+            None => empty("Loading analytics…"),
+            Some(Err(e)) => notice(Tone::Bad, e),
+            Some(Ok(a)) => {
+                view! {
+                    <div class="stack">
+                        {a
+                            .incomplete
+                            .then(|| {
+                                notice(
+                                    Tone::Warn,
+                                    "This interval includes unavailable detailed history. Counts describe retained applications and records only.",
+                                )
+                            })}
+                        <div class="metrics">
+                            {metric(
+                                "Deployments",
+                                a.deployments.to_string(),
+                                Some("with terminal attempts"),
+                            )}
+                            {metric("Succeeded", a.succeeded.to_string(), Some("latest attempt"))}
+                            {metric("Failed", a.failed.to_string(), Some("latest attempt"))}
+                            {metric(
+                                "Mean attempt",
+                                a.mean_duration_ms.map_or_else(|| "—".into(), duration_f64),
+                                Some("completed deployment attempts"),
+                            )}
+                        </div>
+                        <div class="metrics">
+                            {metric(
+                                "Failed attempts",
+                                a.failed_attempts.to_string(),
+                                Some("including later recoveries"),
+                            )}
+                            {metric(
+                                "Retry attempts",
+                                a.retry_attempts.to_string(),
+                                Some("attempts beyond the first"),
+                            )}
+                            {metric(
+                                "Action retries",
+                                a.action_retries.to_string(),
+                                Some("Docker actions retried"),
+                            )}
+                        </div> <section class="card card-flush">
+                            <header>
+                                <h3>"Action durations"</h3>
+                            </header>
+                            {if a.actions.is_empty() {
+                                empty("No completed actions in this interval.")
+                            } else {
+                                view! {
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>"Phase"</th>
+                                                <th class="num">"Actions"</th>
+                                                <th class="num">"Mean duration"</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {a
+                                                .actions
+                                                .into_iter()
+                                                .map(|r| {
+                                                    view! {
+                                                        <tr>
+                                                            <td>{r.phase}</td>
+                                                            <td class="num">{r.count}</td>
+                                                            <td class="num">{duration_f64(r.mean_ms)}</td>
+                                                        </tr>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </tbody>
+                                    </table>
+                                }
+                                    .into_view()
+                            }}
+                        </section> <section class="card card-flush">
+                            <header>
+                                <h3>"Common failures"</h3>
+                            </header>
+                            {if a.failures.is_empty() {
+                                empty("No failures recorded in this interval.")
+                            } else {
+                                view! {
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>"Code"</th>
+                                                <th class="num">"Occurrences"</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {a
+                                                .failures
+                                                .into_iter()
+                                                .map(|r| {
+                                                    view! {
+                                                        <tr>
+                                                            <td>
+                                                                <code>{r.code}</code>
+                                                            </td>
+                                                            <td class="num">{r.count}</td>
+                                                        </tr>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </tbody>
+                                    </table>
+                                }
+                                    .into_view()
+                            }}
+                        </section>
+                    </div>
+                }
+                    .into_view()
+            }
+        }}
     }
 }
+
 /// `/notifications` page: paginated notification deliveries, with a retry
 /// button on failed ones.
 #[component]
@@ -290,12 +739,121 @@ pub(super) fn NotificationsPage() -> impl IntoView {
                 .map_err(|e| client_error_message(&e))
         },
     );
-    view! {<header class="page-heading"><h1>"Notification deliveries"</h1><button on:click=move |_|{cursor.set(None);refresh.request();}>"Newest"</button></header><p class="help">"Destinations and notification categories are configured in daemon TOML. Delivery may be repeated after a lost acknowledgement."</p>
-        {move ||error.get().map(|e|view!{<p class="form-error">{e}</p>})}
-        {move ||match data.get(){None=>view!{<p>"Loading deliveries…"</p>}.into_view(),Some(Err(e))=>view!{<p class="form-error">{e}</p>}.into_view(),Some(Ok(page))=>view!{<section class="observability-panel">
-            {page.items.is_empty().then(||view!{<p>"No notification deliveries."</p>})}
-            {page.items.into_iter().map(|d|{let id=d.id.clone();view!{<article class="event-card"><strong>{format!("{} · {} · {}",d.destination,d.category,d.state)}</strong><p>{format!("{} attempts · {}",d.attempts,timestamp(d.updated_at_ms))}</p><p>{d.last_error}</p><p class="help">{d.id}</p>{(d.state==DeliveryState::Failed).then(||view!{<button on:click=move |_|{let id=id.clone();spawn_local(async move{match Client::browser().retry_notification(&id).await {Ok(())=>{error.set(None);refresh.request();},Err(e)=>error.set(Some(client_error_message(&e)))}});}>"Retry delivery"</button>})}</article>}}).collect_view()}
-            {page.next_cursor.map(|next|view!{<button on:click=move |_|cursor.set(Some(next.clone()))>"Older deliveries"</button>})}
-        </section>}.into_view()}}
+    let retry = move |id: String| {
+        spawn_local(async move {
+            match Client::browser().retry_notification(&id).await {
+                Ok(()) => {
+                    error.set(None);
+                    refresh.request();
+                }
+                Err(e) => error.set(Some(client_error_message(&e))),
+            }
+        });
+    };
+    view! {
+        <PageHeader
+            title="Notifications"
+            description="Webhook deliveries. Destinations and categories are configured in the daemon TOML; delivery may repeat after a lost acknowledgement."
+        >
+            <button
+                type="button"
+                class="btn"
+                on:click={move |_| {
+                    cursor.set(None);
+                    refresh.request();
+                }}
+            >
+                {icon(Icon::Refresh)}
+                "Newest"
+            </button>
+        </PageHeader>
+        <div class="stack">
+            {move || error.get().map(|e| notice(Tone::Bad, e))}
+            {move || match data.get() {
+                None => empty("Loading deliveries…"),
+                Some(Err(e)) => notice(Tone::Bad, e),
+                Some(Ok(page)) => {
+                    view! {
+                        <div class="table-wrap">
+                            {if page.items.is_empty() {
+                                empty("No notification deliveries.")
+                            } else {
+                                view! {
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>"Destination"</th>
+                                                <th>"Category"</th>
+                                                <th>"State"</th>
+                                                <th class="num">"Attempts"</th>
+                                                <th>"Updated"</th>
+                                                <th>"Last error"</th>
+                                                <th></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {page
+                                                .items
+                                                .into_iter()
+                                                .map(|d| {
+                                                    let id = d.id.clone();
+                                                    let tone = match d.state {
+                                                        DeliveryState::Delivered => Tone::Ok,
+                                                        DeliveryState::Failed => Tone::Bad,
+                                                        DeliveryState::Pending => Tone::Pending,
+                                                        DeliveryState::Cancelled => Tone::Neutral,
+                                                    };
+                                                    view! {
+                                                        <tr>
+                                                            <td title={d.id.clone()}>{d.destination}</td>
+                                                            <td>{d.category.to_string()}</td>
+                                                            <td>{badge(tone, d.state.to_string())}</td>
+                                                            <td class="num">{d.attempts}</td>
+                                                            <td class="muted">{when(d.updated_at_ms)}</td>
+                                                            <td class="muted">{d.last_error.unwrap_or_default()}</td>
+                                                            <td class="actions">
+                                                                {(d.state == DeliveryState::Failed)
+                                                                    .then(|| {
+                                                                        view! {
+                                                                            <button
+                                                                                type="button"
+                                                                                class="btn btn-sm"
+                                                                                on:click={move |_| retry(id.clone())}
+                                                                            >
+                                                                                "Retry"
+                                                                            </button>
+                                                                        }
+                                                                    })}
+                                                            </td>
+                                                        </tr>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </tbody>
+                                    </table>
+                                }
+                                    .into_view()
+                            }}
+                        </div>
+                        {page
+                            .next_cursor
+                            .map(|next| {
+                                view! {
+                                    <div class="btn-group">
+                                        <button
+                                            type="button"
+                                            class="btn"
+                                            on:click={move |_| cursor.set(Some(next.clone()))}
+                                        >
+                                            "Older deliveries"
+                                        </button>
+                                    </div>
+                                }
+                            })}
+                    }
+                        .into_view()
+                }
+            }}
+        </div>
     }
 }
