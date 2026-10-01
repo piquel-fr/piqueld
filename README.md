@@ -49,6 +49,7 @@ The supported manifest and runtime model are documented in:
 - [`docs/resource-planning.md`](docs/resource-planning.md)
 - [`docs/docker-reconciliation.md`](docs/docker-reconciliation.md)
 - [`docs/migrations.md`](docs/migrations.md)
+- [`docs/backups.md`](docs/backups.md)
 
 | Supported | Deferred until later releases |
 | --- | --- |

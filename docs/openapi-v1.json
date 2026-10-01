@@ -727,6 +727,25 @@
         ],
         "type": "object"
       },
+      "BackupStatus": {
+        "description": "Recency of the last successful `piqueld backup`. Pre-migration backups are not counted.",
+        "properties": {
+          "last_success_at_ms": {
+            "description": "Completion time in Unix milliseconds; absent when no backup was recorded.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "stale": {
+            "description": "Whether no backup was recorded or the last one is older than seven days.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stale"
+        ],
+        "type": "object"
+      },
       "Build": {
         "description": "Explicit build backend, extensible independently from source selection.",
         "oneOf": [
@@ -3383,6 +3402,10 @@
                 "description": "Version of the exposed API.",
                 "type": "string"
               },
+              "backup": {
+                "$ref": "#/components/schemas/BackupStatus",
+                "description": "Recency of the last successful `piqueld backup`."
+              },
               "daemon_version": {
                 "description": "Version of the running daemon binary.",
                 "type": "string"
@@ -3400,7 +3423,8 @@
               "status",
               "api_version",
               "daemon_version",
-              "instance_id"
+              "instance_id",
+              "backup"
             ],
             "type": "object"
           }
@@ -5498,6 +5522,10 @@
             "description": "Version of the exposed API.",
             "type": "string"
           },
+          "backup": {
+            "$ref": "#/components/schemas/BackupStatus",
+            "description": "Recency of the last successful `piqueld backup`."
+          },
           "daemon_version": {
             "description": "Version of the running daemon binary.",
             "type": "string"
@@ -5515,7 +5543,8 @@
           "status",
           "api_version",
           "daemon_version",
-          "instance_id"
+          "instance_id",
+          "backup"
         ],
         "type": "object"
       },
@@ -16731,6 +16760,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
           }
         },
         "summary": "Get daemon status"

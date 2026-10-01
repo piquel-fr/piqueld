@@ -203,6 +203,52 @@ pub struct SystemStatus {
     pub daemon_version: String,
     /// Control-plane instance identifier.
     pub instance_id: String,
+    /// Recency of the last successful `piqueld backup`.
+    pub backup: BackupStatus,
+}
+
+/// Age after which the last successful backup is reported as stale.
+pub const BACKUP_STALE_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+/// Recency of the last successful `piqueld backup`. Pre-migration backups are not counted.
+pub struct BackupStatus {
+    /// Completion time in Unix milliseconds; absent when no backup was recorded.
+    pub last_success_at_ms: Option<i64>,
+    /// Whether no backup was recorded or the last one is older than seven days.
+    pub stale: bool,
+}
+
+impl BackupStatus {
+    /// Classifies the last backup time as observed at `now_ms`.
+    #[must_use]
+    pub fn new(last_success_at_ms: Option<i64>, now_ms: i64) -> Self {
+        Self {
+            last_success_at_ms,
+            stale: last_success_at_ms
+                .is_none_or(|at| now_ms.saturating_sub(at) > BACKUP_STALE_AFTER_MS),
+        }
+    }
+
+    /// Human summary shared by the CLI and dashboard, observed at `now_ms`.
+    #[must_use]
+    pub fn summary(&self, now_ms: i64) -> String {
+        let Some(at) = self.last_success_at_ms else {
+            return "No backup recorded; run piqueld backup".into();
+        };
+        let hours = now_ms.saturating_sub(at).max(0) / 3_600_000;
+        let age = match hours {
+            0 => "less than an hour ago".to_owned(),
+            1 => "1 hour ago".to_owned(),
+            2..48 => format!("{hours} hours ago"),
+            _ => format!("{} days ago", hours / 24),
+        };
+        if self.stale {
+            format!("Last backup {age}; back up at least weekly")
+        } else {
+            format!("Last backup {age}")
+        }
+    }
 }
 
 /// A change to a manifest field. Environment and process values are redacted.

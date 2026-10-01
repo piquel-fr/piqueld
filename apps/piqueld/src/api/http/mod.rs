@@ -249,13 +249,14 @@ impl From<StoreError> for ApiError {
                 "stored_state_corrupt",
                 "stored application state is corrupt",
             ),
-            StoreError::Database | StoreError::DatabaseSource(_) | StoreError::PathSource(_) => {
-                Self::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "storage_unavailable",
-                    "control-plane storage is unavailable",
-                )
-            }
+            StoreError::Database
+            | StoreError::DatabaseSource(_)
+            | StoreError::PathSource(_)
+            | StoreError::PreMigrationBackup(_) => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                "control-plane storage is unavailable",
+            ),
         }
     }
 }
