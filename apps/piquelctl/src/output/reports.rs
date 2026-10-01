@@ -135,10 +135,9 @@ report!(ShowReport<'_>, self, out, {
         out.label("  Replicas", service.replicas)?;
         match &service.source {
             Source::Image { image } => out.label("  Source", format_args!("image {image}"))?,
-            Source::Git { repository, .. } => out.label(
-                "  Source",
-                format_args!("git {} ({})", repository.url, repository.branch),
-            )?,
+            Source::Git { repository, .. } => {
+                out.label("  Source", format_args!("git {repository}"))?;
+            }
         }
     }
     if !app.application.spec().volumes.is_empty() {

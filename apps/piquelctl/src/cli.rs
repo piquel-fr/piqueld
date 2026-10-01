@@ -181,7 +181,7 @@ pub(crate) enum AppCommand {
     /// Repair latest intent without refreshing resolved images.
     Reconcile(ReconcileArgs),
     /// Deploy saved configuration with fresh source resolution.
-    Deploy(ReconcileArgs),
+    Deploy(DeployArgs),
     /// Rename an idle application; optionally deploy with the change.
     Rename(RenameArgs),
     /// Export the saved manifest as TOML.
@@ -354,6 +354,32 @@ pub(crate) struct RenameArgs {
     pub(crate) new_name: String,
     #[command(flatten)]
     pub(crate) edit: crate::editing::EditFlags,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct DeployArgs {
+    #[command(flatten)]
+    pub(crate) target: ReconcileArgs,
+    /// Fetch the repository manifest from this branch, without saving it.
+    #[arg(long, conflicts_with = "commit")]
+    pub(crate) branch: Option<String>,
+    /// Fetch the repository manifest from this full commit, without saving it.
+    #[arg(long)]
+    pub(crate) commit: Option<String>,
+}
+
+impl DeployArgs {
+    /// The one-time manifest revision, if overridden.
+    pub(crate) fn revision(&self) -> Option<piqueld_client::ManifestRevision> {
+        self.branch
+            .clone()
+            .map(piqueld_client::ManifestRevision::Branch)
+            .or_else(|| {
+                self.commit
+                    .clone()
+                    .map(piqueld_client::ManifestRevision::Commit)
+            })
+    }
 }
 
 #[derive(Debug, Args)]

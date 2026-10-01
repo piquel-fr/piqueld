@@ -30,11 +30,11 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         context.busy.set(true);
         spawn_local(async move {
             let mut result = client
-                .deploy_application(app.application.id().as_str(), app.generation)
+                .deploy_application(app.application.id().as_str(), app.generation, None)
                 .await;
             if result.as_ref().is_err_and(transport_failure) {
                 result = client
-                    .deploy_application(app.application.id().as_str(), app.generation)
+                    .deploy_application(app.application.id().as_str(), app.generation, None)
                     .await;
             }
             match result {
@@ -633,11 +633,8 @@ fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
                 },
         } => {
             format!(
-                "Git: {} · {} · Dockerfile: {} · context: {}",
-                repository.url,
-                repository.commit.as_deref().unwrap_or(&repository.branch),
-                dockerfile,
-                context,
+                "Git: {} · Dockerfile: {} · context: {}",
+                repository, dockerfile, context,
             )
         }
     };

@@ -268,10 +268,11 @@ pub(super) struct GenerationQuery {
     pub(super) force: bool,
 }
 impl GenerationQuery {
-    /// Unwraps the query, mapping rejections to 400 `generation_invalid`.
-    pub(super) fn decode(
-        query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
-    ) -> Result<Self, ApiError> {
+    /// Unwraps this or another query carrying generation preconditions, mapping
+    /// rejections to 400 `generation_invalid`.
+    pub(super) fn decode<T>(
+        query: Result<Query<T>, axum::extract::rejection::QueryRejection>,
+    ) -> Result<T, ApiError> {
         query.map(|Query(value)| value).map_err(|_| {
             ApiError::new(
                 StatusCode::BAD_REQUEST,

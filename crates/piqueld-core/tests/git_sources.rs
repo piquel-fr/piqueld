@@ -1,5 +1,6 @@
 //! Git manifest validation and immutable resolution contracts.
-use piqueld_core::manifest::{Build, Source};
+use piqueld_core::edit::ApplicationEdit;
+use piqueld_core::manifest::{Build, GitRepository, ManifestRevision, Source, SourceRepository};
 use piqueld_core::resource::{ResolvedSource, Sha256Digest};
 use piqueld_core::{ApplicationId, InstanceId, ResolutionSet, compile_application, parse_json};
 
@@ -76,11 +77,81 @@ fn git_resolution_retains_commit_and_local_image_and_rejects_mismatched_inputs()
     assert_eq!(resolved.services[0].image.as_str(), image_id.as_str());
     assert_eq!(resolved.reusable_resolutions(&app), resolutions);
     let mut changed = app.to_manifest();
-    let Source::Git { repository, .. } = &mut changed.spec.services[0].source else {
+    let Source::Git {
+        repository: SourceRepository::Git(repository),
+        ..
+    } = &mut changed.spec.services[0].source
+    else {
         unreachable!()
     };
     repository.commit = Some("c".repeat(40));
     let changed = changed.validate().unwrap().normalize(app.id().clone());
     assert!(compile_application(&changed, instance, &resolutions).is_err());
     assert!(resolved.reusable_resolutions(&changed).sources.is_empty());
+}
+
+#[test]
+fn self_sources_build_from_the_manifest_revision() {
+    let mut valid = manifest();
+    valid["spec"]["services"][0]["source"]["repository"] = "self".into();
+    let error = parse_json(&valid.to_string()).unwrap_err();
+    assert_eq!(error.0[0].code, "manifest_repository_required");
+    valid["spec"]["manifest"] = serde_json::json!({
+        "path": "app.json",
+        "repository": {"url": "https://example.com/app.git", "branch": "main"},
+    });
+    let app = parse_json(&valid.to_string())
+        .unwrap()
+        .normalize(ApplicationId::parse("example-id").unwrap());
+    let manifest_repository = |app: &piqueld_core::NormalizedApplication| {
+        app.spec().manifest.as_ref().unwrap().repository.clone()
+    };
+    let service_repository = |app: &piqueld_core::NormalizedApplication| {
+        let Source::Git { repository, .. } = &app.spec().services[0].source else {
+            unreachable!()
+        };
+        repository.clone()
+    };
+
+    let commit = "b".repeat(40);
+    let pinned = app.clone().pin_manifest_sources(&commit);
+    assert_eq!(
+        service_repository(&pinned),
+        SourceRepository::Git(GitRepository {
+            commit: Some(commit.clone()),
+            ..manifest_repository(&app)
+        })
+    );
+    assert_eq!(pinned.spec().manifest, app.spec().manifest);
+
+    let feature = app
+        .clone()
+        .with_manifest_revision(&ManifestRevision::Branch("feature".into()))
+        .unwrap();
+    assert_eq!(manifest_repository(&feature).branch, "feature");
+    let at_commit = feature
+        .with_manifest_revision(&ManifestRevision::Commit(commit.clone()))
+        .unwrap();
+    assert_eq!(manifest_repository(&at_commit).commit, Some(commit));
+    assert!(
+        app.clone()
+            .with_manifest_revision(&ManifestRevision::Commit("HEAD".into()))
+            .is_err()
+    );
+
+    // Disconnecting keeps building from the former manifest repository.
+    let mut disconnected = app.to_manifest();
+    ApplicationEdit::Repository(None)
+        .apply(&mut disconnected)
+        .unwrap();
+    let disconnected = disconnected.validate().unwrap().normalize(app.id().clone());
+    assert_eq!(
+        service_repository(&disconnected),
+        SourceRepository::Git(manifest_repository(&app))
+    );
+    assert!(
+        disconnected
+            .with_manifest_revision(&ManifestRevision::Branch("main".into()))
+            .is_err()
+    );
 }

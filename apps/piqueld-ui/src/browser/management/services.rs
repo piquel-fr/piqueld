@@ -60,7 +60,7 @@ pub(super) fn ServiceList() -> impl IntoView {
                     .map(|service| {
                         let source = match &service.source {
                             Source::Image { image } => image.clone(),
-                            Source::Git { repository, .. } => format!("Git · {}", repository.url),
+                            Source::Git { repository, .. } => format!("Git · {repository}"),
                         };
                         let runtime = observed(&service.name);
                         view! {

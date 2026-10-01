@@ -148,10 +148,65 @@ pub enum Source {
     /// Build a checked-out Git revision.
     Git {
         /// Repository and revision to resolve.
-        repository: GitRepository,
+        repository: SourceRepository,
         /// Explicit build instructions.
         build: Build,
     },
+}
+
+impl Source {
+    /// Replaces a `"self"` repository with `manifest`, the repository it refers to.
+    pub(crate) fn resolve_manifest_repository(&mut self, manifest: &GitRepository) {
+        if let Self::Git { repository, .. } = self
+            && let SourceRepository::Manifest(_) = repository
+        {
+            *repository = SourceRepository::Git(manifest.clone());
+        }
+    }
+}
+
+/// The repository a Git build source checks out.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum SourceRepository {
+    /// `"self"`: the application's manifest repository, at the exact commit its
+    /// manifest was read from, so one deployment builds from one revision.
+    Manifest(ManifestRepository),
+    /// An independently resolved repository and revision.
+    Git(GitRepository),
+}
+
+/// Shows the repository and its requested revision.
+impl std::fmt::Display for SourceRepository {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Manifest(_) => formatter.write_str("self (manifest repository)"),
+            Self::Git(repository) => write!(
+                formatter,
+                "{} ({})",
+                repository.url,
+                repository.commit.as_ref().unwrap_or(&repository.branch)
+            ),
+        }
+    }
+}
+
+/// The literal `"self"`, selecting the manifest's own repository.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub enum ManifestRepository {
+    /// The manifest's own repository.
+    #[serde(rename = "self")]
+    Manifest,
+}
+
+/// Overrides the manifest repository revision for one deployment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
+pub enum ManifestRevision {
+    /// Resolve this branch head.
+    Branch(String),
+    /// Use this full commit hash.
+    Commit(String),
 }
 
 /// Git checkout configuration. Credentials come from the host's Git configuration.
@@ -165,6 +220,22 @@ pub struct GitRepository {
     /// Optional full commit hash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+}
+
+impl GitRepository {
+    /// Returns this repository at another branch head or commit.
+    #[must_use]
+    pub fn at(&self, revision: &ManifestRevision) -> Self {
+        let mut repository = self.clone();
+        match revision {
+            ManifestRevision::Branch(branch) => {
+                repository.branch.clone_from(branch);
+                repository.commit = None;
+            }
+            ManifestRevision::Commit(commit) => repository.commit = Some(commit.clone()),
+        }
+        repository
+    }
 }
 
 /// Explicit build backend, extensible independently from source selection.

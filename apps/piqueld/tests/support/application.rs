@@ -80,7 +80,7 @@ impl TestApplications {
         id: &ApplicationId,
         expected_generation: Option<u64>,
     ) -> Result<Operation, ApplicationError> {
-        self.submit(Mutation::Deploy { id: id.clone() }, expected_generation)
+        self.submit(Mutation::deploy(id.clone()), expected_generation)
             .await
     }
 

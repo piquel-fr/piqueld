@@ -428,11 +428,7 @@ fn source_details(source: Source) -> AnyView {
         } => view! {
             <dt>"Repository"</dt>
             <dd>
-                <code>{repository.url}</code>
-            </dd>
-            <dt>"Requested revision"</dt>
-            <dd>
-                <code>{repository.commit.unwrap_or(repository.branch)}</code>
+                <code>{repository.to_string()}</code>
             </dd>
             <dt>"Dockerfile"</dt>
             <dd>

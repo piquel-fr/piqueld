@@ -8,7 +8,8 @@ use crate::{
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use piqueld_core::{
-    InstanceId, NormalizedApplication, ResolutionSet, compile_application, manifest::Source,
+    InstanceId, NormalizedApplication, ResolutionSet, compile_application,
+    manifest::{Source, SourceRepository},
     resource::ResolvedSource,
 };
 use std::sync::Arc;
@@ -273,6 +274,12 @@ impl<D: DockerApi> ApplicationRuntime<D> {
                 })
             }
             Source::Git { repository, build } => {
+                // Deployments pin "self" before preparation; see `pin_manifest_sources`.
+                let SourceRepository::Git(repository) = repository else {
+                    return Err(BoundaryError::GitBuild(anyhow::anyhow!(
+                        "the manifest repository source has no fetched manifest commit"
+                    )));
+                };
                 let (commit, image_id) = self
                     .prepare_git(
                         application,

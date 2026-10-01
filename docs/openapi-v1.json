@@ -4191,6 +4191,13 @@
         ],
         "type": "object"
       },
+      "ManifestRepository": {
+        "description": "The literal `\"self\"`, selecting the manifest's own repository.",
+        "enum": [
+          "self"
+        ],
+        "type": "string"
+      },
       "MemoryValue": {
         "additionalProperties": false,
         "properties": {
@@ -5617,7 +5624,7 @@
                 "description": "Explicit build instructions."
               },
               "repository": {
-                "$ref": "#/components/schemas/GitRepository",
+                "$ref": "#/components/schemas/SourceRepository",
                 "description": "Repository and revision to resolve."
               },
               "type": {
@@ -5633,6 +5640,19 @@
               "type"
             ],
             "type": "object"
+          }
+        ]
+      },
+      "SourceRepository": {
+        "description": "The repository a Git build source checks out.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ManifestRepository",
+            "description": "`\"self\"`: the application's manifest repository, at the exact commit its\nmanifest was read from, so one deployment builds from one revision."
+          },
+          {
+            "$ref": "#/components/schemas/GitRepository",
+            "description": "An independently resolved repository and revision."
           }
         ]
       },
@@ -6933,7 +6953,7 @@
             }
           },
           {
-            "description": "Current intent revision; optional for reconcile, required for deployment and deletion unless forced.",
+            "description": "Current intent revision; required unless forced.",
             "in": "query",
             "name": "expected_generation",
             "required": false,
@@ -6950,6 +6970,24 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "description": "Fetch the repository manifest from this branch head, without saving it.",
+            "in": "query",
+            "name": "branch",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Fetch the repository manifest from this full commit, without saving it.",
+            "in": "query",
+            "name": "commit",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {

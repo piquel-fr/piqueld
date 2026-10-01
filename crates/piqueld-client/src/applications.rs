@@ -6,7 +6,7 @@ pub use piqueld_core::api::{
 };
 
 use crate::{
-    Client, ClientError, Envelope, Page,
+    Client, ClientError, Envelope, ManifestRevision, Page,
     client::{generated_result, invalid_request},
 };
 
@@ -331,17 +331,24 @@ impl Client {
 }
 
 impl Client {
-    /// Deploys exactly the inspected saved configuration revision.
+    /// Deploys exactly the inspected saved configuration revision. `revision`
+    /// fetches a repository manifest from another branch or commit, once.
     /// # Errors
     /// Returns transport, API, or revision conflict errors.
     pub async fn deploy_application(
         &self,
         id: &str,
         expected: u64,
+        revision: Option<&ManifestRevision>,
     ) -> Result<AcceptedOperation, ClientError> {
+        let (branch, commit) = match revision {
+            None => (None, None),
+            Some(ManifestRevision::Branch(branch)) => (Some(branch.as_str()), None),
+            Some(ManifestRevision::Commit(commit)) => (None, Some(commit.as_str())),
+        };
         generated_result(
             self.generated
-                .deploy_application(id, Some(expected), None, None)
+                .deploy_application(id, branch, commit, Some(expected), None, None)
                 .await,
         )
         .await

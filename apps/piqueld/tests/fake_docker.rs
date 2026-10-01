@@ -1660,9 +1660,7 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
         .apply(input.clone().validate().unwrap(), Some(0))
         .await
         .unwrap();
-    let deploy = || Mutation::Deploy {
-        id: first.application_id.clone(),
-    };
+    let deploy = || Mutation::deploy(first.application_id.clone());
     let MutationResponse::Operation(replacement) = applications
         .accept(deploy(), None, true, None)
         .await
@@ -1796,7 +1794,9 @@ mod repository_deployments {
     use super::*;
     use piqueld::api::{ApplicationError, Mutation, MutationResponse};
     use piqueld::store::StoreError;
-    use piqueld_core::manifest::{ApplicationManifest, GitRepository, RepositoryManifest};
+    use piqueld_core::manifest::{
+        ApplicationManifest, GitRepository, ManifestRevision, RepositoryManifest, SourceRepository,
+    };
 
     impl git_fixture::GitBuildFixture {
         pub fn failing_source(&self) -> piqueld_core::Source {
@@ -1869,9 +1869,24 @@ mod repository_deployments {
             self.git(&["rev-parse", "HEAD"])
         }
         async fn deploy(harness: &ControllerHarness, id: &ApplicationId) -> Operation {
+            Self::deploy_revision(harness, id, None).await
+        }
+        async fn deploy_revision(
+            harness: &ControllerHarness,
+            id: &ApplicationId,
+            revision: Option<ManifestRevision>,
+        ) -> Operation {
             let MutationResponse::Operation(accepted) = harness
                 .applications()
-                .accept(Mutation::Deploy { id: id.clone() }, None, true, None)
+                .accept(
+                    Mutation::Deploy {
+                        id: id.clone(),
+                        revision,
+                    },
+                    None,
+                    true,
+                    None,
+                )
                 .await
                 .unwrap()
             else {
@@ -2056,6 +2071,65 @@ mod repository_deployments {
     }
 
     #[tokio::test]
+    async fn self_sources_build_the_manifest_commit_including_one_time_branches() {
+        let repository = RepositoryFixture::new();
+        let harness = ControllerHarness::new().await;
+        let mut fetched = repository.manifest("app.json");
+        fetched.spec.services[0].source = piqueld_core::Source::Git {
+            repository: SourceRepository::Manifest(
+                piqueld_core::manifest::ManifestRepository::Manifest,
+            ),
+            build: piqueld_core::manifest::Build::Docker {
+                dockerfile: "Dockerfile".into(),
+                context: ".".into(),
+            },
+        };
+        repository.write("app.json", &fetched);
+        std::fs::write(
+            repository.directory.path().join("Dockerfile"),
+            "FROM alpine:3.20\n",
+        )
+        .unwrap();
+        let main = repository.commit();
+        repository.git(&["checkout", "-b", "feature"]);
+        std::fs::write(
+            repository.directory.path().join("Dockerfile"),
+            "FROM alpine:3.21\n",
+        )
+        .unwrap();
+        let feature = repository.commit();
+        repository.git(&["checkout", "main"]);
+        let mut bootstrap = repository.manifest("app.json");
+        bootstrap.spec.services.clear();
+        let saved = harness
+            .applications()
+            .save(bootstrap.validate().unwrap(), Some(0))
+            .await
+            .unwrap();
+        let application_id = ApplicationId::parse(saved.application_id).unwrap();
+        // The override is not saved, and saved configuration keeps "self".
+        let expected_spec = fetched
+            .validate()
+            .unwrap()
+            .normalize(application_id.clone())
+            .to_manifest()
+            .spec;
+        for (revision, expected) in [
+            (Some(ManifestRevision::Branch("feature".into())), feature),
+            (None, main),
+        ] {
+            let deployment =
+                RepositoryFixture::deploy_revision(&harness, &application_id, revision).await;
+            assert_eq!(deployment.state, OperationState::Succeeded);
+            let stored = harness.store.get(&application_id).await.unwrap();
+            assert!(
+                matches!(&stored.resolved.unwrap().services[0].source, ResolvedSource::Git { commit, .. } if commit == &expected)
+            );
+            assert_eq!(stored.application.to_manifest().spec, expected_spec);
+        }
+    }
+
+    #[tokio::test]
     async fn bootstrap_can_pin_manifest_revision_independently_from_git_build_revision() {
         let repository = RepositoryFixture::new();
         let harness = ControllerHarness::new().await;
@@ -2068,11 +2142,11 @@ mod repository_deployments {
         let build_commit = build_repository.commit();
         let mut fetched = repository.manifest("app.json");
         fetched.spec.services[0].source = piqueld_core::Source::Git {
-            repository: GitRepository {
+            repository: piqueld_core::manifest::SourceRepository::Git(GitRepository {
                 url: build_repository.directory.path().display().to_string(),
                 branch: "main".into(),
                 commit: Some(build_commit.clone()),
-            },
+            }),
             build: piqueld_core::manifest::Build::Docker {
                 dockerfile: "Dockerfile".into(),
                 context: ".".into(),

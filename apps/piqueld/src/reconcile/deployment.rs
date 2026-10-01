@@ -3,7 +3,8 @@ use super::{Controller, DockerApi, Operation, OperationError};
 use piqueld_core::NormalizedApplication;
 
 impl<D: DockerApi> Controller<D> {
-    /// Resolves the manifest an operation should deploy.
+    /// Resolves the manifest an operation should deploy, with `"self"` sources
+    /// pinned to the commit its manifest was fetched from.
     ///
     /// Operations without a captured deployment input use `current`. A fetched
     /// input is reused so retries never re-read a moving branch. Otherwise, when
@@ -20,7 +21,10 @@ impl<D: DockerApi> Controller<D> {
             return Ok(current.clone());
         };
         if input.fetched {
-            return Ok(input.application);
+            return Ok(match &input.commit {
+                Some(commit) => input.application.pin_manifest_sources(commit),
+                None => input.application,
+            });
         }
         let Some(backing) = &input.application.spec().manifest else {
             self.store
@@ -90,6 +94,6 @@ impl<D: DockerApi> Controller<D> {
         self.store
             .save_deployment_input(operation, &application, Some(&checkout.commit))
             .await?;
-        Ok(application)
+        Ok(application.pin_manifest_sources(&checkout.commit))
     }
 }

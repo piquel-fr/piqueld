@@ -14,6 +14,8 @@ use sqlx::{Sqlite, Transaction};
 pub(crate) struct DeploymentInput {
     pub(crate) application: NormalizedApplication,
     pub(crate) fetched: bool,
+    /// Commit the fetched manifest was read from.
+    pub(crate) commit: Option<String>,
 }
 
 impl Store {
@@ -41,7 +43,7 @@ impl Store {
         operation: &Operation,
     ) -> Result<Option<DeploymentInput>, StoreError> {
         sqlx::query!(
-            "SELECT application_json,fetched FROM deployment_inputs WHERE operation_id=?1",
+            "SELECT application_json,fetched,repository_commit FROM deployment_inputs WHERE operation_id=?1",
             operation.id
         )
         .fetch_optional(&self.pool)
@@ -52,6 +54,7 @@ impl Store {
                 application: serde_json::from_str(&row.application_json)
                     .map_err(StoreError::corrupt)?,
                 fetched: row.fetched != 0,
+                commit: row.repository_commit,
             })
         })
         .transpose()

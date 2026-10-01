@@ -623,13 +623,17 @@ impl Client {
 
     Arguments:
     - `id`
-    - `expected_generation`: Current intent revision; optional for reconcile, required for deployment and deletion unless forced.
+    - `branch`: Fetch the repository manifest from this branch head, without saving it.
+    - `commit`: Fetch the repository manifest from this full commit, without saving it.
+    - `expected_generation`: Current intent revision; required unless forced.
     - `force`: Explicitly bypass intent preconditions.
     - `idempotency_key`
     */
     pub async fn deploy_application<'a>(
         &'a self,
         id: &'a str,
+        branch: Option<&'a str>,
+        commit: Option<&'a str>,
         expected_generation: Option<u64>,
         force: Option<bool>,
         idempotency_key: Option<&'a str>,
@@ -658,6 +662,8 @@ impl Client {
                 ::reqwest::header::ACCEPT,
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
+            .query(&progenitor_client::QueryParam::new("branch", &branch))
+            .query(&progenitor_client::QueryParam::new("commit", &commit))
             .query(&progenitor_client::QueryParam::new(
                 "expected_generation",
                 &expected_generation,

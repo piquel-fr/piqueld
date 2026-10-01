@@ -95,7 +95,9 @@ async fn app(
         AppCommand::Plan(args) => plan_command(console, client, args).await,
         AppCommand::Apply(args) => apply(cli, client, console, args).await,
         AppCommand::Delete(args) => delete(cli, client, console, args).await,
-        AppCommand::Reconcile(args) => reconcile_or_deploy(cli, client, console, args, false).await,
+        AppCommand::Reconcile(args) => {
+            reconcile_or_deploy(cli, client, console, args, Intent::Reconcile).await
+        }
         AppCommand::Rename(args) => {
             crate::editing::save(
                 cli,
@@ -107,7 +109,10 @@ async fn app(
             )
             .await
         }
-        AppCommand::Deploy(args) => reconcile_or_deploy(cli, client, console, args, true).await,
+        AppCommand::Deploy(args) => {
+            let intent = Intent::Deploy(args.revision());
+            reconcile_or_deploy(cli, client, console, &args.target, intent).await
+        }
         AppCommand::Create(args) => crate::editing::create(cli, client, console, args).await,
         AppCommand::Service { command } => command.run(cli, client, console).await,
         AppCommand::Volume { command } => command.run(cli, client, console).await,
@@ -519,18 +524,27 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
     }
 }
 
+/// What `reconcile_or_deploy` requests for the latest accepted intent.
+enum Intent {
+    /// Repair the latest deployment without refreshing sources.
+    Reconcile,
+    /// Deploy saved configuration, optionally from a one-time manifest revision.
+    Deploy(Option<piqueld_client::ManifestRevision>),
+}
+
 /// Shared `app reconcile` / `app deploy` flow. Reconcile repairs the latest saved
-/// intent (generation check optional); deploy re-resolves sources and always sends an
-/// expected generation, defaulting to the current one. Waits unless `--no-wait`.
+/// intent (generation check optional); deploy re-resolves sources, optionally from a
+/// one-time manifest revision, and always sends an expected generation, defaulting to
+/// the current one. Waits unless `--no-wait`.
 async fn reconcile_or_deploy(
     cli: &Cli,
     client: &Client,
     console: &mut Console,
     args: &ReconcileArgs,
-    deploy: bool,
+    intent: Intent,
 ) -> Result<()> {
     let application = resolve_application(client, &args.name_or_id).await?;
-    let action = if deploy {
+    let action = if matches!(intent, Intent::Deploy(_)) {
         "Deploy"
     } else {
         "Reconcile current intent for"
@@ -547,11 +561,12 @@ async fn reconcile_or_deploy(
     .await?;
     let id = application.application.id().as_str();
     let accepted = retry_transport(|| async {
-        if deploy {
+        if let Intent::Deploy(revision) = &intent {
             client
                 .deploy_application(
                     id,
                     args.expected_generation.unwrap_or(application.generation),
+                    revision.as_ref(),
                 )
                 .await
         } else {
