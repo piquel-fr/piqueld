@@ -606,6 +606,11 @@ fn logical_name_is_an_alias_only_on_the_private_network() {
         attachment.aliases.clear();
     }
     assert!(!unaliased.services[0].matches(&desired.services[0]));
+
+    // The shared gateway joins the ingress network, so an alias there is drift.
+    let mut exposed = observed(&desired);
+    exposed.services[0].networks[1].aliases = vec!["web".into()];
+    assert!(!exposed.services[0].matches(&desired.services[0]));
 }
 
 #[test]

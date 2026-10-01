@@ -218,9 +218,10 @@ A future user-deployed Prometheus/collector/Grafana application needs:
    log-shipping protocol.
 3. Monitoring configuration and Grafana provisioning, either baked into images or
    supplied through a future file/config mounting feature.
-4. Network reachability among its services and browser access to Grafana. Published
-   ports and stable service aliases would make this straightforward; otherwise
-   users must arrange access and use available runtime service names themselves.
+4. Browser access to Grafana. Services reach each other by manifest name on the
+   application's private network (for example `prometheus:9090`); published
+   ports would make external access straightforward, otherwise users must
+   arrange it themselves.
 5. External retention, dashboards, rules and credentials managed by that
    application/operator.
 

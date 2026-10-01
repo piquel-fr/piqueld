@@ -3,9 +3,9 @@ use super::{
     DesiredVolume, DockerApi, DockerError, DockerTimeout, HashMap, InspectNetworkOptions,
     InspectServiceOptions, Ipam, ListNetworksOptionsBuilder, ListServicesOptionsBuilder,
     ListTasksOptionsBuilder, ListVolumesOptionsBuilder, NetworkCreateRequest,
-    OBSERVATION_INSPECT_CONCURRENCY, ObservedApplication, ObservedNetwork, ObservedVolume,
-    ResourceKind, StreamExt, SwarmInitRequest, SwarmState, TryStreamExt, VolumeCreateOptions,
-    async_trait, resolve_image_digest, stream,
+    OBSERVATION_INSPECT_CONCURRENCY, ObservedApplication, ObservedNetwork, ObservedService,
+    ObservedVolume, ResourceKind, StreamExt, SwarmInitRequest, SwarmState, TryStreamExt,
+    VolumeCreateOptions, async_trait, resolve_image_digest, stream,
 };
 
 /// Inspections attempted before an incomplete network response is an error.
@@ -287,13 +287,18 @@ impl BollardDocker {
             })
             .collect::<Result<Vec<_>, _>>()?;
         for service in &mut services {
-            for attachment in &mut service.networks {
-                if let Some(name) = network_names.get(&attachment.network) {
-                    attachment.network = name.clone();
-                }
-            }
+            Self::name_networks(service, network_names);
         }
         Ok(services)
+    }
+
+    /// Docker reports attachment targets as network IDs; planning compares names.
+    fn name_networks(service: &mut ObservedService, network_names: &HashMap<String, String>) {
+        for attachment in &mut service.networks {
+            if let Some(name) = network_names.get(&attachment.network) {
+                attachment.network = name.clone();
+            }
+        }
     }
 
     /// List responses can omit immutable network fields, so reconciliation
@@ -719,11 +724,7 @@ impl DockerApi for BollardDocker {
                                 .into_iter()
                                 .filter_map(|network| Some((network.id?, network.name?)))
                                 .collect::<HashMap<_, _>>();
-                            for attachment in &mut observed.networks {
-                                if let Some(name) = network_names.get(&attachment.network) {
-                                    attachment.network = name.clone();
-                                }
-                            }
+                            Self::name_networks(&mut observed, &network_names);
                             if observed.matches(desired) {
                                 return Ok(());
                             }
