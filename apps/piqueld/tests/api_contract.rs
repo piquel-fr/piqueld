@@ -1896,7 +1896,10 @@ async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
     let keyed = api.client.clone().with_request_id("atomic-command");
     let request = AcceptanceApi::request();
     assert!(keyed.apply_and_deploy(&request).await.is_err());
-    assert!(api.store.list(None, 50).await.unwrap().items.is_empty());
+    assert_eq!(
+        api.store.list(None, 50).await.unwrap().items,
+        [] as [piqueld::store::StoredApplication; 0]
+    );
     sqlx::query("DROP TRIGGER reject_receipt")
         .execute(&mut connection)
         .await
@@ -2618,14 +2621,14 @@ impl RawResponse {
         if self.status.is_client_error() || self.status.is_server_error() {
             let error: piqueld_core::api::ErrorBody =
                 serde_json::from_value(self.body.clone()).unwrap();
-            assert!(!error.code.is_empty());
-            assert!(!error.message.is_empty());
+            assert_ne!(error.code, "");
+            assert_ne!(error.message, "");
             let header_id = self
                 .headers
                 .get("x-request-id")
                 .and_then(|value| value.to_str().ok())
                 .expect("request ID header");
-            assert!(!header_id.is_empty());
+            assert_ne!(header_id, "");
             assert_eq!(error.request_id, header_id);
         }
     }
@@ -2989,7 +2992,7 @@ async fn route_field_edits_follow_service_renames_and_removals() {
         )
         .await
         .unwrap();
-    assert!(
+    assert_eq!(
         api.client
             .application(id)
             .await
@@ -2997,8 +3000,8 @@ async fn route_field_edits_follow_service_renames_and_removals() {
             .application
             .to_manifest()
             .spec
-            .routes
-            .is_empty()
+            .routes,
+        [] as [piqueld_client::Route; 0]
     );
 }
 
@@ -3526,12 +3529,12 @@ async fn field_edit_resource_lifecycle_rejects_referenced_volume_removal() {
     );
     api.edit_service_field(id, ServiceEdit::RemoveMount("/var/lib/data".into()))
         .await;
-    assert!(
+    assert_eq!(
         api.edit_field(id, ApplicationEdit::RemoveVolume("data".into()))
             .await
             .spec
-            .volumes
-            .is_empty()
+            .volumes,
+        [] as [piqueld_core::Volume; 0]
     );
     api.edit_service_field(
         id,
@@ -3548,12 +3551,12 @@ async fn field_edit_resource_lifecycle_rejects_referenced_volume_removal() {
         .edit_service_field(id, ServiceEdit::Name("worker".into()))
         .await;
     assert_eq!(renamed.name, "worker");
-    assert!(
+    assert_eq!(
         api.edit_field(id, ApplicationEdit::RemoveService("worker".into()))
             .await
             .spec
-            .services
-            .is_empty()
+            .services,
+        [] as [piqueld_core::Service; 0]
     );
     assert_eq!(
         api.edit_field(id, ApplicationEdit::Name("renamed".into()))

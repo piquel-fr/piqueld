@@ -605,12 +605,9 @@ impl Scenario {
             .await
             .unwrap();
         upgraded.synchronize_for(Some(&self.first)).await.unwrap();
-        assert!(
-            self.store
-                .applied_routes(&self.first)
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            self.store.applied_routes(&self.first).await.unwrap(),
+            [] as [piqueld_core::manifest::ValidatedRoute; 0]
         );
         assert_eq!(
             self.client
@@ -852,7 +849,10 @@ impl Scenario {
             changed.validate().unwrap().normalize(self.first.clone()),
         )
         .await;
-        assert!(self.store.routing_table().await.unwrap()[&self.first].is_empty());
+        assert_eq!(
+            self.store.routing_table().await.unwrap()[&self.first],
+            [] as [piqueld_core::manifest::ValidatedRoute; 0]
+        );
         assert_eq!(
             self.docker.observe(&self.first).await.unwrap().services[0]
                 .networks

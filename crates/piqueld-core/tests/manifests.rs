@@ -708,7 +708,7 @@ fn manifest_json_schema_is_self_contained() {
     let schema = piqueld_core::manifest::ApplicationManifest::json_schema();
     let mut found = Vec::new();
     references(&schema, &mut found);
-    assert!(!found.is_empty());
+    assert_ne!(found, [] as [std::string::String; 0]);
     for reference in found {
         let name = reference
             .strip_prefix("#/definitions/")
