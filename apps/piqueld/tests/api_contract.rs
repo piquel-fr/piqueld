@@ -3851,6 +3851,7 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
 async fn every_documented_operation_requires_authentication() {
     const PUBLIC: &[&str] = &[
         "/api/v1/auth/status",
+        "/api/v1/auth/setup-link",
         "/api/v1/auth/register/start",
         "/api/v1/auth/register/finish",
         "/api/v1/auth/login/start",
@@ -3924,6 +3925,41 @@ async fn every_documented_operation_requires_authentication() {
         }
     }
     assert!(checked > 60, "only {checked} operations were checked");
+}
+
+/// Before the first account exists, only the Unix socket reveals the setup link.
+#[tokio::test]
+async fn setup_link_is_served_only_over_the_unix_socket() {
+    let temp = TempDir::new().unwrap();
+    let state = state(&temp).await;
+    let store = Store::open(temp.path().join("state.db")).await.unwrap();
+    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let path = temp.path().join("setup-link");
+    auth.prepare_setup(&path).await.unwrap();
+    let link = std::fs::read_to_string(&path).unwrap();
+    for (listener, status) in [
+        (
+            web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth.clone()),
+            404,
+        ),
+        (api_router(state.clone(), auth.clone()), 200),
+    ] {
+        let response = listener
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/auth/setup-link")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        if status == 200 {
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let setup: piqueld_core::auth::SetupLink = serde_json::from_slice(&body).unwrap();
+            assert_eq!(setup.url, link.trim());
+        }
+    }
 }
 
 /// Authentication short circuits still use the common error correlation layers,

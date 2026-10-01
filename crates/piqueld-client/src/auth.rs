@@ -9,6 +9,12 @@ impl Client {
     pub async fn auth_status(&self) -> Result<AuthStatus, ClientError> {
         crate::client::generated_result(self.generated.auth_status().await).await
     }
+    /// Returns the first-account setup link. Only the daemon's Unix socket serves it.
+    /// # Errors
+    /// Returns setup-completed, transport, decoding, or API failures.
+    pub async fn auth_setup_link(&self) -> Result<SetupLink, ClientError> {
+        crate::client::generated_result(self.generated.auth_setup_link().await).await
+    }
     /// Returns the signed-in account.
     /// # Errors
     /// Returns authentication, transport, decoding, or API failures.

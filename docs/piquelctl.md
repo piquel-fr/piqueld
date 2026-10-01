@@ -258,7 +258,9 @@ interrupted.
 The dashboard provides application management forms and recent application logs. Remote
 registry management and advanced interactive CLI flows remain future work.
 
-Use `piquelctl login` for passkey login through the browser, `whoami` to inspect
+Use `piquelctl setup-link` on the daemon host to print the first-account setup
+link (`--open` also opens it in the default browser); only the Unix socket serves
+it. Use `piquelctl login` for passkey login through the browser, `whoami` to inspect
 the current account, and `logout` to revoke it. Saved credentials are separate
 from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
 a saved account. See [authentication](authentication.md) for details.

@@ -15,9 +15,10 @@ The first account has no special privileges. There is no account recovery flow.
    and any SQLite `-wal`/`-shm` files. Keep the previous binary and configuration.
    The new daemon migrates the database on startup; an older binary rejects the
    newer schema. Replacing the binary alone is not a supported rollback.
-3. Start the upgraded daemon, open its private `setup-link`, and create the first
-   account. Existing applications continue reconciling, but all API clients now
-   need credentials, including clients connecting over a Unix socket.
+3. Start the upgraded daemon, open the link printed by `piquelctl setup-link`, and
+   create the first account. Existing applications continue reconciling, but all
+   API clients now need credentials, including clients connecting over a Unix
+   socket.
 4. Run `piquelctl login` for interactive clients. Create automation tokens and
    update scripts, deployment jobs, and API health checks that previously used
    anonymous access. TCP `/health` remains public. Verify a browser edit and an
@@ -52,12 +53,17 @@ browser context; remote browser access still needs an HTTPS hostname.
 
 Before the first account exists, the API exposes only authentication/setup
 endpoints (plus static website assets, TCP `/health`, and the optional
-metrics-only listener). Startup writes a private
-`<data_dir>/setup-link` file, mode `0600`. Open that link, choose a username and
-optional display name, and register a passkey. The account, passkey, and permanent
-closure of initial setup commit together. The link becomes invalid immediately;
-the file is removed on the next startup. A restart before registration preserves
-the valid link. Initial setup never reopens automatically.
+metrics-only listener). Run `piquelctl setup-link` on the daemon host to print
+the setup link, or add `--open` to also open it in the default browser. The daemon
+serves the link only over its Unix socket, whose group-restricted access is the
+trust boundary; TCP listeners return 404, and after setup it reports that setup is
+already completed. Startup also writes the link to a private
+`<data_dir>/setup-link` file, mode `0600`, for installations without CLI access.
+Open the link, choose a username and optional display name, and register a
+passkey. The account, passkey, and permanent closure of initial setup commit
+together. The link becomes invalid immediately; the file is removed on the next
+startup. A restart before registration preserves the valid link. Initial setup
+never reopens automatically.
 
 Passkeys use discoverable credentials, so subsequent login starts directly with
 “Sign in with a passkey”; typing a username is unnecessary. Authenticators must

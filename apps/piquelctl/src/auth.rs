@@ -4,7 +4,10 @@ use crate::{
     error::{CliError, ErrorKind, Result},
     output::{Console, HumanWriter, Report},
 };
-use piqueld_client::{Client, auth::User};
+use piqueld_client::{
+    Client,
+    auth::{SetupLink, User},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -229,6 +232,54 @@ impl Report for AccountReport {
         out.line(format_args!("{} ({})", self.0.username, self.0.id))
     }
 }
+/// First-account setup link; human output is the bare URL so it can be piped.
+pub(crate) struct SetupLinkReport(pub SetupLink);
+impl Report for SetupLinkReport {
+    type Json = SetupLink;
+    fn json(&self) -> &SetupLink {
+        &self.0
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> std::io::Result<()> {
+        out.line(&self.0.url)
+    }
+}
+/// Prints the first-account setup link and optionally opens it in a browser.
+/// The daemon serves it only over its Unix socket, so TCP endpoints are refused locally.
+pub(crate) async fn setup_link(
+    cli: &Cli,
+    client: &Client,
+    console: &mut Console,
+    open: bool,
+) -> Result<()> {
+    if cli.url.is_some() {
+        return Err(CliError::new(
+            ErrorKind::Input,
+            "setup-link is only served over the daemon's Unix socket; use --socket",
+        ));
+    }
+    let report = SetupLinkReport(client.auth_setup_link().await?);
+    console.emit(&report)?;
+    if open {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        std::process::Command::new(opener)
+            .arg(&report.0.url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                CliError::new(
+                    ErrorKind::General,
+                    format!("could not open a browser with {opener}: {error}"),
+                )
+            })?;
+    }
+    Ok(())
+}
 /// Runs the browser device-code login:
 /// 1. Refuses when the daemon has no first account yet (that needs the setup link).
 /// 2. Starts a device login and prints the verification URL, code, and requester address.
@@ -243,7 +294,7 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
     if !status.initialized {
         return Err(CliError::new(
             ErrorKind::Input,
-            "daemon needs its first account; open the setup-link file from its data directory in a browser",
+            "daemon needs its first account; run piquelctl setup-link on the daemon host",
         ));
     }
     let start = client.auth_device_start().await?;

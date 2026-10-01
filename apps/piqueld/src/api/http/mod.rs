@@ -86,6 +86,14 @@ impl ApiError {
             diagnostic: None,
         }
     }
+    fn endpoint_not_found() -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            "endpoint_not_found",
+            "API endpoint was not found",
+        )
+    }
+
     /// Attaches structured `details` to the error body.
     fn details(mut self, details: Value) -> Self {
         self.details = details;
@@ -382,10 +390,16 @@ pub fn router(state: ApiState, auth: impl Authenticator) -> Router {
     web_router(state, UiAssets::resolve(), auth)
 }
 
+/// Marks requests that arrived over the Unix socket, whose group-restricted
+/// access is trusted to retrieve the first-account setup link.
+#[derive(Clone, Copy)]
+struct UnixSocket;
+
 /// Builds the API-only router used by the Unix-socket client transport.
 pub fn api_router(state: ApiState, auth: impl Authenticator) -> Router {
     let (router, openapi) = documented_router().split_for_parts();
     finish_router(router.fallback(api_fallback), state, &openapi, auth, None)
+        .layer(Extension(UnixSocket))
 }
 
 /// Builds the TCP router from the API, liveness, and optional UI boundaries,
@@ -490,6 +504,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::with_openapi(openapi::base_document())
         .merge(editing::router())
         .routes(routes!(auth::status))
+        .routes(routes!(auth::setup_link))
         .routes(routes!(auth::me))
         .routes(routes!(auth::register_start))
         .routes(routes!(auth::register_finish))
@@ -649,12 +664,7 @@ async fn ui_fallback(bundle: &'static EmbeddedBundle, request: Request) -> Respo
 /// plain 404 otherwise.
 async fn api_fallback(request: Request) -> Response {
     if ui::is_api_path(request.uri().path()) {
-        return ApiError::new(
-            StatusCode::NOT_FOUND,
-            "endpoint_not_found",
-            "API endpoint was not found",
-        )
-        .into_response();
+        return ApiError::endpoint_not_found().into_response();
     }
     ui::not_found()
 }

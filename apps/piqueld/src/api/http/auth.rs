@@ -11,7 +11,7 @@ use axum::{
 };
 use piqueld_core::auth::{
     AuthStatus, Ceremony, CeremonyFinish, DeviceApprove, DevicePoll, DeviceRequest, DeviceStart,
-    DeviceToken, Directory, Manage, Managed, RegistrationStart, User,
+    DeviceToken, Directory, Manage, Managed, RegistrationStart, SetupLink, User,
 };
 use std::net::SocketAddr;
 
@@ -54,6 +54,11 @@ impl From<AuthError> for ApiError {
                 "authentication_busy",
                 "Too many authentication requests; try again shortly",
             ),
+            AuthError::SetupCompleted => Self::new(
+                StatusCode::CONFLICT,
+                "setup_completed",
+                "First-account setup is already completed; run piquelctl login",
+            ),
             AuthError::Store(StoreError::AlreadyExists) => Self::new(
                 StatusCode::CONFLICT,
                 "account_conflict",
@@ -94,6 +99,7 @@ pub(super) fn is_public(path: &str) -> bool {
     matches!(
         path,
         "/api/v1/auth/status"
+            | "/api/v1/auth/setup-link"
             | "/api/v1/auth/register/start"
             | "/api/v1/auth/register/finish"
             | "/api/v1/auth/login/start"
@@ -229,6 +235,20 @@ fn challenge_response(auth: &Auth, ceremony: Ceremony, binding: &str) -> Respons
 #[utoipa::path(get,path="/api/v1/auth/status",operation_id="authStatus",responses((status=200,body=AuthStatus)))]
 pub(super) async fn status(Extension(auth): Extension<Auth>) -> Result<Json<AuthStatus>, ApiError> {
     Ok(Json(auth.status().await?))
+}
+/// Gets the first-account setup link.
+///
+/// Public, but served only over the Unix socket, whose group access is the trust boundary; other transports return 404. Returns 409 once the first account exists.
+#[utoipa::path(get,path="/api/v1/auth/setup-link",operation_id="authSetupLink",responses((status=200,body=SetupLink),(status=404,response=inline(super::openapi::ApiErrorResponse)),
+    (status=409,response=inline(super::openapi::ApiErrorResponse))))]
+pub(super) async fn setup_link(
+    Extension(auth): Extension<Auth>,
+    unix: Option<Extension<super::UnixSocket>>,
+) -> Result<Json<SetupLink>, ApiError> {
+    if unix.is_none() {
+        return Err(ApiError::endpoint_not_found());
+    }
+    Ok(Json(auth.setup_link().await?))
 }
 /// Gets the signed-in user.
 #[utoipa::path(get,path="/api/v1/auth/me",operation_id="authMe",responses((status=200,body=User)))]

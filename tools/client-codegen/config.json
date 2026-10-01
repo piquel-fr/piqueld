@@ -251,6 +251,11 @@
       "rustType": "piqueld_core::auth::AuthStatus"
     },
     {
+      "schema": "SetupLink",
+      "name": "SetupLink",
+      "rustType": "piqueld_core::auth::SetupLink"
+    },
+    {
       "schema": "RegistrationStart",
       "name": "RegistrationStart",
       "rustType": "piqueld_core::auth::RegistrationStart"
