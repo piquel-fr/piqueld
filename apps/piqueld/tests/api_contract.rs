@@ -3948,6 +3948,7 @@ async fn setup_link_is_served_only_over_the_unix_socket() {
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/auth/setup-link")
+                    .header("host", "localhost")
                     .body(Body::empty())
                     .unwrap(),
             )
