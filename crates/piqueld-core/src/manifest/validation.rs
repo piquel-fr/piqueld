@@ -30,6 +30,42 @@ const MAX_MOUNTS_PER_SERVICE: usize = 32;
 const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
 const MAX_CPU_MILLIS: u32 = 1_048_576;
 
+impl Build {
+    /// Validates build inputs without reading the checkout.
+    pub fn validate(&self, path: &str, errors: &mut Vec<ValidationError>) {
+        let Self::Docker {
+            dockerfile,
+            context,
+            args,
+            target,
+        } = self;
+        for (field, value) in [("dockerfile", dockerfile), ("context", context)] {
+            if !valid_repository_path(value) {
+                error(
+                    errors,
+                    "repository_path_invalid",
+                    &format!("{path}.{field}"),
+                    "path must be relative to the repository root and remain within it",
+                );
+            }
+        }
+        VariableMap::BUILD_ARGS.validate(args, path, errors);
+        if target
+            .as_deref()
+            .is_some_and(|target| !valid_build_target(target))
+        {
+            error(
+                errors,
+                codes::BUILD_TARGET_INVALID,
+                &format!("{path}.target"),
+                &format!(
+                    "build target must start with a letter, use letters, digits, '-', '_', or '.', and be at most {MAX_IDENTIFIER_BYTES} bytes"
+                ),
+            );
+        }
+    }
+}
+
 impl GitRepository {
     /// Validates Git arguments without executing Git.
     ///
@@ -499,42 +535,9 @@ fn validate_services(
                 "image must be a valid registry reference without credentials or a URL scheme",
             );
         }
-        if let Source::Git {
-            repository,
-            build:
-                Build::Docker {
-                    dockerfile,
-                    context,
-                    args,
-                    target,
-                },
-        } = &service.source
-        {
+        if let Source::Git { repository, build } = &service.source {
             repository.validate(&format!("{base}.source.repository"), errors);
-            for (field, value) in [("dockerfile", dockerfile), ("context", context)] {
-                if !valid_repository_path(value) {
-                    error(
-                        errors,
-                        "repository_path_invalid",
-                        &format!("{base}.source.build.{field}"),
-                        "path must be relative to the repository root and remain within it",
-                    );
-                }
-            }
-            VariableMap::BUILD_ARGS.validate(args, &base, errors);
-            if target
-                .as_deref()
-                .is_some_and(|target| !valid_build_target(target))
-            {
-                error(
-                    errors,
-                    codes::BUILD_TARGET_INVALID,
-                    &format!("{base}.source.build.target"),
-                    &format!(
-                        "build target must start with a letter, use letters, digits, '-', '_', or '.', and be at most {MAX_IDENTIFIER_BYTES} bytes"
-                    ),
-                );
-            }
+            build.validate(&format!("{base}.source.build"), errors);
         }
         let mut targets = service
             .mounts
@@ -600,7 +603,7 @@ fn validate_services(
 struct VariableMap {
     /// Human-readable entry kind used in messages.
     noun: &'static str,
-    /// Field path below the service.
+    /// Field name below the validated path.
     field: &'static str,
     name_invalid: &'static str,
     value_invalid: &'static str,
@@ -619,7 +622,7 @@ impl VariableMap {
     };
     const BUILD_ARGS: Self = Self {
         noun: "build argument",
-        field: "source.build.args",
+        field: "args",
         name_invalid: codes::BUILD_ARG_NAME_INVALID,
         value_invalid: codes::BUILD_ARG_VALUE_INVALID,
         count_excessive: codes::BUILD_ARG_COUNT_EXCESSIVE,
