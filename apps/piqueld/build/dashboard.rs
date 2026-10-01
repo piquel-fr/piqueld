@@ -136,9 +136,19 @@ impl Dashboard {
     /// The nested Cargo must never share this build's target directory: the
     /// outer Cargo holds its build-directory lock until the build script
     /// returns, so sharing would deadlock. It compiles into a sibling
-    /// directory instead, and Cargo's jobserver and flag plumbing are stripped
-    /// because they describe the host build rather than the wasm build.
+    /// directory instead. Cargo's jobserver, flag, wrapper, and profile
+    /// overrides are stripped because they describe the host build rather
+    /// than the wasm build, which the `dashboard` profile alone defines.
     fn compile(&self) -> Result<PathBuf, Box<dyn Error>> {
+        const HOST_SETTINGS: [&str; 7] = [
+            "CARGO_MAKEFLAGS",
+            "RUSTFLAGS",
+            "RUSTDOCFLAGS",
+            "CARGO_ENCODED_RUSTFLAGS",
+            "CARGO_BUILD_RUSTFLAGS",
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+        ];
         let cargo = env::var_os("CARGO")
             .ok_or("Cargo did not provide CARGO to the piqueld build script")?;
         let target_dir = self.nested_target_dir()?;
@@ -146,18 +156,20 @@ impl Dashboard {
             "cargo:warning=building embedded dashboard bundle (nested target dir: {})",
             target_dir.display()
         );
-        let output = Command::new(cargo)
+        let mut command = Command::new(cargo);
+        command
             .current_dir(&self.ui_dir)
             .args(["build", "--locked", "--package", "piqueld-ui"])
             .args(["--profile", Self::PROFILE, "--target", Self::TARGET])
-            .env_remove("CARGO_MAKEFLAGS")
-            .env_remove("RUSTFLAGS")
-            .env_remove("RUSTDOCFLAGS")
-            .env_remove("CARGO_ENCODED_RUSTFLAGS")
-            .env_remove("RUSTC_WRAPPER")
-            .env_remove("RUSTC_WORKSPACE_WRAPPER")
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .output()?;
+            .env("CARGO_TARGET_DIR", &target_dir);
+        for (key, _) in env::vars_os() {
+            if key.to_str().is_some_and(|key| {
+                HOST_SETTINGS.contains(&key) || key.starts_with("CARGO_PROFILE_")
+            }) {
+                command.env_remove(key);
+            }
+        }
+        let output = command.output()?;
         if !output.status.success() {
             return Err(io::Error::other(format!(
                 "cargo failed to build the dashboard; is the {target} target installed \
