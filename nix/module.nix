@@ -16,7 +16,8 @@ let
         server.data_dir = cfg.dataDir;
         server.runtime_dir = cfg.runtimeDir;
       }
-      // lib.optionalAttrs (cfg.tailscaleAuthKeyFile != null) {
+      # The daemon reads the key through its systemd credential, not the host path.
+      // lib.optionalAttrs (cfg.settings.tailscale.auth_key_file != null) {
         tailscale.auth_key_file = "/run/credentials/piqueld.service/ts-auth-key";
       }
     )
@@ -38,12 +39,6 @@ in
       type = lib.types.str;
       default = "/run/piqueld";
       description = "Runtime directory below /run containing piqueld.sock. Group members can connect; account authentication is still required.";
-    };
-    tailscaleAuthKeyFile = lib.mkOption {
-      # A string, not a path, so the secret is never copied into the Nix store.
-      type = lib.types.nullOr (lib.types.strMatching "/.+");
-      default = null;
-      description = "Host file with a Tailscale auth key for the node's first login, passed to piqueld as a systemd credential. Node state in dataDir makes it unnecessary afterwards.";
     };
     settings = lib.mkOption {
       type = lib.types.submodule {
@@ -82,6 +77,12 @@ in
             type = lib.types.strMatching "[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
             default = "piqueld";
             description = "Node name, which becomes <hostname>.<tailnet>.ts.net.";
+          };
+          tailscale.auth_key_file = lib.mkOption {
+            # A string, not a path, so the secret is never copied into the Nix store.
+            type = lib.types.nullOr (lib.types.strMatching "/.+");
+            default = null;
+            description = "Host file with a Tailscale auth key for the node's first login, passed to piqueld as a systemd credential. Node state in dataDir makes it unnecessary afterwards.";
           };
           docker.socket = lib.mkOption {
             type = lib.types.strMatching "/.+";
@@ -248,7 +249,9 @@ in
           lib.optional (
             cfg.notificationDestinationsFile != null
           ) "notification-destinations:${cfg.notificationDestinationsFile}"
-          ++ lib.optional (cfg.tailscaleAuthKeyFile != null) "ts-auth-key:${cfg.tailscaleAuthKeyFile}";
+          ++ lib.optional (
+            cfg.settings.tailscale.auth_key_file != null
+          ) "ts-auth-key:${cfg.settings.tailscale.auth_key_file}";
         User = "piqueld";
         Group = "piqueld";
         SupplementaryGroups = [ "docker" ];
