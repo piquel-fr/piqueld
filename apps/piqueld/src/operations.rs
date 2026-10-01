@@ -342,8 +342,8 @@ impl OperationError {
 }
 
 impl crate::application::BoundaryError {
-    /// Diagnoses a runtime-boundary failure journaled outside operation execution,
-    /// such as API-driven secret removal, using the same safe-cause rules.
+    /// Diagnoses a runtime-boundary failure (API errors, journaled source
+    /// preparation, API-driven secret removal) using the same safe-cause rules.
     /// Compilation failures list up to 16 resource errors as causes.
     pub(crate) fn diagnostic(&self) -> piqueld_core::observability::Diagnostic {
         let (code, summary) = match self {

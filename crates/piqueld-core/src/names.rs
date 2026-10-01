@@ -3,10 +3,11 @@
 // Validators stay with the owning type; the macro only supplies identical
 // construction, wire-format, and standard-trait implementations.
 //
-// Each invocation declares a `String` newtype plus a unit error type. The only way to
-// build the newtype is `parse` (also used by `Deserialize` and `FromStr`), so every
-// value in memory has passed `$validate`. Doc attributes on the newtype feed the
-// generated `OpenAPI` schema.
+// Each invocation declares a `String` newtype plus a unit error type. Outside the
+// declaring module the only way to build the newtype is `parse` (also used by
+// `Deserialize` and `FromStr`), so every value has passed `$validate`; code in the
+// declaring module that constructs it directly must uphold `$validate` itself. Doc
+// attributes on the newtype feed the generated `OpenAPI` schema.
 //
 //     validated_string!(
 //         /// Docs for the newtype.

@@ -172,7 +172,7 @@ impl Ingress {
         }
     }
 
-    /// Every 15s, probes public HTTPS for all routes to refresh route status.
+    /// Every 15s, refreshes route status by probing public HTTPS for acknowledged routes.
     async fn run_probes(&self, cancellation: &CancellationToken) {
         let mut tick = tokio::time::interval(Duration::from_secs(15));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -260,8 +260,10 @@ impl Ingress {
         Ok(())
     }
 
-    /// Recomputes per-route status, probing up to four routes concurrently. Only
-    /// routes the gateway has acknowledged are probed; others stay pending.
+    /// Recomputes per-route status, probing up to four routes concurrently. When
+    /// ingress is enabled, only routes the gateway has acknowledged are probed and
+    /// the rest stay pending; when disabled, routes report disabled (or failed while
+    /// shutdown is unconfirmed).
     async fn probe_routes(&self) {
         let Ok(table) = self.store.routing_table().await else {
             return;

@@ -164,7 +164,8 @@ impl fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
-/// I/O errors surface from output writes, so they are phrased as such.
+/// Fallback for I/O errors, worded for the common case of output writes. Other
+/// I/O callers (such as the credential file) should map their errors themselves.
 impl From<std::io::Error> for CliError {
     fn from(error: std::io::Error) -> Self {
         Self::new(

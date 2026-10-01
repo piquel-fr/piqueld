@@ -903,7 +903,7 @@ impl Client {
     - `service`: Only include output from this service (1–63 characters); all services when omitted.
     - `since_seconds`: Only include output from this many seconds ago onward.
     - `stream`: Only include this output stream; merged output when omitted.
-    - `tail`: Maximum number of recent lines per service.
+    - `tail`: Maximum number of most recent lines, merged across the selected services.
     */
     pub async fn application_logs<'a>(
         &'a self,
@@ -6146,7 +6146,8 @@ impl Client {
     - `action_id`: Only include events of this runtime action.
     - `application_id`: Only include events about this application.
     - `attempt`: Only include events of this operation attempt.
-    - `cursor`: `next_cursor` from a previous page; for streams, the event ID to resume after.
+    - `cursor`: `next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to
+    resume after.
     - `descending`: Return newest events first; streams only support oldest first.
     - `error_code`: Only include failures with this error code.
     - `errors_only`: Only include diagnostic (failure) events.
@@ -6257,7 +6258,8 @@ impl Client {
     - `action_id`: Only include events of this runtime action.
     - `application_id`: Only include events about this application.
     - `attempt`: Only include events of this operation attempt.
-    - `cursor`: `next_cursor` from a previous page; for streams, the event ID to resume after.
+    - `cursor`: `next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to
+    resume after.
     - `descending`: Return newest events first; streams only support oldest first.
     - `error_code`: Only include failures with this error code.
     - `errors_only`: Only include diagnostic (failure) events.

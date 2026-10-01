@@ -54,7 +54,7 @@ pub(crate) struct Cli {
     pub(crate) command: Command,
 }
 
-/// Account selection and authentication transport options.
+// Account selection and authentication transport options.
 #[derive(Debug, Args)]
 pub(crate) struct AuthArgs {
     /// Account username or ID from the private credential file.
@@ -146,7 +146,7 @@ pub(crate) enum AppCommand {
         /// Only include output from this service; all services when omitted.
         #[arg(long)]
         service: Option<String>,
-        /// Maximum number of recent lines per service.
+        /// Maximum number of most recent lines, merged across the selected services.
         #[arg(long,default_value_t=200,value_parser=clap::value_parser!(u16).range(1..=1000))]
         tail: u16,
         /// Only include output from the last N seconds.

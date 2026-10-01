@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use utoipa::{OpenApi, ToResponse};
 
-// Base document: API metadata plus schemas not reachable from any route.
+// Base document: API metadata plus explicitly registered component schemas.
 // Paths are merged in by `documented_router`.
 #[derive(OpenApi)]
 #[openapi(

@@ -13,8 +13,10 @@ use std::{
 };
 use utoipa::ToSchema;
 
-// Resource budgets bounding manifest size and validation work. Collection
-// limits are checked before per-item validation walks attacker input.
+// Limits bounding manifest size and validation work. Route, service, and
+// volume counts are checked before any per-item validation and stop it early;
+// the remaining limits are reported alongside per-item errors.
+const MAX_ROUTES: usize = 64;
 const MAX_SERVICES: usize = 64;
 const MAX_VOLUMES: usize = 64;
 const MAX_ENVIRONMENT_ENTRIES: usize = 256;
@@ -348,7 +350,8 @@ impl ApplicationManifest {
     ///
     /// Collects every independent error rather than stopping at the first:
     /// 1. Header, metadata, and optional repository manifest source.
-    /// 2. Collection budgets; exceeding one returns early to bound work.
+    /// 2. Route, service, and volume budgets; exceeding one returns early to
+    ///    bound work.
     /// 3. Routes, duplicate names, services, and volumes.
     /// 4. On success, canonicalizes image registries and converts to domain types.
     ///
@@ -373,16 +376,6 @@ impl ApplicationManifest {
             }
         }
         // Bound work before walking attacker-controlled collections.
-        if self.spec.routes.len() > 64 {
-            error(
-                &mut errors,
-                "routes_limit",
-                "spec.routes",
-                "at most 64 routes are allowed per application",
-            );
-            return Err(ValidationErrors(errors));
-        }
-
         if !validate_budgets(&self, &mut errors) {
             errors
                 .sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
@@ -440,9 +433,19 @@ fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError
     validate_name(&input.metadata.name, "metadata.name", errors);
 }
 
-/// Checks service and volume counts; returns `false` when a budget is exceeded.
+/// Checks route, service, and volume counts; returns `false` when a budget is
+/// exceeded.
 fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) -> bool {
     let mut within_budget = true;
+    if input.spec.routes.len() > MAX_ROUTES {
+        error(
+            errors,
+            "routes_limit",
+            "spec.routes",
+            &format!("at most {MAX_ROUTES} routes are allowed per application"),
+        );
+        within_budget = false;
+    }
     if input.spec.services.len() > MAX_SERVICES {
         error(
             errors,

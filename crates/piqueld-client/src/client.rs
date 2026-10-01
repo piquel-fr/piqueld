@@ -11,7 +11,8 @@ use crate::{ClientError, ErrorBody, TransportFailure, generated};
 /// Upper bound on buffered response bodies for every operation.
 const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
 /// Transport message used for timeouts; `generated_error` matches on it to restore
-/// `TransportFailure::Timeout` after Progenitor flattens errors into `Error::Custom`.
+/// `TransportFailure::Timeout` after `decode_response` flattens body-read errors into
+/// `Error::Custom`.
 const TIMEOUT_MESSAGE: &str = "request timed out";
 
 /// Per-client request settings stored inside the generated client and applied to
@@ -463,8 +464,9 @@ fn unexpected_status(status: reqwest::StatusCode) -> ClientError {
     }
 }
 
-/// Classifies a reqwest failure as a timeout, a connection failure (with the
-/// underlying OS error kind when available), or a generic exchange failure.
+/// Classifies a reqwest failure as a timeout, a connection failure (the first
+/// `io::Error` kind in the source chain, or `ConnectionRefused` for connect errors
+/// without one), or a generic exchange failure.
 // `map_err` passes ownership; retaining reqwest's error beyond this conversion is unnecessary.
 #[allow(clippy::needless_pass_by_value)]
 fn transport_error(error: reqwest::Error) -> ClientError {

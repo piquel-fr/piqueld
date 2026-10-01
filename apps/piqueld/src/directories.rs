@@ -48,7 +48,7 @@ impl DirectoryKind {
     /// Walks `path` one component at a time from the root, so no ancestor can be
     /// swapped for a symlink or attacker-controlled directory.
     ///
-    /// 1. Rejects empty, `/`, `.`, and `..` paths.
+    /// 1. Rejects empty and `/` paths, a leading `.`, and any `..` component.
     /// 2. Requires each component to be a real directory (never a symlink),
     ///    creating missing ones with mode `0700` for [`Self::Data`] only.
     /// 3. Requires each ancestor to be owned by root or the daemon and not

@@ -352,7 +352,7 @@ impl Store {
     /// Starts a new operation for `app` within `tx`:
     /// 1. supersedes any requested or running operation, recording events and attempt snapshots;
     /// 2. inserts a `requested` operation at the application's current generation;
-    /// 3. captures deployment inputs for non-delete kinds;
+    /// 3. snapshots the manifest into deployment history for non-delete kinds;
     /// 4. records the kind's request event.
     pub(super) async fn insert_operation(
         tx: &mut Transaction<'_, Sqlite>,

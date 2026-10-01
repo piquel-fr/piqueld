@@ -93,8 +93,9 @@ impl TailscaleStatus {
         Self::parse(&output.stdout)
     }
 
-    /// Extracts sorted, deduplicated addresses, requiring a `Running` backend and
-    /// at least one concrete unicast address.
+    /// Extracts sorted, deduplicated addresses, requiring a `Running` backend and a
+    /// non-empty list in which every address is concrete (not unspecified,
+    /// loopback, or multicast).
     fn parse(output: &[u8]) -> Result<Vec<IpAddr>> {
         let status: Self =
             serde_json::from_slice(output).context("invalid tailscale status JSON")?;

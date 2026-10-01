@@ -26,6 +26,7 @@ impl ApplicationManifest {
     /// limits, and cross-references are checked by [`super::parse_toml`].
     #[must_use]
     pub fn json_schema() -> Value {
+        // Rewrites utoipa's `OpenAPI` component refs to draft-7 `definitions` refs.
         fn relocate_refs(value: &mut Value) {
             match value {
                 Value::Object(object) => {

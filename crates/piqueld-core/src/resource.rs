@@ -410,7 +410,8 @@ impl ResolvedApplication {
     /// Retains network access for accepted routes until their cutover succeeds.
     ///
     /// Rebuilds the ingress network projection from scratch, so it is idempotent:
-    /// 1. Drops the application's ingress network and every service attachment.
+    /// 1. Drops the application's ingress network and every service's attachment
+    ///    to it.
     /// 2. When `enabled`, reattaches each service targeted by a desired or
     ///    `accepted` (still live) route.
     /// 3. When `enabled` and any route exists, adds the owned ingress network.

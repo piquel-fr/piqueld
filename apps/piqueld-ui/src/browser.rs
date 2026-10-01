@@ -372,8 +372,9 @@ fn stale_notice(signals: DashboardSignals) -> View {
 /// Starts one dashboard refresh if `PollController` grants the single in-flight slot.
 /// `manual` refreshes are queued even while hidden or busy and rerun once the current
 /// request finishes. On success all dashboard signals are replaced and the selected
-/// application's detail is reloaded (or cleared if it disappeared); on failure the
-/// previous data is kept and marked stale.
+/// application's detail is reloaded, or cleared if it disappeared from a complete
+/// listing. On failure application data is kept (marked stale unless still loading)
+/// and readiness is cleared.
 fn start_refresh(
     client: Client,
     signals: DashboardSignals,

@@ -111,7 +111,8 @@ pub(super) fn is_public(path: &str) -> bool {
 ///    configured origin.
 /// 4. Inserts the resolved `Identity` as an extension. Invalid credentials on
 ///    public routes are ignored; missing or invalid ones elsewhere yield 401.
-/// 5. Marks every API response `Cache-Control: no-store`.
+/// 5. Marks throttled and handler responses `Cache-Control: no-store`; the
+///    middleware's own 401/403 rejections are returned without it.
 async fn authenticate(
     axum::extract::State(auth): axum::extract::State<Auth>,
     mut request: Request,

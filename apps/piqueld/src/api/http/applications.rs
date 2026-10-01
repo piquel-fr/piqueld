@@ -186,7 +186,8 @@ pub(super) async fn delete(
     .await
 }
 
-// Dry-runs `apply`: same body and preconditions, but nothing is saved.
+// Dry-runs `apply` with the same body; supplied preconditions are checked, but
+// none are required and nothing is saved.
 #[utoipa::path(
     post, path = "/api/v1/applications/plan", operation_id = "planApplication",
     summary = "Preview an application manifest",

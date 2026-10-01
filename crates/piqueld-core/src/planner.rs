@@ -351,13 +351,6 @@ impl Plan {
     /// `Preview` reconciles the compiled desired state when available and
     /// prepends one `BuildGit`/`ResolveImage` action per unresolved source.
     /// Diagnostics are sorted by resource then code for stable output.
-    ///
-    /// ```text
-    /// RESOLVE IMAGE web
-    /// ENSURE NETWORK <docker network name>
-    /// ENSURE SERVICE api
-    /// WAIT SERVICE <docker service name>
-    /// ```
     #[must_use]
     pub fn from_request(request: &PlanRequest, observed: &ObservedApplication) -> Self {
         let mut plan = match request {

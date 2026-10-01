@@ -19,9 +19,9 @@ use super::{
 pub(super) struct ServiceRuntimePolicy;
 
 impl ServiceRuntimePolicy {
-    /// Returns whether an observed spec is exactly what piqueld would author,
-    /// modulo known Engine defaults, including placement on `node_id`. `false`
-    /// means the service must be updated.
+    /// Returns whether an observed spec uses only settings piqueld authors, modulo
+    /// known Engine defaults, including placement on `node_id`. Desired values are
+    /// compared separately; `false` means out-of-policy drift that needs an update.
     pub(super) fn matches(spec: &ServiceSpec, node_id: &str) -> bool {
         let Some(task) = spec.task_template.as_ref() else {
             return false;

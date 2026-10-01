@@ -486,7 +486,8 @@ impl Store {
     }
 
     /// Deletes an account with its passkeys, credentials, and invitations.
-    /// Refuses to delete the last account or the account holding the last passkey.
+    /// Refuses to delete the last account, or an account whose deletion would leave
+    /// no passkeys.
     pub(crate) async fn delete_user(&self, id: &str) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let accounts = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM auth_users"#)

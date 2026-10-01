@@ -240,8 +240,8 @@ impl Store {
         .collect()
     }
 
-    /// Records `table` as each application's applied routes, releasing
-    /// reservations for hostnames no longer served.
+    /// Records `table` as each application's applied routes and recomputes their
+    /// hostname reservations.
     /// Called only after this exact table is accepted (or the gateway is stopped).
     pub(crate) async fn acknowledge_routes(&self, table: &RoutingTable) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;

@@ -212,8 +212,9 @@ impl Report for AccountReport {
 /// 3. Polls at the daemon's interval (backing off on `slow_down`) until complete.
 /// 4. Saves the token as the endpoint's selected account and emits it.
 ///
-/// Bounded by the daemon's `expires_in` (capped at `MAX_DEVICE_LOGIN_SECS`) and Ctrl-C,
-/// not by `--timeout`, since approval waits on the operator.
+/// Bounded by the daemon's `expires_in` (capped at `MAX_DEVICE_LOGIN_SECS`) and Ctrl-C
+/// rather than the whole-command `--timeout`, since approval waits on the operator.
+/// Each individual request still uses `--timeout`.
 pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
     let status = client.auth_status().await?;
     if !status.initialized {

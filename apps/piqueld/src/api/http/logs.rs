@@ -17,7 +17,7 @@ pub(super) struct LogQuery {
     service: Option<String>,
     /// Only include this output stream; merged output when omitted.
     stream: Option<piqueld_core::api::LogStream>,
-    /// Maximum number of recent lines per service.
+    /// Maximum number of most recent lines, merged across the selected services.
     #[param(minimum = 1, maximum = 1000, default = 200)]
     tail: u16,
     /// Only include output from this many seconds ago onward.

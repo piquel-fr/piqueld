@@ -7058,7 +7058,7 @@
             }
           },
           {
-            "description": "Maximum number of recent lines per service.",
+            "description": "Maximum number of most recent lines, merged across the selected services.",
             "in": "query",
             "name": "tail",
             "required": false,
@@ -16055,7 +16055,7 @@
             }
           },
           {
-            "description": "`next_cursor` from a previous page; for streams, the event ID to resume after.",
+            "description": "`next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to\nresume after.",
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -16229,7 +16229,7 @@
             }
           },
           {
-            "description": "`next_cursor` from a previous page; for streams, the event ID to resume after.",
+            "description": "`next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to\nresume after.",
             "in": "query",
             "name": "cursor",
             "required": false,

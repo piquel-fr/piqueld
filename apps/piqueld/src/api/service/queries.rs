@@ -110,9 +110,10 @@ impl ApplicationService {
     }
     /// Previews validated intent without pulling images or saving configuration.
     ///
-    /// Checks the same generation and identity preconditions as apply, builds a
-    /// runtime plan against current observation, and diffs the manifest against
-    /// the latest deployment's captured input (no baseline after a delete).
+    /// Checks the generation and identity preconditions when supplied (unlike
+    /// apply, they are optional), builds a runtime plan against current
+    /// observation, and diffs the manifest against the latest deployment's
+    /// captured input (no baseline after a delete).
     /// # Errors
     /// Returns precondition, storage, or runtime errors.
     /// # Panics

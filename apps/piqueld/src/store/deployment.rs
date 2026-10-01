@@ -43,8 +43,9 @@ impl Store {
         })
     }
 
-    /// Snapshots the application's current manifest as the immutable input of
-    /// operation `id`. The deployment row shares the operation's ID.
+    /// Snapshots the application's current manifest as operation `id`'s deployment
+    /// record; repository-backed deploys later replace it with the fetched manifest.
+    /// The deployment row shares the operation's ID.
     pub(super) async fn capture_deployment(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,

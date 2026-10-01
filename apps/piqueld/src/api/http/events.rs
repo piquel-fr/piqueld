@@ -41,7 +41,8 @@ pub(super) struct EventQuery {
     until_ms: Option<i64>,
     /// Return newest events first; streams only support oldest first.
     descending: Option<bool>,
-    /// `next_cursor` from a previous page; for streams, the event ID to resume after.
+    /// `next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to
+    /// resume after.
     cursor: Option<String>,
     /// Page size (defaults to 50), or stream batch size (defaults to 100).
     #[param(minimum = 1, maximum = 100)]

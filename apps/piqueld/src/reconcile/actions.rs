@@ -113,7 +113,7 @@ impl<D: DockerApi> Controller<D> {
         Ok(values)
     }
 
-    /// Issues the single Docker request for a mutating action. Non-removal actions
+    /// Performs one attempt of a mutating action. Non-removal actions
     /// first verify the supported swarm topology, and `EnsureService` first
     /// ensures each pinned secret so the service can reference it.
     pub(super) async fn mutate_action(

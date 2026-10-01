@@ -400,8 +400,8 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
-    /// Keeps the currently active (published) target healthy while a newer
-    /// operation is still preparing and has not been promoted.
+    /// Keeps the currently active (published) target healthy while the latest
+    /// operation has not been promoted.
     ///
     /// Applies at most the first mutating action per call, under the global
     /// mutation lock and in its own journal entry. Skips deletions, promoted

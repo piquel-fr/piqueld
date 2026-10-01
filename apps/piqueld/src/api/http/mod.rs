@@ -545,7 +545,8 @@ fn documented_router() -> OpenApiRouter<ApiState> {
 ///    `x-request-id` value.
 /// 4. For 5xx responses (except `configuration_unavailable`), records a
 ///    diagnostic (the handler's, or a synthesized one) and exposes its ID as
-///    `details.diagnostic_id`.
+///    `details.diagnostic_id`. Storage failures (`storage_unavailable`,
+///    `schema_mismatch`) are only logged, since the store cannot persist them.
 ///
 /// Non-error and non-JSON responses pass through untouched.
 async fn bind_error_request_id(

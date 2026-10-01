@@ -21,8 +21,9 @@ use tokio_util::sync::CancellationToken;
 pub struct Controller<D> {
     /// Docker client with concurrency limits shared by API observation and preview.
     docker: Arc<crate::docker::LimitedDocker<D>>,
-    /// Serializes every Docker mutation across applications, including active-target
-    /// repair, so each journaled request is checked against the latest operation.
+    /// Serializes plan-action Docker mutations across applications (operation
+    /// execution and active-target repair), so each journaled request is checked
+    /// against the latest operation. Secret removal does not take it.
     mutations: tokio::sync::Mutex<()>,
     /// Deadline for resolving images, building sources, and fetching manifests.
     prepare_timeout: Duration,

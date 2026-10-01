@@ -337,7 +337,7 @@ report!(DeletionReport<'_>, self, out, {
     }
 });
 
-/// Saved TOML in human mode; a JSON string in machine mode.
+/// Local `app validate` success; JSON carries the manifest's application name.
 #[derive(Serialize)]
 pub(crate) struct ValidManifestReport {
     pub(crate) application: String,
@@ -349,6 +349,7 @@ report!(ValidManifestReport, self, out, {
     ))
 });
 
+/// Saved TOML in human mode; a JSON string in machine mode.
 pub(crate) struct ManifestReport(pub(crate) String);
 impl Report for ManifestReport {
     type Json = str;

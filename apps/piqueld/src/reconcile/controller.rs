@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 impl<D: DockerApi> Controller<D> {
     /// Executes an operation to a durable outcome, then closes any journal actions
-    /// it left open as `action_outcome_unknown`. Only journal failures are returned;
+    /// it left open as `action_outcome_unknown`. Only store failures are returned;
     /// operation failures are persisted on the operation itself.
     #[tracing::instrument(skip_all, fields(
         application_id = %operation.application_id,
@@ -344,8 +344,9 @@ impl<D: DockerApi> Controller<D> {
         })
     }
 
-    /// Stages the application's routes and waits until they are applied, through
-    /// managed ingress when present or by acknowledging the routing table directly.
+    /// Stages the application's routes and applies them through managed ingress
+    /// when present (which skips the gateway while backends are not ready and no
+    /// hostname is withdrawn), or acknowledges the routing table directly.
     /// `ready` tells staging whether the backing services exist yet. No-op when
     /// there are neither desired nor stored routes.
     async fn sync_routes(
