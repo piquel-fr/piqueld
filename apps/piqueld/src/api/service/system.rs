@@ -13,6 +13,11 @@ impl ApplicationService {
             api_version: "v1".into(),
             daemon_version: env!("CARGO_PKG_VERSION").into(),
             instance_id: self.store.instance_id().to_owned(),
+            tailscale: self
+                .tailnet
+                .as_ref()
+                .map(|status| status.borrow().clone())
+                .unwrap_or_default(),
         }
     }
 

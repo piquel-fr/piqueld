@@ -119,8 +119,8 @@ interface; userspace-only networking is not supported.
 
 Every API caller must authenticate, including over Tailscale. Use tailnet policy
 to control who can connect. HTTP traffic
-between tailnet nodes is encrypted by Tailscale; piqueld does not manage HTTPS,
-Tailscale Serve, enrollment, or certificates. Set `listen_mode = "localhost"`
+between tailnet nodes is encrypted by Tailscale; these listeners serve plain
+HTTP. For HTTPS, use a [tailnet node](#tailnet-node) instead. Set `listen_mode = "localhost"`
 to remove the Tailscale listener, or `"off"` for Unix-socket-only access, and
 restart the daemon. Independently configured proxies can still expose localhost.
 
@@ -146,12 +146,56 @@ still apply on every API transport.
 See [observability](observability.md) for notification category switches, webhook
 destinations, metrics exposure, diagnostic ownership and retention semantics.
 
+## Tailnet node
+
+With `[tailscale]` enabled, piqueld joins the tailnet as its own node and serves
+the website and API over HTTPS on port 443 of that node. piqueld starts and
+supervises a dedicated `tailscaled` in userspace-networking mode, separate from
+any host Tailscale daemon, so `tailscaled` and `tailscale` must be on `PATH`.
+That `tailscaled` terminates TLS with the tailnet-issued certificate and
+forwards connections to a loopback listener with a PROXY protocol header that
+carries the client's tailnet address.
+
+```toml
+[tailscale]
+enabled = true
+hostname = "piqueld"      # piqueld.<tailnet>.ts.net
+auth_key_file = "/run/credentials/piqueld.service/ts-auth-key"
+```
+
+- The tailnet needs MagicDNS and HTTPS certificates enabled.
+- Node state and the `tailscaled` socket live in `<data_dir>/tailscale`, so the
+  node identity, its name and the passkeys bound to it follow the data directory
+  rather than the host.
+- piqueld owns the node's preferences and its Serve configuration for port 443,
+  and rewrites both at every start.
+- `auth_key_file` is only needed for the first login. Without it, startup logs a
+  login URL and waits until the node is approved.
+- An unset `auth.public_url` becomes `https://<hostname>.<tailnet>.ts.net`. An
+  explicit value that differs is allowed, but is reported in `piquelctl status`
+  and the dashboard, because passkeys only work on `auth.public_url`.
+- The node name is trusted automatically; it does not need to be listed in
+  `server.allowed_hosts`.
+- The node has its own tailnet IP, so it never competes with managed ingress
+  for port 443.
+
+Startup fails if the node cannot start or obtain a certificate. While running,
+piqueld refreshes the login state and certificate every minute; Tailscale renews
+the certificate before it expires. `piquelctl status` and the dashboard report
+the login state, certificate expiry, and whether `auth.public_url` matches. If
+`tailscaled` exits, piqueld stops so the service manager can restart both.
+`tailscaled` logs are forwarded at debug level.
+
+`listen_mode` is independent and remains available for installations without a
+dedicated node.
+
 ## Authentication origin
 
-`auth.public_url` is the canonical HTTPS website origin (default
-`http://localhost:7845` for development). Remote passkey login requires HTTPS
-even over Tailscale. See [authentication](authentication.md) for reverse-proxy
-setup, the private first-account link, invitations, and credential lifetimes.
+`auth.public_url` is the canonical HTTPS website origin. It defaults to the
+tailnet node's URL when `[tailscale]` is enabled, and to `http://localhost:7845`
+otherwise. Remote passkey login requires HTTPS even over Tailscale. See
+[authentication](authentication.md) for reverse-proxy setup, the private
+first-account link, invitations, and credential lifetimes.
 
 ## Secret storage
 

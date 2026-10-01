@@ -57,6 +57,7 @@ tower-http = { version = "0.6.6", features = ["request-id", "trace"] }
 utoipa = { version = "5.3.1", features = ["axum_extras", "uuid"] }
 utoipa-axum = "0.2.0"
 url = "2.5.4"
+x509-parser = "0.16.0"
 uuid = { version = "1.17.0", features = ["v7"] }
 
 # Browser UI and same-origin WASM transport. These are target-gated in the

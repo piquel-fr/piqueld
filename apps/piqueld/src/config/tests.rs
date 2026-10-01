@@ -142,3 +142,31 @@ fn runtime_directory_override_changes_only_the_socket_path() {
         PathBuf::from("/var/lib/piqueld/piqueld.db")
     );
 }
+
+#[test]
+fn tailscale_node_settings_are_validated() {
+    let config = DaemonConfig::from_toml(
+        "[tailscale]\nhostname = 'piqueld-dev'\nauth_key_file = '/run/credentials/ts-auth-key'",
+    )
+    .unwrap();
+    assert_eq!(config.tailscale.hostname, "piqueld-dev");
+    assert_eq!(
+        config.server.tailscale_dir(),
+        PathBuf::from("/var/lib/piqueld/tailscale")
+    );
+    assert_eq!(config.public_url(), "http://localhost:7845");
+    for document in [
+        "[tailscale]\nhostname = ''",
+        "[tailscale]\nhostname = 'piqueld.example'",
+        "[tailscale]\nhostname = '-piqueld'",
+        "[tailscale]\nauth_key_file = 'relative/key'",
+    ] {
+        assert!(
+            matches!(
+                DaemonConfig::from_toml(document),
+                Err(ConfigError::Invalid(_))
+            ),
+            "accepted {document}"
+        );
+    }
+}

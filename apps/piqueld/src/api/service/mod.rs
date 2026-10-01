@@ -142,6 +142,7 @@ impl Mutation {
 pub struct ApplicationService {
     /// Managed ingress state, reported by readiness and used by plan previews.
     ingress: Option<Arc<crate::ingress::Ingress>>,
+    tailnet: Option<tokio::sync::watch::Receiver<piqueld_core::api::TailnetStatus>>,
     /// Effective host settings exposed read-only; `None` unless attached at startup.
     configuration: Option<Arc<piqueld_core::api::HostConfiguration>>,
     store: Arc<Store>,
@@ -159,7 +160,18 @@ impl ApplicationService {
             runtime,
             configuration: None,
             ingress: None,
+            tailnet: None,
         }
+    }
+
+    /// Reports the tailnet node's latest status, when the daemon runs one.
+    #[must_use]
+    pub fn with_tailnet(
+        mut self,
+        status: Option<tokio::sync::watch::Receiver<piqueld_core::api::TailnetStatus>>,
+    ) -> Self {
+        self.tailnet = status;
+        self
     }
 
     /// Shares managed ingress state with transport-independent daemon operations.

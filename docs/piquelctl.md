@@ -59,8 +59,11 @@ credentials, non-root paths, queries, and fragments are rejected. DNS resolution
 and connection setup share the request timeout; redirects are not followed.
 Remote HTTP authentication, including `login`, requires `--allow-insecure-http`
 when using separate transport encryption such as Tailscale. The client does not
-verify tailnet membership or add encryption with this flag. Prefer HTTPS otherwise;
-loopback HTTP and Unix sockets need no opt-in.
+verify tailnet membership or add encryption with this flag. Prefer HTTPS, such as
+a daemon's [tailnet node](configuration.md#tailnet-node) at
+`https://piqueld.<tailnet>.ts.net`; loopback HTTP and Unix sockets need no opt-in.
+When the daemon runs a tailnet node, `status` also reports its login state,
+certificate expiry, and whether `auth.public_url` matches the node.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer

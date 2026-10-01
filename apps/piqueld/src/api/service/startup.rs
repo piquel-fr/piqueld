@@ -48,7 +48,7 @@ impl ApplicationService {
         let auth = crate::auth::Auth::initialize(&store, config).await?;
         // Application routes must never serve the website origin or its subdomains,
         // which could otherwise act on its passkeys or cookies.
-        let website = crate::auth::Auth::validate_origin(&config.auth.public_url)?
+        let website = crate::auth::Auth::validate_origin(config.public_url())?
             .domain()
             .and_then(|host| Hostname::parse(host.trim_end_matches('.')).ok());
         for hostname in store

@@ -9,8 +9,8 @@ The first account has no special privileges. There is no account recovery flow.
 ## Upgrading an existing installation
 
 1. Choose the stable HTTPS hostname and configure `auth.public_url` before creating
-   any passkeys. Arrange TLS termination and verify that the browser can reach it.
-   Tailscale users still need HTTPS for the browser; see the transport notes below.
+   any passkeys. Arrange TLS termination, or enable the tailnet node, and verify
+   that the browser can reach it. Browsers need HTTPS even over Tailscale.
 2. Stop the daemon and back up its entire data directory, including `piqueld.db`
    and any SQLite `-wal`/`-shm` files. Keep the previous binary and configuration.
    The new daemon migrates the database on startup; an older binary rejects the
@@ -41,8 +41,14 @@ package). Configure one stable browser origin:
 public_url = "https://piqueld.example.com"
 ```
 
-Terminate HTTPS at an external reverse proxy and forward requests to a configured
-piqueld listener. Keep both the proxy and piqueld reachable only from trusted
+The simplest HTTPS origin on a tailnet is piqueld's own
+[tailnet node](configuration.md#tailnet-node): with `[tailscale]` enabled and
+`public_url` unset, the origin is `https://<hostname>.<tailnet>.ts.net` and
+piqueld terminates TLS itself. Its state lives in the data directory, so moving
+or reinstalling the daemon with that directory keeps the name and passkeys.
+
+Otherwise, terminate HTTPS at an external reverse proxy and forward requests to
+a configured piqueld listener. Keep both the proxy and piqueld reachable only from trusted
 networks, such as a tailnet or LAN; piqueld must never be exposed to the
 internet. No forwarded-header trust configuration is needed: WebAuthn and CSRF
 checks use the explicitly configured origin. Restrict access to the proxy's
@@ -105,8 +111,11 @@ piquelctl --url https://piqueld.example.com status
 piquelctl --url https://piqueld.example.com logout
 ```
 
+A [tailnet node](configuration.md#tailnet-node) serves HTTPS, so
+`piquelctl --url https://piqueld.<tailnet>.ts.net login` works without any flag.
+
 Remote HTTP authentication is rejected by default, including device login.
-For an API connection protected separately by Tailscale, explicitly opt in with
+For an HTTP listener protected separately by Tailscale, explicitly opt in with
 `piquelctl --allow-insecure-http --url http://<tailnet-host>:7845 login` (and use
 that flag for subsequent commands). This does not enable TLS; the caller must
 ensure transport encryption. HTTPS, loopback HTTP, and Unix sockets need no opt-in.

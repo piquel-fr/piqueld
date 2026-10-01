@@ -11,10 +11,16 @@ let
     "both"
   ];
   configuration = (pkgs.formats.toml { }).generate "piqueld.toml" (
-    lib.recursiveUpdate (lib.filterAttrsRecursive (_: value: value != null) cfg.settings) {
-      server.data_dir = cfg.dataDir;
-      server.runtime_dir = cfg.runtimeDir;
-    }
+    lib.recursiveUpdate (lib.filterAttrsRecursive (_: value: value != null) cfg.settings) (
+      {
+        server.data_dir = cfg.dataDir;
+        server.runtime_dir = cfg.runtimeDir;
+      }
+      # The daemon reads the key through its systemd credential, not the host path.
+      // lib.optionalAttrs (cfg.settings.tailscale.auth_key_file != null) {
+        tailscale.auth_key_file = "/run/credentials/piqueld.service/ts-auth-key";
+      }
+    )
   );
 in
 {
@@ -58,9 +64,25 @@ in
             description = "Shared HTTP port for all selected IPv4 and IPv6 addresses.";
           };
           auth.public_url = lib.mkOption {
-            type = lib.types.str;
-            default = "http://localhost:7845";
-            description = "Canonical HTTPS website origin for passkeys; HTTP localhost is allowed for development. TLS is terminated externally.";
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Canonical HTTPS website origin for passkeys; HTTP localhost is allowed for development. Defaults to the tailnet node's HTTPS URL when tailscale.enabled is set, otherwise http://localhost:7845.";
+          };
+          tailscale.enabled = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Join the tailnet as a dedicated node and serve the website over HTTPS on its port 443, with a tailnet-issued certificate. Requires HTTPS certificates to be enabled for the tailnet.";
+          };
+          tailscale.hostname = lib.mkOption {
+            type = lib.types.strMatching "[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+            default = "piqueld";
+            description = "Node name, which becomes <hostname>.<tailnet>.ts.net.";
+          };
+          tailscale.auth_key_file = lib.mkOption {
+            # A string, not a path, so the secret is never copied into the Nix store.
+            type = lib.types.nullOr (lib.types.strMatching "/.+");
+            default = null;
+            description = "Host file with a Tailscale auth key for the node's first login, passed to piqueld as a systemd credential. Node state in dataDir makes it unnecessary afterwards.";
           };
           docker.socket = lib.mkOption {
             type = lib.types.strMatching "/.+";
@@ -211,7 +233,8 @@ in
         pkgs.openssh
         pkgs.docker-client
       ]
-      ++ lib.optional usesTailscale config.services.tailscale.package;
+      # The tailnet node runs its own tailscaled and drives it with the CLI.
+      ++ lib.optional (usesTailscale || cfg.settings.tailscale.enabled) config.services.tailscale.package;
       serviceConfig = {
         ExecStart =
           if cfg.notificationDestinationsFile == null then
@@ -223,9 +246,13 @@ in
               { cat ${configuration}; echo; cat "$CREDENTIALS_DIRECTORY/notification-destinations"; } > /tmp/piqueld.toml
               exec ${cfg.package}/bin/piqueld --config /tmp/piqueld.toml
             '';
-        LoadCredential = lib.optional (
-          cfg.notificationDestinationsFile != null
-        ) "notification-destinations:${cfg.notificationDestinationsFile}";
+        LoadCredential =
+          lib.optional (
+            cfg.notificationDestinationsFile != null
+          ) "notification-destinations:${cfg.notificationDestinationsFile}"
+          ++ lib.optional (
+            cfg.settings.tailscale.auth_key_file != null
+          ) "ts-auth-key:${cfg.settings.tailscale.auth_key_file}";
         User = "piqueld";
         Group = "piqueld";
         SupplementaryGroups = [ "docker" ];

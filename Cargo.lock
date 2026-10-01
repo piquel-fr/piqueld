@@ -2260,6 +2260,7 @@ dependencies = [
  "uuid",
  "wasm-bindgen-cli-support",
  "webauthn-rs-core",
+ "x509-parser",
  "zeroize",
 ]
 
