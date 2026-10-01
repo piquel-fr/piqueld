@@ -52,7 +52,7 @@ just run --socket /tmp/piqueld-dev-run/piqueld.sock events --application <applic
 
 The development toolchain serves the dashboard through the running
 daemon, exactly like a deployment: run `just dev` instead of the commands
-above (`just dev` also prepares the runtime directory), give the first embedded build a moment to run Tailwind and Trunk, and
+above (`just dev` also prepares the runtime directory), give the first embedded build a moment to compile the dashboard, and
 open `http://localhost:7845/dashboard/` in a browser to inspect the overview,
 application list, and detail routes alongside `piquelctl`; refresh after Rust
 or CSS changes. Any other daemon built with `--features embedded-ui` ships its

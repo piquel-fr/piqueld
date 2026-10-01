@@ -5,8 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <meta name="description" content="Manage piqueld applications, configuration, and deployments">
-    <link data-trunk rel="css" href="generated/style.css">
-    <link data-trunk rel="rust" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory-opt --enable-nontrapping-float-to-int">
+    <!-- The daemon build script replaces each placeholder with a content-hashed bundle file. -->
+    <link rel="stylesheet" href="/dashboard/{{stylesheet}}">
+    <link rel="modulepreload" href="/dashboard/{{bindings}}">
+    <link rel="preload" href="/dashboard/{{wasm}}" as="fetch" type="application/wasm" crossorigin>
+    <script type="module" src="/dashboard/{{loader}}"></script>
     <title>piqueld dashboard</title>
   </head>
   <body>

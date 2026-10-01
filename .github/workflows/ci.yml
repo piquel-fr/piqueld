@@ -66,20 +66,13 @@ jobs:
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
         with:
           tool: just
-      # --all-features compiles the embedded dashboard, which needs the same
-      # tooling as a release build.
+      # --all-features compiles the embedded dashboard; the daemon build script
+      # needs only the wasm32 target for it.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-          cache-directories: |
-            target-ui
-            ${{ runner.temp }}/piqueld-tools
-      - uses: ./.github/actions/dashboard-tools
-        with:
-          trunk-version: "0.21.14"
-          tailwindcss-version: "4.3.3"
-          tailwindcss-sha256: "dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a"
-          binaryen-version: "132"
+          cache-directories: target-ui
+      - run: rustup target add wasm32-unknown-unknown
       - run: just lint
 
   embedded-test:
@@ -94,15 +87,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-          cache-directories: |
-            target-ui
-            ${{ runner.temp }}/piqueld-tools
-      - uses: ./.github/actions/dashboard-tools
-        with:
-          trunk-version: "0.21.14"
-          tailwindcss-version: "4.3.3"
-          tailwindcss-sha256: "dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a"
-          binaryen-version: "132"
+          cache-directories: target-ui
+      - run: rustup target add wasm32-unknown-unknown
       - run: just test-embedded
 
   browser-playwright:
@@ -117,15 +103,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-          cache-directories: |
-            target-ui
-            ${{ runner.temp }}/piqueld-tools
-      - uses: ./.github/actions/dashboard-tools
-        with:
-          trunk-version: "0.21.14"
-          tailwindcss-version: "4.3.3"
-          tailwindcss-sha256: "dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a"
-          binaryen-version: "132"
+          cache-directories: target-ui
+      - run: rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -307,15 +286,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-          cache-directories: |
-            target-ui
-            ${{ runner.temp }}/piqueld-tools
-      - uses: ./.github/actions/dashboard-tools
-        with:
-          trunk-version: "0.21.14"
-          tailwindcss-version: "4.3.3"
-          tailwindcss-sha256: "dc61b3ac6b8c9ca874c0cc4c57b2409791a64c5540404ca5f5367360babc313a"
-          binaryen-version: "132"
+          cache-directories: target-ui
+      - run: rustup target add wasm32-unknown-unknown
       - run: just build-embedded
       - run: test -x target/release/piqueld && test -x target/release/piquelctl
       - name: Upload release binaries

@@ -1,6 +1,6 @@
 //! Compile-time dashboard bundle supplied by the build script.
 //!
-//! With the `embedded-ui` feature, the build script runs Tailwind and Trunk
+//! With the `embedded-ui` feature, the build script compiles the dashboard
 //! and writes [`BUNDLE`] into `OUT_DIR`. Without it this module is empty.
 
 #[cfg(feature = "embedded-ui")]

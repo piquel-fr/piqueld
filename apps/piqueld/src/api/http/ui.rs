@@ -16,15 +16,11 @@ pub type EmbeddedFile = (&'static str, &'static [u8]);
 /// The complete set of dashboard files compiled into the daemon binary.
 pub type EmbeddedBundle = [EmbeddedFile];
 
-/// Headers applied to every dashboard response, including redirects.
+/// Content-Security-Policy for every dashboard response, including redirects.
 ///
-/// The Content-Security-Policy is generated from the final Trunk shell so its
-/// exact inline module loader is authorized by a hash; WebAssembly still uses
-/// `'wasm-unsafe-eval'`, and everything else stays same-origin.
-#[cfg(feature = "embedded-ui")]
-const DASHBOARD_CONTENT_SECURITY_POLICY: &str = crate::ui_bundle::DASHBOARD_CONTENT_SECURITY_POLICY;
-
-#[cfg(not(feature = "embedded-ui"))]
+/// The shell loads only same-origin script files and has no inline scripts,
+/// so the policy is constant. Compiling the dashboard's WebAssembly needs
+/// `'wasm-unsafe-eval'`; everything else stays same-origin.
 const DASHBOARD_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
      style-src 'self'; img-src 'self' data:; font-src 'self'; \
      connect-src 'self'; object-src 'none'; base-uri 'none'; \
@@ -138,7 +134,7 @@ fn lookup(bundle: &'static EmbeddedBundle, name: &str) -> Option<EmbeddedFile> {
 fn asset_response(name: &str, body: &'static [u8]) -> Response {
     let mut response = Response::new(Body::from(body));
     let headers = response.headers_mut();
-    // Trunk content-hashes asset filenames, so those entries may be cached
+    // The build script content-hashes asset filenames, so those entries may be cached
     // forever; everything else must revalidate because a new daemon binary
     // can replace the bytes under an unchanged URL.
     headers.insert(
@@ -204,11 +200,11 @@ fn content_type(name: &str) -> &'static str {
     }
 }
 
-/// Returns whether Trunk content-hashed this filename, making it immutable.
+/// Returns whether the build script content-hashed this filename, making it
+/// immutable.
 ///
-/// Trunk inserts its digest as the last `-` separated segment of the stem;
-/// wasm-bindgen tooling may append further underscore suffixes such as `_bg`
-/// behind that digest. The minimum length keeps ordinary short words like
+/// The digest is the last `-` separated segment of the stem; wasm-bindgen
+/// appends further underscore suffixes such as `_bg` behind it. The minimum length keeps ordinary short words like
 /// `added.css` or `cafe.js` from being mistaken for digests.
 ///
 /// ```text

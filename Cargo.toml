@@ -69,6 +69,9 @@ leptos_router = { version = "0.8.16", default-features = false }
 # bump it deliberately.
 js-sys               = "=0.3.103"
 wasm-bindgen          = "=0.2.126"
+# The daemon build script binds the dashboard with the library behind the
+# wasm-bindgen CLI. Its schema must match the `wasm-bindgen` crate exactly.
+wasm-bindgen-cli-support = "=0.2.126"
 wasm-bindgen-futures  = "=0.4.76"
 wasm-bindgen-test     = "=0.3.76"
 web-sys               = "=0.3.103"
@@ -91,3 +94,13 @@ pedantic = { level = "warn", priority = -1 }
 [profile.release]
 lto = "thin"
 strip = "symbols"
+
+# The embedded dashboard's wasm32 build, run by the daemon build script.
+# Size beats speed here: this halves the gzipped module compared with release
+# settings plus `wasm-opt -Oz`, so no separate wasm optimizer is needed. LTO is
+# explicit so environment overrides of the release profile cannot disable it.
+[profile.dashboard]
+inherits = "release"
+opt-level = "z"
+codegen-units = 1
+lto = "thin"

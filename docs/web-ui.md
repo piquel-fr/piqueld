@@ -74,23 +74,22 @@ manifest. Secret values and unsaved references participate in navigation warning
 
 ## Development
 
-Use `nix develop` for the Rust/WASM toolchain, Nextest, Cargo Watch, Trunk,
-wasm-bindgen, Binaryen, and Tailwind. Alternatively install those tools and
-add the WASM target with `rustup target add wasm32-unknown-unknown`.
-Docker must be accessible to your user and support a single-node Swarm.
-Start the development workflow:
+Building the dashboard needs only Cargo and the `wasm32-unknown-unknown` target,
+which `rust-toolchain.toml` installs. `nix develop` provides the same toolchain
+plus Nextest and Cargo Watch. Docker must be accessible to your user and support
+a single-node Swarm. Start the development workflow:
 
 ```console
 just dev
 ```
 
-This watches the daemon and dashboard sources, builds the embedded bundle
-with Tailwind and Trunk, and runs the daemon using
-`examples/piqueld.toml`. Open `http://localhost:7845/dashboard/` and
-refresh the browser after a rebuild. Stopping the command allows the daemon
-its graceful shutdown period before terminating any remaining processes.
+This watches the daemon and dashboard sources, rebuilds the embedded bundle, and
+runs the daemon using `examples/piqueld.toml`. Open
+`http://localhost:7845/dashboard/` and refresh the browser after a rebuild.
+Stopping the command allows the daemon its graceful shutdown period before
+terminating any remaining processes.
 
-Compile the browser client and dashboard without building assets with:
+Compile the browser client and dashboard without building the bundle with:
 
 ```console
 cargo check --package piqueld-ui --target wasm32-unknown-unknown
@@ -100,20 +99,29 @@ The browser modules separate dashboard navigation and lists, editor state,
 configuration forms, deployment history, navigation guards, and shared
 presentation primitives (`browser/ui.rs` for icons, badges, notices, dialogs,
 and tabs; `browser/format.rs` for relative times, durations, and sizes).
-Styles are split into theme tokens, shell layout, and component rules. To format view
-macros as well as Rust, run `leptosfmt` from `apps/piqueld-ui` (it reads the local
-`leptosfmt.toml`), followed by `cargo fmt --all`.
+Styles are plain CSS: a base reset adapted from Tailwind's preflight, theme
+tokens, shell layout, and component rules, in `apps/piqueld-ui/styles/`. To
+format view macros as well as Rust, run `leptosfmt` from `apps/piqueld-ui` (it
+reads the local `leptosfmt.toml`), followed by `cargo fmt --all`.
 
 ## Production assets
 
-The source files `apps/piqueld-ui/index.html`, `tailwind.css`, and the Rust UI
-are committed. Tailwind's generated CSS and Trunk-generated
-HTML/WASM/JavaScript loader assets are build outputs and are not committed.
+The release dashboard ships inside the daemon binary itself, and Cargo builds
+it. With the `embedded-ui` feature, the daemon build script:
 
-The release dashboard ships inside the daemon binary itself. Building with the
-feature embeds the bundle; the daemon's build script runs Tailwind and Trunk,
-so `trunk`, `wasm-bindgen-cli`, `binaryen`, and `tailwindcss` must be on the
-path:
+1. compiles `piqueld-ui` for `wasm32-unknown-unknown` with the size-optimized
+   `dashboard` profile, using a nested Cargo with its own target directory;
+2. generates the JavaScript bindings in-process with `wasm-bindgen-cli-support`,
+   pinned to the exact `wasm-bindgen` version;
+3. concatenates `styles/` in cascade order, and writes a small loader module;
+4. fills the placeholders in `apps/piqueld-ui/index.html` with the
+   content-hashed file names, and embeds every file.
+
+No Trunk, wasm-bindgen CLI, binaryen, Tailwind, or Node is involved. The shell
+has no inline scripts, so the Content-Security-Policy is a constant. See
+[ADR 0002](architecture/0002-cargo-built-dashboard.md) for the reasoning and
+the planned move to Cargo artifact dependencies, which would remove the nested
+Cargo invocation.
 
 ```console
 cargo build --release --package piqueld --bin piqueld --features embedded-ui --locked
@@ -123,11 +131,9 @@ cargo build --release --package piqueld --bin piqueld --features embedded-ui --l
 There is no runtime UI configuration: the dashboard exists exactly when the
 binary was built with the feature, and binaries built without it are API-only.
 The combined Nix package (`.#`) includes `piquelctl` and a daemon with the
-release dashboard embedded. It builds the bundle hermetically in `preBuild` and
-hands it to the build script through `PIQUELD_UI_DIST`, which skips tool
-invocation for packagers that supply their own distribution directory. The
-`.#daemon` output contains only the daemon without the feature, and the
-`.#cli` output contains only `piquelctl`.
+release dashboard embedded, built by the same build script. The `.#daemon`
+output contains only the daemon without the feature, and the `.#cli` output
+contains only `piquelctl`.
 
 The TCP router serves bundle files below `/dashboard/` and uses `index.html`
 only for extensionless dashboard paths. API, health, and unknown paths never

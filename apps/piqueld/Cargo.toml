@@ -6,11 +6,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Builds with this feature embed the Trunk dashboard bundle at compile time.
-# The build script invokes tailwindcss and trunk, so these tools plus the
-# wasm32-unknown-unknown target must be available when it is enabled.
+# Builds with this feature embed the dashboard bundle at compile time. The
+# build script compiles `piqueld-ui` with a nested Cargo, so the
+# wasm32-unknown-unknown target (listed in rust-toolchain.toml) must be installed.
 [features]
-embedded-ui = []
+embedded-ui = ["dep:wasm-bindgen-cli-support"]
 openapi-codegen = ["dep:prettyplease", "dep:progenitor", "dep:syn"]
 
 [[bin]]
@@ -72,6 +72,7 @@ hyper-util.workspace = true
 tokio.workspace = true
 sqlx.workspace = true
 sha2.workspace = true
+wasm-bindgen-cli-support = { workspace = true, optional = true }
 
 [lints]
 workspace = true

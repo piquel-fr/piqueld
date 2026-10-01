@@ -46,14 +46,12 @@ handle_signal() {
 trap cleanup EXIT
 trap handle_signal INT TERM HUP
 
-mkdir -p apps/piqueld-ui/generated
 # Existing directories are validated by the daemon, never silently chmodded.
 mkdir -p -m 0700 /tmp/piqueld-dev-run
 
 # The daemon embeds the dashboard at compile time, so the UI crate is watched
-# too: every dashboard edit re-runs the build script (Tailwind + Trunk) and
-# restarts the daemon. The build script's own outputs are ignored so a rebuild
-# cannot trigger itself.
+# too: every dashboard edit re-runs the build script, which rebuilds the
+# bundle, and restarts the daemon.
 # Keep the command in the session managed by cleanup: cargo-watch otherwise
 # creates another session that survives if the watcher exits first. Exec makes
 # cargo (and then the daemon) the watcher's direct child, so reloads still stop
@@ -62,7 +60,6 @@ setsid cargo watch \
     --no-process-group \
     --watch apps/piqueld --watch apps/piqueld-ui --watch crates \
     --watch Cargo.toml --watch Cargo.lock \
-    --ignore 'apps/piqueld-ui/generated' \
     --shell 'exec cargo run --package piqueld --bin piqueld --features embedded-ui -- --config examples/piqueld.toml' &
 child_pids+=("$!")
 

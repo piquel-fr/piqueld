@@ -48,7 +48,7 @@ test-wasm:
 test:
     @cargo nextest run --locked --workspace
 
-# Verify the real embedded bundle and run daemon tests with its generated CSP.
+# Verify the real embedded bundle and run daemon tests against it.
 test-embedded:
     @cargo nextest run --locked --package piqueld --features embedded-ui
 
@@ -65,14 +65,14 @@ openapi-check:
 boundary:
     @./scripts/check-dependency-boundaries.sh
 
-# UI checks and release builds require the wasm target, Trunk,
-# wasm-bindgen-cli, binaryen, and Tailwind. Default all-feature Clippy also
-# builds the embedded dashboard unless PIQUELD_UI_DIST supplies a bundle.
-# Default Playwright validation builds it through its Rust fixture too.
+# UI checks and embedded builds need only the wasm32 target from
+# rust-toolchain.toml: the daemon build script compiles and binds the dashboard
+# itself. Default all-feature Clippy builds the embedded dashboard, and
+# Playwright validation builds it through its Rust fixture too.
 ui-check:
     @cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
 
-# Release daemon and CLI; the daemon build script invokes Tailwind and Trunk.
+# Release daemon and CLI; the daemon build script compiles the dashboard.
 # Select only the shipped binaries to avoid optimizing the OpenAPI generator,
 # and build them together so Cargo can share dependencies and schedule both.
 build-embedded:
@@ -81,7 +81,7 @@ build-embedded:
 daemon-embedded *ARGS:
     @cargo run --package piqueld --bin piqueld --features embedded-ui -- {{ARGS}}
 
-# Full local development: daemon, Tailwind, and Trunk are cleaned up together.
+# Full local development: the watcher and daemon are cleaned up together.
 dev:
     @bash ./scripts/dev.sh
 
