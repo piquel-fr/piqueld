@@ -192,10 +192,6 @@ impl<D: DockerApi> Controller<D> {
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         let request = self.operation_request(operation, cancellation).await?;
-        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
-        if operation.kind == OperationKind::Delete {
-            self.withdraw_routes(operation, deadline).await?;
-        }
         let ownership = self.ownership_labels(&operation.application_id);
         if operation.kind != OperationKind::Delete
             && !self
@@ -205,6 +201,17 @@ impl<D: DockerApi> Controller<D> {
                 .map_err(OperationError::from)?
         {
             return Err(OperationError::Superseded);
+        }
+        if let PlanRequest::Reconcile { desired } = &request {
+            self.run_jobs(operation, desired, cancellation).await?;
+        }
+        // Jobs have their own timeouts; convergence starts after them.
+        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+        if operation.kind == OperationKind::Delete {
+            self.withdraw_routes(operation, deadline).await?;
+            // Job services would keep the private network attached.
+            self.remove_jobs(operation, &ownership, cancellation)
+                .await?;
         }
         tracing::debug!(
             timeout_seconds = self.retry.convergence_timeout.as_secs(),

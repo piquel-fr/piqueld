@@ -254,7 +254,9 @@ per-route public HTTPS readiness without affecting `ready`; see
 `cursor`, and `limit` (1–100, default 50). Each executed Git-service preparation
 creates an independent record before checkout. Image pulls do not create records.
 Outcomes are running, succeeded, failed, or interrupted. Resolved commits and
-image IDs are recorded when available; retries create new attempts.
+image IDs are recorded when available; retries create new attempts. Job runs
+appear in the same history with `job` set, the service whose container they
+reuse, the image that ran, and `exit_code` once the container exited.
 
 `GET /api/v1/builds/{id}/logs` returns the newest output in chronological order,
 with `previous_offset` as an exclusive `before` cursor to load older chunks.

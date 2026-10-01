@@ -93,6 +93,12 @@ validated_string!(
     "volume names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
     crate::resource::valid_logical_name
 );
+validated_string!(
+    /// Logical one-shot job name.
+    JobName, JobNameError,
+    "job names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
+    crate::resource::valid_logical_name
+);
 
 #[cfg(test)]
 mod tests {

@@ -367,7 +367,7 @@ An empty list prints `No profiles configured.` in human mode, or
 warnings, errors, and authorized prompts.
 
 `piquelctl builds list [--application ID] [--cursor CURSOR]` lists one page of build
-attempts. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
+attempts and job runs. `piquelctl builds logs ID [--before BYTE_OFFSET]` reads the newest bounded
 output page, or an older page before the supplied cursor. It prints the cursor
 for loading older output when available. Both support `--json`.
 

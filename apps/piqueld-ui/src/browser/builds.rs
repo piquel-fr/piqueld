@@ -87,7 +87,7 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
             loading.set(false);
         });
     };
-    view! {<section class="deployment-history build-history"><div class="build-history-heading"><p class="help">"Every Git source preparation is recorded, including failed checkouts and cached builds. Image pulls do not create builds."</p>
+    view! {<section class="deployment-history build-history"><div class="build-history-heading"><p class="help">"Every Git source preparation and job run is recorded, including failed checkouts and cached builds. Image pulls do not create builds."</p>
         <button disabled=move ||loading.get() on:click=move |_|refresh.set(true)>"Refresh builds"</button></div>
         {move ||error.get().map(|e|view!{<p class="form-error" role="alert">{e}</p>})}
         <Show when=move ||!loading.get() && records.with(Vec::is_empty)><p class="empty-state">"No builds recorded yet."</p></Show>
@@ -107,7 +107,7 @@ fn BuildCard(record: Signal<BuildRecord>) -> impl IntoView {
         <button class="deployment-summary build-summary" aria-expanded=move ||opened.get().to_string() on:click=toggle>
             {move ||{let b=record.get();let state=build_state(b.state);let summary_time=build_summary_time(&b);view!{
                 <span class="deployment-state" data-state=state>{state}</span>
-                <strong>{format!("Build #{}",b.id)}</strong>
+                <strong>{b.job.as_ref().map_or_else(||format!("Build #{}",b.id),|job|format!("Job {job} #{}",b.id))}</strong>
                 <span class="build-service">{b.service}</span>
                 <span class="deployment-time">{summary_time}</span>
                 <span class="expand-icon" aria-hidden="true">{if opened.get(){"−"}else{"+"}}</span>
@@ -119,6 +119,7 @@ fn BuildCard(record: Signal<BuildRecord>) -> impl IntoView {
                     <dt>"Application"</dt>
                     <dd><leptos_router::A href=format!("/dashboard/applications/{}",b.application_id)>{b.application_id}</leptos_router::A></dd>
                     <dt>"Service"</dt><dd>{b.service}</dd>
+                    {b.job.map(|job|view!{<dt>"Job"</dt><dd>{job}</dd><dt>"Exit code"</dt><dd>{b.exit_code.map_or_else(||"None".into(),|code|code.to_string())}</dd>})}
                     <dt>"Operation ID"</dt><dd><code>{b.operation_id}</code></dd>
                     <dt>"Started"</dt><dd>{timestamp(b.started_at_ms)}</dd>
                     <dt>"Finished"</dt><dd>{b.finished_at_ms.map(timestamp).unwrap_or_else(||"In progress".into())}</dd>
