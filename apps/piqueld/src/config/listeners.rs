@@ -41,6 +41,13 @@ impl ServerConfig {
         Ok(listeners)
     }
 
+    /// Expands the listen mode into concrete socket addresses on the shared port.
+    ///
+    /// ```text
+    /// localhost -> 127.0.0.1:7845, [::1]:7845
+    /// tailscale -> <each discovered Tailscale IP>:7845
+    /// both      -> loopback addresses followed by Tailscale addresses
+    /// ```
     fn listen_addresses(&self, tailscale: Vec<IpAddr>) -> Vec<SocketAddr> {
         let mut addresses = Vec::new();
         if matches!(self.listen_mode, ListenMode::Localhost | ListenMode::Both) {
@@ -59,6 +66,7 @@ impl ServerConfig {
     }
 }
 
+/// The subset of `tailscale status --json` needed to find local addresses.
 #[derive(Deserialize)]
 struct TailscaleStatus {
     #[serde(rename = "BackendState")]
@@ -68,6 +76,8 @@ struct TailscaleStatus {
 }
 
 impl TailscaleStatus {
+    /// Runs the status command with a five-second timeout and parses its output.
+    /// Takes the command as a parameter so tests can substitute a fixture.
     async fn discover(mut command: Command) -> Result<Vec<IpAddr>> {
         let output =
             tokio::time::timeout(Duration::from_secs(5), command.kill_on_drop(true).output())
@@ -83,6 +93,9 @@ impl TailscaleStatus {
         Self::parse(&output.stdout)
     }
 
+    /// Extracts sorted, deduplicated addresses, requiring a `Running` backend and a
+    /// non-empty list in which every address is concrete (not unspecified,
+    /// loopback, or multicast).
     fn parse(output: &[u8]) -> Result<Vec<IpAddr>> {
         let status: Self =
             serde_json::from_slice(output).context("invalid tailscale status JSON")?;

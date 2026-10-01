@@ -20,6 +20,11 @@ validated_string!(
 
 impl Hostname {
     /// Whether this is `domain` itself or one of its subdomains.
+    ///
+    /// ```text
+    /// "api.example.com" within "example.com"    -> true
+    /// "badexample.com"  within "example.com"    -> false
+    /// ```
     #[must_use]
     pub fn is_within(&self, domain: &Self) -> bool {
         self.as_str()
@@ -42,6 +47,7 @@ pub struct ValidatedRoute {
 }
 
 impl ValidatedRoute {
+    /// Converts back to the editable input shape used for export.
     pub(super) fn to_input(&self) -> super::input::Route {
         super::input::Route {
             hostname: self.hostname.to_string(),

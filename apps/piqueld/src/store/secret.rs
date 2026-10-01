@@ -31,6 +31,11 @@ impl Store {
             .collect())
     }
     /// Creates or replaces a logical secret. Rotation only affects a later deployment.
+    /// `expected` is the current generation (zero to create). The value is
+    /// encrypted into a new immutable version with its own Swarm secret name
+    /// (`piqueld-secret-<uuid>`), subject to per-application count and byte quotas.
+    /// Rejected while the application or the secret is being deleted.
+    ///
     /// # Errors
     /// Returns invalid input, version conflict, key or database errors.
     pub async fn put_secret(
@@ -97,6 +102,7 @@ impl Store {
             unavailable: false,
         })
     }
+    /// Optimistic concurrency check against the secret's current generation.
     fn secret_version_matches(expected: i64, actual: i64) -> Result<(), StoreError> {
         if expected == actual {
             Ok(())
@@ -104,6 +110,7 @@ impl Store {
             Err(StoreError::SecretVersionConflict { expected, actual })
         }
     }
+    /// Pins the secret versions a deployment uses in its own transaction; see `pin_secrets_on`.
     pub(crate) async fn pin_secrets(
         &self,
         operation: &str,
@@ -115,6 +122,11 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)?;
         Ok(pins)
     }
+    /// Returns the logical-to-Swarm secret names a deployment operation uses.
+    /// The first call pins the current generation of every referenced secret, so
+    /// retries deploy the same versions even after rotation; later calls reuse
+    /// the pins. Fails if a referenced secret is missing (`InvalidInput`), being
+    /// deleted, or had its value discarded by key recovery.
     pub(super) async fn pin_secrets_on(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         operation: &str,
@@ -164,6 +176,7 @@ impl Store {
         }
         Ok(rows.into_iter().map(|r| (r.name, r.swarm_name)).collect())
     }
+    /// Decrypts one version by its Swarm secret name, for creating the runtime secret.
     pub(crate) async fn secret_plaintext(
         &self,
         application: &ApplicationId,
@@ -188,6 +201,7 @@ impl Store {
             )
             .map_err(StoreError::SecretSource)
     }
+    /// Swarm secret names of every stored version, used to clean up after application deletion.
     pub(crate) async fn secret_names(
         &self,
         application: &ApplicationId,
@@ -201,6 +215,8 @@ impl Store {
         .await
         .map_err(StoreError::database)
     }
+    /// Enforces the per-application limits of 1000 available versions and
+    /// 100 MiB of ciphertext, including the incoming value.
     async fn check_secret_quota(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         id: &str,

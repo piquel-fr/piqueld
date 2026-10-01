@@ -42,12 +42,16 @@ impl std::error::Error for Lockout {}
 /// Credential classes. Only browser sessions have an idle timeout.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CredentialKind {
+    /// Dashboard session cookie.
     Browser,
+    /// Session approved for the command-line client.
     Cli,
+    /// Named API token.
     Token,
 }
 
 impl CredentialKind {
+    /// Value stored in the `kind` column.
     const fn as_str(self) -> &'static str {
         match self {
             Self::Browser => "browser",
@@ -59,14 +63,21 @@ impl CredentialKind {
 
 /// A credential to store for an account. Only its secret's hash is persisted.
 pub(crate) struct NewCredential<'a> {
+    /// Public identifier, used to revoke the credential.
     pub(crate) id: String,
+    /// Hash of the bearer secret; the secret itself is never stored.
     pub(crate) secret_hash: String,
+    /// Credential class, deciding idle-timeout behavior.
     pub(crate) kind: CredentialKind,
+    /// Human-readable label shown in the account directory.
     pub(crate) name: &'a str,
+    /// Absolute expiry in Unix seconds; `None` never expires.
     pub(crate) expires_at: Option<i64>,
 }
 
 impl NewCredential<'_> {
+    /// Inserts the credential for `user_id`, marking it used now. A duplicate ID
+    /// or hash maps to `AlreadyExists`, and a missing account to `NotFound`.
     async fn insert(&self, db: &mut SqliteConnection, user_id: &str) -> Result<(), StoreError> {
         let now = now_secs();
         let kind = self.kind.as_str();
@@ -89,8 +100,11 @@ impl NewCredential<'_> {
 
 /// A registered `WebAuthn` credential, serialized by the caller.
 pub(crate) struct NewPasskey<'a> {
+    /// `WebAuthn` credential ID.
     pub(crate) id: &'a str,
+    /// Human-readable label.
     pub(crate) name: &'a str,
+    /// Serialized passkey state, updated after each sign-in.
     pub(crate) credential: &'a str,
 }
 
@@ -101,16 +115,22 @@ pub(crate) enum PasskeyOwner<'a> {
     /// Registration creates the account, consuming the setup secret or an
     /// invitation, and signs it in with `session`.
     New {
+        /// Account to create.
         user: &'a User,
+        /// Hash of the setup secret or invitation secret being redeemed.
         invitation_hash: &'a str,
+        /// Browser session opened for the new account.
         session: NewCredential<'a>,
     },
 }
 
 /// The account behind a live credential.
 pub(crate) struct CredentialOwner {
+    /// Matched credential, used to record its use or revoke it.
     pub(crate) credential_id: String,
+    /// Account that owns the credential.
     pub(crate) user: User,
+    /// Last recorded use in Unix seconds, letting callers skip frequent refreshes.
     pub(crate) last_used_at: i64,
 }
 
@@ -164,6 +184,7 @@ impl Store {
         .map_err(StoreError::database)
     }
 
+    /// Reads one account by ID.
     pub(crate) async fn auth_user(&self, id: &str) -> Result<Option<User>, StoreError> {
         sqlx::query_as!(
             User,
@@ -192,6 +213,7 @@ impl Store {
     /// Stores a registered passkey. For a new account this atomically consumes
     /// the invitation, creates the account, and opens its session. Returns
     /// `false` when the invitation was already used or has expired.
+    /// The setup secret is tried first; claiming it marks the installation initialized.
     pub(crate) async fn add_passkey(
         &self,
         owner: PasskeyOwner<'_>,
@@ -382,12 +404,14 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)
     }
 
+    /// Deletes one credential; unknown IDs are ignored.
     pub(crate) async fn revoke_credential(&self, id: &str) -> Result<(), StoreError> {
         self.write_one(sqlx::query!("DELETE FROM auth_credentials WHERE id=?1", id))
             .await?;
         Ok(())
     }
 
+    /// Deletes every credential of an account, signing it out everywhere.
     pub(crate) async fn revoke_credentials(&self, user_id: &str) -> Result<(), StoreError> {
         self.write_one(sqlx::query!(
             "DELETE FROM auth_credentials WHERE user_id=?1",
@@ -443,6 +467,8 @@ impl Store {
         })
     }
 
+    /// Changes an account's username and display name. A taken username maps to
+    /// `AlreadyExists`.
     pub(crate) async fn update_user(
         &self,
         id: &str,
@@ -460,6 +486,8 @@ impl Store {
     }
 
     /// Deletes an account with its passkeys, credentials, and invitations.
+    /// Refuses to delete the last account, or an account whose deletion would leave
+    /// no passkeys.
     pub(crate) async fn delete_user(&self, id: &str) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let accounts = sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM auth_users"#)
@@ -477,6 +505,7 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)
     }
 
+    /// Deletes one passkey unless it is the last one left.
     pub(crate) async fn remove_passkey(&self, id: &str) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         sqlx::query!("DELETE FROM auth_passkeys WHERE id=?1", id)
@@ -502,6 +531,7 @@ impl Store {
         }
     }
 
+    /// Changes a passkey's label.
     pub(crate) async fn rename_passkey(&self, id: &str, name: &str) -> Result<(), StoreError> {
         self.write_one(sqlx::query!(
             "UPDATE auth_passkeys SET name=?1 WHERE id=?2",
@@ -512,6 +542,7 @@ impl Store {
         Ok(())
     }
 
+    /// Stores an invitation by its secret hash; `add_passkey` consumes it.
     pub(crate) async fn create_invitation(
         &self,
         id: &str,
@@ -530,6 +561,7 @@ impl Store {
         Ok(())
     }
 
+    /// Deletes an unused invitation.
     pub(crate) async fn revoke_invitation(&self, id: &str) -> Result<(), StoreError> {
         self.write_one(sqlx::query!("DELETE FROM auth_invitations WHERE id=?1", id))
             .await?;

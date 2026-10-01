@@ -25,6 +25,7 @@ use piqueld_core::{
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
 
+/// Unwraps the shared `expected_generation`/`force`/`deploy` query options.
 fn options(query: Result<Query<EditOptions>, QueryRejection>) -> Result<EditOptions, ApiError> {
     query.map(|Query(value)| value).map_err(|_| {
         ApiError::new(
@@ -34,6 +35,7 @@ fn options(query: Result<Query<EditOptions>, QueryRejection>) -> Result<EditOpti
         )
     })
 }
+/// Decodes a strict JSON edit body; any other content type fails with 415.
 fn body<T: serde::de::DeserializeOwned>(
     headers: &HeaderMap,
     body: Result<Bytes, BytesRejection>,
@@ -49,6 +51,14 @@ fn body<T: serde::de::DeserializeOwned>(
 }
 
 // One declaration supplies the handler, route metadata, body type and typed mutation.
+//
+// Arguments: handler name (also the `OpenAPI` operation ID), HTTP method, path,
+// the path parameters as `(binding: Type = "label", ...)` with the application
+// ID first, the request body type, its decoder, and a closure mapping
+// `(path parts, body)` to an `ApplicationEdit`. The generated handler submits
+// `Mutation::Edit` through `accept_mutation`, answering 200 when saved or 202
+// when `deploy=true` also accepted a deployment. The `@id` arm selects the
+// first path parameter as the application ID.
 macro_rules! edit_endpoint {
     ($name:ident, $method:ident, $path:literal, ($($part:ident : $part_ty:ty = $label:literal),+), $body:ty, $decode:expr, $edit:expr) => {
         #[utoipa::path($method, path = $path, operation_id = stringify!($name),
@@ -73,6 +83,10 @@ edit_endpoint!(set_application_volumes, put, "/api/v1/applications/{id}/volumes"
 edit_endpoint!(set_application_routes, put, "/api/v1/applications/{id}/routes", (id: String = "id"), RoutesValue, body::<RoutesValue>, |_, body: RoutesValue| ApplicationEdit::Routes(body.value));
 edit_endpoint!(set_application_name, put, "/api/v1/applications/{id}/name", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::Name(body.value));
 edit_endpoint!(set_manifest_repository, put, "/api/v1/applications/{id}/repository", (id: String = "id"), RepositoryValue, body::<RepositoryValue>, |_, body: RepositoryValue| ApplicationEdit::Repository(body.value));
+/// Disconnects the manifest repository.
+///
+/// The saved configuration becomes directly editable. Same query options,
+/// idempotency, and 200/202 responses as the other editing endpoints.
 #[utoipa::path(delete, path = "/api/v1/applications/{id}/repository", operation_id = "disconnect_manifest_repository",
     params(("id" = String, Path), EditOptions, ("Idempotency-Key" = Option<String>, Header)),
     responses((status = 200, description = "Configuration saved", body = Envelope<SavedApplication>),
@@ -106,6 +120,9 @@ edit_endpoint!(set_manifest_repository_commit, put, "/api/v1/applications/{id}/r
 edit_endpoint!(set_manifest_repository_path, put, "/api/v1/applications/{id}/repository/path", (id: String = "id"), StringValue, body::<StringValue>, |_, body: StringValue| ApplicationEdit::RepositoryPath(body.value));
 edit_endpoint!(add_application_service, post, "/api/v1/applications/{id}/services", (id: String = "id"), Service, body::<Service>, |_, body: Service| ApplicationEdit::AddService(body));
 edit_endpoint!(add_application_volume, post, "/api/v1/applications/{id}/volumes", (id: String = "id"), Volume, body::<Volume>, |_, body: Volume| ApplicationEdit::AddVolume(body));
+/// Removes a service from the saved configuration.
+///
+/// Pass `deploy=true` to also deploy the result (202 instead of 200).
 #[utoipa::path(delete, path = "/api/v1/applications/{id}/services/{service}", operation_id = "remove_application_service",
     params(("id" = String, Path), ("service" = String, Path), EditOptions, ("Idempotency-Key" = Option<String>, Header)),
     responses((status = 200, description = "Configuration saved", body = Envelope<SavedApplication>),
@@ -133,6 +150,9 @@ async fn remove_application_service(
     )
     .await
 }
+/// Removes a named volume from the saved configuration.
+///
+/// Pass `deploy=true` to also deploy the result (202 instead of 200).
 #[utoipa::path(delete, path = "/api/v1/applications/{id}/volumes/{volume}", operation_id = "remove_application_volume",
     params(("id" = String, Path), ("volume" = String, Path), EditOptions, ("Idempotency-Key" = Option<String>, Header)),
     responses((status = 200, description = "Configuration saved", body = Envelope<SavedApplication>),
@@ -186,6 +206,9 @@ edit_endpoint!(set_service_memory, put, "/api/v1/applications/{id}/services/{ser
 edit_endpoint!(set_service_general, put, "/api/v1/applications/{id}/services/{service}/general", (id: String = "id", service: String = "service"), ServiceGeneral, body::<ServiceGeneral>, |(_, service), body: ServiceGeneral| ApplicationEdit::Service { name: service, edit: ServiceEdit::General(body) });
 edit_endpoint!(set_service_process, put, "/api/v1/applications/{id}/services/{service}/process", (id: String = "id", service: String = "service"), ServiceProcess, body::<ServiceProcess>, |(_, service), body: ServiceProcess| ApplicationEdit::Service { name: service, edit: ServiceEdit::Process(body) });
 edit_endpoint!(set_service_environment_entry, put, "/api/v1/applications/{id}/services/{service}/environment/{key}", (id: String = "id", service: String = "service", key: String = "key"), StringValue, body::<StringValue>, |(_, service, key), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::EnvironmentEntry((key, Some(body.value))) });
+/// Removes an environment variable from a service.
+///
+/// Pass `deploy=true` to also deploy the result (202 instead of 200).
 #[utoipa::path(delete, path = "/api/v1/applications/{id}/services/{service}/environment/{key}", operation_id = "remove_service_environment_entry",
     params(("id" = String, Path), ("service" = String, Path), ("key" = String, Path), EditOptions, ("Idempotency-Key" = Option<String>, Header)),
     responses((status = 200, description = "Configuration saved", body = Envelope<SavedApplication>),
@@ -219,12 +242,17 @@ async fn remove_service_environment_entry(
 edit_endpoint!(set_service_mount, put, "/api/v1/applications/{id}/services/{service}/mount", (id: String = "id", service: String = "service"), Mount, body::<Mount>, |(_, service), body: Mount| ApplicationEdit::Service { name: service, edit: ServiceEdit::Mount(body) });
 edit_endpoint!(remove_service_mount, delete, "/api/v1/applications/{id}/services/{service}/mount", (id: String = "id", service: String = "service"), StringValue, body::<StringValue>, |(_, service), body: StringValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::RemoveMount(body.value) });
 
+/// Query options for `create_application`; `deploy` defaults to false.
 #[derive(Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct CreateQuery {
     deploy: bool,
 }
 
+/// Creates an empty application.
+///
+/// The body holds only the name, which must not already be in use (409
+/// otherwise). Pass `deploy=true` to also deploy it (202 instead of 200).
 #[utoipa::path(post, path = "/api/v1/applications", operation_id = "create_application",
     params(("deploy" = Option<bool>, Query), ("Idempotency-Key" = Option<String>, Header)), request_body = StringValue,
     responses((status = 200, description = "Empty application saved", body = Envelope<SavedApplication>),
@@ -263,6 +291,7 @@ async fn create_application(
     .await
 }
 
+/// Registers every typed editing endpoint plus `create_application`.
 pub(super) fn router() -> OpenApiRouter<ApiState> {
     OpenApiRouter::new()
         .routes(routes!(create_application))

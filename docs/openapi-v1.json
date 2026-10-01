@@ -5828,9 +5828,11 @@
   "paths": {
     "/api/v1/analytics/deployments": {
       "get": {
+        "description": "Aggregates deployment outcomes; the window defaults to the last 30 days.",
         "operationId": "deploymentAnalytics",
         "parameters": [
           {
+            "description": "Only include deployments of this application.",
             "in": "query",
             "name": "application_id",
             "required": false,
@@ -5839,6 +5841,7 @@
             }
           },
           {
+            "description": "Inclusive Unix millisecond lower bound; defaults to 30 days before `until_ms`.",
             "in": "query",
             "name": "since_ms",
             "required": false,
@@ -5848,6 +5851,7 @@
             }
           },
           {
+            "description": "Inclusive Unix millisecond upper bound; defaults to now.",
             "in": "query",
             "name": "until_ms",
             "required": false,
@@ -5898,7 +5902,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Gets deployment analytics for a time window."
       }
     },
     "/api/v1/applications": {
@@ -5906,6 +5911,7 @@
         "operationId": "listApplications",
         "parameters": [
           {
+            "description": "`next_cursor` from a previous page.",
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -5914,6 +5920,7 @@
             }
           },
           {
+            "description": "Page size.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -5981,6 +5988,7 @@
         "summary": "List applications"
       },
       "post": {
+        "description": "The body holds only the name, which must not already be in use (409\notherwise). Pass `deploy=true` to also deploy it (202 instead of 200).",
         "operationId": "create_application",
         "parameters": [
           {
@@ -6111,7 +6119,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Creates an empty application."
       }
     },
     "/api/v1/applications/apply": {
@@ -6648,6 +6657,7 @@
     },
     "/api/v1/applications/{id}/deploy": {
       "post": {
+        "description": "Returns 202 with the accepted durable operation. Requires\n`expected_generation` unless `force=true`; a stale generation fails with 409.\nRepeating a request with the same `Idempotency-Key` returns the original\nresponse.",
         "operationId": "deployApplication",
         "parameters": [
           {
@@ -6758,11 +6768,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Deploys the saved configuration."
       }
     },
     "/api/v1/applications/{id}/deployments": {
       "get": {
+        "description": "Returns three deployment snapshots per page; follow `next_cursor` for older ones.",
         "operationId": "listDeployments",
         "parameters": [
           {
@@ -6774,6 +6786,7 @@
             }
           },
           {
+            "description": "`next_cursor` from a previous page.",
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -6833,11 +6846,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Lists deployments of an application, newest first."
       }
     },
     "/api/v1/applications/{id}/deployments/{deployment}/attempts": {
       "get": {
+        "description": "Returns up to 100 retained attempt outcomes per page. Deployments owned by\nanother application are reported as not found.",
         "operationId": "listDeploymentAttempts",
         "parameters": [
           {
@@ -6857,6 +6872,7 @@
             }
           },
           {
+            "description": "`next_cursor` from a previous page.",
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -6916,7 +6932,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Lists attempts of one deployment, newest first."
       }
     },
     "/api/v1/applications/{id}/detail": {
@@ -7011,6 +7028,7 @@
     },
     "/api/v1/applications/{id}/logs": {
       "get": {
+        "description": "Output can be narrowed to one service and one stream. Out-of-range `tail` or\n`since_seconds` values fail with 400 `logs_query_invalid`.",
         "operationId": "applicationLogs",
         "parameters": [
           {
@@ -7022,6 +7040,7 @@
             }
           },
           {
+            "description": "Only include output from this service (1–63 characters); all services when omitted.",
             "in": "query",
             "name": "service",
             "required": false,
@@ -7030,6 +7049,7 @@
             }
           },
           {
+            "description": "Only include this output stream; merged output when omitted.",
             "in": "query",
             "name": "stream",
             "required": false,
@@ -7038,6 +7058,7 @@
             }
           },
           {
+            "description": "Maximum number of most recent lines, merged across the selected services.",
             "in": "query",
             "name": "tail",
             "required": false,
@@ -7050,6 +7071,7 @@
             }
           },
           {
+            "description": "Only include output from this many seconds ago onward.",
             "in": "query",
             "name": "since_seconds",
             "required": false,
@@ -7123,11 +7145,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Gets recent container output for an application."
       }
     },
     "/api/v1/applications/{id}/manifest": {
       "get": {
+        "description": "Reads only saved configuration, so it works while the runtime is unavailable.",
         "operationId": "downloadApplicationManifest",
         "parameters": [
           {
@@ -7215,7 +7239,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Download only saved configuration; runtime availability is irrelevant."
+        "summary": "Downloads the saved configuration as a TOML manifest."
       }
     },
     "/api/v1/applications/{id}/name": {
@@ -7394,6 +7418,7 @@
     },
     "/api/v1/applications/{id}/reconcile": {
       "post": {
+        "description": "Returns 202 with a durable operation that repairs the runtime to match the\naccepted configuration. Unlike other mutations, `expected_generation` is\noptional. Repeating a request with the same `Idempotency-Key` returns the\noriginal response.",
         "operationId": "reconcileApplication",
         "parameters": [
           {
@@ -7504,11 +7529,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Reconciles an application."
       }
     },
     "/api/v1/applications/{id}/rename": {
       "post": {
+        "description": "Changes only the user-facing name, without redeploying. The inspected\n`expected_generation` goes in the JSON body; the new name must not already be\nin use, even with `force=true`.",
         "operationId": "renameApplication",
         "parameters": [
           {
@@ -7618,11 +7645,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Renames an application."
       }
     },
     "/api/v1/applications/{id}/repository": {
       "delete": {
+        "description": "The saved configuration becomes directly editable. Same query options,\nidempotency, and 200/202 responses as the other editing endpoints.",
         "operationId": "disconnect_manifest_repository",
         "parameters": [
           {
@@ -7762,7 +7791,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Disconnects the manifest repository."
       },
       "put": {
         "operationId": "set_manifest_repository",
@@ -8809,6 +8839,7 @@
     },
     "/api/v1/applications/{id}/secrets": {
       "get": {
+        "description": "Returns metadata only; secret values are write-only and never returned.",
         "operationId": "applicationSecrets",
         "parameters": [
           {
@@ -8861,11 +8892,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Lists an application's secrets."
       }
     },
     "/api/v1/applications/{id}/secrets/{name}": {
       "delete": {
+        "description": "Fails with 409 while the configuration or a deployment still references it.\nIf cleanup is interrupted, retrying the deletion finishes it.",
         "operationId": "deleteApplicationSecret",
         "parameters": [
           {
@@ -8955,9 +8988,11 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Deletes a secret."
       },
       "put": {
+        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes).\n`X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. The response carries metadata only.",
         "operationId": "putApplicationSecret",
         "parameters": [
           {
@@ -9058,7 +9093,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Creates or replaces a secret value."
       }
     },
     "/api/v1/applications/{id}/services": {
@@ -9237,6 +9273,7 @@
     },
     "/api/v1/applications/{id}/services/{service}": {
       "delete": {
+        "description": "Pass `deploy=true` to also deploy the result (202 instead of 200).",
         "operationId": "remove_application_service",
         "parameters": [
           {
@@ -9384,7 +9421,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Removes a service from the saved configuration."
       }
     },
     "/api/v1/applications/{id}/services/{service}/arguments": {
@@ -9935,6 +9973,7 @@
     },
     "/api/v1/applications/{id}/services/{service}/environment/{key}": {
       "delete": {
+        "description": "Pass `deploy=true` to also deploy the result (202 instead of 200).",
         "operationId": "remove_service_environment_entry",
         "parameters": [
           {
@@ -10090,7 +10129,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Removes an environment variable from a service."
       },
       "put": {
         "operationId": "set_service_environment_entry",
@@ -15075,6 +15115,7 @@
     },
     "/api/v1/applications/{id}/volumes/{volume}": {
       "delete": {
+        "description": "Pass `deploy=true` to also deploy the result (202 instead of 200).",
         "operationId": "remove_application_volume",
         "parameters": [
           {
@@ -15222,11 +15263,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Removes a named volume from the saved configuration."
       }
     },
     "/api/v1/auth/device/approve": {
       "post": {
+        "description": "The device's next poll receives a token for the signed-in user.",
         "operationId": "authDeviceApprove",
         "requestBody": {
           "content": {
@@ -15259,11 +15302,13 @@
             },
             "description": "TCP authority or browser origin is not trusted"
           }
-        }
+        },
+        "summary": "Approves a pending device sign-in."
       }
     },
     "/api/v1/auth/device/inspect": {
       "post": {
+        "description": "Shows the requesting address and remaining lifetime so the user can confirm\nthe request before approving it.",
         "operationId": "authDeviceInspect",
         "requestBody": {
           "content": {
@@ -15296,11 +15341,13 @@
             },
             "description": "TCP authority or browser origin is not trusted"
           }
-        }
+        },
+        "summary": "Inspects a pending device sign-in."
       }
     },
     "/api/v1/auth/device/poll": {
       "post": {
+        "description": "Public. Poll at most every five seconds: the status is\n`authorization_pending` until approval, `slow_down` when polled too fast, and\n`complete` with a 30-day token exactly once after approval. Expired or unknown\ncodes fail with 401.",
         "operationId": "authDevicePoll",
         "requestBody": {
           "content": {
@@ -15334,11 +15381,13 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "security": []
+        "security": [],
+        "summary": "Polls a device sign-in."
       }
     },
     "/api/v1/auth/device/start": {
       "post": {
+        "description": "Public. Returns a device code to poll with and a user code to approve in a\nsigned-in browser. Rate limited per client address (429 with `Retry-After`).",
         "operationId": "authDeviceStart",
         "responses": {
           "200": {
@@ -15362,7 +15411,8 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "security": []
+        "security": [],
+        "summary": "Starts a device sign-in for a command-line client."
       }
     },
     "/api/v1/auth/directory": {
@@ -15389,11 +15439,13 @@
             },
             "description": "TCP authority or browser origin is not trusted"
           }
-        }
+        },
+        "summary": "Lists accounts, passkeys, credentials, and open invitations."
       }
     },
     "/api/v1/auth/login/finish": {
       "post": {
+        "description": "Public. Verifies the passkey and sets a seven-day session cookie.",
         "operationId": "authLoginFinish",
         "requestBody": {
           "content": {
@@ -15427,11 +15479,13 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "security": []
+        "security": [],
+        "summary": "Finishes a passkey sign-in."
       }
     },
     "/api/v1/auth/login/start": {
       "post": {
+        "description": "Public. Usernameless: any discoverable passkey for this site may answer.\nSets a short-lived ceremony cookie that the finish request must present.\nRate limited per client address (429 with `Retry-After`).",
         "operationId": "authLoginStart",
         "responses": {
           "200": {
@@ -15455,11 +15509,13 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "security": []
+        "security": [],
+        "summary": "Starts a passkey sign-in."
       }
     },
     "/api/v1/auth/logout": {
       "post": {
+        "description": "Revokes the credential used for this request and clears the session cookie.",
         "operationId": "authLogout",
         "responses": {
           "200": {
@@ -15482,7 +15538,8 @@
             },
             "description": "TCP authority or browser origin is not trusted"
           }
-        }
+        },
+        "summary": "Signs out."
       }
     },
     "/api/v1/auth/manage": {
@@ -15519,7 +15576,8 @@
             },
             "description": "TCP authority or browser origin is not trusted"
           }
-        }
+        },
+        "summary": "Applies one account management action as the signed-in user."
       }
     },
     "/api/v1/auth/me": {
@@ -15546,11 +15604,13 @@
             },
             "description": "TCP authority or browser origin is not trusted"
           }
-        }
+        },
+        "summary": "Gets the signed-in user."
       }
     },
     "/api/v1/auth/register/finish": {
       "post": {
+        "description": "Public. Verifies the passkey against the ceremony started in the same\nbrowser. New accounts are signed in with a session cookie; adding a passkey\nto an existing account is not.",
         "operationId": "authRegistrationFinish",
         "requestBody": {
           "content": {
@@ -15584,11 +15644,13 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "security": []
+        "security": [],
+        "summary": "Finishes passkey registration."
       }
     },
     "/api/v1/auth/register/start": {
       "post": {
+        "description": "Public. Registers a new account by redeeming an invitation or setup secret,\nor, when signed in, adds a passkey to an existing account. Sets a short-lived\nceremony cookie that the finish request must present. Rate limited per\nclient address (429 with `Retry-After`).",
         "operationId": "authRegistrationStart",
         "requestBody": {
           "content": {
@@ -15622,11 +15684,13 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "security": []
+        "security": [],
+        "summary": "Starts passkey registration."
       }
     },
     "/api/v1/auth/status": {
       "get": {
+        "description": "Public. Reports whether the first account exists and the website origin.",
         "operationId": "authStatus",
         "responses": {
           "200": {
@@ -15650,14 +15714,17 @@
             "description": "TCP authority or browser origin is not trusted"
           }
         },
-        "security": []
+        "security": [],
+        "summary": "Gets authentication status."
       }
     },
     "/api/v1/builds": {
       "get": {
+        "description": "Optionally filtered to one application. Follow `next_cursor` to load older\nbuilds.",
         "operationId": "listBuilds",
         "parameters": [
           {
+            "description": "Only include builds for this application.",
             "in": "query",
             "name": "application_id",
             "required": false,
@@ -15666,6 +15733,7 @@
             }
           },
           {
+            "description": "`next_cursor` from a previous page.",
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -15674,6 +15742,7 @@
             }
           },
           {
+            "description": "Page size; defaults to 50.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -15725,11 +15794,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Lists Git source builds, newest first."
       }
     },
     "/api/v1/builds/{id}/logs": {
       "get": {
+        "description": "Returns the newest bounded page of output in chronological order. Pass the\npage's `previous_offset` as `before` to load older output.",
         "operationId": "buildLogs",
         "parameters": [
           {
@@ -15742,6 +15813,7 @@
             }
           },
           {
+            "description": "`previous_offset` from a previous page, to load older output.",
             "in": "query",
             "name": "before",
             "required": false,
@@ -15751,6 +15823,7 @@
             }
           },
           {
+            "description": "Only include this output stream.",
             "in": "query",
             "name": "stream",
             "required": false,
@@ -15810,11 +15883,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Gets captured output for one build."
       }
     },
     "/api/v1/diagnostics/{id}": {
       "get": {
+        "description": "Server errors expose this ID as `details.diagnostic_id`; the response is the\nevent that recorded the failure, with its context.",
         "operationId": "getDiagnostic",
         "parameters": [
           {
@@ -15867,14 +15942,17 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Gets a recorded diagnostic."
       }
     },
     "/api/v1/events": {
       "get": {
+        "description": "Oldest first unless `descending=true`. Follow `next_cursor` to load more.",
         "operationId": "listEvents",
         "parameters": [
           {
+            "description": "Only include events about this application.",
             "in": "query",
             "name": "application_id",
             "required": false,
@@ -15883,6 +15961,7 @@
             }
           },
           {
+            "description": "Only include events of this operation.",
             "in": "query",
             "name": "operation_id",
             "required": false,
@@ -15891,6 +15970,7 @@
             }
           },
           {
+            "description": "Only include events of this operation attempt.",
             "in": "query",
             "name": "attempt",
             "required": false,
@@ -15901,6 +15981,7 @@
             }
           },
           {
+            "description": "Only include events of this runtime action.",
             "in": "query",
             "name": "action_id",
             "required": false,
@@ -15909,6 +15990,7 @@
             }
           },
           {
+            "description": "Only include events of this kind.",
             "in": "query",
             "name": "kind",
             "required": false,
@@ -15917,6 +15999,7 @@
             }
           },
           {
+            "description": "Only include failures with this error code.",
             "in": "query",
             "name": "error_code",
             "required": false,
@@ -15925,6 +16008,7 @@
             }
           },
           {
+            "description": "Only include diagnostic (failure) events.",
             "in": "query",
             "name": "errors_only",
             "required": false,
@@ -15933,6 +16017,7 @@
             }
           },
           {
+            "description": "Only include application-owned or daemon-owned history.",
             "in": "query",
             "name": "scope",
             "required": false,
@@ -15941,6 +16026,7 @@
             }
           },
           {
+            "description": "Inclusive Unix millisecond lower bound.",
             "in": "query",
             "name": "since_ms",
             "required": false,
@@ -15950,6 +16036,7 @@
             }
           },
           {
+            "description": "Inclusive Unix millisecond upper bound.",
             "in": "query",
             "name": "until_ms",
             "required": false,
@@ -15959,6 +16046,7 @@
             }
           },
           {
+            "description": "Return newest events first; streams only support oldest first.",
             "in": "query",
             "name": "descending",
             "required": false,
@@ -15967,6 +16055,7 @@
             }
           },
           {
+            "description": "`next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to\nresume after.",
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -15975,6 +16064,7 @@
             }
           },
           {
+            "description": "Page size (defaults to 50), or stream batch size (defaults to 100).",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -16026,14 +16116,17 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Lists structured events."
       }
     },
     "/api/v1/events/stream": {
       "get": {
+        "description": "Events arrive oldest first, resuming after the `Last-Event-ID` header or\n`cursor` (from the beginning when both are absent). Invalid cursors fail with\n400 and pruned history with 410 before the stream opens. The stream emits:\n- `event` messages with `id: v1:<event-id>` for each matching event;\n- ID-only messages that advance the resume position past filtered-out events;\n- a final `history_expired` or `stream_error` message, after which the\n  stream ends and history must be reloaded before reconnecting.",
         "operationId": "streamEvents",
         "parameters": [
           {
+            "description": "Only include events about this application.",
             "in": "query",
             "name": "application_id",
             "required": false,
@@ -16042,6 +16135,7 @@
             }
           },
           {
+            "description": "Only include events of this operation.",
             "in": "query",
             "name": "operation_id",
             "required": false,
@@ -16050,6 +16144,7 @@
             }
           },
           {
+            "description": "Only include events of this operation attempt.",
             "in": "query",
             "name": "attempt",
             "required": false,
@@ -16060,6 +16155,7 @@
             }
           },
           {
+            "description": "Only include events of this runtime action.",
             "in": "query",
             "name": "action_id",
             "required": false,
@@ -16068,6 +16164,7 @@
             }
           },
           {
+            "description": "Only include events of this kind.",
             "in": "query",
             "name": "kind",
             "required": false,
@@ -16076,6 +16173,7 @@
             }
           },
           {
+            "description": "Only include failures with this error code.",
             "in": "query",
             "name": "error_code",
             "required": false,
@@ -16084,6 +16182,7 @@
             }
           },
           {
+            "description": "Only include diagnostic (failure) events.",
             "in": "query",
             "name": "errors_only",
             "required": false,
@@ -16092,6 +16191,7 @@
             }
           },
           {
+            "description": "Only include application-owned or daemon-owned history.",
             "in": "query",
             "name": "scope",
             "required": false,
@@ -16100,6 +16200,7 @@
             }
           },
           {
+            "description": "Inclusive Unix millisecond lower bound.",
             "in": "query",
             "name": "since_ms",
             "required": false,
@@ -16109,6 +16210,7 @@
             }
           },
           {
+            "description": "Inclusive Unix millisecond upper bound.",
             "in": "query",
             "name": "until_ms",
             "required": false,
@@ -16118,6 +16220,7 @@
             }
           },
           {
+            "description": "Return newest events first; streams only support oldest first.",
             "in": "query",
             "name": "descending",
             "required": false,
@@ -16126,6 +16229,7 @@
             }
           },
           {
+            "description": "`next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to\nresume after.",
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -16134,6 +16238,7 @@
             }
           },
           {
+            "description": "Page size (defaults to 50), or stream batch size (defaults to 100).",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -16195,14 +16300,17 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Streams structured events as server-sent events."
       }
     },
     "/api/v1/notifications/deliveries": {
       "get": {
+        "description": "Follow `next_cursor` to load more deliveries.",
         "operationId": "notificationDeliveries",
         "parameters": [
           {
+            "description": "`next_cursor` from a previous page.",
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -16211,6 +16319,7 @@
             }
           },
           {
+            "description": "Page size; defaults to 50.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -16262,11 +16371,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Lists webhook notification deliveries."
       }
     },
     "/api/v1/notifications/deliveries/{id}/retry": {
       "post": {
+        "description": "Schedules another attempt using the current destination configuration.",
         "operationId": "retryNotificationDelivery",
         "parameters": [
           {
@@ -16329,7 +16440,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Retries a webhook notification delivery."
       }
     },
     "/api/v1/openapi.json": {
@@ -16432,6 +16544,7 @@
     },
     "/api/v1/system/configuration": {
       "get": {
+        "description": "Returns 503 when the daemon has no effective configuration to report.",
         "operationId": "systemConfiguration",
         "responses": {
           "200": {
@@ -16464,11 +16577,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Gets the effective read-only host configuration."
       }
     },
     "/api/v1/system/readiness": {
       "get": {
+        "description": "Probes the database, Docker Engine, and the Swarm manager with bounded\ntimeouts, and reports ingress status. The same body is returned in both\ncases; only the status code differs (200 when ready, 503 otherwise).",
         "operationId": "systemReadiness",
         "responses": {
           "200": {
@@ -16501,11 +16616,13 @@
             },
             "description": "Deployment dependencies unavailable"
           }
-        }
+        },
+        "summary": "Checks whether deployment dependencies are ready."
       }
     },
     "/api/v1/system/resources": {
       "get": {
+        "description": "Reports process, database, disk, retained history, and queue statistics.\nMeasurements the host cannot provide are omitted rather than reported as zero.",
         "operationId": "systemResources",
         "responses": {
           "200": {
@@ -16538,11 +16655,13 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Gets daemon resource usage."
       }
     },
     "/api/v1/system/secrets/recover-key": {
       "post": {
+        "description": "Discards stored secret values for all applications; metadata and running\nservices are kept. Fails with 409 while the current key still works. The next\nvalue write generates a new key.",
         "operationId": "recoverSecretKey",
         "responses": {
           "200": {
@@ -16586,7 +16705,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Recovers from a lost master key by discarding every application's stored values."
+        "summary": "Recovers from a lost secret master key."
       }
     },
     "/api/v1/system/status": {

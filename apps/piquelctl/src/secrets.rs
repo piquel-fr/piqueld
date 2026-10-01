@@ -12,34 +12,47 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Largest accepted secret value (500 KiB).
 const MAX_SECRET_BYTES: usize = 500 * 1024;
 
+// `app secret` subcommands; `///` on variants and fields is user-facing help.
 #[derive(Debug, Subcommand)]
 pub(crate) enum SecretAction {
     /// List secret metadata; values cannot be read back.
     List,
     /// Create or rotate a secret for the next explicit deployment.
     Set {
+        /// Secret name.
         name: String,
+        /// Read the value from this file (1–512000 bytes).
         #[arg(long, conflicts_with = "stdin", required_unless_present = "stdin")]
         file: Option<PathBuf>,
+        /// Read the value from stdin (1–512000 bytes).
         #[arg(long, conflicts_with = "file")]
         stdin: bool,
+        /// Require this secret generation; zero requires an absent secret.
         #[arg(long,value_parser=clap::value_parser!(i64).range(0..))]
         expected_generation: Option<i64>,
+        /// Skip interactive confirmation.
         #[arg(long, short)]
         yes: bool,
     },
     /// Delete an unreferenced logical secret and its Docker versions.
     Delete {
+        /// Secret name.
         name: String,
+        /// Require this secret generation.
         #[arg(long,value_parser=clap::value_parser!(i64).range(1..))]
         expected_generation: Option<i64>,
+        /// Skip interactive confirmation.
         #[arg(long, short)]
         yes: bool,
     },
 }
 impl SecretAction {
+    /// Runs a secret action for `application`. Current metadata is fetched first so
+    /// `set` and `delete` can default the expected generation (`0` creates a new secret;
+    /// deleting an unknown secret fails). Values are read only after confirmation.
     pub(crate) async fn run(
         &self,
         cli: &Cli,
@@ -138,6 +151,7 @@ pub(crate) enum KeyAction {
 }
 
 impl KeyAction {
+    /// Discards every stored secret value after printing the scope and confirming.
     pub(crate) async fn run(
         &self,
         cli: &Cli,

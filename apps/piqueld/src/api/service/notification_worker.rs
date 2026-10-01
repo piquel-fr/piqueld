@@ -9,6 +9,12 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 impl ApplicationService {
+    /// Samples dependency and service health every 15 seconds until cancelled.
+    ///
+    /// Each tick feeds Docker and Swarm readiness and per-application runtime
+    /// health into the store's condition tracking (which emits failure and
+    /// recovery events), then refreshes the cached daemon statistics. Sampling
+    /// errors are logged and the loop continues.
     pub(super) async fn observe_notifications(
         &self,
         scan_seconds: u64,
@@ -38,6 +44,7 @@ impl ApplicationService {
                         .observe_condition(key, None, failed, now, 45_000)
                         .await?;
                 }
+                // Service health older than three scan intervals is treated as stale.
                 self.store
                     .observe_services(
                         i64::try_from(scan_seconds.max(15).saturating_mul(3000))
@@ -53,6 +60,8 @@ impl ApplicationService {
             }
         }
     }
+    /// Attempts at most one webhook delivery per second until cancelled.
+    /// Errors are logged and never stop the worker.
     pub(super) async fn deliver_notifications(
         &self,
         client: reqwest::Client,
@@ -74,6 +83,17 @@ impl ApplicationService {
         }
     }
 
+    /// Ingests new events into the outbox, then claims and sends one due delivery.
+    ///
+    /// The payload is either the versioned JSON envelope or a Discord message
+    /// (truncated to 1900 chars, mentions disabled). The delivery ID is sent as
+    /// `Idempotency-Key` so receivers can deduplicate retries. Outcomes:
+    /// - 2xx: delivered.
+    /// - 5xx, 429, 408, or transport error: stays pending and is retried after
+    ///   `Retry-After` (1–3600 s) or exponential backoff (5 s doubling, max 1 h).
+    /// - Any other status: failed permanently.
+    ///
+    /// Error messages stored for the delivery never include receiver response bodies.
     async fn deliver_next_notification(&self, client: &reqwest::Client) -> Result<(), StoreError> {
         // Queued deliveries, retries and recoveries must not wait on new-event ingestion.
         if let Err(error) = self.store.process_notifications().await {
@@ -120,6 +140,7 @@ impl ApplicationService {
             .json(&payload)
             .send()
             .await;
+        // Backoff: 5 s, 10 s, 20 s, ... capped at one hour.
         let exponent = u32::try_from(delivery.attempts.saturating_sub(1).min(10)).unwrap_or(10);
         let delay = 5_u64.saturating_mul(1_u64 << exponent).min(3600);
         let (state, message, delay) = match result {

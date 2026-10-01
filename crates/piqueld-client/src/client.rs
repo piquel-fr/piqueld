@@ -10,13 +10,22 @@ use crate::{ClientError, ErrorBody, TransportFailure, generated};
 
 /// Upper bound on buffered response bodies for every operation.
 const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// Transport message used for timeouts; `generated_error` matches on it to restore
+/// `TransportFailure::Timeout` after `decode_response` flattens body-read errors into
+/// `Error::Custom`.
 const TIMEOUT_MESSAGE: &str = "request timed out";
 
+/// Per-client request settings stored inside the generated client and applied to
+/// every outgoing request by `prepare_request`.
 #[derive(Clone, Debug)]
 pub(crate) struct ClientState {
+    /// Whole-request deadline, including reading the response body.
     timeout: Duration,
+    /// Sent as `idempotency-key` on mutating requests so retries replay one command.
     request_id: Option<String>,
+    /// Pre-built, sensitive `Authorization` header value.
     bearer: Option<reqwest::header::HeaderValue>,
+    /// Allows credentials over plain HTTP to non-loopback hosts.
     allow_insecure_http: bool,
 }
 
@@ -31,6 +40,10 @@ impl Client {
     #[cfg(target_arch = "wasm32")]
     pub const AUTHENTICATION_REQUIRED_EVENT: &'static str = "piqueld-authentication-required";
 
+    /// Inspects every response before decoding. In the browser, an unexpected 401
+    /// outside the login/registration ceremonies dispatches
+    /// `AUTHENTICATION_REQUIRED_EVENT` so the dashboard can prompt for a new session.
+    /// No-op on native targets.
     fn observe_response(response: &reqwest::Response) {
         #[cfg(target_arch = "wasm32")]
         if response.status() == reqwest::StatusCode::UNAUTHORIZED
@@ -103,6 +116,8 @@ impl Client {
         .expect("the fixed Unix-socket client configuration is valid")
     }
 
+    /// Builds the reqwest client and wraps it in the generated client with default
+    /// settings: 30 second timeout, no credentials, and no request ID.
     #[cfg(not(target_arch = "wasm32"))]
     fn with_client(base_url: &str, builder: reqwest::ClientBuilder) -> Result<Self, ClientError> {
         let client = builder
@@ -176,6 +191,12 @@ impl Client {
         self
     }
 
+    /// Posts a raw TOML body to `path` and decodes a JSON response.
+    ///
+    /// Used for endpoints whose TOML media type Progenitor cannot generate. It
+    /// reproduces the generated pipeline by hand: `prepare_request` for auth,
+    /// timeout, and idempotency, `observe_response`, the response size cap, and
+    /// `ErrorBody` decoding for non-success statuses.
     pub(crate) async fn send_toml<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -240,6 +261,16 @@ impl ClientHooks<ClientState> for generated::Client {
 }
 
 impl ClientState {
+    /// Rejects credentials sent over plain HTTP to a non-loopback host unless the
+    /// caller opted in with `Client::with_insecure_http`. A request counts as
+    /// authenticated when it carries a bearer token or targets `/api/v1/auth/`.
+    ///
+    /// ```text
+    /// http://localhost:7845 + bearer      -> allowed (loopback)
+    /// https://daemon.example + bearer     -> allowed (TLS)
+    /// http://daemon.example + bearer      -> rejected without the opt-in
+    /// http://daemon.example/api/v1/system -> allowed (no credential)
+    /// ```
     fn validate_auth_transport(&self, url: &url::Url) -> Result<(), String> {
         let local = match url.host() {
             Some(url::Host::Domain("localhost")) => true,
@@ -261,6 +292,10 @@ impl ClientState {
     }
 }
 
+/// Applies `ClientState` to an outgoing request: enforces the auth transport
+/// policy, sets the timeout, attaches the bearer token, and adds the request ID as
+/// `idempotency-key` on non-GET/HEAD requests that do not already carry one.
+/// Shared by the generated `pre` hook and `Client::send_toml`.
 fn prepare_request(state: &ClientState, request: &mut reqwest::Request) -> Result<(), String> {
     state.validate_auth_transport(request.url())?;
     // reqwest passes this duration to the signed 32-bit browser timer.
@@ -285,6 +320,8 @@ fn prepare_request(state: &ClientState, request: &mut reqwest::Request) -> Resul
     Ok(())
 }
 
+/// Decodes a JSON response for generated operations, which call this instead of
+/// Progenitor's default decoder so every body is subject to `MAX_RESPONSE_BODY_BYTES`.
 // Progenitor fixes this public error type; boxing it would not match generated calls.
 #[allow(clippy::result_large_err)]
 pub(crate) async fn decode_response<T, E>(
@@ -307,16 +344,20 @@ where
     Ok(ResponseValue::new(value, status, headers))
 }
 
+/// Buffers a full response body, enforcing the size cap.
 async fn collect_response(response: reqwest::Response) -> Result<Vec<u8>, ClientError> {
     collect_stream(response.bytes_stream()).await
 }
 
+/// Buffers a generated streaming (non-JSON) response body, enforcing the size cap.
 pub(crate) async fn collect_byte_stream(
     response: progenitor_client::ByteStream,
 ) -> Result<Vec<u8>, ClientError> {
     collect_stream(response.into_inner()).await
 }
 
+/// Concatenates body chunks, failing with a transport error as soon as the total
+/// would exceed `MAX_RESPONSE_BODY_BYTES` rather than buffering unbounded output.
 async fn collect_stream<S>(mut stream: S) -> Result<Vec<u8>, ClientError>
 where
     S: futures_util::Stream<Item = reqwest::Result<Bytes>> + Unpin,
@@ -335,7 +376,11 @@ where
     Ok(buffer)
 }
 
+/// Documented error payload types of generated operations. Converts the payload into
+/// an `ErrorBody` when it has one; `None` makes `generated_error` report an
+/// undocumented status instead.
 pub(crate) trait ApiErrorPayload {
+    /// Returns the structured API error carried by this payload, if any.
     fn into_error_body(self) -> Option<ErrorBody>;
 }
 
@@ -351,12 +396,15 @@ impl ApiErrorPayload for () {
     }
 }
 
+// Readiness documents its 503 as a normal readiness payload; `Client::system_readiness`
+// handles it before this conversion is reached.
 impl ApiErrorPayload for crate::Envelope<piqueld_core::api::ReadinessStatus> {
     fn into_error_body(self) -> Option<ErrorBody> {
         None
     }
 }
 
+/// Unwraps a generated operation result into its payload or a `ClientError`.
 pub(crate) async fn generated_result<T, E>(
     result: Result<ResponseValue<T>, Error<E>>,
 ) -> Result<T, ClientError>
@@ -369,6 +417,9 @@ where
     }
 }
 
+/// Maps Progenitor's error variants onto `ClientError`. Documented error responses
+/// become `ClientError::Api`; undocumented ones have their body read and decoded as an
+/// `ErrorBody` when the status is a failure.
 pub(crate) async fn generated_error<E>(error: Error<E>) -> ClientError
 where
     E: ApiErrorPayload,
@@ -405,6 +456,7 @@ where
     }
 }
 
+/// Transport error for a status the `OpenAPI` document does not describe.
 fn unexpected_status(status: reqwest::StatusCode) -> ClientError {
     ClientError::Transport {
         message: format!("server returned undocumented status {status}"),
@@ -412,6 +464,9 @@ fn unexpected_status(status: reqwest::StatusCode) -> ClientError {
     }
 }
 
+/// Classifies a reqwest failure as a timeout, a connection failure (the first
+/// `io::Error` kind in the source chain, or `ConnectionRefused` for connect errors
+/// without one), or a generic exchange failure.
 // `map_err` passes ownership; retaining reqwest's error beyond this conversion is unnecessary.
 #[allow(clippy::needless_pass_by_value)]
 fn transport_error(error: reqwest::Error) -> ClientError {
@@ -440,6 +495,7 @@ fn transport_error(error: reqwest::Error) -> ClientError {
     }
 }
 
+/// Returns the kind of the first `std::io::Error` in the error's source chain.
 #[cfg(not(target_arch = "wasm32"))]
 fn connection_error_kind(error: &reqwest::Error) -> Option<std::io::ErrorKind> {
     let mut source = std::error::Error::source(error);
@@ -452,6 +508,11 @@ fn connection_error_kind(error: &reqwest::Error) -> Option<std::io::ErrorKind> {
     None
 }
 
+/// Joins the error and its whole source chain with `: ` so the root cause is visible.
+///
+/// ```text
+/// <reqwest error>: <hyper cause>: Connection refused (os error 111)
+/// ```
 fn transport_error_message(error: &reqwest::Error) -> String {
     use std::fmt::Write as _;
 
@@ -464,12 +525,15 @@ fn transport_error_message(error: &reqwest::Error) -> String {
     message
 }
 
+/// Builds a `ClientError::Endpoint` for requests rejected before they are sent.
 pub(crate) fn invalid_request(message: impl std::fmt::Display) -> ClientError {
     ClientError::Endpoint {
         message: message.to_string(),
     }
 }
 
+/// Decodes a non-success body as an `ErrorBody`, substituting a synthetic
+/// `invalid_error_response` body when the server's error is not valid JSON.
 fn api_error(status: reqwest::StatusCode, payload: &[u8]) -> ClientError {
     ClientError::Api {
         status,

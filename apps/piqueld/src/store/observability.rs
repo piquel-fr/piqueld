@@ -11,6 +11,10 @@ impl Store {
         self
     }
     /// Returns a snapshot cached for five seconds to avoid expensive per-request scans.
+    /// Combines database counters, database and WAL file sizes, free disk space,
+    /// and process memory/CPU. CPU percent is derived from the previous snapshot,
+    /// so it is null on the first sample.
+    ///
     /// # Errors
     /// Returns storage errors; unavailable OS measurements are represented by null.
     pub async fn daemon_stats(&self) -> Result<DaemonStats, StoreError> {
@@ -92,6 +96,10 @@ impl Store {
         *cache = Some(stats.clone());
         Ok(stats)
     }
+    /// Reads this process's resident memory (bytes) and total user+system CPU
+    /// time (seconds) from `/proc`; each is `None` where unavailable (non-Linux).
+    /// `utime` and `stime` are fields 14 and 15 of `/proc/self/stat`, counted
+    /// after the parenthesized command name, which may itself contain spaces.
     async fn process_usage() -> (Option<u64>, Option<f64>) {
         let memory = tokio::fs::read_to_string("/proc/self/status")
             .await
@@ -126,6 +134,10 @@ impl Store {
         (memory, cpu)
     }
     /// Derives deployment outcomes from retained attempts and detailed durations from events.
+    /// Counts each deployment once by its latest attempt finished in the window,
+    /// and marks the result `incomplete` when the window reaches before recorded
+    /// or pruned history. Reads run in one transaction for a consistent snapshot.
+    ///
     /// # Errors
     /// Returns invalid time intervals or storage errors.
     pub async fn deployment_analytics(
@@ -206,6 +218,9 @@ impl Store {
         Ok(result)
     }
 
+    /// Fills action retry counts, mean durations per phase, and the 20 most
+    /// frequent error codes from events in the window. Failures are counted per
+    /// diagnostic, so one diagnostic repeated across events counts once.
     async fn action_analytics(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         application: Option<&str>,

@@ -10,22 +10,32 @@ use webauthn_rs_core::proto::{
     AuthenticationState, Credential, PublicKeyCredential, RegistrationState, UserVerificationPolicy,
 };
 
+/// Server-side state of one started ceremony, redeemable once before `expires`.
 pub(super) struct Pending {
     pub(super) expires: i64,
+    /// Hash of the per-ceremony browser cookie secret, so only the browser that
+    /// started the ceremony can finish it.
     binding: String,
     kind: Kind,
 }
+/// The ceremony-specific state needed to verify the browser's response.
 enum Kind {
+    /// Adds a passkey to an existing user, or to a new user when `invitation`
+    /// holds the hash of the redeemed invitation secret.
     Register {
         state: RegistrationState,
         user: User,
         invitation: Option<String>,
+        /// Display name for the new passkey.
         name: String,
     },
     Login(AuthenticationState),
 }
 
 impl Auth {
+    /// Stores a pending ceremony under a fresh random ID and returns the options
+    /// the browser passes to `WebAuthn`. Expired entries are pruned first; fails
+    /// with [`AuthError::Busy`] when capacity is still exhausted.
     async fn remember(
         &self,
         binding: &str,
@@ -48,6 +58,8 @@ impl Auth {
         );
         Ok(Ceremony { id, options })
     }
+    /// Removes and returns a pending ceremony if it is unexpired and bound to the
+    /// caller's cookie. Mismatched or expired attempts leave the entry in place.
     async fn consume(&self, id: &str, binding: &str) -> Result<Kind> {
         let mut pending = self.0.ceremonies.lock().await;
         let item = pending.get(id).ok_or(AuthError::Unauthorized)?;
@@ -56,6 +68,11 @@ impl Auth {
         }
         Ok(pending.remove(id).ok_or(AuthError::Unauthorized)?.kind)
     }
+    /// Starts passkey registration for either an existing user (`user_id`, requires
+    /// an authenticated caller) or a new account redeeming an invitation.
+    ///
+    /// Existing passkeys of the user are excluded so an authenticator cannot be
+    /// registered twice. Resident keys and user verification are required.
     pub(crate) async fn registration_start(
         &self,
         input: RegistrationStart,
@@ -118,6 +135,12 @@ impl Auth {
         )
         .await
     }
+    /// Verifies the registration response and stores the passkey.
+    ///
+    /// New accounts are created atomically with the passkey, the invitation is
+    /// consumed, and a browser session token is returned. Adding a passkey to an
+    /// existing user returns no token. A store refusal (e.g. an invitation used
+    /// concurrently) is reported as unauthorized.
     pub(crate) async fn registration_finish(
         &self,
         input: CeremonyFinish,
@@ -179,6 +202,8 @@ impl Auth {
             Some(now_secs() + 7 * DAY),
         )
     }
+    /// Starts a usernameless login: no allowed credentials are listed, so the
+    /// authenticator offers any discoverable passkey for this relying party.
     pub(crate) async fn login_start(&self, binding: &str) -> Result<Ceremony> {
         let builder = self.0.webauthn.new_challenge_authenticate_builder(
             Vec::new(),
@@ -188,6 +213,8 @@ impl Auth {
         self.remember(binding, Kind::Login(state), serde_json::to_value(options)?)
             .await
     }
+    /// Verifies a login assertion against the stored passkey identified by the
+    /// response's user handle and credential ID, then opens a browser session.
     pub(crate) async fn login_finish(
         &self,
         input: CeremonyFinish,

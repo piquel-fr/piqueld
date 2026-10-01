@@ -17,6 +17,7 @@ impl Store {
         .await
     }
 
+    /// Reads status on an existing connection or transaction.
     pub(super) async fn status_on(
         connection: &mut SqliteConnection,
         id: &ApplicationId,
@@ -43,6 +44,9 @@ impl Store {
     }
 
     /// Updates status only for the application's latest operation.
+    /// Records `status_changed` only when the state or message actually changes.
+    /// Returns whether `operation_id` is still the latest operation, so callers
+    /// can stop superseded work.
     ///
     /// # Errors
     /// Returns a storage error.
@@ -66,6 +70,8 @@ impl Store {
         Ok(current.as_deref() == Some(operation_id))
     }
 
+    /// Unconditionally upserts an application's status within `tx`; callers
+    /// are responsible for operation guards.
     pub(super) async fn write_status(
         tx: &mut Transaction<'_, Sqlite>,
         app_id: &str,
@@ -81,6 +87,9 @@ impl Store {
 
 impl Store {
     /// Records a meaningful observed health transition without overwriting intent progress.
+    /// Health is `absent` with no services, `ready` when all converged, else
+    /// `degraded`. The observation time is refreshed on every call, while a
+    /// `health_changed` event is recorded only when the value changes.
     /// # Errors
     /// Returns a store error. Superseded observations are ignored.
     pub async fn record_health(

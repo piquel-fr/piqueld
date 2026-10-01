@@ -1,3 +1,4 @@
+//! Application secret metadata and write-only secret values.
 use crate::{Client, ClientError, SecretMetadata, client::generated_result};
 impl Client {
     /// Recovers from a lost master key by discarding every application's stored values.

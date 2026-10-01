@@ -161,6 +161,11 @@ pub enum ResolutionRequirement {
 }
 
 /// Returns the image resolutions still needed before compilation.
+///
+/// Every service without an entry in `resolutions.sources` yields one
+/// requirement: image sources need digest resolution, Git sources need a build.
+/// Existing entries are not checked here; `compile_application` rejects
+/// mismatched ones.
 #[must_use]
 pub fn preview_resolution(
     app: &NormalizedApplication,
@@ -204,6 +209,16 @@ pub struct Ownership {
 
 impl Ownership {
     /// Produces the labels used to identify an owned Docker resource.
+    ///
+    /// The service label is only present for service-scoped resources.
+    ///
+    /// ```text
+    /// io.piqueld.managed     = "true"
+    /// io.piqueld.instance    = <instance_id>
+    /// io.piqueld.application = <application_id>
+    /// io.piqueld.spec-hash   = "sha256:..."
+    /// io.piqueld.service     = <service>   (optional)
+    /// ```
     #[must_use]
     pub fn labels(&self) -> BTreeMap<String, String> {
         let mut labels = BTreeMap::from([
@@ -231,6 +246,9 @@ pub struct DesiredNetwork {
 
 impl DesiredNetwork {
     /// Returns whether the network has a canonical name and identity.
+    ///
+    /// Networks are application-scoped, so a service label is rejected and the
+    /// name must be the application's canonical private or ingress network.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
@@ -254,6 +272,9 @@ pub struct DesiredVolume {
 
 impl DesiredVolume {
     /// Returns whether the volume has a canonical name and identity.
+    ///
+    /// Requires valid ownership labels without a service label, a safe logical
+    /// name, and a Docker name derived from the labelled application.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
@@ -336,6 +357,9 @@ pub struct DesiredService {
 
 impl DesiredService {
     /// Returns whether the service has a canonical name and identity.
+    ///
+    /// Requires valid ownership labels whose service label equals the logical
+    /// name, and a Docker name derived from the labelled application.
     #[must_use]
     pub fn has_valid_identity(&self) -> bool {
         let Some((application, _)) = desired_application_from_labels(&self.labels) else {
@@ -376,12 +400,23 @@ pub struct ResolvedApplication {
 
 impl ResolvedApplication {
     /// Projects route intent into runtime networks only when ingress is enabled.
+    ///
+    /// Shorthand for `with_ingress_routes` with no previously accepted routes.
     #[must_use]
     pub fn with_ingress(self, enabled: bool) -> Self {
         self.with_ingress_routes(enabled, &[])
     }
 
     /// Retains network access for accepted routes until their cutover succeeds.
+    ///
+    /// Rebuilds the ingress network projection from scratch, so it is idempotent:
+    /// 1. Drops the application's ingress network and every service's attachment
+    ///    to it.
+    /// 2. When `enabled`, reattaches each service targeted by a desired or
+    ///    `accepted` (still live) route.
+    /// 3. When `enabled` and any route exists, adds the owned ingress network.
+    ///
+    /// Network lists are kept sorted so the result compares deterministically.
     #[must_use]
     pub fn with_ingress_routes(
         mut self,
@@ -419,6 +454,11 @@ impl ResolvedApplication {
     }
 
     /// Reuses immutable sources for services whose requested image is unchanged.
+    ///
+    /// A prior resolution is kept only when it still matches the new source
+    /// (same image reference, or identical Git source and compatible commit), so
+    /// redeploying an unchanged service does not re-pull or rebuild. Pinned
+    /// secret versions are carried over as-is.
     #[must_use]
     pub fn reusable_resolutions(&self, application: &NormalizedApplication) -> ResolutionSet {
         ResolutionSet {
@@ -440,6 +480,10 @@ impl ResolvedApplication {
     }
 }
 
+/// Extracts the owning application and instance from desired ownership labels.
+///
+/// Returns `None` unless the managed marker is `"true"`, the spec hash is a
+/// valid `sha256:` digest, and both identities parse.
 fn desired_application_from_labels(
     labels: &BTreeMap<String, String>,
 ) -> Option<(ApplicationId, InstanceId)> {
@@ -458,6 +502,14 @@ fn desired_application_from_labels(
 }
 
 /// Returns whether a logical resource name is safe for Docker naming.
+///
+/// Names are 1-63 bytes of lowercase ASCII letters, digits, or hyphens,
+/// starting with a letter and not ending with a hyphen.
+///
+/// ```text
+/// "web", "api-2"         -> valid
+/// "2web", "Web", "web-"  -> invalid
+/// ```
 #[must_use]
 pub fn valid_logical_name(value: &str) -> bool {
     (1..=63).contains(&value.len())
@@ -484,6 +536,10 @@ pub struct CompileError {
 }
 
 /// Compiles normalized intent after all image references have immutable resolutions.
+///
+/// Validates resolutions first, then derives one owned private network (only
+/// when there are services), one Docker volume per declared volume, and one
+/// `DesiredService` per service, all labelled with the application ownership.
 ///
 /// # Errors
 ///
@@ -549,6 +605,8 @@ pub fn compile_application(
     })
 }
 
+/// Collects every reason `compile_application` cannot proceed: unresolved
+/// sources, unpinned secrets, and resolutions that do not match their source.
 fn validate_application(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
@@ -581,6 +639,8 @@ fn validate_application(
     errors
 }
 
+/// Converts each outstanding `preview_resolution` requirement into a
+/// `SOURCE_UNRESOLVED` compile error.
 fn unresolved_errors(
     app: &NormalizedApplication,
     resolutions: &ResolutionSet,
@@ -598,6 +658,11 @@ fn unresolved_errors(
         .collect()
 }
 
+/// Whether `resolved` is a valid immutable resolution of `source`.
+///
+/// Images must match the requested reference exactly and resolve within the
+/// same repository. Git sources must be identical, resolve to a full commit
+/// hash, and honour a pinned commit when one is set.
 fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
     match (source, resolved) {
         (
@@ -624,6 +689,12 @@ fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
     }
 }
 
+/// Builds the desired Docker service for one validated service.
+///
+/// Must only run after `validate_application` succeeds: it indexes the
+/// resolved source and pinned secret names directly and panics if missing.
+/// Services start attached to the private network only; ingress is projected
+/// later by `ResolvedApplication::with_ingress_routes`.
 fn compile_service(
     service: &Service,
     app: &NormalizedApplication,
@@ -667,6 +738,13 @@ fn compile_service(
     }
 }
 
+/// Whether a valid image reference is pinned by exactly one SHA-256 digest.
+///
+/// ```text
+/// "nginx@sha256:<64 hex>"           -> true
+/// "nginx:1.27@sha256:<64 hex>"      -> true
+/// "nginx:1.27", "nginx@sha512:..."  -> false
+/// ```
 pub(crate) fn immutable_digest_reference(reference: &str) -> bool {
     valid_image_reference(reference)
         && reference
@@ -680,6 +758,7 @@ pub(crate) fn immutable_digest_reference(reference: &str) -> bool {
             })
 }
 
+/// Whether both references are valid and name the same canonical repository.
 fn same_image_repository(requested: &str, resolved: &str) -> bool {
     image_repository(requested)
         .zip(image_repository(resolved))
@@ -687,6 +766,16 @@ fn same_image_repository(requested: &str, resolved: &str) -> bool {
 }
 
 /// Returns the canonical repository portion of a valid image reference.
+///
+/// Strips the tag and digest, then applies Docker Hub defaults so equivalent
+/// spellings compare equal. Explicit registry hosts are lowercased.
+///
+/// ```text
+/// "nginx:1.27"                    -> "docker.io/library/nginx"
+/// "user/app@sha256:..."           -> "docker.io/user/app"
+/// "index.docker.io/nginx"         -> "docker.io/library/nginx"
+/// "Registry.io:5000/team/app:v1"  -> "registry.io:5000/team/app"
+/// ```
 #[must_use]
 pub fn image_repository(reference: &str) -> Option<String> {
     if !valid_image_reference(reference) {
@@ -817,6 +906,8 @@ pub struct ObservedNetwork {
 
 impl ObservedNetwork {
     /// Returns whether ownership labels identify the desired network.
+    ///
+    /// Only checks identity (owner and name), not configuration drift.
     #[must_use]
     pub fn matches_ownership(
         &self,
@@ -906,6 +997,7 @@ pub struct ObservedService {
 }
 
 impl ObservedService {
+    /// Whether observed mounts equal the desired ones, ignoring order.
     pub(crate) fn mounts_match(&self, desired: &DesiredService) -> bool {
         unordered_eq(
             self.mounts.iter().map(|mount| {
@@ -924,6 +1016,8 @@ impl ObservedService {
             }),
         )
     }
+    /// Whether attached networks equal the desired ones, ignoring order but
+    /// not multiplicity.
     pub(crate) fn networks_match(&self, desired: &DesiredService) -> bool {
         unordered_eq(
             self.networks.iter().map(String::as_str),
@@ -931,27 +1025,47 @@ impl ObservedService {
         )
     }
 
+    /// Compares health checks by what Docker executes, so an HTTP check and its
+    /// equivalent `wget` command match. An unsupported observed check
+    /// (configured but not representable) never matches.
     pub(crate) fn healthcheck_matches(&self, desired: &DesiredService) -> bool {
         self.healthcheck.as_ref().map(HealthCheck::execution)
             == desired.healthcheck.as_ref().map(HealthCheck::execution)
+            && self.healthcheck_configured == desired.healthcheck.is_some()
     }
 
     /// Returns whether all desired service fields match.
     #[must_use]
     pub fn matches(&self, desired: &DesiredService) -> bool {
-        self.image == desired.image.as_str()
-            && self.replicas == desired.replicas
-            && self.environment == desired.environment
-            && self.command == desired.command
-            && self.arguments == desired.arguments
-            && self.mounts_match(desired)
-            && unordered_eq(&self.secrets, &desired.secrets)
-            && self.healthcheck_matches(desired)
-            && self.healthcheck_configured == desired.healthcheck.is_some()
-            && self.resources == desired.resources
-            && self.networks_match(desired)
-            && owned_label_subset(&self.labels, &desired.labels)
-            && self.runtime_configuration_matches
+        self.drift(desired).is_empty()
+    }
+
+    /// Lists the desired field names that differ from this observation, as
+    /// reported by `ActionReason::Drift`.
+    ///
+    /// ```text
+    /// image changed and a replica added -> ["image", "replicas"]
+    /// ```
+    #[must_use]
+    pub fn drift(&self, desired: &DesiredService) -> Vec<&'static str> {
+        [
+            ("image", self.image == desired.image.as_str()),
+            ("replicas", self.replicas == desired.replicas),
+            ("environment", self.environment == desired.environment),
+            ("command", self.command == desired.command),
+            ("arguments", self.arguments == desired.arguments),
+            ("secrets", unordered_eq(&self.secrets, &desired.secrets)),
+            ("mounts", self.mounts_match(desired)),
+            // Multiplicity is significant, so a duplicated attachment is drift.
+            ("networks", self.networks_match(desired)),
+            ("healthcheck", self.healthcheck_matches(desired)),
+            ("resources", self.resources == desired.resources),
+            ("runtime_policy", self.runtime_configuration_matches),
+            ("labels", owned_label_subset(&self.labels, &desired.labels)),
+        ]
+        .into_iter()
+        .filter_map(|(field, matches)| (!matches).then_some(field))
+        .collect()
     }
 
     /// Returns whether ownership labels identify the desired service.
@@ -968,6 +1082,10 @@ impl ObservedService {
     }
 
     /// Returns whether labels and the canonical name identify this service.
+    ///
+    /// Unlike `matches_ownership`, needs no desired service: it recomputes the
+    /// canonical name from the service label, so it can classify obsolete
+    /// services during cleanup and deletion.
     #[must_use]
     pub fn is_owned_by(&self, instance: &InstanceId, application: &ApplicationId) -> bool {
         OwnershipState::for_resource(
@@ -1004,9 +1122,12 @@ pub enum OwnershipState {
 }
 
 impl OwnershipState {
-    /// Checks shared ownership plus the resource's role and canonical identity.
-    /// Volumes have no logical-name label, so their name is checked separately
-    /// against the desired volume before use; retained volumes are never deleted.
+    /// Checks shared ownership plus the resource's role and canonical identity;
+    /// a wrong role or name is `Invalid`. Services need a valid `SERVICE_LABEL`
+    /// that derives their name, and networks need no service label and a name
+    /// scoped to the application. Volumes have no logical-name label, so their
+    /// name is checked separately against the desired volume before use;
+    /// retained volumes are never deleted.
     #[must_use]
     pub fn for_resource(
         labels: &BTreeMap<String, String>,
@@ -1039,6 +1160,9 @@ impl OwnershipState {
     }
 
     /// Classifies ownership labels without exposing raw backend data.
+    ///
+    /// A missing managed marker or malformed spec hash is `Invalid`; otherwise a
+    /// different instance or application is `Foreign`.
     #[must_use]
     pub fn from_labels(
         labels: &BTreeMap<String, String>,
@@ -1061,6 +1185,7 @@ impl OwnershipState {
     }
 }
 
+/// Multiset equality: same elements with the same counts, in any order.
 pub(crate) fn unordered_eq<T: Ord>(
     observed: impl IntoIterator<Item = T>,
     desired: impl IntoIterator<Item = T>,
@@ -1072,6 +1197,10 @@ pub(crate) fn unordered_eq<T: Ord>(
     observed == desired
 }
 
+/// Whether observed labels contain every desired label and no extra or
+/// differing `io.piqueld.*` labels.
+///
+/// Foreign labels added by Docker or operators are tolerated.
 pub(crate) fn owned_label_subset(
     observed: &BTreeMap<String, String>,
     desired: &BTreeMap<String, String>,
@@ -1085,6 +1214,7 @@ pub(crate) fn owned_label_subset(
             .all(|(key, value)| desired.get(key) == Some(value))
 }
 
+/// Whether a value is `sha256:` followed by 64 lowercase hex digits.
 fn valid_sha256(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|digest| {
         digest.len() == 64

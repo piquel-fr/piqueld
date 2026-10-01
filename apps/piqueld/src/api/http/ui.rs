@@ -30,6 +30,7 @@ const DASHBOARD_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 
      connect-src 'self'; object-src 'none'; base-uri 'none'; \
      form-action 'none'; frame-ancestors 'none'";
 
+/// Hardening headers added to dashboard responses by `security_headers`.
 const SECURITY_HEADERS: [(&str, &str); 3] = [
     ("x-content-type-options", "nosniff"),
     ("referrer-policy", "no-referrer"),
@@ -37,7 +38,8 @@ const SECURITY_HEADERS: [(&str, &str); 3] = [
 ];
 
 /// Applies dashboard headers once, including router-generated errors.
-/// API and liveness responses retain their own response policy.
+/// API and liveness responses retain their own response policy. Headers the
+/// inner response already set are left untouched.
 pub(super) async fn security_headers(request: Request, next: Next) -> Response {
     let dashboard = !is_api_path(request.uri().path()) && request.uri().path() != "/health";
     let mut response = next.run(request).await;
@@ -119,10 +121,12 @@ pub(super) fn serve(bundle: &'static EmbeddedBundle, request: &Request) -> Respo
     response
 }
 
+/// Bare 404 for non-API paths outside the dashboard bundle.
 pub(super) fn not_found() -> Response<Body> {
     StatusCode::NOT_FOUND.into_response()
 }
 
+/// Finds a bundle file by its exact relative name, e.g. `index.html`.
 fn lookup(bundle: &'static EmbeddedBundle, name: &str) -> Option<EmbeddedFile> {
     bundle
         .iter()
@@ -130,6 +134,7 @@ fn lookup(bundle: &'static EmbeddedBundle, name: &str) -> Option<EmbeddedFile> {
         .find(|(candidate, _)| *candidate == name)
 }
 
+/// Serves one bundle file with its content type and cache policy.
 fn asset_response(name: &str, body: &'static [u8]) -> Response {
     let mut response = Response::new(Body::from(body));
     let headers = response.headers_mut();
@@ -174,7 +179,8 @@ fn shell_response(bundle: &'static EmbeddedBundle) -> Response {
     }
 }
 
-/// Maps a bundle filename to a conservative static `Content-Type`.
+/// Maps a bundle filename to a conservative static `Content-Type`; unknown
+/// extensions fall back to `application/octet-stream`.
 fn content_type(name: &str) -> &'static str {
     let extension = name.rsplit_once('.').map_or("", |(_, tail)| tail);
     match extension {
@@ -204,6 +210,11 @@ fn content_type(name: &str) -> &'static str {
 /// wasm-bindgen tooling may append further underscore suffixes such as `_bg`
 /// behind that digest. The minimum length keeps ordinary short words like
 /// `added.css` or `cafe.js` from being mistaken for digests.
+///
+/// ```text
+/// app-3f2a9c1d8e7b6a50_bg.wasm -> true
+/// index.html                   -> false
+/// ```
 fn is_content_hashed(name: &str) -> bool {
     let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
     let digest = stem.rsplit('-').next().unwrap_or(stem);

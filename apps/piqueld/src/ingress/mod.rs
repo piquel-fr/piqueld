@@ -26,17 +26,28 @@ pub const CADDY_IMAGE: &str =
 
 /// Serializes gateway configuration, lifecycle, and durable route projection.
 pub struct Ingress {
+    /// Whether the daemon configuration enables ingress; disabled ingress stops
+    /// the gateway and withdraws routes.
     pub(crate) enabled: bool,
+    /// Store instance identity, served by the probe endpoint to verify DNS.
     instance_id: String,
+    /// Gateway container and edge network name, derived from the instance identity.
     name: String,
+    /// Host directory holding Caddy's data, config, and control mounts.
     directory: PathBuf,
+    /// Raw Docker Engine API over its Unix socket.
     docker: UnixApi,
+    /// Caddy's private admin API socket inside the control mount.
     caddy: UnixApi,
+    /// Docker client used only for streaming image pulls.
     images: bollard::Docker,
+    /// Public HTTPS client for route probes; never follows redirects or proxies.
     client: reqwest::Client,
     store: Arc<Store>,
+    /// Gateway writer lock serializing configuration and lifecycle changes.
     update: Mutex<()>,
     health: RwLock<IngressStatus>,
+    /// Unix timestamp (seconds) up to which Caddy logs were already relayed.
     logs_since: Mutex<u64>,
     #[cfg(test)]
     issuer: Option<serde_json::Value>,
@@ -46,6 +57,11 @@ pub struct Ingress {
 
 impl Ingress {
     /// Creates an inert manager. Startup failures are reported by its background loop.
+    ///
+    /// ```text
+    /// name: piqueld-ingress-<first 16 hex chars of sha256(instance_id)>
+    /// directory: <data_dir>/ingress
+    /// ```
     /// # Errors
     /// Returns invalid local client configuration errors.
     pub fn new(enabled: bool, socket: &Path, data_dir: &Path, store: Arc<Store>) -> Result<Self> {
@@ -100,6 +116,9 @@ impl Ingress {
     }
 
     /// Applies one application's deployment boundary under the gateway writer lock.
+    /// Stages the routes, then synchronizes the gateway unless backends are not
+    /// ready yet and no hostname is being withdrawn. Fails for this application's
+    /// own network failures, not for other applications'.
     pub(crate) async fn apply(
         &self,
         operation: &piqueld_core::Operation,
@@ -132,6 +151,8 @@ impl Ingress {
         );
     }
 
+    /// Every 10s, reconciles the gateway under the writer lock and relays Caddy
+    /// logs. Failures are logged and retried on the next tick.
     async fn run_gateway(&self, cancellation: &CancellationToken) {
         let mut tick = tokio::time::interval(Duration::from_secs(10));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -151,6 +172,7 @@ impl Ingress {
         }
     }
 
+    /// Every 15s, refreshes route status by probing public HTTPS for acknowledged routes.
     async fn run_probes(&self, cancellation: &CancellationToken) {
         let mut tick = tokio::time::interval(Duration::from_secs(15));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -161,10 +183,18 @@ impl Ingress {
         }
     }
 
+    /// Reconciles the gateway for all applications.
     async fn synchronize(&self) -> Result<()> {
         self.synchronize_for(None).await
     }
 
+    /// Converges the gateway with the durable routing table and updates health.
+    ///
+    /// When enabled: verifies ingress networks, ensures the gateway container,
+    /// applies routes and attachments, then acknowledges the applied table. When
+    /// disabled: stops the gateway and acknowledges the withdrawal. Callers must
+    /// hold the writer lock. Network failures degrade health; they fail the call
+    /// only for `application` (or for any application when `None`).
     async fn synchronize_for(
         &self,
         application: Option<&piqueld_core::ApplicationId>,
@@ -230,6 +260,10 @@ impl Ingress {
         Ok(())
     }
 
+    /// Recomputes per-route status, probing up to four routes concurrently. When
+    /// ingress is enabled, only routes the gateway has acknowledged are probed and
+    /// the rest stay pending; when disabled, routes report disabled (or failed while
+    /// shutdown is unconfirmed).
     async fn probe_routes(&self) {
         let Ok(table) = self.store.routing_table().await else {
             return;
@@ -273,6 +307,12 @@ impl Ingress {
         self.health.write().await.routes = statuses;
     }
 
+    /// Verifies DNS and trusted TLS by fetching the gateway's probe endpoint and
+    /// requiring this instance's identity (at most 256 bytes) as the body.
+    ///
+    /// ```text
+    /// GET https://<hostname>/.well-known/piqueld-ingress  ->  200 "<instance_id>"
+    /// ```
     async fn probe_https(&self, hostname: &str) -> Result<()> {
         let response = self
             .client

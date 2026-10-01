@@ -24,14 +24,19 @@ use std::{
     time::Duration,
 };
 
+/// Marks the gateway container and its egress network.
 const GATEWAY_LABEL: &str = "io.piqueld.ingress";
+/// SHA-256 of the managed container spec; a mismatch triggers replacement.
 const CONFIGURATION_LABEL: &str = "io.piqueld.ingress-configuration";
 
 impl Ingress {
+    /// Ownership labels applied to the gateway container and egress network.
     fn labels(&self) -> Value {
         json!({MANAGED_LABEL:"true",INSTANCE_LABEL:self.instance_id,GATEWAY_LABEL:"true"})
     }
 
+    /// Rejects resources that exist under a managed name but were not created
+    /// by this installation's gateway.
     fn check_owner(&self, labels: &Value) -> Result<()> {
         ensure!(
             labels[MANAGED_LABEL] == "true"
@@ -42,10 +47,12 @@ impl Ingress {
         Ok(())
     }
 
+    /// Inspects the serving gateway container, if it exists.
     pub(super) async fn container(&self) -> Result<Option<Value>> {
         self.named_container(&self.name).await
     }
 
+    /// Inspects a container by name, verifying ownership when it exists.
     async fn named_container(&self, name: &str) -> Result<Option<Value>> {
         let container = self
             .docker
@@ -57,6 +64,8 @@ impl Ingress {
         Ok(container)
     }
 
+    /// Removes the serving, `-previous`, and `-next` gateway containers in a single
+    /// action when ingress is disabled. Records nothing if none exist.
     pub(super) async fn stop_gateway(&self) -> Result<()> {
         let mut existing = Vec::new();
         for name in [
@@ -92,6 +101,7 @@ impl Ingress {
         journal.finish(result).await
     }
 
+    /// Force-removes a container by name if it exists.
     async fn remove_container(&self, journal: &Journaled<'_>, name: &str) -> Result<()> {
         if let Some(container) = self.named_container(name).await? {
             // Removing the container also removes its restart policy. Persistent
@@ -112,6 +122,13 @@ impl Ingress {
         Ok(())
     }
 
+    /// Requires Docker Engine 28+ with API 1.48+, which support the per-endpoint
+    /// `GwPriority` used to keep the edge network as the default route.
+    ///
+    /// ```text
+    /// {"Version": "28.1.1", "ApiVersion": "1.49"}  -> ok
+    /// {"Version": "27.5.0", "ApiVersion": "1.47"}  -> error
+    /// ```
     async fn check_version(&self) -> Result<()> {
         let version = self.docker.get("/version").await?;
         let major = version["Version"]
@@ -132,6 +149,8 @@ impl Ingress {
         Ok(())
     }
 
+    /// Ensures the gateway's own non-internal bridge network (named like the
+    /// container), which provides public egress for ACME and published ports.
     async fn ensure_edge_network(&self) -> Result<()> {
         if let Some(network) = self
             .docker
@@ -159,9 +178,12 @@ impl Ingress {
         Ok(())
     }
 
-    /// Keep unavailable apps on their accepted destinations, but always honor
-    /// withdrawals. Never attach an unverified network or acknowledge a new route
-    /// for an app whose network failed validation.
+    /// Splits the desired routing table into what can safely be applied now.
+    ///
+    /// Returns the table to apply, the verified ingress networks to attach, and
+    /// per-application network failures. Keep unavailable apps on their accepted
+    /// destinations, but always honor withdrawals. Never attach an unverified
+    /// network or acknowledge a new route for an app whose network failed validation.
     pub(super) async fn prepare_routes(
         &self,
         desired: &RoutingTable,
@@ -195,6 +217,8 @@ impl Ingress {
         Ok((table, networks, failures))
     }
 
+    /// Verifies an application's ingress network exists, is owned by that
+    /// application on this instance, and is an attachable overlay.
     async fn check_ingress_network(
         &self,
         id: &piqueld_core::ApplicationId,
@@ -218,6 +242,10 @@ impl Ingress {
         Ok(())
     }
 
+    /// Builds the hardened Caddy container spec: runs as the daemon's user with a
+    /// read-only root, only `NET_BIND_SERVICE`, host-bound ports 80/443, and data,
+    /// config, and control directories bind-mounted from the ingress directory.
+    /// The spec's own hash is stored in `CONFIGURATION_LABEL` to detect drift.
     pub(super) fn container_spec(&self) -> Value {
         let uid = rustix::process::geteuid().as_raw();
         let gid = rustix::process::getegid().as_raw();
@@ -254,6 +282,14 @@ impl Ingress {
         spec
     }
 
+    /// Ensures a running gateway matching the current container spec.
+    ///
+    /// 1. Checks Docker compatibility and recovers any interrupted replacement.
+    /// 2. Returns early when the container matches the spec hash and is running
+    ///    (after verifying security-relevant settings were not altered).
+    /// 3. Prepares host directories, the edge network, and the image.
+    /// 4. Replaces a container with an outdated spec; otherwise creates (if
+    ///    missing), attaches networks, and starts it with fresh configuration.
     pub(super) async fn ensure_gateway(
         &self,
         table: &RoutingTable,
@@ -308,6 +344,7 @@ impl Ingress {
         journal.finish(result).await
     }
 
+    /// Pulls the pinned Caddy image in its own action, bounded to three minutes.
     async fn pull_image(&self) -> Result<()> {
         use bollard::query_parameters::CreateImageOptionsBuilder;
         let journal = self.journal("ingress_pull_image", CADDY_IMAGE).await?;
@@ -337,6 +374,7 @@ impl Ingress {
         journal.finish(result).await
     }
 
+    /// Creates a container with the given name and spec without starting it.
     async fn create_container(
         &self,
         journal: &Journaled<'_>,
@@ -354,6 +392,9 @@ impl Ingress {
         Ok(())
     }
 
+    /// Replaces the gateway container with one built from `spec`, then removes
+    /// the old container in a separate best-effort action.
+    ///
     /// Both containers and the rollback configuration survive cancellation or a
     /// daemon crash. Reconciliation restores the old gateway if cutover did not
     /// finish; disablement removes all three managed container names. Discarding
@@ -394,6 +435,14 @@ impl Ingress {
         Ok(())
     }
 
+    /// Performs a replacement inside the caller's action.
+    ///
+    /// 1. Validates the new Caddy configuration in a throwaway container.
+    /// 2. Creates `-next` and attaches networks while the old gateway still serves.
+    /// 3. Saves the live (or autosaved) configuration as `rollback.json`.
+    /// 4. Stops the old gateway, renames it to `-previous`, renames `-next` to the
+    ///    serving name, and starts it. On failure, restores the old gateway.
+    /// 5. Deletes `rollback.json`, which commits the replacement.
     async fn cut_over(
         &self,
         journal: &Journaled<'_>,
@@ -446,6 +495,9 @@ impl Ingress {
         Ok(())
     }
 
+    /// Runs `caddy validate` on the candidate configuration in a temporary
+    /// container (no published ports, no restart), failing with its last log
+    /// lines if validation exits non-zero. The container is removed afterwards.
     async fn validate_replacement(
         &self,
         journal: &Journaled<'_>,
@@ -495,6 +547,7 @@ impl Ingress {
         self.remove_container(journal, name).await
     }
 
+    /// Renames a container.
     async fn rename_container(&self, journal: &Journaled<'_>, from: &str, to: &str) -> Result<()> {
         self.docker
             .send(
@@ -508,6 +561,8 @@ impl Ingress {
     }
 
     /// Finishes or reverts a replacement interrupted by cancellation or a crash.
+    /// A `-previous` container without `rollback.json` means the cutover committed
+    /// and only cleanup remains; any other leftover triggers a restore.
     pub(super) async fn recover_gateway(&self) -> Result<()> {
         let previous = format!("{}-previous", self.name);
         if self.named_container(&previous).await?.is_some()
@@ -553,16 +608,21 @@ impl Ingress {
         Ok(())
     }
 
+    /// Configuration saved before cutover; its presence means the replacement
+    /// has not committed yet.
     fn rollback_path(&self) -> std::path::PathBuf {
         self.directory.join("config/caddy/rollback.json")
     }
 
+    /// Reinstates the rollback configuration as Caddy's autosave.
     async fn restore_configuration(&self) -> Result<()> {
         let bytes = tokio::fs::read(self.rollback_path()).await?;
         self.write_configuration("autosave.json", &serde_json::from_slice(&bytes)?)
             .await
     }
 
+    /// Atomically writes a JSON file under `config/caddy` via a temporary file
+    /// and rename.
     async fn write_configuration(&self, file: &str, configuration: &Value) -> Result<()> {
         let path = self.directory.join("config/caddy").join(file);
         let temporary = path.with_extension("tmp");
@@ -571,6 +631,7 @@ impl Ingress {
         Ok(())
     }
 
+    /// Writes the configuration for `table` as the autosave and starts the gateway.
     async fn start_gateway(&self, journal: &Journaled<'_>, table: &RoutingTable) -> Result<()> {
         // A restarted gateway must never briefly resume routes that were removed
         // by deployments while ingress was disabled.
@@ -579,6 +640,7 @@ impl Ingress {
         self.start_container(journal).await
     }
 
+    /// Starts the serving container and waits up to 10s for Caddy's admin API.
     async fn start_container(&self, journal: &Journaled<'_>) -> Result<()> {
         self.docker
             .send(
@@ -605,6 +667,9 @@ impl Ingress {
         Ok(())
     }
 
+    /// Verifies an existing container with a matching spec hash still has the
+    /// managed image, user, command, host security settings, port bindings, and
+    /// storage environment, rather than trusting the hash label alone.
     fn check_container_configuration(current: &Value, spec: &Value) -> Result<()> {
         for field in ["Image", "User", "Cmd"] {
             ensure!(
@@ -659,6 +724,8 @@ impl Ingress {
         Ok(())
     }
 
+    /// Connects the named container to each desired network it is not yet on.
+    /// Application networks get `GwPriority` 0 so the edge network stays default.
     async fn attach_networks(
         &self,
         journal: &Journaled<'_>,
@@ -682,6 +749,7 @@ impl Ingress {
         Ok(())
     }
 
+    /// Desired networks the inspected container is not attached to.
     fn missing_networks<'a>(
         container: &Value,
         desired: &'a BTreeSet<String>,
@@ -693,6 +761,8 @@ impl Ingress {
     }
 
     /// Converges attachments and routes; a matching gateway records no action.
+    /// Attaches new networks before loading routes, and detaches stale networks
+    /// only after the new configuration no longer references them.
     pub(super) async fn configure_gateway(
         &self,
         table: &RoutingTable,
@@ -753,6 +823,8 @@ impl Ingress {
         journal.finish(result).await
     }
 
+    /// Forwards Caddy log lines emitted since the previous relay into daemon logs
+    /// (at most 100 per pass).
     pub(super) async fn relay_logs(&self) -> Result<()> {
         if !self.enabled || self.container().await?.is_none() {
             return Ok(());
@@ -774,6 +846,12 @@ impl Ingress {
         Ok(())
     }
 
+    /// Reads container logs and decodes Docker's multiplexed stream framing into
+    /// lines, each truncated to 4096 characters. `query` is appended to the URL.
+    ///
+    /// ```text
+    /// [stream: u8][0; 3][length: u32 big-endian][payload: length bytes] ...
+    /// ```
     async fn container_logs(&self, name: &str, query: &str) -> Result<Vec<String>> {
         let path = format!("/containers/{name}/logs?stdout=1&stderr=1&{query}");
         let bytes = self.docker.read(&path).await?;

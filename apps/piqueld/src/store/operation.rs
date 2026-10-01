@@ -6,6 +6,7 @@ use super::{
 use serde::Deserialize;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
+/// Raw `operations` columns as stored; `decode` validates them into an `Operation`.
 struct OperationRow {
     id: String,
     application_id: String,
@@ -24,6 +25,7 @@ struct OperationRow {
     finished_at_ms: Option<i64>,
 }
 impl OperationRow {
+    /// Parses enum text and converts counters, treating any mismatch as corruption.
     fn decode(self) -> Result<Operation, StoreError> {
         Ok(Operation {
             id: self.id,
@@ -66,6 +68,7 @@ impl Store {
         .await
     }
 
+    /// Fetches an operation on an existing connection or transaction.
     pub(crate) async fn operation_on(
         connection: &mut SqliteConnection,
         id: &str,
@@ -92,6 +95,10 @@ impl Store {
     }
 
     /// Records a transition only if this is still the latest operation.
+    /// `error` must be present exactly when moving to `Failed`. Entering
+    /// `Running` counts a new attempt; failures and successes update
+    /// `consecutive_failures`. Terminal states snapshot the deployment attempt,
+    /// and every real state change appends its matching operation event.
     ///
     /// # Errors
     /// Returns a storage error or `IllegalTransition` when superseded.
@@ -140,6 +147,8 @@ impl Store {
     }
 
     /// Stores the latest error while a deletion remains running.
+    /// The operation stays `running` so the controller keeps retrying; the
+    /// application status shows the error and an `operation_failed` event is recorded.
     ///
     /// # Errors
     /// Returns a storage error.
@@ -170,6 +179,9 @@ impl Store {
     }
 
     /// Atomically completes deletion after the controller verifies resource absence.
+    /// Marks the operation succeeded, then removes the application's
+    /// notification state, open actions, application-scoped events, replay
+    /// receipts, and finally the application row itself.
     ///
     /// # Errors
     /// Returns a storage error or `IllegalTransition` for stale work.
@@ -226,6 +238,10 @@ impl Store {
         Ok(result)
     }
 
+    /// Resets the latest terminal operation (or a running deletion with a recorded
+    /// error) back to `requested` inside `tx`, updating application status and
+    /// recording `reconciliation_requested`. Idempotent: if the operation is
+    /// already requested or running it is returned unchanged.
     pub(crate) async fn retry_operation_on(
         tx: &mut Transaction<'_, Sqlite>,
         operation: &Operation,
@@ -274,12 +290,15 @@ impl Store {
         Ok(())
     }
 
+    /// Records a `resource_mutated` event after an action changed runtime state.
     pub(crate) async fn mutation_event(&self, id: &str) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         Self::operation_event(&mut tx, id, "resource_mutated", None, now_ms()).await?;
         tx.commit().await.map_err(StoreError::database)
     }
 
+    /// Whether the operation's target has been published as the application's
+    /// resolved state (see `publish_prepared`).
     pub(crate) async fn is_promoted(&self, id: &str) -> Result<bool, StoreError> {
         Ok(
             sqlx::query_scalar!("SELECT promoted FROM operations WHERE id=?1", id)
@@ -292,6 +311,8 @@ impl Store {
     }
 
     /// Returns interrupted operations to the requested state on process startup.
+    /// Each gets an `operation_interrupted` event and a cancelled deployment
+    /// attempt snapshot before being reset. Returns the number reset.
     ///
     /// # Errors
     /// Returns a storage error.
@@ -318,6 +339,7 @@ impl Store {
     }
 
     /// Prunes old terminal history, always retaining the latest operation per app.
+    /// Operations backing a deployment record are kept as well.
     ///
     /// # Errors
     /// Returns a storage error.
@@ -327,6 +349,11 @@ impl Store {
             .execute(&self.pool).await.map_err(StoreError::database)?.rows_affected())
     }
 
+    /// Starts a new operation for `app` within `tx`:
+    /// 1. supersedes any requested or running operation, recording events and attempt snapshots;
+    /// 2. inserts a `requested` operation at the application's current generation;
+    /// 3. snapshots the manifest into deployment history for non-delete kinds;
+    /// 4. records the kind's request event.
     pub(super) async fn insert_operation(
         tx: &mut Transaction<'_, Sqlite>,
         app: &ApplicationId,

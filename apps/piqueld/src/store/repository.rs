@@ -10,12 +10,14 @@
 use super::{NormalizedApplication, Operation, Store, StoreError, now_ms};
 use sqlx::{Sqlite, Transaction};
 
+/// A deployment's candidate manifest and whether it is the fetched snapshot.
 pub(crate) struct DeploymentInput {
     pub(crate) application: NormalizedApplication,
     pub(crate) fetched: bool,
 }
 
 impl Store {
+    /// Captures the configuration a Deploy started from, still unfetched.
     pub(crate) async fn insert_deployment_on(
         tx: &mut Transaction<'_, Sqlite>,
         operation: &Operation,
@@ -33,6 +35,7 @@ impl Store {
         Ok(())
     }
 
+    /// Loads the operation's candidate manifest, if one was captured.
     pub(crate) async fn deployment_input(
         &self,
         operation: &Operation,
@@ -54,6 +57,10 @@ impl Store {
         .transpose()
     }
 
+    /// Stores the fetched manifest and commit for the latest running operation,
+    /// copying it into deployment history, pinning its secret versions, and
+    /// re-checking hostname reservations. Fetching happens once: a second save,
+    /// or one for superseded work, fails with `StoreError::IllegalTransition`.
     pub(crate) async fn save_deployment_input(
         &self,
         operation: &Operation,
@@ -80,7 +87,11 @@ impl Store {
         Self::commit_application_changes(tx, [app_id]).await
     }
 
-    // Called in the same transaction that saves the fully prepared runtime target.
+    /// Promotes a fetched candidate to saved configuration, bumping the
+    /// application generation and recording `application_applied`. Skipped when
+    /// the candidate matches the saved configuration or a newer save changed the
+    /// generation since the operation started.
+    /// Called in the same transaction that saves the fully prepared runtime target.
     pub(super) async fn accept_deployment_on(
         tx: &mut Transaction<'_, Sqlite>,
         operation: &Operation,

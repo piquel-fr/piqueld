@@ -11,6 +11,8 @@ use piqueld_core::{
 };
 
 // The generated client owns paths, encoding, request bodies, and response types.
+// Each invocation wraps one generated field-edit endpoint as a `Client` method taking
+// its path segments, an optional typed body, and `EditOptions` (deploy, revision, force).
 macro_rules! edit_method {
     ($name:ident, ($($path:ident),+) $(, $request:ident: $body:ty)?) => {
         impl Client {
@@ -85,6 +87,10 @@ impl Client {
         .map(|response| response.data)
     }
     /// Sends a typed change through its individual generated endpoint.
+    ///
+    /// Each `ApplicationEdit` variant maps to exactly one field endpoint;
+    /// `Repository(None)` becomes a disconnect, and service edits go through
+    /// `edit_service`.
     /// # Errors
     /// Returns transport, validation, revision, or resource errors.
     pub async fn edit_application(
@@ -143,6 +149,8 @@ impl Client {
             }
         }
     }
+    /// Routes a `ServiceEdit` to the field endpoint of the named service. Environment
+    /// entries map to set or remove depending on whether a value is supplied.
     async fn edit_service(
         &self,
         id: &str,

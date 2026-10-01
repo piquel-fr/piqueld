@@ -8,6 +8,11 @@ use piqueld_core::resource::{APPLICATION_LABEL, INSTANCE_LABEL, MANAGED_LABEL};
 use std::collections::BTreeMap;
 
 impl BollardDocker {
+    /// Inspects a secret's metadata and verifies its ownership labels.
+    ///
+    /// Returns `None` when the secret does not exist, and `OwnershipConflict`
+    /// unless `ownership` is managed and the managed, instance, and
+    /// application labels are all present and equal on both sides.
     async fn owned_secret(
         &self,
         name: &str,
@@ -38,6 +43,11 @@ impl BollardDocker {
             Err(error) => Err(DockerError::request("inspect secret", error)),
         }
     }
+    /// Creates an owned secret unless it already exists.
+    ///
+    /// Secrets are immutable, so an existing owned secret is accepted without
+    /// comparing its value. A creation race (HTTP 409) is resolved by
+    /// rechecking ownership of the secret that won.
     pub(super) async fn provision_secret(
         &self,
         name: &str,
@@ -65,6 +75,8 @@ impl BollardDocker {
             Err(error) => Err(DockerError::request("create secret", error)),
         }
     }
+    /// Deletes each named secret by ID after verifying ownership; missing
+    /// secrets are skipped and a foreign one aborts with `OwnershipConflict`.
     pub(super) async fn remove_owned_secrets(
         &self,
         names: &[String],
@@ -88,6 +100,10 @@ impl BollardDocker {
         }
         Ok(())
     }
+    /// Builds the container secret references for a desired service.
+    ///
+    /// Each secret must already exist with the service's ownership labels and
+    /// is mounted by ID as a root-owned, world-readable (`0444`) file.
     pub(super) async fn secret_references(
         &self,
         desired: &DesiredService,

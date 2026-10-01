@@ -43,7 +43,9 @@ pub enum DataState {
 /// without a DOM or a browser runtime.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ViewState {
+    /// Refresh outcome for the application list.
     data: DataState,
+    /// Application shown in the detail flow.
     selected_id: Option<String>,
 }
 
@@ -157,9 +159,13 @@ impl ApplicationHealth {
 /// Cursor state for a bounded paginated refresh.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PaginationState {
+    /// Pages accepted so far, bounded by `MAX_PAGES`.
     pages_loaded: usize,
+    /// Cursor for the next page; `None` once a cursor repeats or the list ends.
     next_cursor: Option<String>,
+    /// Every cursor already followed, to stop on server cursor loops.
     seen_cursors: BTreeSet<String>,
+    /// Pagination stopped early (page bound or repeated cursor).
     incomplete: bool,
 }
 
@@ -207,10 +213,15 @@ impl PaginationState {
 /// Single-flight polling controller with visibility and failure backoff.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PollController {
+    /// A refresh request is currently running.
     in_flight: bool,
+    /// The document is hidden, pausing background polls.
     hidden: bool,
+    /// A manual refresh was requested and has not started yet.
     manual_pending: bool,
+    /// Consecutive failed requests, driving the backoff.
     failures: u8,
+    /// Delay before the next background poll.
     delay: Duration,
 }
 

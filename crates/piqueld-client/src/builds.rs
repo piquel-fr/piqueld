@@ -1,3 +1,4 @@
+//! Build history and build output retrieval.
 use crate::{BuildLogPage, BuildRecord, Client, ClientError, Page, client::generated_result};
 impl Client {
     /// Reads one page of build attempts, newest first.

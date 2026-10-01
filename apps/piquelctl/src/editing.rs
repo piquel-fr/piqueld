@@ -13,6 +13,9 @@ use piqueld_client::{
     edit::{ApplicationEdit, EditOptions, ServiceEdit},
 };
 
+// Flags shared by every edit: deployment, generation precondition, and confirmation.
+// Flattened `Args` structs use `//`: their doc comments would override the `about`
+// text of commands that flatten them. Field `///` comments are user-facing help.
 #[derive(Debug, Args)]
 pub(crate) struct EditFlags {
     #[command(flatten)]
@@ -27,6 +30,7 @@ pub(crate) struct EditFlags {
     #[arg(long)]
     yes: bool,
 }
+// Positional `<app> <service>` pair addressed by service-level edits.
 #[derive(Debug, Args)]
 pub(crate) struct Target {
     /// Application name or stable ID.
@@ -36,6 +40,7 @@ pub(crate) struct Target {
     #[command(flatten)]
     flags: EditFlags,
 }
+// Declares service-edit argument structs taking one required positional value.
 macro_rules! service_value_args {
     ($($name:ident: $ty:ty;)*) => {$ (
         #[derive(Debug, Args)]
@@ -60,6 +65,7 @@ pub(crate) struct StringsArgs {
     #[arg(last = true)]
     value: Vec<String>,
 }
+// Declares service-edit argument structs whose value is either given or `--clear`ed.
 macro_rules! optional_args {
     ($($name:ident: $ty:ty;)*) => {$ (
         #[derive(Debug, Args)]
@@ -156,18 +162,25 @@ pub(crate) struct GitSourceArgs {
     #[command(flatten)]
     build: GitBuildArgs,
 }
+// Git build settings; each flag requires the `git` argument (`--git` or the
+// positional URL of `source git`).
 #[derive(Debug, Args)]
 pub(crate) struct GitBuildArgs {
+    /// Branch to fetch when no commit is pinned.
     #[arg(long, requires = "git", default_value = "main")]
     branch: String,
+    /// Pin a full commit hash instead of following the branch.
     #[arg(long, requires = "git")]
     commit: Option<String>,
+    /// Dockerfile path relative to the repository root.
     #[arg(long, requires = "git", default_value = "Dockerfile")]
     dockerfile: String,
+    /// Build context relative to the repository root.
     #[arg(long, requires = "git", default_value = ".")]
     context: String,
 }
 impl GitBuildArgs {
+    /// Git source that builds `url` with Docker using these settings.
     fn source(&self, url: &str) -> Source {
         Source::Git {
             repository: GitRepository {
@@ -188,13 +201,16 @@ pub(crate) enum EnvironmentCommand {
     Set {
         #[command(flatten)]
         target: Target,
+        /// Variable name.
         key: String,
+        /// Variable value.
         value: String,
     },
     /// Remove one variable.
     Remove {
         #[command(flatten)]
         target: Target,
+        /// Variable name.
         key: String,
     },
 }
@@ -204,8 +220,11 @@ pub(crate) enum MountCommand {
     Set {
         #[command(flatten)]
         target: Target,
+        /// Declared named volume.
         volume: String,
+        /// Container target path.
         path: String,
+        /// Mount the volume read-only.
         #[arg(long)]
         read_only: bool,
     },
@@ -218,11 +237,15 @@ pub(crate) enum HealthCommand {
     Http {
         #[command(flatten)]
         target: Target,
+        /// Container port to probe.
         port: u16,
+        /// HTTP request path.
         #[arg(long, default_value = "/health")]
         path: String,
+        /// Seconds between checks.
         #[arg(long, default_value_t = 10)]
         interval: u32,
+        /// Seconds before a check counts as failed.
         #[arg(long, default_value_t = 3)]
         check_timeout: u32,
     },
@@ -230,10 +253,13 @@ pub(crate) enum HealthCommand {
     Command {
         #[command(flatten)]
         target: Target,
+        /// Seconds between checks.
         #[arg(long, default_value_t = 10)]
         interval: u32,
+        /// Seconds before a check counts as failed.
         #[arg(long, default_value_t = 3)]
         check_timeout: u32,
+        /// Command elements after --, preserving spaces.
         #[arg(last = true, required = true)]
         elements: Vec<String>,
     },
@@ -252,7 +278,9 @@ pub(crate) enum HealthCommand {
 }
 #[derive(Debug, Args)]
 pub(crate) struct VolumeArgs {
+    /// Application name or stable ID.
     app: String,
+    /// Named volume.
     volume: String,
     #[command(flatten)]
     flags: EditFlags,
@@ -291,6 +319,7 @@ pub(crate) enum RouteCommand {
 }
 #[derive(Debug, Args)]
 pub(crate) struct RepositoryTarget {
+    /// Application name or stable ID.
     app: String,
     #[command(flatten)]
     flags: EditFlags,
@@ -299,6 +328,7 @@ pub(crate) struct RepositoryTarget {
 pub(crate) struct RepositoryText {
     #[command(flatten)]
     target: RepositoryTarget,
+    /// New setting value.
     value: String,
 }
 #[derive(Debug, Subcommand)]
@@ -307,10 +337,14 @@ pub(crate) enum RepositoryCommand {
     Connect {
         #[command(flatten)]
         target: RepositoryTarget,
+        /// Git clone URL or host path.
         url: String,
+        /// Manifest file path relative to the repository root.
         path: String,
+        /// Branch to fetch when no commit is pinned.
         #[arg(long, default_value = "main")]
         branch: String,
+        /// Pin a full commit hash instead of following the branch.
         #[arg(long)]
         commit: Option<String>,
     },
@@ -324,8 +358,10 @@ pub(crate) enum RepositoryCommand {
     Commit {
         #[command(flatten)]
         target: RepositoryTarget,
+        /// Full commit hash, or use --clear to follow the branch.
         #[arg(required_unless_present = "clear", conflicts_with = "clear")]
         value: Option<String>,
+        /// Follow the branch instead of a pinned commit.
         #[arg(long)]
         clear: bool,
     },
@@ -334,6 +370,9 @@ pub(crate) enum RepositoryCommand {
 }
 
 impl ServiceCommand {
+    /// Saves one service edit. Adding and removing services are whole-application
+    /// edits; every other variant becomes a field-level `ServiceEdit` on the target service.
+    /// New services start with one replica and no optional settings.
     pub(crate) async fn run(
         &self,
         cli: &Cli,
@@ -406,6 +445,7 @@ impl ServiceCommand {
     }
 }
 impl SourceCommand {
+    /// Maps the subcommand to its target service and source edit.
     fn edit(&self) -> (&Target, ServiceEdit) {
         match self {
             Self::Image(args) => (&args.target, ServiceEdit::Image(args.value.clone())),
@@ -422,6 +462,7 @@ impl SourceCommand {
     }
 }
 impl EnvironmentCommand {
+    /// Maps to a single-entry environment edit; `None` removes the key.
     fn edit(&self) -> (&Target, ServiceEdit) {
         match self {
             Self::Set { target, key, value } => (
@@ -435,6 +476,7 @@ impl EnvironmentCommand {
     }
 }
 impl MountCommand {
+    /// Maps to a mount edit keyed by container target path.
     fn edit(&self) -> (&Target, ServiceEdit) {
         match self {
             Self::Set {
@@ -455,6 +497,8 @@ impl MountCommand {
     }
 }
 impl HealthCommand {
+    /// Maps to a health check edit: `Http`/`Command` replace the whole check, `Clear`
+    /// removes it, and the rest adjust one field of the existing check.
     fn edit(&self) -> (&Target, ServiceEdit) {
         match self {
             Self::Http {
@@ -497,6 +541,7 @@ impl HealthCommand {
     }
 }
 impl VolumeCommand {
+    /// Saves a named volume declaration or removal.
     pub(crate) async fn run(
         &self,
         cli: &Cli,
@@ -516,6 +561,9 @@ impl VolumeCommand {
     }
 }
 impl RouteCommand {
+    /// Edits routes client-side and saves the whole list: loads the application,
+    /// appends or removes (by normalized hostname) a route, then saves against the
+    /// same loaded generation. Removing an unknown hostname is an input error.
     pub(crate) async fn run(
         &self,
         cli: &Cli,
@@ -558,6 +606,7 @@ impl RouteCommand {
     }
 }
 impl RepositoryCommand {
+    /// Saves a manifest repository connection, disconnection, or single-field change.
     pub(crate) async fn run(
         &self,
         cli: &Cli,
@@ -603,6 +652,7 @@ impl RepositoryCommand {
     }
 }
 
+/// Resolves `app` by name or ID, then saves `edit` against it.
 pub(crate) async fn save(
     cli: &Cli,
     client: &Client,
@@ -615,6 +665,9 @@ pub(crate) async fn save(
     save_loaded(cli, client, console, current, flags, edit).await
 }
 
+/// Confirms and saves `edit` for an already loaded application. Unless `--force`,
+/// the save requires `--expected-generation` or, by default, the loaded generation,
+/// so concurrent edits are rejected instead of overwritten.
 async fn save_loaded(
     cli: &Cli,
     client: &Client,
@@ -650,6 +703,7 @@ async fn save_loaded(
     .await?;
     finish(console, client, &saved, &flags.deployment).await
 }
+/// Confirms and creates an empty application, optionally deploying it.
 pub(crate) async fn create(
     cli: &Cli,
     client: &Client,
@@ -667,6 +721,7 @@ pub(crate) async fn create(
         retry_transport(|| client.create_application(&args.name, args.deployment.deploy)).await?;
     finish(console, client, &saved, &args.deployment).await
 }
+/// Emits the save result, first waiting for an accepted deployment unless `--no-wait`.
 async fn finish(
     console: &mut Console,
     client: &Client,

@@ -1,3 +1,6 @@
+//! Clap command-line surface. `///` on derived items is user-facing help text, so
+//! internal notes use `//`. Flattened `Args` structs keep `//` because their doc
+//! comments would become the `about` text of commands that flatten them.
 use clap::{Args, Parser, Subcommand};
 use std::{path::PathBuf, time::Duration};
 
@@ -9,6 +12,8 @@ use std::{path::PathBuf, time::Duration};
     about = "Operate a local piqueld control plane"
 )]
 pub(crate) struct Cli {
+    // Where the effective endpoint and timeout came from, filled in by
+    // `Profiles::resolve` and shown in connection diagnostics.
     #[arg(skip)]
     pub(crate) connection_sources: crate::profiles::ConnectionSources,
 
@@ -49,7 +54,7 @@ pub(crate) struct Cli {
     pub(crate) command: Command,
 }
 
-/// Account selection and authentication transport options.
+// Account selection and authentication transport options.
 #[derive(Debug, Args)]
 pub(crate) struct AuthArgs {
     /// Account username or ID from the private credential file.
@@ -61,6 +66,8 @@ pub(crate) struct AuthArgs {
     pub(crate) allow_insecure_http: bool,
 }
 
+// Top-level commands. `Profiles` and `Login` are dispatched by `main` before the
+// timeout-bounded `commands::run`; everything else goes through it.
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Sign in with a passkey through the browser (also works over SSH).
@@ -134,16 +141,21 @@ pub(crate) enum AppCommand {
     },
     /// Read a bounded snapshot of Docker application logs.
     Logs {
+        /// Application name or stable ID.
         name_or_id: String,
+        /// Only include output from this service; all services when omitted.
         #[arg(long)]
         service: Option<String>,
+        /// Maximum number of most recent lines, merged across the selected services.
         #[arg(long,default_value_t=200,value_parser=clap::value_parser!(u16).range(1..=1000))]
         tail: u16,
+        /// Only include output from the last N seconds.
         #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
         since_seconds: u32,
     },
     /// Manage application-scoped secret values and metadata.
     Secret {
+        /// Application name or stable ID.
         application: String,
         #[command(subcommand)]
         action: crate::secrets::SecretAction,
@@ -167,11 +179,15 @@ pub(crate) enum AppCommand {
     /// Rename an idle application; optionally deploy with the change.
     Rename(RenameArgs),
     /// Export the saved manifest as TOML.
-    Manifest { name_or_id: String },
+    Manifest {
+        /// Application name or stable ID.
+        name_or_id: String,
+    },
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct CreateArgs {
+    /// New unique application name.
     pub(crate) name: String,
     #[command(flatten)]
     pub(crate) deployment: DeploymentArgs,
@@ -190,14 +206,18 @@ pub(crate) struct BuildArgs {
 pub(crate) enum BuildCommand {
     /// List recent build attempts, newest first.
     List {
+        /// Filter by stable application ID.
         #[arg(long)]
         application: Option<String>,
+        /// Continue after a cursor returned by the previous page.
         #[arg(long)]
         cursor: Option<String>,
     },
     /// Read a bounded page of persisted build output.
     Logs {
+        /// Build attempt ID from `builds list`.
         id: i64,
+        /// Read output before this offset, as suggested after the previous page.
         #[arg(long)]
         before: Option<i64>,
     },
@@ -233,6 +253,7 @@ pub(crate) struct ApplyArgs {
     pub(crate) force: bool,
 }
 
+// Shared `--deploy` / `--no-wait` flags for commands that save configuration.
 #[derive(Debug, Args)]
 pub(crate) struct DeploymentArgs {
     /// Deploy after saving; by default only configuration is saved.
@@ -274,6 +295,12 @@ pub(crate) struct OperationArgs {
     pub(crate) no_wait: bool,
 }
 
+/// Parses a positive integer duration with an optional unit (`ms`, `s`, `m`, `h`;
+/// bare numbers are seconds). Used for `--timeout`, `PIQUELD_TIMEOUT`, and profiles.
+///
+/// ```text
+/// "500ms" → 500ms    "30" → 30s    "2m" → 120s    "0s" / "1.5s" / "-1" → error
+/// ```
 pub(crate) fn parse_duration(value: &str) -> std::result::Result<Duration, String> {
     let (number, unit) = if let Some(value) = value.strip_suffix("ms") {
         (value, "ms")

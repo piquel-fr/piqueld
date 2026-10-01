@@ -18,6 +18,8 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteConnection},
 };
 
+/// Always provisions the migration schema; embeds the dashboard only when the
+/// `embedded-ui` feature is enabled.
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR")
@@ -31,6 +33,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Embeds the workspace migrations and builds the `SQLx` check database.
+///
+/// 1. Collect `migrations/*.sql` in name order and require contiguous
+///    numeric prefixes starting at 1 (`0001_init.sql`, `0002_…`).
+/// 2. Write `OUT_DIR/migrations.rs`, an `include_str!` slice of the files.
+/// 3. Recreate `OUT_DIR/sqlx-build.db`, apply every migration, and point
+///    `DATABASE_URL` at it so `SQLx` macros check against the real schema.
 fn embed_migrations(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
     let migrations_dir = manifest_dir.join("../../migrations").canonicalize()?;
     println!("cargo:rerun-if-changed={}", migrations_dir.display());
@@ -209,10 +218,13 @@ fn build_bundle(ui_dir: &Path, out_dir: &Path) -> Result<PathBuf, Box<dyn Error>
     Ok(dist)
 }
 
-/// Regenerates the Tailwind stylesheet consumed by the dashboard shell.
+/// Regenerates the Tailwind stylesheet and stages the Trunk shell, returning
+/// the staged `index.html` path.
 ///
-/// The generated stylesheet and staged Trunk shell live entirely in `OUT_DIR`,
-/// allowing release builds from read-only source trees.
+/// The staged shell is the UI `index.html` with its Rust link pointed back at
+/// the UI manifest relative to `OUT_DIR`. The generated stylesheet and staged
+/// shell live entirely in `OUT_DIR`, allowing release builds from read-only
+/// source trees.
 fn prepare_trunk_input(ui_dir: &Path, out_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let generated = out_dir.join("generated");
     fs::create_dir_all(&generated)?;
@@ -244,6 +256,11 @@ fn prepare_trunk_input(ui_dir: &Path, out_dir: &Path) -> Result<PathBuf, Box<dyn
     Ok(input)
 }
 
+/// Computes the relative path from directory `from` to the canonical path `to`.
+///
+/// ```text
+/// /t/out + /src/ui/Cargo.toml → ../../src/ui/Cargo.toml
+/// ```
 fn relative_path(from: &Path, to: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let from = from.canonicalize()?;
     let from = from.components().collect::<Vec<_>>();
@@ -398,6 +415,10 @@ fn content_security_policy(index_path: &Path) -> Result<String, Box<dyn Error>> 
     Ok(policy)
 }
 
+/// Returns the base64 SHA-256 of every inline `<script>` body in `html`.
+///
+/// Scripts whose opening tag has a `src` attribute are external and skipped.
+/// This is a minimal scanner for Trunk's generated shell, not an HTML parser.
 fn inline_script_hashes(html: &[u8]) -> Result<Vec<String>, Box<dyn Error>> {
     let html = std::str::from_utf8(html)?;
     let mut hashes = Vec::new();
@@ -470,6 +491,7 @@ fn walk_files(directory: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     Ok(files)
 }
 
+/// Explains how to install a dashboard build tool that failed to spawn.
 fn missing_tool(tool: &str, error: &io::Error) -> io::Error {
     io::Error::other(format!(
         "{tool} is required to embed the dashboard bundle (--features \
@@ -478,6 +500,7 @@ fn missing_tool(tool: &str, error: &io::Error) -> io::Error {
     ))
 }
 
+/// Turns a failed tool exit status into an error naming the tool.
 fn ensure_success(tool: &str, status: std::process::ExitStatus) -> Result<(), Box<dyn Error>> {
     if status.success() {
         Ok(())

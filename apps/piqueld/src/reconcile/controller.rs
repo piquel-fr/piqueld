@@ -6,6 +6,9 @@ use crate::application::RuntimeBoundary;
 use std::sync::Arc;
 
 impl<D: DockerApi> Controller<D> {
+    /// Executes an operation to a durable outcome, then closes any journal actions
+    /// it left open as `action_outcome_unknown`. Only store failures are returned;
+    /// operation failures are persisted on the operation itself.
     #[tracing::instrument(skip_all, fields(
         application_id = %operation.application_id,
         operation_id = %operation.id,
@@ -34,6 +37,18 @@ impl<D: DockerApi> Controller<D> {
         result.map(|_| ())
     }
 
+    /// Moves the operation to `Running`, executes it, and persists the outcome.
+    ///
+    /// 1. A `Requested` operation that can no longer start is reported as superseded.
+    /// 2. A `Running` operation with a recorded error (a transient retry) is cycled
+    ///    through `Requested` so it starts a fresh attempt.
+    /// 3. A cancelled local token (shutdown or replacement) persists nothing.
+    ///    Otherwise success completes the operation (or finalizes deletion), a
+    ///    `Cancelled`/`Superseded` error defers to newer durable state, failed
+    ///    deletions keep running with the error recorded for retry, and other
+    ///    failures mark the application degraded and the operation failed.
+    ///
+    /// Returns a short outcome label for logging.
     async fn run_operation_inner(
         &self,
         operation: &Operation,
@@ -296,6 +311,9 @@ impl<D: DockerApi> Controller<D> {
         .map_err(|_| OperationError::ConvergenceTimeout)?
     }
 
+    /// Builds the plan request for an operation: a deletion request, or a
+    /// reconcile request toward a freshly prepared target. Preparation is bounded
+    /// by `prepare_timeout` and aborts on cancellation.
     async fn operation_request(
         &self,
         operation: &Operation,
@@ -326,6 +344,11 @@ impl<D: DockerApi> Controller<D> {
         })
     }
 
+    /// Stages the application's routes and applies them through managed ingress
+    /// when present (which skips the gateway while backends are not ready and no
+    /// hostname is withdrawn), or acknowledges the routing table directly.
+    /// `ready` tells staging whether the backing services exist yet. No-op when
+    /// there are neither desired nor stored routes.
     async fn sync_routes(
         &self,
         operation: &Operation,
@@ -364,6 +387,8 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    /// Records the planning phase (naming the first blocking resource, if any) and
+    /// rejects blocked plans with their classified error.
     async fn check_plan(&self, operation: &Operation, plan: &Plan) -> Result<(), OperationError> {
         tracing::debug!(
             actions = plan.actions.len(),
@@ -385,6 +410,13 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    /// Resolves the operation's deployable target, reusing a previously saved one.
+    ///
+    /// Verifies the swarm topology, fetches the deployment manifest, keeps the
+    /// application's current name, reuses prior image resolutions unless this is
+    /// a `Refresh`, pins secret versions, then resolves images and builds sources.
+    /// The result is saved on the operation only if it is still current and the
+    /// topology is still supported.
     #[tracing::instrument(skip_all, fields(phase = "preparation", timeout_seconds = self.prepare_timeout.as_secs()))]
     async fn prepare_target(
         &self,
@@ -451,6 +483,8 @@ impl<D: DockerApi> Controller<D> {
         Ok(prepared)
     }
 
+    /// Fails with `Superseded` when a newer operation exists for the application,
+    /// or `Cancelled` when this operation is no longer `Running`.
     pub(super) async fn check_current(&self, operation: &Operation) -> Result<(), OperationError> {
         let current = self
             .store
@@ -466,6 +500,7 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    /// Marks the application degraded with the failure message.
     async fn record_failure(
         &self,
         operation: &Operation,

@@ -1,3 +1,4 @@
+//! Error classification, exit codes, and human error reports with connection hints.
 use crate::{
     cli::Cli,
     output::{DiagnosticReport, HumanWriter},
@@ -6,13 +7,20 @@ use piqueld_client::{ClientError, PlanView, TransportFailure};
 use serde_json::Value;
 use std::{fmt, io};
 
+/// Failure classes, each mapped to a stable process exit code.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ErrorKind {
+    /// Unexpected client, output, or response failure (exit 1).
     General,
+    /// Invalid arguments, configuration, or unconfirmed action (exit 2).
     Input,
+    /// Generation precondition, name ambiguity, or blocked plan (exit 3).
     Conflict,
+    /// Daemon unreachable, gateway errors, or command timeout (exit 4).
     Unavailable,
+    /// An awaited operation ended unsuccessfully (exit 5).
     Operation,
+    /// Ctrl-C (exit 130, the shell convention for SIGINT).
     Interrupted,
 }
 
@@ -29,22 +37,33 @@ impl ErrorKind {
     }
 }
 
+/// Command failure with an exit class, a one-line message, and optional API
+/// context rendered by `ErrorReport`.
 #[derive(Debug)]
 pub(crate) struct CliError {
     kind: ErrorKind,
     message: String,
+    /// Stable API error code from the daemon, if the error came from an API response.
     api_code: Option<String>,
     request_id: Option<String>,
+    /// Structured context; an `operation` object gets a dedicated rendering.
     details: Option<Value>,
+    /// Selects which connection facts and hint the report shows.
     diagnostic: Option<Box<Diagnostic>>,
 }
 
+/// Connection-related failure category, used to pick report context and hints.
 #[derive(Debug)]
 enum Diagnostic {
+    /// The endpoint was rejected before connecting; its value must not be echoed.
     Endpoint,
+    /// Invalid configuration from the named source (flag, variable, or profile).
     Configuration(String),
+    /// The request failed at the transport level.
     Transport(TransportFailure),
+    /// The daemon answered with something that is not a valid piqueld API response.
     Response,
+    /// The whole command exceeded `--timeout`.
     CommandTimeout,
 }
 
@@ -60,23 +79,28 @@ impl CliError {
         }
     }
 
+    /// Attaches a connection diagnostic; the public builders below wrap this.
     fn diagnostic(mut self, diagnostic: Diagnostic) -> Self {
         self.diagnostic = Some(Box::new(diagnostic));
         self
     }
 
+    /// Marks the error as caused by configuration from `source`.
     pub(crate) fn configuration(self, source: String) -> Self {
         self.diagnostic(Diagnostic::Configuration(source))
     }
 
+    /// Marks the error as a whole-command timeout.
     pub(crate) fn command_timeout(self) -> Self {
         self.diagnostic(Diagnostic::CommandTimeout)
     }
 
+    /// Marks the error as an invalid daemon response.
     pub(crate) fn invalid_response(self) -> Self {
         self.diagnostic(Diagnostic::Response)
     }
 
+    /// Undecodable response body, reported as an invalid API response.
     fn decode_failure(source: impl fmt::Display) -> Self {
         Self::new(
             ErrorKind::General,
@@ -89,6 +113,7 @@ impl CliError {
         self.kind.exit_code()
     }
 
+    /// Attaches API error context, dropping an empty request ID and null details.
     pub(crate) fn api(mut self, code: String, request_id: String, details: Value) -> Self {
         self.api_code = Some(code);
         self.request_id = (!request_id.is_empty()).then_some(request_id);
@@ -102,6 +127,10 @@ impl CliError {
     }
 
     /// Keep blocking reasons visible even when quiet mode hides the plan result.
+    ///
+    /// ```text
+    /// plan is blocked (<code> [<resource>]: <message>, <code> [<resource>]: <message>)
+    /// ```
     pub(crate) fn blocked_plan(plan: &PlanView) -> Self {
         let diagnostics = plan
             .plan
@@ -135,6 +164,8 @@ impl fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
+/// Fallback for I/O errors, worded for the common case of output writes. Other
+/// I/O callers (such as the credential file) should map their errors themselves.
 impl From<std::io::Error> for CliError {
     fn from(error: std::io::Error) -> Self {
         Self::new(
@@ -144,6 +175,9 @@ impl From<std::io::Error> for CliError {
     }
 }
 
+/// Classifies client errors: endpoint rejections are input errors, transport failures
+/// are unavailability, and API errors map by HTTP status. Redirects and malformed error
+/// bodies also get the invalid-response diagnostic and include the HTTP status.
 impl From<ClientError> for CliError {
     fn from(error: ClientError) -> Self {
         match error {
@@ -184,9 +218,12 @@ impl From<ClientError> for CliError {
 
 pub(crate) type Result<T> = std::result::Result<T, CliError>;
 
+/// Human rendering of a `CliError` on stderr, with connection context from the
+/// resolved CLI configuration.
 pub(crate) struct ErrorReport<'a> {
     error: &'a CliError,
     cli: &'a Cli,
+    /// Set for per-application warnings, which render as `Warning` instead of `Error`.
     application: Option<&'a str>,
 }
 impl<'a> ErrorReport<'a> {
@@ -198,6 +235,7 @@ impl<'a> ErrorReport<'a> {
             application: None,
         }
     }
+    /// Non-fatal report for one application whose status could not be fetched.
     pub(crate) fn warning(error: &'a CliError, cli: &'a Cli, application: &'a str) -> Self {
         Self {
             error,
@@ -206,6 +244,8 @@ impl<'a> ErrorReport<'a> {
         }
     }
     /// Render only evidence available from configuration and the failed exchange.
+    /// Prints the endpoint (or configuration source), timeout facts for timeouts,
+    /// and a hint chosen from the diagnostic.
     fn connection(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
         let cli = self.cli;
         let Some(diagnostic) = self.error.diagnostic.as_deref() else {
@@ -264,6 +304,8 @@ impl<'a> ErrorReport<'a> {
         out.label("  Hint", hint)
     }
 
+    /// Renders error details. Operation failures get a labelled context block and a
+    /// reconcile hint; any other details are printed as raw JSON.
     fn details(details: &Value, out: &mut HumanWriter<'_>) -> io::Result<()> {
         // Local and daemon manifest validation share the `ValidationErrors` shape.
         if let Some(errors) = details.get("errors").and_then(Value::as_array) {

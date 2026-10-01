@@ -3,6 +3,11 @@ use super::{ApplicationId, Store, StoreError, new_id, now_ms};
 use piqueld_core::observability::{Diagnostic, DiagnosticCode, EventScope};
 use sqlx::{Sqlite, Transaction};
 
+/// Handle to one journaled runtime request, recorded in `active_actions` until
+/// finished. Lifecycle: `begin_action` (or `begin_application_action`), then
+/// `action_request` before each attempt, `action_retry` after a retryable
+/// failure, and finally `finish_action`. Actions left open by a crash are closed
+/// by `interrupt_actions` as `action_outcome_unknown`.
 #[derive(Clone, Debug)]
 pub(crate) struct JournalAction {
     pub(crate) id: String,
@@ -15,6 +20,9 @@ pub(crate) struct JournalAction {
     started_at_ms: i64,
 }
 impl Store {
+    /// Journals a runtime request before it is made, optionally under an
+    /// operation whose application, generation, and attempt are copied onto the
+    /// action. Without an operation the action is daemon-scoped.
     pub(crate) async fn begin_action(
         &self,
         operation: Option<&str>,
@@ -70,6 +78,7 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)?;
         Ok(action)
     }
+    /// Inserts the `active_actions` row and its `action_started` event.
     async fn start_action_on(
         tx: &mut Transaction<'_, Sqlite>,
         action: &JournalAction,
@@ -91,6 +100,8 @@ impl Store {
         .map_err(StoreError::database)?;
         Self::action_event_on(tx, action, "action_started", None, None, None).await
     }
+    /// Records that attempt `retry` is about to be sent to the runtime.
+    /// Fails with `StoreError::IllegalTransition` if the action is no longer active.
     pub(crate) async fn action_request(
         &self,
         action: &JournalAction,
@@ -113,6 +124,8 @@ impl Store {
         Self::action_event_on(&mut tx, action, "action_requested", Some(retry), None, None).await?;
         tx.commit().await.map_err(StoreError::database)
     }
+    /// Records a retryable failure and the backoff before the next attempt.
+    /// The delay is written onto the event just inserted via `last_insert_rowid()`.
     pub(crate) async fn action_retry(
         &self,
         action: &JournalAction,
@@ -145,6 +158,10 @@ impl Store {
         .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
+    /// Records the action's final outcome (`action_succeeded`, or
+    /// `action_failed` with a diagnostic) and removes it from `active_actions`.
+    /// Cancelled or superseded failures are logged at info rather than error.
+    /// Fails with `StoreError::IllegalTransition` if the action was already closed.
     pub(crate) async fn finish_action(
         &self,
         action: &JournalAction,
@@ -192,6 +209,9 @@ impl Store {
             .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
+    /// Appends an action lifecycle event to `events`. Daemon-scoped actions
+    /// force their diagnostic scope to `Daemon`; terminal kinds also record the
+    /// action's duration. `message` overrides the diagnostic summary.
     async fn action_event_on(
         tx: &mut Transaction<'_, Sqlite>,
         action: &JournalAction,
@@ -254,6 +274,9 @@ impl Store {
         Ok(())
     }
     /// Closes incomplete action records without inventing an external outcome.
+    /// Each open action (all of them, or only `operation`'s) gets an
+    /// `action_outcome_unknown` event and is removed from `active_actions`.
+    ///
     /// # Errors
     /// Returns a storage error; reconciliation must not resume if it cannot record recovery.
     pub async fn interrupt_actions(&self, operation: Option<&str>) -> Result<(), StoreError> {

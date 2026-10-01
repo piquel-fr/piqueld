@@ -13,6 +13,9 @@ use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, Transaction};
 
 impl WebhookDestination {
+    /// Hex SHA-256 of the destination's kind and URL. Stored with deliveries and
+    /// routes so a destination whose name is kept but URL or kind changes is
+    /// treated as a different receiver and never gets the old one's queue.
     pub(crate) fn fingerprint(&self) -> String {
         format!(
             "{:x}",
@@ -67,6 +70,11 @@ impl Store {
         })
     }
     /// Retries a failed delivery only while its destination/category remain enabled.
+    /// Also refuses (as `StoreError::InvalidInput`) failures already followed by a
+    /// delivered recovery, recoveries whose incident has reopened, and failures
+    /// whose incident has since closed. Resets the delivery to `pending` with a
+    /// fresh retry window.
+    ///
     /// # Errors
     /// Returns absence, disabled delivery or storage errors.
     pub async fn retry_delivery(&self, id: &str) -> Result<(), StoreError> {
@@ -139,6 +147,12 @@ impl Store {
         .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
+    /// Reconciles the outbox with the current notification configuration at startup:
+    /// 1. cancels pending deliveries whose category or destination is disabled or changed;
+    /// 2. drops routes for disabled or changed category/destination pairs;
+    /// 3. adds routes for newly enabled pairs, starting after the latest event so
+    ///    a new destination is not backfilled with history;
+    /// 4. restarts the sustained-failure window of conditions not yet notified.
     pub(crate) async fn configure_deliveries(&self) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let rows = sqlx::query!(
@@ -217,6 +231,10 @@ impl Store {
         .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
+    /// Advances the notification cursor over the next batch (up to 100) of
+    /// committed events, opening/closing conditions and enqueueing deliveries.
+    /// Returns early without changes if another caller moved the cursor between
+    /// the unlocked read and the write transaction.
     pub(crate) async fn process_notifications(&self) -> Result<(), StoreError> {
         // Read events outside the writer transaction, then compare the cursor under the lock.
         let cursor =
@@ -262,6 +280,18 @@ impl Store {
         }
         tx.commit().await.map_err(StoreError::database)
     }
+    /// Applies one event to notification state. A successful operation closes the
+    /// application's build and deployment failure conditions (queueing
+    /// recoveries). Failed operations and daemon diagnostics open a condition and
+    /// notify immediately the first time it opens; repeats while it is open are
+    /// deduplicated. Dependency outages are skipped here because
+    /// `observe_condition` notifies them only once sustained.
+    ///
+    /// Condition keys:
+    /// ```text
+    /// <application_id>:<category>   application build/deployment failures
+    /// daemon:<error_code>           daemon failures
+    /// ```
     async fn process_notification_event(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -341,6 +371,7 @@ impl Store {
         }
         Ok(())
     }
+    /// Queues a delivery of `event` to every enabled destination, if `category` is enabled.
     async fn enqueue(
         tx: &mut Transaction<'_, Sqlite>,
         config: &NotificationConfig,
@@ -355,6 +386,9 @@ impl Store {
         Ok(())
     }
 
+    /// Queues one delivery idempotently and returns its id (new or existing).
+    /// Returns `None` without queueing when the destination has no route for the
+    /// category or the event predates the route's `after_event_id`.
     async fn enqueue_destination(
         tx: &mut Transaction<'_, Sqlite>,
         event: i64,
@@ -404,6 +438,10 @@ impl Store {
         .await
         .map_err(StoreError::database)
     }
+    /// Clears an open condition. If it was notified and recoveries are enabled,
+    /// queues a recovery for each destination that received (or is still
+    /// receiving) the failure, linking them in `notification_recovery_sources`
+    /// so the recovery is sent only after the failure is acknowledged.
     async fn close_condition(
         tx: &mut Transaction<'_, Sqlite>,
         config: &NotificationConfig,
@@ -471,6 +509,8 @@ impl Store {
         Ok(())
     }
     /// Writes the health transition in the same transaction as its notification condition.
+    /// Inserts a `dependency_health_changed` event (with a diagnostic when
+    /// failing) and returns its row id. Daemon keys must be a `DiagnosticCode`.
     async fn record_health_transition(
         tx: &mut Transaction<'_, Sqlite>,
         key: &str,
@@ -528,6 +568,10 @@ impl Store {
     }
 
     /// Records continuously observed dependency health, emitting events only on transitions.
+    /// Ignores observations for deleted applications and ones no newer than the
+    /// last. A new failure opens an unnotified `health:<key>` condition that
+    /// `notify_sustained_failure` announces once it persists; a recovery closes
+    /// it. An initial healthy observation records nothing.
     pub(crate) async fn observe_condition(
         &self,
         key: &str,
@@ -614,6 +658,9 @@ impl Store {
         .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
+    /// Extends an unnotified failure condition to `observed`, restarting its
+    /// window after an observation gap, and notifies once it has failed
+    /// continuously for `failure_threshold_seconds`.
     async fn notify_sustained_failure(
         &self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -659,6 +706,9 @@ impl Store {
         Ok(())
     }
 
+    /// Feeds each live application's recent runtime health into
+    /// `observe_condition`. Degraded services, or no running services when some
+    /// are expected, count as failing; observations older than `max_gap_ms` are skipped.
     pub(crate) async fn observe_services(&self, max_gap_ms: i64) -> Result<(), StoreError> {
         let rows = sqlx::query!(
             "SELECT s.application_id AS \"application_id!\",s.runtime_health,s.health_observed_at_ms,COALESCE(json_array_length(a.resolved_json,
@@ -686,6 +736,14 @@ impl Store {
         }
         Ok(())
     }
+    /// Claims the next due delivery for the notification worker:
+    /// 1. fails pending deliveries whose retry window expired;
+    /// 2. cancels recoveries none of whose failures can still be delivered;
+    /// 3. picks the earliest due delivery, holding recoveries until every linked
+    ///    failure is settled and at least one was delivered;
+    /// 4. leases it for 30 seconds by pushing `next_attempt_ms` and counting the attempt.
+    ///
+    /// Fails with `StoreError::InvalidInput` if its destination is no longer configured.
     pub(crate) async fn claim_delivery(
         &self,
     ) -> Result<Option<(NotificationDelivery, WebhookDestination)>, StoreError> {
@@ -789,6 +847,8 @@ impl Store {
         )))
     }
 
+    /// Records the result of a claimed attempt. Only pending deliveries change;
+    /// `delay` (seconds) schedules the next attempt when `state` stays `Pending`.
     pub(crate) async fn complete_delivery(
         &self,
         id: &str,

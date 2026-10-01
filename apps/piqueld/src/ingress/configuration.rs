@@ -14,6 +14,14 @@ use serde_json::{Value, json};
 impl Ingress {
     /// Produces the complete replacement configuration. Exact-host routes enable
     /// automatic TLS without on-demand certificate issuance for arbitrary hosts.
+    ///
+    /// Each route yields a probe handler, a reverse proxy, and an HTTP redirect;
+    /// both servers end with a 404 fallback.
+    ///
+    /// ```text
+    /// app.example.com -> reverse_proxy <swarm service name>:<port>
+    /// http://app.example.com/x -> 308 https://app.example.com/x
+    /// ```
     pub(super) fn configuration(&self, table: &RoutingTable) -> Value {
         let mut https = Vec::new();
         let mut redirects = Vec::new();

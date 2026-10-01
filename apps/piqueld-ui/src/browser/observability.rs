@@ -7,9 +7,12 @@ use piqueld_client::{
     observability::{DaemonStats, DeliveryState, EventFilter, EventScope},
 };
 
+/// Revision counter that observability resources track to refetch.
+/// Bumped every 5 seconds while the tab is visible, or on demand.
 #[derive(Clone, Copy)]
 struct Refresh(RwSignal<u64>);
 impl Refresh {
+    /// Starts the 5-second interval, cleared when the owning view unmounts.
     fn new() -> Self {
         let revision = create_rw_signal(0_u64);
         if let Ok(handle) = set_interval_with_handle(
@@ -24,9 +27,11 @@ impl Refresh {
         }
         Self(revision)
     }
+    /// Triggers an immediate refetch.
     fn request(self) {
         self.0.update(|r| *r = r.wrapping_add(1));
     }
+    /// Unix milliseconds `days` ago, or `None` (no lower bound) for `0`.
     fn since(days: u32) -> Option<i64> {
         if days == 0 {
             return None;
@@ -35,15 +40,20 @@ impl Refresh {
         Some(now.saturating_sub(i64::from(days) * 86_400_000))
     }
 }
+/// `/events` page: all retained events.
 #[component]
 pub(super) fn HistoryPage() -> impl IntoView {
     view! {<header class="page-heading"><h1>"Event history"</h1></header><EventHistory/>}
 }
+/// `/errors` page: events that carry an error.
 #[component]
 pub(super) fn ErrorsPage() -> impl IntoView {
     view! {<header class="page-heading"><h1>"Errors"</h1></header><EventHistory errors_only=true/>}
 }
 
+/// Filterable, paginated event list (50 per page), optionally scoped to one
+/// application. Also honours an `?operation=` query filter; changing any filter
+/// or the operation resets to the newest page. Auto-refreshes via `Refresh`.
 #[component]
 pub(super) fn EventHistory(
     #[prop(optional, into)] application: Option<String>,
@@ -125,6 +135,8 @@ pub(super) fn EventHistory(
         </section>
     }
 }
+/// Summary card for one event, linking to related operation events and, when
+/// present, its diagnostic details.
 #[component]
 fn EventCard(event: Event) -> impl IntoView {
     let summary = event
@@ -150,6 +162,7 @@ fn EventCard(event: Event) -> impl IntoView {
         {diagnostic.map(|id|view!{<A href=format!("/dashboard/errors/{id}")>"Details"</A>})}
     </article>}
 }
+/// `/errors/:id` page: loads one diagnostic event by ID.
 #[component]
 pub(super) fn DiagnosticPage() -> impl IntoView {
     let params = use_params_map();
@@ -166,6 +179,7 @@ pub(super) fn DiagnosticPage() -> impl IntoView {
         {move ||match data.get(){None=>view!{<p>"Loading diagnostic…"</p>}.into_view(),Some(Err(e))=>view!{<p class="form-error">{e}</p>}.into_view(),Some(Ok(event))=>view!{<DiagnosticDetails event/>}.into_view()}}
     }
 }
+/// Full diagnostic view: event context, causes, suggested next action and retryability.
 #[component]
 fn DiagnosticDetails(event: Event) -> impl IntoView {
     let detail = event.diagnostic.clone();
@@ -181,6 +195,7 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
         {operation.map(|id|view!{<A href=format!("/dashboard/events?operation={id}")>"Related operation events"</A>})}
     </section>}
 }
+/// `/system` page: readiness panel plus auto-refreshing daemon resource usage.
 #[component]
 pub(super) fn SystemPage() -> impl IntoView {
     let refresh = Refresh::new();
@@ -198,6 +213,7 @@ pub(super) fn SystemPage() -> impl IntoView {
         {move ||match data.get(){None=>view!{<p>"Collecting resource usage…"</p>}.into_view(),Some(Err(e))=>view!{<p class="form-error">{e}</p>}.into_view(),Some(Ok(stats))=>view!{<ResourceStats stats/>}.into_view()}}
     }
 }
+/// Definition list of daemon resource and queue statistics.
 #[component]
 fn ResourceStats(stats: DaemonStats) -> impl IntoView {
     let bytes = |v: Option<u64>| {
@@ -232,6 +248,8 @@ fn ResourceStats(stats: DaemonStats) -> impl IntoView {
     ];
     view! {<section class="observability-panel"><p class="help">{format!("Measured {}. Historical resource graphs require an external metrics collector.",timestamp(stats.sampled_at_ms))}</p><dl class="observability-values">{fields.into_iter().map(|(label,value)|view!{<dt>{label}</dt><dd>{value}</dd>}).collect_view()}</dl></section>}
 }
+/// `/analytics` page: deployment outcome, retry, duration and failure-code
+/// aggregates over a selectable period.
 #[component]
 pub(super) fn AnalyticsPage() -> impl IntoView {
     let refresh = Refresh::new();
@@ -256,6 +274,8 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
         </section>}.into_view()}}
     }
 }
+/// `/notifications` page: paginated notification deliveries, with a retry
+/// button on failed ones.
 #[component]
 pub(super) fn NotificationsPage() -> impl IntoView {
     let refresh = Refresh::new();

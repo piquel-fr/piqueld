@@ -2,7 +2,7 @@
 
 use crate::resource::{
     Convergence, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
-    ObservedService, ResolutionRequirement, ResolvedApplication, owned_label_subset, unordered_eq,
+    ResolutionRequirement, ResolvedApplication,
 };
 use crate::{ApplicationId, InstanceId};
 use serde::{Deserialize, Serialize};
@@ -347,6 +347,10 @@ impl Plan {
     }
 
     /// Builds a plan for the requested desired/observed transition.
+    ///
+    /// `Preview` reconciles the compiled desired state when available and
+    /// prepends one `BuildGit`/`ResolveImage` action per unresolved source.
+    /// Diagnostics are sorted by resource then code for stable output.
     #[must_use]
     pub fn from_request(request: &PlanRequest, observed: &ObservedApplication) -> Self {
         let mut plan = match request {
@@ -394,6 +398,8 @@ impl Plan {
         plan
     }
 
+    /// Records a blocking diagnostic for a same-name resource this application
+    /// does not own. `seen` deduplicates reports per resource name.
     fn collision(&mut self, name: &str, seen: &mut BTreeSet<String>) {
         if seen.insert(name.into()) {
             self.diagnostics.push(PlanDiagnostic {
@@ -406,6 +412,8 @@ impl Plan {
         }
     }
 
+    /// Records a blocking diagnostic for an owned network or volume whose
+    /// settings drifted; Docker cannot update these in place.
     fn immutable_drift(&mut self, name: &str, resource: &str) {
         self.diagnostics.push(PlanDiagnostic {
             code: codes::IMMUTABLE_CONFIGURATION_DRIFT.into(),
@@ -418,6 +426,8 @@ impl Plan {
         });
     }
 
+    /// Records a non-blocking note that an undesired resource is left untouched
+    /// because this application does not own it.
     fn ignored(&mut self, name: &str) {
         self.diagnostics.push(PlanDiagnostic {
             code: codes::FOREIGN_RESOURCE_IGNORED.into(),
@@ -428,6 +438,8 @@ impl Plan {
         });
     }
 
+    /// Records a non-blocking note that an obsolete owned resource is kept until
+    /// the desired resources converge.
     fn cleanup_deferred(&mut self, name: &str, resource: &str) {
         self.diagnostics.push(PlanDiagnostic {
             code: codes::CLEANUP_DEFERRED.into(),
@@ -470,6 +482,9 @@ impl Plan {
 
     /// Whether desired resources have converged and obsolete backends can be retired.
     /// Route cutover must succeed at this boundary before cleanup executes.
+    ///
+    /// True when the plan is unblocked and only cleanup actions (removals,
+    /// removal waits, and volume retention) remain.
     #[must_use]
     pub fn desired_resources_ready(&self) -> bool {
         !self.is_blocked()
@@ -484,6 +499,17 @@ impl Plan {
             })
     }
 
+    /// Plans the transition from `observed` to `desired`.
+    ///
+    /// Action order is significant for execution:
+    /// 1. Ensure missing networks and volumes (dependencies of services).
+    /// 2. Retain obsolete owned volumes; data is never deleted.
+    /// 3. Ensure missing or drifted services, followed by all service waits.
+    /// 4. Only when everything above is converged and unblocked, remove
+    ///    obsolete services (then wait for removal) and obsolete networks.
+    ///    Otherwise their cleanup is reported as deferred.
+    ///
+    /// `blocked_names` is shared so each colliding name is reported once.
     fn reconcile(desired: &ResolvedApplication, observed: &ObservedApplication) -> Self {
         let mut plan = Self::default();
         let mut blocked_names = BTreeSet::new();
@@ -500,6 +526,10 @@ impl Plan {
         plan
     }
 
+    /// Adds `EnsureNetwork` for missing networks and diagnostics for unowned or
+    /// drifted ones. Returns whether every desired network already exists intact.
+    ///
+    /// Label drift ignores the spec hash, which changes on every spec edit.
     fn ensure_networks(
         &mut self,
         desired: &ResolvedApplication,
@@ -540,6 +570,9 @@ impl Plan {
         ready
     }
 
+    /// Adds `EnsureVolume` for missing volumes and diagnostics for unowned or
+    /// misconfigured ones. Returns whether every desired volume already exists
+    /// intact. Volume labels are only checked for ownership, not drift.
     fn ensure_volumes(
         &mut self,
         desired: &ResolvedApplication,
@@ -576,6 +609,8 @@ impl Plan {
         ready
     }
 
+    /// Adds `RetainVolume` for owned volumes no longer desired, and ignores
+    /// foreign ones. Volumes are never removed automatically.
     fn retain_obsolete_volumes(
         &mut self,
         desired: &ResolvedApplication,
@@ -603,6 +638,12 @@ impl Plan {
         }
     }
 
+    /// Plans each desired service and returns `(ready, waits)`.
+    ///
+    /// Missing or drifted services get `EnsureService` plus a wait; unconverged
+    /// services only get a wait; failed updates and unowned names block the
+    /// plan. Waits are returned separately so the caller can place them after
+    /// every `EnsureService`, issuing all updates before waiting on any.
     fn ensure_services(
         &mut self,
         desired: &ResolvedApplication,
@@ -638,7 +679,7 @@ impl Plan {
                             service: Box::new(service.clone()),
                         },
                         ActionReason::Drift {
-                            fields: service_drift(found, service),
+                            fields: found.drift(service).into_iter().map(String::from).collect(),
                         },
                     ));
                     waits.push(PlanAction::wait_for_service(service.name.as_str()));
@@ -667,6 +708,8 @@ impl Plan {
         (ready, waits)
     }
 
+    /// Removes owned services no longer desired once `cleanup_ready`, appending
+    /// all removal waits after the removals. Otherwise defers their cleanup.
     fn remove_obsolete_services(
         &mut self,
         desired: &ResolvedApplication,
@@ -702,6 +745,8 @@ impl Plan {
         self.actions.append(&mut waits);
     }
 
+    /// Removes owned networks no longer desired once `cleanup_ready`; must run
+    /// after service removal so no removed network is still attached.
     fn remove_obsolete_networks(
         &mut self,
         desired: &ResolvedApplication,
@@ -734,6 +779,9 @@ impl Plan {
         }
     }
 
+    /// Plans application deletion: remove owned services and wait for them,
+    /// then remove owned networks, and retain owned volumes. Any unowned
+    /// observed resource is a blocking collision rather than being ignored.
     fn deletion(
         application_id: &ApplicationId,
         instance_id: &InstanceId,
@@ -784,6 +832,8 @@ impl Plan {
     }
 }
 
+/// Borrows `values` sorted by name so observed Docker ordering never affects
+/// the plan.
 fn sorted_by_name<T, F>(values: &[T], name: F) -> Vec<&T>
 where
     F: Fn(&T) -> &str,
@@ -793,6 +843,8 @@ where
     values
 }
 
+/// Selects `io.piqueld.*` labels except the spec hash, which networks keep from
+/// creation and which is expected to differ after later spec changes.
 fn relevant_network_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
     labels
         .iter()
@@ -801,47 +853,4 @@ fn relevant_network_labels(labels: &BTreeMap<String, String>) -> BTreeMap<&str, 
         })
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect()
-}
-
-fn service_drift(found: &ObservedService, desired: &DesiredService) -> Vec<String> {
-    let mut fields = Vec::new();
-    if found.image != desired.image.as_str() {
-        fields.push("image".into());
-    }
-    if found.replicas != desired.replicas {
-        fields.push("replicas".into());
-    }
-    if found.environment != desired.environment {
-        fields.push("environment".into());
-    }
-    if found.command != desired.command {
-        fields.push("command".into());
-    }
-    if found.arguments != desired.arguments {
-        fields.push("arguments".into());
-    }
-    if !unordered_eq(&found.secrets, &desired.secrets) {
-        fields.push("secrets".into());
-    }
-    if !found.mounts_match(desired) {
-        fields.push("mounts".into());
-    }
-    // Multiplicity is significant, matching `ObservedService::matches`, so a
-    // duplicated attachment registers as network drift.
-    if !found.networks_match(desired) {
-        fields.push("networks".into());
-    }
-    if !found.healthcheck_matches(desired) {
-        fields.push("healthcheck".into());
-    }
-    if found.resources != desired.resources {
-        fields.push("resources".into());
-    }
-    if !found.runtime_configuration_matches {
-        fields.push("runtime_policy".into());
-    }
-    if !owned_label_subset(&found.labels, &desired.labels) {
-        fields.push("labels".into());
-    }
-    fields
 }

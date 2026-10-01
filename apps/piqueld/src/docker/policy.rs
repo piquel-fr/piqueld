@@ -9,16 +9,19 @@ use super::{
 ///
 /// This policy verifies exactly the fields piqueld authors — replication,
 /// update settings, the restart condition and delay, mounts, environment,
-/// network targets, health checks, and resource limits. Fields the builder
-/// never sets are accepted only at known Engine defaults, so ordinary
-/// engine-defaulted echo-back does not register as drift while unsupported
-/// non-default values do. Security relevant settings piqueld cannot express
-/// (privileged execution, Linux capabilities, sysctls, users, runtimes, log
-/// drivers) are explicitly denied: their presence means out-of-band
-/// modification.
+/// network targets, health checks, resource limits, and the placement pin to
+/// the local node. Fields the builder never sets are accepted only at known
+/// Engine defaults, so ordinary engine-defaulted echo-back does not register as
+/// drift while unsupported non-default values do. Security relevant settings
+/// piqueld cannot express (privileged execution, Linux capabilities, sysctls,
+/// users, runtimes, log drivers) are explicitly denied: their presence means
+/// out-of-band modification.
 pub(super) struct ServiceRuntimePolicy;
 
 impl ServiceRuntimePolicy {
+    /// Returns whether an observed spec uses only settings piqueld authors, modulo
+    /// known Engine defaults, including placement on `node_id`. Desired values are
+    /// compared separately; `false` means out-of-policy drift that needs an update.
     pub(super) fn matches(spec: &ServiceSpec, node_id: &str) -> bool {
         let Some(task) = spec.task_template.as_ref() else {
             return false;
@@ -39,6 +42,7 @@ impl ServiceRuntimePolicy {
     }
 
     /// Rejects security-sensitive drift outside the supported single-node policy.
+    /// Placement must be exactly the constraint pinning tasks to `node_id`.
     fn no_security_settings(
         task: &TaskSpec,
         container: &TaskSpecContainerSpec,
@@ -112,6 +116,8 @@ impl ServiceRuntimePolicy {
             && container.ulimits.as_ref().is_none_or(Vec::is_empty)
     }
 
+    /// Accepts only Docker's default rollback config, no service-level
+    /// networks, and a VIP endpoint without published ports.
     fn no_unsupported_service_settings(spec: &ServiceSpec) -> bool {
         spec.rollback_config.as_ref().is_none_or(|rollback| {
             rollback.parallelism == Some(1)
@@ -134,6 +140,7 @@ impl ServiceRuntimePolicy {
             })
     }
 
+    /// Requires the authored restart-on-any-exit policy with no attempt limit.
     fn restart_policy(task: &TaskSpec) -> bool {
         task.restart_policy.as_ref().is_some_and(|restart| {
             restart.condition == Some(TaskSpecRestartPolicyConditionEnum::ANY)
@@ -143,6 +150,8 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Requires the authored one-at-a-time, start-first update policy that
+    /// pauses on failure.
     fn update_policy(spec: &ServiceSpec) -> bool {
         spec.update_config.as_ref().is_some_and(|update| {
             update.parallelism == Some(1)
@@ -154,6 +163,7 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Requires replicated mode and no other service mode.
     fn replicated_mode(spec: &ServiceSpec) -> bool {
         spec.mode.as_ref().is_some_and(|mode| {
             mode.replicated.is_some()
@@ -163,6 +173,7 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Requires every mount to be a plain named volume without extra options.
     fn mounts(container: &TaskSpecContainerSpec) -> bool {
         container.mounts.as_ref().is_none_or(|mounts| {
             mounts.iter().all(|mount| {
@@ -178,6 +189,7 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Requires well-formed `KEY=value` entries with unique, non-empty keys.
     fn environment(container: &TaskSpecContainerSpec) -> bool {
         container.env.as_ref().is_none_or(|environment| {
             let mut keys = BTreeSet::new();
@@ -189,6 +201,8 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Requires unique, non-empty network targets without aliases or driver
+    /// options.
     fn networks(task: &TaskSpec) -> bool {
         task.networks.as_ref().is_none_or(|networks| {
             let mut targets = BTreeSet::new();
@@ -206,6 +220,7 @@ impl ServiceRuntimePolicy {
         })
     }
 
+    /// Accepts no healthcheck or one that round-trips through observation.
     fn health(container: &TaskSpecContainerSpec) -> bool {
         container
             .health_check
@@ -213,6 +228,8 @@ impl ServiceRuntimePolicy {
             .is_none_or(Self::supported_health_config)
     }
 
+    /// Accepts millicore-aligned CPU and non-negative memory limits, no PID
+    /// limit, and only default (zero) reservations.
     fn resource_limits(task: &TaskSpec) -> bool {
         task.resources
             .as_ref()
@@ -232,6 +249,7 @@ impl ServiceRuntimePolicy {
             })
     }
 
+    /// Returns whether reservations are unset or zero.
     fn default_reservations(reservations: &bollard::models::ResourceObject) -> bool {
         reservations.nano_cpus.is_none_or(|value| value == 0)
             && reservations.memory_bytes.is_none_or(|value| value == 0)
@@ -241,6 +259,12 @@ impl ServiceRuntimePolicy {
                 .is_none_or(Vec::is_empty)
     }
 
+    /// Returns whether a health config uses piqueld's retry count, positive
+    /// timings, no start period, and re-authors to the identical `test` vector
+    /// and timings.
+    ///
+    /// The config is parsed with `observed_health` and rebuilt with
+    /// `health_config`, so hand-written variants of the same check register as drift.
     fn supported_health_config(health: &HealthConfig) -> bool {
         if health.retries != Some(HEALTH_RETRIES)
             || health.interval.is_none_or(|value| value <= 0)

@@ -3,6 +3,9 @@ use super::{Envelope, SecretCipher, Store, StoreError};
 use piqueld_core::api::SecretKeyRecovery;
 
 impl Store {
+    /// Loads the master key and proves it matches the database by decrypting the
+    /// stored verifier. The first write binds the key by storing a new verifier
+    /// in `tx`, so it only persists if the caller commits.
     pub(super) async fn verified_secret_cipher(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,

@@ -10,6 +10,10 @@ use piqueld_client::{ApplyApplicationRequest, Client, DeploymentView, Page, Sour
 use std::cell::Cell;
 use std::rc::Rc;
 
+/// "Preview" and "Deploy" buttons for the saved configuration. Preview asks the
+/// daemon for a plan (cleared whenever the saved view changes); Deploy starts a
+/// deployment of the saved generation, retrying once on transport failure, then
+/// switches to the deployments tab.
 #[component]
 pub(super) fn DeploymentActions() -> impl IntoView {
     let context = editor();
@@ -82,6 +86,9 @@ pub(super) fn DeploymentActions() -> impl IntoView {
     }
 }
 
+/// Deployment list for the editor's application. The first page is polled while
+/// the deployments tab is visible; older pages are appended on request without
+/// duplicating deployments already shown.
 #[component]
 pub(super) fn DeploymentHistory() -> impl IntoView {
     let context = editor();
@@ -159,6 +166,11 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
         </section>
     }
 }
+/// Applies a freshly polled first page to the history. Before any older page is
+/// loaded, the page simply replaces the list and cursor. Afterwards it is merged
+/// by operation ID (keeping the older pages), and the `current_target` and
+/// `last_successful` flags are cleared on existing entries when the new page
+/// carries them, so only one deployment holds each flag.
 pub(super) fn merge_history(
     history: RwSignal<Vec<DeploymentView>>,
     cursor: RwSignal<Option<String>>,
@@ -194,6 +206,9 @@ pub(super) fn merge_history(
         }
     });
 }
+/// Expandable deployment summary with details, snapshot and attempts tabs.
+/// Starts expanded when it matches the `?deployment=` query; attempts load
+/// lazily the first time their tab is opened.
 #[component]
 pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
     let initial = deployment.get_untracked();
@@ -290,6 +305,7 @@ pub(super) fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoVie
     }
 }
 
+/// The services and volumes captured in a deployment's configuration snapshot.
 #[component]
 fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
     view! {
@@ -332,6 +348,8 @@ pub(in crate::browser) fn timestamp(milliseconds: i64) -> String {
         .into()
 }
 
+/// Panel showing a deployment plan: configuration changes, planned runtime
+/// actions and plan diagnostics.
 #[component]
 fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> impl IntoView {
     view! {
@@ -404,6 +422,7 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
     }
 }
 
+/// Paginated attempt outcomes of one deployment, plus the live attempt while it runs.
 #[component]
 fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
     let op = deployment.get_untracked().operation;
@@ -500,6 +519,7 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
     }
 }
 
+/// Definition list describing one snapshotted service's configuration.
 #[component]
 fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
     let source = match service.source.clone() {
@@ -576,6 +596,7 @@ fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
     }
 }
 
+/// Health check and resource limit rows for `SnapshotService`.
 #[component]
 fn SnapshotRuntime(service: piqueld_client::Service) -> impl IntoView {
     view! {
@@ -632,6 +653,9 @@ fn SnapshotRuntime(service: piqueld_client::Service) -> impl IntoView {
 }
 
 impl super::EditorContext {
+    /// Polls the first deployment page every 2 seconds while the deployments tab is
+    /// selected and the page is visible, merging results with `merge_history`.
+    /// Stops when the owning view unmounts.
     fn poll_deployments(
         self,
         id: String,
@@ -672,6 +696,7 @@ impl super::EditorContext {
     }
 }
 
+/// One attempt outcome with a link to its events and diagnostics.
 #[component]
 fn AttemptRow(attempt: piqueld_client::Operation) -> impl IntoView {
     let history = format!("/dashboard/events?operation={}", attempt.id);

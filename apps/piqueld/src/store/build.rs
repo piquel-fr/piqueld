@@ -6,6 +6,7 @@ use piqueld_core::{
     manifest::Source,
 };
 
+/// `builds` row shared by the application-scoped and global listing queries.
 struct BuildRow {
     id: i64,
     application_id: String,
@@ -22,6 +23,7 @@ struct BuildRow {
     log_expired: i64,
 }
 
+/// `build_log_chunks` row shared by the stream-filtered and unfiltered page queries.
 struct BuildLogRow {
     offset: i64,
     data: Vec<u8>,
@@ -36,6 +38,8 @@ impl Store {
         self.build_history = policy;
         self
     }
+    /// Records a new running build attempt for one service of an operation and
+    /// returns its row ID.
     pub(crate) async fn start_build(
         &self,
         application: &ApplicationId,
@@ -49,6 +53,10 @@ impl Store {
         let _writer = self.writers.lock().await;
         Ok(sqlx::query!("INSERT INTO builds(application_id,operation_id,service,source_json,state,started_at_ms) VALUES(?1,?2,?3,?4,'running',?5)",app,operation,service,source,now).execute(&self.pool).await.map_err(StoreError::database)?.last_insert_rowid())
     }
+    /// Appends build output, splitting it into chunks of at most 4096 bytes.
+    /// Output past the per-build byte cap is dropped and the build is marked
+    /// truncated; nothing more is accepted after truncation, expiry, or completion.
+    /// Cut points never split a UTF-8 sequence, so multibyte text survives paging.
     pub(crate) async fn append_build_log(
         &self,
         id: i64,
@@ -113,6 +121,7 @@ impl Store {
         .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
+    /// Records the repository commit a build checked out.
     pub(crate) async fn build_commit(&self, id: i64, commit: &str) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
         sqlx::query!("UPDATE builds SET commit_hash=?1 WHERE id=?2", commit, id)
@@ -121,6 +130,8 @@ impl Store {
             .map_err(StoreError::database)?;
         Ok(())
     }
+    /// Marks a running build finished with a terminal state and optional image ID.
+    /// Already finished builds are left unchanged; `Running` is invalid input.
     pub(crate) async fn finish_build(
         &self,
         id: i64,
@@ -138,6 +149,7 @@ impl Store {
         sqlx::query!("UPDATE builds SET state=?1,finished_at_ms=?2,image_id=?3 WHERE id=?4 AND state='running'",state,now,image,id).execute(&self.pool).await.map_err(StoreError::database)?;
         Ok(())
     }
+    /// Marks builds left running by a previous daemon process as interrupted.
     pub(crate) async fn recover_builds(&self) -> Result<(), StoreError> {
         let now = now_ms();
         let _writer = self.writers.lock().await;
@@ -150,6 +162,8 @@ impl Store {
         .map_err(StoreError::database)?;
         Ok(())
     }
+    /// Deletes output of builds finished before the retention window, keeping
+    /// their metadata and flagging the output as expired.
     pub(crate) async fn prune_build_logs(&self) -> Result<(), StoreError> {
         let cutoff =
             now_ms().saturating_sub(i64::from(self.build_history.log_retention_days) * 86_400_000);
@@ -246,6 +260,8 @@ impl Store {
         Ok(Page { items, next_cursor })
     }
     /// Reads the newest output chunks before an optional exclusive cursor. Stream filtering happens before pagination.
+    /// Pages hold up to 16 chunks in offset order; `previous_offset` is the cursor
+    /// for the next older page.
     /// # Errors
     /// Returns not found, invalid cursors, or storage errors.
     pub async fn build_logs(

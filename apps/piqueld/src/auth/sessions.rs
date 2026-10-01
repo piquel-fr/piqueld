@@ -3,20 +3,31 @@ use super::{Auth, AuthError, CredentialKind, DAY, MAX_PENDING, Result, now_secs}
 use piqueld_core::auth::{DeviceRequest, DeviceStart, DeviceToken, User};
 use std::collections::HashMap;
 
+/// The authenticated caller and the credential (session, token, or CLI login)
+/// that proved it.
 #[derive(Clone)]
 pub(crate) struct Identity {
     pub user: User,
     pub credential_id: String,
 }
+/// A pending CLI device login, following the OAuth device authorization flow.
 pub(super) struct Device {
+    /// Short code the user types in the dashboard, e.g. `ABCD-EF23`.
     user_code: String,
+    /// Peer address that started the login; `None` for the Unix socket.
     requester: Option<std::net::IpAddr>,
     created: i64,
     expires: i64,
+    /// Earliest time the CLI may poll again without receiving `slow_down`.
     pub(super) next_poll: i64,
+    /// Credential ID of the approving session; the issued token belongs to its owner.
     approved_by: Option<String>,
 }
 impl Auth {
+    /// Resolves a bearer or cookie secret to its live credential and owner.
+    ///
+    /// Secrets that are not 43 characters are rejected without a database lookup.
+    /// The credential's last-used time is refreshed at most once per minute.
     pub(crate) async fn authenticate(&self, secret: &str) -> Result<Identity> {
         if secret.len() != 43 {
             return Err(AuthError::Unauthorized);
@@ -39,9 +50,15 @@ impl Auth {
             credential_id: owner.credential_id,
         })
     }
+    /// Revokes the credential used for the current request.
     pub(crate) async fn logout(&self, credential_id: &str) -> Result<()> {
         Ok(self.0.store.revoke_credential(credential_id).await?)
     }
+    /// Starts a CLI device login valid for ten minutes.
+    ///
+    /// Returns a secret device code for the CLI to poll with and a unique,
+    /// unambiguous user code (no `I`, `O`, `0`, or `1`) for the user to approve in
+    /// the dashboard. Only the device code's hash is kept.
     pub(crate) async fn device_start(
         &self,
         requester: Option<std::net::IpAddr>,
@@ -113,6 +130,7 @@ impl Auth {
             expires_in: u32::try_from(device.expires - now).unwrap_or(0),
         })
     }
+    /// Marks a pending device login as approved by the caller's credential.
     pub(crate) async fn device_approve(&self, code: &str, identity: &Identity) -> Result<()> {
         let mut devices = self.0.devices.lock().await;
         let device = Self::pending_device(&mut devices, code)?;
@@ -127,6 +145,12 @@ impl Auth {
         );
         Ok(())
     }
+    /// Polls a device login by its secret device code.
+    ///
+    /// Returns `slow_down` when polled faster than every five seconds,
+    /// `authorization_pending` until approved, and `complete` with a 30-day CLI
+    /// token once approved. Completion removes the request so it cannot be reused;
+    /// expired or unknown codes are unauthorized.
     pub(crate) async fn device_poll(&self, code: &str) -> Result<DeviceToken> {
         let mut devices = self.0.devices.lock().await;
         let key = Self::hash(code);

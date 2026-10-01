@@ -4,6 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 impl ManifestChange {
     /// Compares normalized specifications without exposing environment or process values.
+    ///
+    /// Both sides are flattened into sorted field paths (see `fields`) and every path
+    /// whose value differs is reported. `None` means the application does not exist
+    /// yet, so every field is an addition.
     #[must_use]
     pub fn between(
         current: Option<&NormalizedApplication>,
@@ -27,6 +31,16 @@ impl ManifestChange {
             .collect()
     }
 
+    /// Flattens an application into comparable field paths. Services contribute one
+    /// entry per top-level setting except `name`; routes are keyed by hostname and
+    /// volumes only record presence.
+    ///
+    /// ```text
+    /// manifest                 -> repository manifest settings
+    /// services.web.replicas    -> 3
+    /// routes.app.example.com   -> {"service":"web","port":3000}
+    /// volumes.data             -> "present (retained if removed)"
+    /// ```
     fn fields(application: &NormalizedApplication) -> BTreeMap<String, serde_json::Value> {
         let mut fields = BTreeMap::new();
         if let Some(manifest) = &application.spec().manifest {
@@ -60,6 +74,9 @@ impl ManifestChange {
         fields
     }
 
+    /// Renders a field value for display, replacing non-null environment, process,
+    /// and health check values with `<redacted>`. Strings are shown unquoted; other
+    /// JSON values use their compact JSON form.
     fn display(field: &str, value: &serde_json::Value) -> String {
         if [".environment", ".command", ".arguments", ".healthcheck"]
             .iter()

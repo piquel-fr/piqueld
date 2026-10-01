@@ -10,6 +10,7 @@ use tokio::net::UnixStream;
 // A valid API request may be 2 MiB; Docker adds service metadata around that
 // specification when it is inspected.
 const MAX_SERVICE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+/// Complete budget for one raw service request, from connect to last byte.
 const SERVICE_REQUEST_TIMEOUT: Duration = super::DockerTimeout::Request.duration();
 
 /// Bollard's per-request timeout, in seconds. Bollard only bounds a request up
@@ -18,19 +19,29 @@ const SERVICE_REQUEST_TIMEOUT: Duration = super::DockerTimeout::Request.duration
 const BOLLARD_HEADER_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Debug)]
+/// Failures of a raw service request, before they are classified publicly.
 enum ServiceWireError {
+    /// Transport or local failures that already carry a public classification.
     Public(DockerError),
+    /// A non-success HTTP response, kept raw so callers can match exact
+    /// Engine errors (not found, update out of sequence) before sanitizing.
     Response { status: StatusCode, body: Vec<u8> },
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("Docker returned HTTP {status}: {message}")]
+/// Diagnostic source for an Engine error response, with a control-free,
+/// length-bounded message.
 struct ServiceResponseDiagnostic {
     status: StatusCode,
     message: String,
 }
 
 impl ServiceWireError {
+    /// Converts the failure into a [`DockerError`] labelled with `operation`.
+    ///
+    /// Engine response bodies become a [`ServiceResponseDiagnostic`] source
+    /// with control characters stripped and at most 2048 characters kept.
     fn sanitized(self, operation: &'static str) -> DockerError {
         match self {
             Self::Public(error) => error,
@@ -48,6 +59,7 @@ impl ServiceWireError {
         }
     }
 
+    /// Returns whether Docker answered with HTTP 404.
     fn is_not_found(&self) -> bool {
         matches!(
             self,
@@ -86,6 +98,14 @@ impl BollardDocker {
     /// Bollard's service model uses a different health-check key spelling than
     /// the Swarm API. Keeping the request and response bytes here lets the
     /// adapter translate that key and inspect Docker's exact update error.
+    ///
+    /// 1. Serialize `spec` (if any), renaming `HealthCheck` to `Healthcheck`.
+    /// 2. Connect and perform an HTTP/1 handshake on the Unix socket.
+    /// 3. Send one `Connection: close` request and read the bounded body.
+    ///
+    /// All steps share one [`SERVICE_REQUEST_TIMEOUT`] deadline; elapsed
+    /// deadlines surface as unavailability. Non-success statuses are returned
+    /// as [`ServiceWireError::Response`].
     async fn service_request(
         &self,
         method: Method,
@@ -196,6 +216,9 @@ impl BollardDocker {
     }
 
     /// Collects a bounded response while retaining transport failures.
+    ///
+    /// Bodies larger than [`MAX_SERVICE_RESPONSE_BYTES`] are rejected, and
+    /// non-success statuses keep their body for exact error matching.
     async fn read_service_response(
         response: hyper::Response<hyper::body::Incoming>,
     ) -> Result<Vec<u8>, ServiceWireError> {
@@ -250,6 +273,7 @@ impl BollardDocker {
             .map_err(|source| DockerError::request("decode service response", source))
     }
 
+    /// Creates a service from `spec` through the raw service endpoint.
     pub(super) async fn create_service_wire(&self, spec: &ServiceSpec) -> Result<(), DockerError> {
         self.service_request(Method::POST, "/services/create", Some(spec))
             .await
@@ -260,7 +284,8 @@ impl BollardDocker {
     /// Updates a service with a bounded retry for Docker's exact transient
     /// optimistic-concurrency response. Every retry refreshes the current
     /// service version and rechecks ownership before resubmitting the specification.
-    /// The immutable service ID prevents a replacement with the same name being updated.
+    /// The immutable service ID prevents a replacement with the same name being updated;
+    /// a vanished, replaced, renamed, or foreign service is `OwnershipConflict`.
     pub(super) async fn update_service_wire(
         &self,
         id: &str,
@@ -347,6 +372,14 @@ impl BollardDocker {
     }
 
     /// Renames the health-check key in either a service spec or a service response.
+    ///
+    /// Accepts a bare spec or a service object with a `Spec` field; values
+    /// without a container spec are left untouched.
+    ///
+    /// ```text
+    /// {"TaskTemplate":{"ContainerSpec":{"HealthCheck":…}}}
+    ///   → {"TaskTemplate":{"ContainerSpec":{"Healthcheck":…}}}
+    /// ```
     fn rename_swarm_healthcheck(value: &mut serde_json::Value, from: &str, to: &str) {
         let spec = if let Some(spec) = value.get_mut("Spec") {
             spec

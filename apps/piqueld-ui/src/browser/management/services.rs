@@ -8,6 +8,7 @@ use leptos::{
 use leptos_router::{A, NavigateOptions, use_navigate};
 use piqueld_client::{Source, edit::ApplicationEdit};
 
+/// Saved services of the application, each linking to its service editor page.
 #[component]
 pub(super) fn ServiceList() -> impl IntoView {
     let context = editor();
@@ -58,6 +59,9 @@ pub(super) fn ServiceList() -> impl IntoView {
     }
 }
 
+/// Service page: one tab per `Section` settings group plus a scoped log tab, and a
+/// remove button that saves the service's removal and returns to the service list.
+/// Editing is disabled when the application is managed from a Git manifest.
 #[component]
 pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let context = editor();

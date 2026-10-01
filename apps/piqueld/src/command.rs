@@ -8,6 +8,7 @@ use tokio::{
 
 /// Each command owns a process group, so cancellation also stops helpers such
 /// as Git transports and Docker build plugins before the caller releases its slot.
+/// Dropping the guard kills the group unless it was disarmed by clearing the PID.
 struct ProcessGroup(Option<rustix::process::Pid>);
 
 impl Drop for ProcessGroup {
@@ -23,6 +24,7 @@ impl Drop for ProcessGroup {
     }
 }
 
+/// Namespace for running external commands with bounded output capture.
 pub(crate) struct LoggedCommand;
 
 /// Typed facts are safe to expose; output tails remain internal diagnostics.
@@ -35,14 +37,19 @@ pub(crate) struct CommandFailure {
     stderr: String,
 }
 impl LoggedCommand {
+    /// Bytes of each output stream retained for failure diagnostics.
     const TAIL_BYTES: usize = 8192;
 
-    /// Drain both streams concurrently with a fixed memory bound and no log file.
-    /// Error tails stay in internal diagnostics, never the public API response.
+    /// Runs a command without recording its output to a build log.
     #[cfg(test)]
     pub(crate) async fn run(command: &mut Command, operation: &'static str) -> anyhow::Result<()> {
         Self::run_recorded(command, operation, None).await
     }
+    /// Drain both streams concurrently with a fixed memory bound, streaming them
+    /// into `log` when supplied. A non-zero exit returns a [`CommandFailure`] with
+    /// the last `TAIL_BYTES` of each stream. The command runs in its own process
+    /// group, which is killed if this future is dropped before the command exits.
+    /// Error tails stay in internal diagnostics, never the public API response.
     pub(crate) async fn run_recorded(
         command: &mut Command,
         operation: &'static str,
@@ -91,6 +98,10 @@ impl LoggedCommand {
     async fn tail(stream: impl AsyncRead + Unpin) -> anyhow::Result<Vec<u8>> {
         Self::tail_recorded(stream, None, piqueld_core::api::LogStream::Stdout).await
     }
+    /// Reads a stream to the end, returning its last `TAIL_BYTES`.
+    ///
+    /// When `log` is supplied, output is appended as it arrives, holding back an
+    /// incomplete trailing UTF-8 character until the next read or end of stream.
     async fn tail_recorded(
         mut stream: impl AsyncRead + Unpin,
         log: Option<&crate::build::BuildLog>,

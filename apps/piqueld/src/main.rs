@@ -10,9 +10,12 @@ use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+/// Configuration read when `--config` is not supplied.
 const DEFAULT_CONFIG_PATH: &str = "/etc/piqueld/config.toml";
+/// Time open connections get to finish after shutdown is requested.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
+// Command-line arguments. Doc comments on fields become CLI help text.
 #[derive(Debug, Parser)]
 #[command(
     name = "piqueld",
@@ -21,10 +24,22 @@ const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 )]
 struct Args {
     /// Read daemon configuration from this TOML file.
+    ///
+    /// Without this flag, `/etc/piqueld/config.toml` is read if it exists;
+    /// otherwise built-in defaults are used.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
 }
 
+/// Starts the daemon and runs until a shutdown signal.
+///
+/// 1. Loads configuration and initializes tracing.
+/// 2. Prepares and locks the data directory, then validates and locks the runtime
+///    directory and binds every listener, so misconfiguration fails before any
+///    state is opened.
+/// 3. Starts the application service and reconciliation controller.
+/// 4. Serves the dashboard/API over TCP, metrics, and the Unix API socket.
+/// 5. After cancellation, waits for every task and surfaces the first failure.
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -134,6 +149,9 @@ fn log_ui_status(ui_assets: &UiAssets) {
     }
 }
 
+/// Loads configuration from `--config` when given, where any failure is fatal.
+/// Otherwise reads `DEFAULT_CONFIG_PATH`, falling back to validated built-in
+/// defaults only when that file does not exist.
 fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> {
     if let Some(path) = explicit_path {
         return DaemonConfig::load(path).with_context(|| {
@@ -163,6 +181,9 @@ fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> 
     }
 }
 
+/// Serves `router` on a TCP listener until cancellation, recording peer addresses
+/// for throttling. In-flight connections get `SHUTDOWN_GRACE` to finish, and the
+/// task cancels the whole daemon when it exits for any reason.
 fn spawn_tcp_api(
     listener: TcpListener,
     router: axum::Router,
@@ -200,6 +221,8 @@ fn spawn_tcp_api(
     })
 }
 
+/// Serves the authenticated API on the Unix socket with the same shutdown
+/// behavior as [`spawn_tcp_api`].
 fn spawn_unix_api(
     listener: UnixListener,
     state: ApiState,

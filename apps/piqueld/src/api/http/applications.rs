@@ -17,10 +17,13 @@ use piqueld_core::api::{
 };
 use serde::Deserialize;
 
+/// Cursor pagination for the application list.
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(super) struct ListQuery {
+    /// `next_cursor` from a previous page.
     cursor: Option<String>,
+    /// Page size.
     #[param(minimum = 1, maximum = 100, default = 100)]
     limit: Option<u16>,
 }
@@ -70,6 +73,8 @@ pub(super) async fn get(
     Ok(ok(state.application(&ApplicationId::parse(id)?).await?))
 }
 
+// Combines saved intent with a live runtime observation; runtime outages are
+// reported as diagnostics rather than failing the request.
 #[utoipa::path(
     get,
     path = "/api/v1/applications/{id}/detail",
@@ -94,6 +99,8 @@ pub(super) async fn detail(
         .await?))
 }
 
+// Saves a whole manifest (JSON or TOML, see `parse_manifest`) by name,
+// optionally accepting a deployment of it in the same transaction.
 #[utoipa::path(
     post, path = "/api/v1/applications/apply", operation_id = "applyApplication",
     summary = "Apply an application manifest",
@@ -146,6 +153,7 @@ pub(super) struct ApplyQuery {
     deploy: bool,
 }
 
+// Accepts a deletion operation; named volumes are retained.
 #[utoipa::path(
     delete, path = "/api/v1/applications/{id}", operation_id = "deleteApplication",
     summary = "Delete services and networks, retaining volumes",
@@ -178,6 +186,8 @@ pub(super) async fn delete(
     .await
 }
 
+// Dry-runs `apply` with the same body; supplied preconditions are checked, but
+// none are required and nothing is saved.
 #[utoipa::path(
     post, path = "/api/v1/applications/plan", operation_id = "planApplication",
     summary = "Preview an application manifest",
@@ -204,6 +214,8 @@ pub(super) async fn plan(
     Ok(ok(state.plan(manifest, expected, expected_id).await?))
 }
 
+/// Unwraps a buffered body, reporting the size limit as 413
+/// `request_body_too_large` and other read failures as 400.
 pub(super) fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes, ApiError> {
     body.map_err(|rejection| {
         if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
@@ -256,6 +268,7 @@ pub(super) struct GenerationQuery {
     pub(super) force: bool,
 }
 impl GenerationQuery {
+    /// Unwraps the query, mapping rejections to 400 `generation_invalid`.
     pub(super) fn decode(
         query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
     ) -> Result<Self, ApiError> {
@@ -269,6 +282,12 @@ impl GenerationQuery {
     }
 }
 
+/// Reconciles an application.
+///
+/// Returns 202 with a durable operation that repairs the runtime to match the
+/// accepted configuration. Unlike other mutations, `expected_generation` is
+/// optional. Repeating a request with the same `Idempotency-Key` returns the
+/// original response.
 #[utoipa::path(post,path="/api/v1/applications/{id}/reconcile",operation_id="reconcileApplication",
     params(("id"=String,Path),GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
     responses((status=202,description="Reconciliation accepted",body=Envelope<AcceptedOperation>),
@@ -293,6 +312,9 @@ pub(super) async fn reconcile(
     .await
 }
 
+/// Submits a mutation with the request's `Idempotency-Key` and renders the
+/// acceptance: 202 when a durable operation was started (including a save that
+/// also deploys), 200 for a plain save or rename.
 pub(super) async fn accept_mutation(
     state: &ApiState,
     mutation: Mutation,
@@ -317,6 +339,11 @@ pub(super) async fn accept_mutation(
     }
 }
 
+/// Renames an application.
+///
+/// Changes only the user-facing name, without redeploying. The inspected
+/// `expected_generation` goes in the JSON body; the new name must not already be
+/// in use, even with `force=true`.
 #[utoipa::path(post,path="/api/v1/applications/{id}/rename",operation_id="renameApplication",
     params(("id"=String,Path),ForceQuery,("Idempotency-Key"=Option<String>,Header)),
     request_body=RenameApplicationRequest,
@@ -359,6 +386,7 @@ pub(super) struct ForceQuery {
     pub(super) force: bool,
 }
 impl ForceQuery {
+    /// Unwraps the query, mapping rejections to 400 `force_invalid`.
     pub(super) fn decode(
         query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
     ) -> Result<Self, ApiError> {
@@ -372,7 +400,9 @@ impl ForceQuery {
     }
 }
 
-/// Download only saved configuration; runtime availability is irrelevant.
+/// Downloads the saved configuration as a TOML manifest.
+///
+/// Reads only saved configuration, so it works while the runtime is unavailable.
 #[utoipa::path(get,path="/api/v1/applications/{id}/manifest",operation_id="downloadApplicationManifest",
     params(("id"=String,Path)),
     responses((status=200,description="Saved application configuration",body=String,content_type="application/toml",

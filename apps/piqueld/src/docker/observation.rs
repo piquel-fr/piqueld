@@ -99,6 +99,11 @@ impl BollardDocker {
     }
 
     /// Converts one Docker service specification and its tasks into an observation.
+    ///
+    /// Network targets are left as Docker reports them (usually IDs); callers
+    /// translate them to names. `node_id` is the local swarm node the runtime
+    /// policy expects services to be pinned to. Fails only when the spec lacks a
+    /// name or container specification.
     pub(super) fn observe_service(
         spec: &ServiceSpec,
         node_id: &str,
@@ -161,6 +166,7 @@ impl BollardDocker {
         })
     }
 
+    /// Parses `KEY=value` environment entries, dropping entries without `=`.
     pub(super) fn observed_environment(
         container: &TaskSpecContainerSpec,
     ) -> BTreeMap<String, String> {
@@ -177,6 +183,8 @@ impl BollardDocker {
             .collect()
     }
 
+    /// Returns the named-volume mounts; other mount types are ignored here and
+    /// rejected separately by the runtime policy.
     pub(super) fn observed_mounts(container: &TaskSpecContainerSpec) -> Vec<ObservedMount> {
         container
             .mounts
@@ -194,6 +202,7 @@ impl BollardDocker {
             .collect()
     }
 
+    /// Converts Docker resource limits back into millicores and bytes.
     pub(super) fn observed_resources(spec: &ServiceSpec) -> Option<ResourceLimits> {
         spec.task_template
             .as_ref()
@@ -209,6 +218,7 @@ impl BollardDocker {
             })
     }
 
+    /// Returns the task network attachment targets, as reported by Docker.
     pub(super) fn observed_networks(spec: &ServiceSpec) -> Vec<String> {
         spec.task_template
             .as_ref()
@@ -219,6 +229,8 @@ impl BollardDocker {
             .collect()
     }
 
+    /// Returns the replicated-mode replica count, or `0` for other modes or
+    /// out-of-range values.
     pub(super) fn replica_count(spec: &ServiceSpec) -> u16 {
         spec.mode
             .as_ref()
@@ -228,6 +240,14 @@ impl BollardDocker {
             .unwrap_or(0)
     }
 
+    /// Summarizes a service's rollout state from its update status and tasks.
+    ///
+    /// A paused update is `Failed` and an in-progress one is `Updating`.
+    /// Otherwise desired-running tasks are counted: a task is healthy when
+    /// running and, if a healthcheck is configured, reported healthy (without
+    /// one, only an explicit unhealthy verdict disqualifies it). Exactly
+    /// `replicas` healthy tasks is `Converged`; failures with no healthy task
+    /// is `Failed`; failures alongside healthy tasks is `Degraded`.
     pub(super) fn convergence(
         tasks: &[ObservedTask],
         replicas: u16,
@@ -280,11 +300,24 @@ impl BollardDocker {
         }
     }
 
-    /// Converts Docker's supported health-check syntax into the core model.
+    /// Returns whether a health config is active, i.e. not Docker's `["NONE"]`
+    /// sentinel that disables an image-defined healthcheck.
     fn healthcheck_configured(health: &HealthConfig) -> bool {
         !matches!(health.test.as_deref(), Some([test]) if test == "NONE")
     }
 
+    /// Converts Docker's supported health-check syntax into the core model.
+    ///
+    /// `CMD` vectors become a command check unless they are exactly the `wget`
+    /// vector piqueld authors for HTTP checks; `CMD-SHELL` is read as HTTP from
+    /// its last word.
+    /// Returns `None` for unsupported forms or missing timings.
+    ///
+    /// ```text
+    /// ["CMD","wget","-q","-T","3","-O","/dev/null","http://127.0.0.1:8080/health"]
+    ///   → Http { port: 8080, path: "/health", timeout_seconds: 3, .. }
+    /// ["CMD","/bin/check"] → Command { command: ["/bin/check"], .. }
+    /// ```
     pub(super) fn observed_health(config: &HealthConfig) -> Option<HealthCheck> {
         let test = config.test.as_ref()?;
         let interval = u32::try_from(config.interval? / NANOSECONDS_PER_SECOND).ok()?;
@@ -320,6 +353,12 @@ impl BollardDocker {
             .filter(|health| health.execution().command == test[1..])
     }
 
+    /// Parses a loopback health URL into an HTTP check.
+    ///
+    /// ```text
+    /// http://127.0.0.1:8080/health → port 8080, path /health
+    /// http://127.0.0.1:8080        → port 8080, path /
+    /// ```
     fn observed_http_health(
         url: &str,
         interval_seconds: u32,

@@ -25,6 +25,9 @@ impl utoipa::PartialSchema for SecretValue {
     }
 }
 
+/// Lists an application's secrets.
+///
+/// Returns metadata only; secret values are write-only and never returned.
 #[utoipa::path(get,path="/api/v1/applications/{id}/secrets",operation_id="applicationSecrets",params(("id"=String,Path)),responses((status=200,description="Secret metadata",body=Envelope<Vec<SecretMetadata>>),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn list(
     State(state): State<ApiState>,
@@ -33,6 +36,8 @@ pub(super) async fn list(
     Ok(ok(state.secrets(&ApplicationId::parse(id)?).await?))
 }
 
+/// Reads the mandatory non-negative `X-Expected-Generation` header; `0` means
+/// the secret must not exist yet.
 fn expected(headers: &HeaderMap) -> Result<i64, ApiError> {
     headers
         .get("x-expected-generation")
@@ -47,6 +52,12 @@ fn expected(headers: &HeaderMap) -> Result<i64, ApiError> {
             )
         })
 }
+/// Creates or replaces a secret value.
+///
+/// The body is the raw value (`application/octet-stream`, 1–512000 bytes).
+/// `X-Expected-Generation` must be 0 to create a secret, or its current
+/// generation to replace it; a mismatch fails with 409. Running services keep
+/// their value until the next deployment. The response carries metadata only.
 #[utoipa::path(put,path="/api/v1/applications/{id}/secrets/{name}",operation_id="putApplicationSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header)),request_body(content=inline(SecretValue),content_type="application/octet-stream"),responses((status=200,description="Updated metadata; no secret value",body=Envelope<SecretMetadata>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn put(
     State(state): State<ApiState>,
@@ -85,6 +96,10 @@ pub(super) async fn put(
         .await?))
 }
 
+/// Deletes a secret.
+///
+/// Fails with 409 while the configuration or a deployment still references it.
+/// If cleanup is interrupted, retrying the deletion finishes it.
 #[utoipa::path(delete,path="/api/v1/applications/{id}/secrets/{name}",operation_id="deleteApplicationSecret",params(("id"=String,Path),("name"=String,Path),("X-Expected-Generation"=i64,Header)),responses((status=200,description="Secret deleted",body=Envelope<bool>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn delete(
     State(state): State<ApiState>,
@@ -98,7 +113,11 @@ pub(super) async fn delete(
     Ok(ok(true))
 }
 
-/// Recovers from a lost master key by discarding every application's stored values.
+/// Recovers from a lost secret master key.
+///
+/// Discards stored secret values for all applications; metadata and running
+/// services are kept. Fails with 409 while the current key still works. The next
+/// value write generates a new key.
 #[utoipa::path(post,path="/api/v1/system/secrets/recover-key",operation_id="recoverSecretKey",
     responses((status=200,description="Values discarded; the next value write generates a new key",body=Envelope<piqueld_core::api::SecretKeyRecovery>),
     (status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]

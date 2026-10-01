@@ -1,3 +1,4 @@
+//! Application and service runtime log card.
 use super::{EditorContext, client_error_message};
 use crate::{
     browser::logs::{LogKind, LogViewer, StreamFilter},
@@ -7,6 +8,10 @@ use leptos::*;
 use piqueld_client::Client;
 use std::{cell::Cell, rc::Rc};
 
+/// Runtime log card for the editor's application: the latest 200 lines from the
+/// last hour, refetched every 30 seconds while visible or when the service or
+/// stream filter changes. `fixed_service` scopes it to one service and hides the
+/// service selector. Responses for an outdated filter are discarded and refetched.
 #[component]
 pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -> impl IntoView {
     let context = use_context::<EditorContext>().expect("application editor");

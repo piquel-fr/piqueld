@@ -11,6 +11,7 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::directories::{DirectoryLock, validate_runtime_dir};
 
+/// File name of the Unix API socket inside the runtime directory.
 pub(crate) const SOCKET_NAME: &str = "piqueld.sock";
 
 /// A validated runtime directory exclusively held for a daemon's lifetime.
@@ -56,6 +57,11 @@ impl RuntimeDir {
             .with_context(|| format!("failed to bind Unix API socket {}", path.display()))
     }
 
+    /// Binds a Unix listener at `path` with mode `0660` and the daemon's group.
+    ///
+    /// An existing socket is probed first: a refused connection means it is stale
+    /// and is removed, a live listener is an error, and a probe error or timeout
+    /// leaves it untouched. Non-socket paths are never replaced.
     async fn bind_at(path: &Path) -> Result<UnixListener> {
         match tokio::fs::symlink_metadata(path).await {
             Ok(metadata) if metadata.file_type().is_socket() => {

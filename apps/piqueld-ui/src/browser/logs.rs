@@ -1,7 +1,10 @@
+//! Shared log viewer, stream filter, and persisted log display preferences.
 use crate::log_output::LogLine;
 use leptos::*;
 use piqueld_client::LogStream;
 
+/// Log display toggles shared by every viewer and persisted in `localStorage`.
+/// Build and service-scoped viewers keep separate timestamp/service defaults.
 #[derive(Clone, Copy)]
 pub(super) struct LogPreferences {
     timestamps: RwSignal<bool>,
@@ -11,6 +14,7 @@ pub(super) struct LogPreferences {
     wrap: RwSignal<bool>,
 }
 impl LogPreferences {
+    /// Loads the stored preferences and provides them as context for the whole app.
     pub(super) fn provide() {
         provide_context(Self {
             timestamps: Self::preference("timestamps", true),
@@ -20,6 +24,8 @@ impl LogPreferences {
             wrap: Self::preference("wrap", false),
         });
     }
+    /// Signal initialised from `piqueld.logs.<name>` in `localStorage` (or
+    /// `default`) that writes every change back.
     fn preference(name: &'static str, default: bool) -> RwSignal<bool> {
         let key = format!("piqueld.logs.{name}");
         let storage = window().local_storage().ok().flatten();
@@ -40,6 +46,7 @@ impl LogPreferences {
     }
 }
 
+/// Select that filters logs to `stdout`, `stderr`, or both (`None`).
 #[component]
 pub(super) fn StreamFilter(stream: RwSignal<Option<LogStream>>) -> impl IntoView {
     view! {
@@ -55,6 +62,13 @@ pub(super) fn StreamFilter(stream: RwSignal<Option<LogStream>>) -> impl IntoView
 }
 
 impl LogLine {
+    /// Returns the short local `HH:MM:SS` time and the full timestamp for its tooltip.
+    /// Accepts Unix milliseconds or a date string; `"0"` or unparsable values show `—`.
+    ///
+    /// ```text
+    /// "1700000000000"        -> ("22:13:20", "2023-11-14T22:13:20.000Z")  (UTC browser)
+    /// "2024-01-01T00:00:00Z" -> ("00:00:00", "2024-01-01T00:00:00Z")      (UTC browser)
+    /// ```
     fn display_time(&self) -> (String, String) {
         let date = self.timestamp.parse::<f64>().map_or_else(
             |_| js_sys::Date::new(&self.timestamp.clone().into()),
@@ -80,15 +94,24 @@ impl LogLine {
     }
 }
 
+/// Which preference set a `LogViewer` uses.
 #[derive(Clone, Copy, Default)]
 pub(super) enum LogKind {
+    /// Whole-application runtime logs.
     #[default]
     Application,
+    /// Runtime logs scoped to one service.
     Service,
+    /// Build output; never shows a service column.
     Build,
 }
 
 /// A stable scroll container; refreshing rows never remounts the viewer.
+///
+/// Renders display toggles and the log rows. After each update it sticks to the
+/// bottom while the user is within 24px of it, otherwise keeps their position;
+/// when `prepend_revision` changes (older lines inserted above) it offsets the
+/// scroll by the added height so the visible lines stay put.
 #[component]
 pub(super) fn LogViewer(
     #[prop(into)] lines: Signal<Vec<LogLine>>,

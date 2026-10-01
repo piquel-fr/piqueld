@@ -12,6 +12,9 @@ use piqueld_client::{
 };
 use std::collections::BTreeMap;
 
+/// Toggle and fields for loading the application's configuration from a Git
+/// manifest on deploy. The draft is `(enabled, manifest)`; saving is refused
+/// while other form groups have unsaved edits.
 #[component]
 pub(super) fn RepositorySettings() -> impl IntoView {
     let context = editor();
@@ -105,6 +108,7 @@ pub(super) fn RepositorySettings() -> impl IntoView {
     }
 }
 
+/// Application name heading with an inline rename form.
 #[component]
 pub(super) fn MetadataSettings() -> impl IntoView {
     let context = editor();
@@ -182,6 +186,7 @@ pub(super) fn MetadataSettings() -> impl IntoView {
     }
 }
 
+/// Named volume list editor, saved as one group.
 #[component]
 pub(super) fn VolumeSettings() -> impl IntoView {
     let context = editor();
@@ -268,6 +273,9 @@ pub(super) fn VolumeSettings() -> impl IntoView {
     }
 }
 
+/// Form for one `Section` of service `name`. Saving patches only that section
+/// onto a copy of the saved service (validating the text fields) and sends the
+/// matching `ServiceEdit`, so other sections' saved values are left untouched.
 #[component]
 pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
     let context = editor();
@@ -342,6 +350,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
     }
 }
 
+/// Input fields for one service `Section`, bound to the shared draft form.
 pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> View {
     match section {
         Section::General => {
@@ -428,6 +437,8 @@ pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> V
     }
 }
 
+/// Editable list of strings (one element per row, no shell parsing) selected
+/// from the form by the `read`/`write` accessors.
 pub(super) fn string_rows(
     label: &'static str,
     form: RwSignal<ServiceForm>,
@@ -468,6 +479,7 @@ pub(super) fn string_rows(
     }
     .into_view()
 }
+/// Key/value rows for the service environment.
 pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> View {
     view! {
         <div class="collection">
@@ -517,6 +529,7 @@ pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> View {
     }
     .into_view()
 }
+/// Volume mount rows: volume name, container path and read-only flag.
 pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> View {
     view! {
         <p class="help">"Use a declared volume name and an absolute container path."</p>
@@ -583,6 +596,8 @@ pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> View {
     }
     .into_view()
 }
+/// Health check type selector with the interval, timeout, and HTTP or command
+/// fields relevant to the chosen type.
 pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> View {
     view! {
         <label class="field">
@@ -636,6 +651,7 @@ pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> View {
     .into_view()
 }
 
+/// "Add Service" button and modal that saves a new single-replica image service.
 #[component]
 pub(super) fn NewService() -> impl IntoView {
     let context = editor();

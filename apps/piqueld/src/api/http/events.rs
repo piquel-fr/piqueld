@@ -14,26 +14,42 @@ use piqueld_core::{
 };
 use serde::Deserialize;
 
+/// Event filters shared by the paged listing and the live stream.
 #[derive(Default, Deserialize, utoipa::IntoParams)]
 #[serde(default, deny_unknown_fields)]
 #[into_params(parameter_in=Query)]
 pub(super) struct EventQuery {
+    /// Only include events about this application.
     application_id: Option<String>,
+    /// Only include events of this operation.
     operation_id: Option<String>,
+    /// Only include events of this operation attempt.
     attempt: Option<u64>,
+    /// Only include events of this runtime action.
     action_id: Option<String>,
+    /// Only include events of this kind.
     kind: Option<String>,
+    /// Only include failures with this error code.
     error_code: Option<String>,
+    /// Only include diagnostic (failure) events.
     errors_only: Option<bool>,
+    /// Only include application-owned or daemon-owned history.
     scope: Option<EventScope>,
+    /// Inclusive Unix millisecond lower bound.
     since_ms: Option<i64>,
+    /// Inclusive Unix millisecond upper bound.
     until_ms: Option<i64>,
+    /// Return newest events first; streams only support oldest first.
     descending: Option<bool>,
+    /// `next_cursor` from a previous page; for streams, a `v1:<event-id>` SSE ID to
+    /// resume after.
     cursor: Option<String>,
+    /// Page size (defaults to 50), or stream batch size (defaults to 100).
     #[param(minimum = 1, maximum = 100)]
     limit: Option<usize>,
 }
 impl EventQuery {
+    /// Extracts the store filter; pagination fields are handled separately.
     fn filter(&self) -> EventFilter {
         EventFilter {
             application_id: self.application_id.clone(),
@@ -49,6 +65,7 @@ impl EventQuery {
             descending: self.descending.unwrap_or(false),
         }
     }
+    /// Maps a rejected query string to a generic 400.
     fn parse(query: Result<Query<Self>, QueryRejection>) -> Result<Self, ApiError> {
         query.map(|Query(q)| q).map_err(|_| {
             ApiError::new(
@@ -59,6 +76,9 @@ impl EventQuery {
         })
     }
 }
+/// Lists structured events.
+///
+/// Oldest first unless `descending=true`. Follow `next_cursor` to load more.
 #[utoipa::path(get,path="/api/v1/events",operation_id="listEvents",params(EventQuery),responses((status=200,description="Structured history",body=Envelope<Page<Event>>),(status=400,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn list(
     State(state): State<ApiState>,
@@ -73,6 +93,17 @@ pub(super) async fn list(
         )
         .await?))
 }
+// The first batch is read before responding so request errors are still plain
+// JSON; afterwards the stream polls the store every second.
+/// Streams structured events as server-sent events.
+///
+/// Events arrive oldest first, resuming after the `Last-Event-ID` header or
+/// `cursor` (from the beginning when both are absent). Invalid cursors fail with
+/// 400 and pruned history with 410 before the stream opens. The stream emits:
+/// - `event` messages with `id: v1:<event-id>` for each matching event;
+/// - ID-only messages that advance the resume position past filtered-out events;
+/// - a final `history_expired` or `stream_error` message, after which the
+///   stream ends and history must be reloaded before reconnecting.
 #[utoipa::path(get,path="/api/v1/events/stream",operation_id="streamEvents",params(EventQuery),responses((status=200,description="Resumable SSE; IDs are v1:<event-id>",body=String,content_type="text/event-stream"),(status=400,response=inline(ApiErrorResponse)),(status=410,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn stream(
     State(state): State<ApiState>,

@@ -18,8 +18,11 @@ use tokio::sync::Notify;
 /// Application runtime orchestration backed by Docker.
 pub struct ApplicationRuntime<D> {
     docker: Arc<D>,
+    /// Instance whose ownership labels scope every Docker lookup and mutation.
     instance_id: InstanceId,
+    /// Shared with the reconciler loop so mutations can request an immediate scan.
     wake: Arc<Notify>,
+    /// Upper bound for resolving every source and compiling one application.
     prepare_timeout: Duration,
     // Set only for execution, never API previews. Records the source-preparation
     // phase and service names, and journals each source-preparation action.
@@ -64,6 +67,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         since: u32,
         stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, BoundaryError> {
+        // Log reads serve interactive API requests, so they get a short fixed budget.
         tokio::time::timeout(
             Duration::from_secs(10),
             self.docker
@@ -74,6 +78,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         .map_err(BoundaryError::from)
     }
 
+    /// Pings the Engine first and only probes Swarm when the Engine answered.
     async fn readiness(&self) -> (bool, bool) {
         let docker = tokio::time::timeout(Duration::from_secs(2), self.docker.ping())
             .await
@@ -85,6 +90,8 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         (docker, swarm)
     }
 
+    /// Removes secrets only when they carry this instance's and application's
+    /// ownership labels, so foreign Docker secrets are never deleted.
     async fn remove_secrets(
         &self,
         application: &piqueld_core::ApplicationId,
@@ -113,6 +120,16 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         self.wake.notify_one();
     }
 
+    /// Resolves every service source not already present in `reusable`, then
+    /// compiles the application against the merged resolutions.
+    ///
+    /// 1. Collects services lacking a reusable resolution and, during execution,
+    ///    records the `preparing_sources` progress phase with their names.
+    /// 2. Resolves up to four sources concurrently; on failure, records the failing
+    ///    service's phase (`building_git` or `resolving_image`) before returning.
+    /// 3. Compiles the application with the combined resolution set.
+    ///
+    /// The whole sequence is bounded by `prepare_timeout`.
     async fn prepare(
         &self,
         application: &NormalizedApplication,
@@ -189,6 +206,11 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
 }
 
 impl<D: DockerApi> ApplicationRuntime<D> {
+    /// Resolves one service source, journaling it as an action when progress is
+    /// attached.
+    ///
+    /// Errors carry the service name and phase so `prepare` can report which service
+    /// failed. Journal failures are reported the same way as resolution failures.
     async fn prepare_source(
         &self,
         application: &NormalizedApplication,
@@ -230,6 +252,8 @@ impl<D: DockerApi> ApplicationRuntime<D> {
             .map_err(|error| (name, phase, error))
     }
 
+    /// Pins an image reference to its registry digest, or checks out and builds a
+    /// Git source into a local image.
     async fn resolve_source(
         &self,
         application: &NormalizedApplication,
@@ -269,6 +293,11 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         }
     }
 
+    /// Checks out and builds a Git source, returning the commit and built image ID.
+    ///
+    /// During execution the build is recorded as a `BuildAttempt`: output is streamed
+    /// into its log, a failure message is appended on error, and the attempt is
+    /// finished as succeeded or failed. Without progress the build runs unrecorded.
     async fn prepare_git(
         &self,
         application: &NormalizedApplication,

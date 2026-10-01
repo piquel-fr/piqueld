@@ -6,7 +6,10 @@ use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnord
 use std::collections::{HashMap, HashSet};
 use tracing::Instrument;
 
+/// Result of a discovery pass: whether it was a full scan, and each selected
+/// application with the ID of its latest operation.
 type Discovered = (bool, Vec<(StoredApplication, String)>);
+/// Application/diagnostic-code pairs already recorded during one discovery pass.
 type ScanFailures = Arc<tokio::sync::Mutex<HashSet<(piqueld_core::ApplicationId, String)>>>;
 
 impl<D: DockerApi> Controller<D> {
@@ -61,6 +64,7 @@ impl<D: DockerApi> Controller<D> {
                             let failures = ScanFailures::default();
                             for (application,operation_id) in applications {
                                 let id=application.application.id().clone();
+                                // Full scans refresh health, with at most one job per application.
                                 if full && health_active.insert(id.clone()) {
                                     let health_id=id.clone();
                                     let health_operation=operation_id.clone();
@@ -82,6 +86,8 @@ impl<D: DockerApi> Controller<D> {
                                     }.instrument(span));
                                 }
 
+                                // A running job is cancelled if a newer operation replaced its own;
+                                // its completion requests another pass that picks up the new one.
                                 if let Some((current,token))=active.get(&id) {
                                     let token: &CancellationToken=token;
                                     if current!=&operation_id { token.cancel(); }
@@ -144,6 +150,9 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
+    /// Pages through all applications and selects those needing work. A full scan
+    /// selects every application with an operation; otherwise only requested,
+    /// cleanly running, or retry-due operations are selected.
     async fn discover(&self, full: bool) -> Result<Vec<(StoredApplication, String)>, StoreError> {
         let mut cursor = None;
         let mut applications = Vec::new();
@@ -189,6 +198,14 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    /// Whether a transiently failed operation has waited out its backoff.
+    /// Only transient error codes qualify; the delay doubles per consecutive
+    /// failure from 5s and is capped at 60s.
+    ///
+    /// ```text
+    /// failures: 1   2    3    4    5+
+    /// delay:    5s  10s  20s  40s  60s
+    /// ```
     fn retry_due(operation: &super::Operation) -> bool {
         let Some(code) = operation.error_code.as_deref() else {
             return false;
@@ -218,6 +235,15 @@ impl<D: DockerApi> Controller<D> {
             .saturating_add(delay)
     }
 
+    /// Processes one application during a scan.
+    ///
+    /// 1. Repairs drift in the active target while a newer target is unpromoted.
+    /// 2. Runs requested, cleanly running, or retry-due operations.
+    /// 3. Otherwise plans the latest target against fresh observations: blocked
+    ///    plans degrade the application, converged plans mark it ready, and drift
+    ///    after success (or a cleared permanent blocker) reopens the operation.
+    ///
+    /// Observation failures are recorded as deduplicated diagnostics, not errors.
     #[tracing::instrument(skip_all, fields(application_id = %application.application.id(), generation = application.generation))]
     async fn scan_application(
         &self,
@@ -327,6 +353,8 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    /// Runs `maintain_active`, recording non-journal failures as scan diagnostics so
+    /// a failed repair never prevents the latest operation from executing.
     async fn repair_before_execution(
         &self,
         application: &StoredApplication,
@@ -351,8 +379,9 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
-    // A health job and reconciliation can observe the same failure concurrently.
-    // Keep one diagnostic per application/code in their shared discovery pass.
+    /// Records a diagnostic at most once per application and code within a pass.
+    /// A health job and reconciliation can observe the same failure concurrently;
+    /// the lock is held across the write so only one of them records it.
     async fn record_scan_diagnostic(
         &self,
         application: &piqueld_core::ApplicationId,
@@ -371,6 +400,13 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    /// Keeps the currently active (published) target healthy while the latest
+    /// operation has not been promoted.
+    ///
+    /// Applies at most the first mutating action per call, under the global
+    /// mutation lock and in its own journal entry. Skips deletions, promoted
+    /// operations, blocked plans, and removals that would drop resources still
+    /// referenced by routes awaiting cutover.
     async fn maintain_active(
         &self,
         id: &piqueld_core::ApplicationId,
@@ -452,6 +488,8 @@ impl<D: DockerApi> Controller<D> {
         result
     }
 
+    /// Prunes daemon events, receipts, and build logs, plus finished operations and
+    /// events older than their retention windows. A zero-day window disables pruning.
     async fn prune_history(&self, operation_days: u64, event_days: u64) -> Result<(), StoreError> {
         self.store.prune_daemon_events().await?;
         self.store.prune_receipts().await?;
@@ -475,6 +513,7 @@ impl<D: DockerApi> Controller<D> {
     }
 }
 
+/// Whether the plan has work beyond retaining volumes.
 pub(super) fn plan_requires_execution(plan: &Plan) -> bool {
     plan.actions
         .iter()

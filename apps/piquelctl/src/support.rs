@@ -1,3 +1,5 @@
+//! Shared helpers: confirmation prompts, blocking input, manifest reading, retries,
+//! and small formatting utilities.
 use crate::{
     cli::Cli,
     error::{CliError, ErrorKind, Result},
@@ -14,16 +16,22 @@ use std::{
 };
 use tokio::{sync::Notify, time};
 
+/// Daemon socket used when no socket or URL is configured.
 pub(crate) const DEFAULT_SOCKET: &str = "/run/piqueld/piqueld.sock";
 /// Must not exceed the daemon's `REQUEST_BODY_LIMIT_BYTES`, or a locally
 /// accepted manifest would fail server-side with 413.
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
+/// Page size for exhaustive application listing (the API maximum).
 pub(crate) const PAGE_SIZE: u16 = piqueld_client::MAX_APPLICATION_PAGE_SIZE;
+/// Delay between operation status polls.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Set while a blocking operator read is in progress; see `read_input`.
 static INTERACTION_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Wakes the timeout supervisor in `main` when `INTERACTION_ACTIVE` flips.
 static INTERACTION_CHANGED: Notify = Notify::const_new();
 
+/// Updates the interaction flag and wakes the supervisor.
 fn set_interaction(active: bool) {
     INTERACTION_ACTIVE.store(active, Ordering::SeqCst);
     // `notify_one` stores a permit when no waiter is registered yet, so a
@@ -42,6 +50,9 @@ pub(crate) async fn interaction_changed() {
     INTERACTION_CHANGED.notified().await;
 }
 
+/// Asks for `y`/`yes` on stdin before a mutation. `--yes` skips the prompt; without it,
+/// `--noninteractive` or a non-terminal stdin is an input error. Any other answer
+/// fails with "operation was not confirmed".
 pub(crate) async fn confirm(
     console: &mut Console,
     noninteractive: bool,
@@ -93,6 +104,9 @@ pub(crate) async fn read_input<T: Send + 'static>(
     })
 }
 
+/// Reads a UTF-8 manifest of at most `MAX_MANIFEST_BYTES` on a blocking thread.
+/// Only regular files are accepted; the type is checked both before and after
+/// opening, and the read itself is capped in case the file grows.
 pub(crate) async fn read_manifest(path: &Path) -> Result<String> {
     let path = path.to_owned();
     let display_path = path.display().to_string();
@@ -170,11 +184,14 @@ pub(crate) async fn read_manifest(path: &Path) -> Result<String> {
     })?
 }
 
+/// Extracts the application name from manifest TOML, reporting validation errors
+/// against `path`.
 pub(crate) fn manifest_name(manifest: &str, path: &Path) -> Result<String> {
     piqueld_client::application_name_from_toml(manifest)
         .map_err(|errors| manifest_validation_error(path, &errors))
 }
 
+/// Input error listing manifest validation failures, with structured details.
 fn manifest_validation_error(path: &Path, errors: &ValidationErrors) -> CliError {
     CliError::new(
         ErrorKind::Input,
@@ -187,6 +204,8 @@ fn manifest_validation_error(path: &Path, errors: &ValidationErrors) -> CliError
     .with_details(json!({"errors": errors}))
 }
 
+/// Runs `request`, retrying once after 25ms if it failed at the transport level
+/// (e.g. a dropped connection). API errors and successes are returned as is.
 pub(crate) async fn retry_transport<T, F, Fut>(
     mut request: F,
 ) -> std::result::Result<T, ClientError>
@@ -203,6 +222,12 @@ where
     }
 }
 
+/// Human description of the configured endpoint.
+///
+/// ```text
+/// --url http://127.0.0.1:7845  →  TCP http://127.0.0.1:7845
+/// (no endpoint)                →  Unix socket /run/piqueld/piqueld.sock
+/// ```
 pub(crate) fn transport_description(cli: &Cli) -> String {
     if let Some(url) = &cli.url {
         format!("TCP {url}")
@@ -215,6 +240,7 @@ pub(crate) fn transport_description(cli: &Cli) -> String {
     }
 }
 
+/// Total desired replicas across all services.
 pub(crate) fn desired_replicas(application: &ApplicationView) -> u32 {
     application
         .application
@@ -225,10 +251,16 @@ pub(crate) fn desired_replicas(application: &ApplicationView) -> u32 {
         .sum()
 }
 
+/// Whether `value` parses as an application ID (names may also match this shape).
 pub(crate) fn looks_like_application_id(value: &str) -> bool {
     piqueld_client::ApplicationId::parse(value).is_ok()
 }
 
+/// Formats a duration in whole seconds when exact, else in milliseconds.
+///
+/// ```text
+/// 30s → "30s"    1500ms → "1500ms"
+/// ```
 pub(crate) fn format_duration(duration: Duration) -> String {
     if duration.as_millis().is_multiple_of(1000) {
         format!("{}s", duration.as_secs())

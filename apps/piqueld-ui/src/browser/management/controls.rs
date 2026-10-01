@@ -6,6 +6,8 @@ use leptos::{
 
 use leptos::wasm_bindgen::JsCast;
 
+/// Labelled text input bound to one field of `state` through `read`/`write`
+/// accessors, so several inputs can edit parts of one draft signal.
 pub(super) fn text_input<T: Clone + 'static>(
     label: &'static str,
     state: RwSignal<T>,
@@ -25,6 +27,8 @@ pub(super) fn text_input<T: Clone + 'static>(
     .into_view()
 }
 
+/// Modal `<dialog>` opened and closed by `opened`, focusing its first input on open.
+/// Closing (button or Escape) is ignored while `busy`, and calls `on_close`.
 /// Native dialogs provide focus containment, Escape handling, and focus restoration.
 #[component]
 pub(super) fn Modal(
@@ -84,6 +88,7 @@ pub(super) fn Modal(
     }
 }
 
+/// Row of tab buttons that sets `selected` to the clicked label.
 #[component]
 pub(super) fn Tabs(
     label: &'static str,

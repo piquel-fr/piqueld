@@ -3,6 +3,7 @@ use axum::{extract::State, response::IntoResponse};
 use piqueld_core::Operation;
 use piqueld_core::api::Envelope;
 
+// Returns one durable operation, as identified by a 202 mutation response.
 #[utoipa::path(
     get,
     path = "/api/v1/operations/{id}",

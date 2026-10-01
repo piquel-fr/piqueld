@@ -11,6 +11,10 @@ use piqueld_client::{
     edit::{ApplicationEdit, ServiceEdit},
 };
 
+/// Secrets tab. Loads secret metadata (never values), writes or deletes secrets
+/// guarded by their generation, and clears the value field as soon as it is
+/// submitted. After a failed write or delete, actions stay disabled until the
+/// metadata is refreshed. Also renders `SecretFiles` for every service.
 #[component]
 pub(super) fn ApplicationSecrets() -> impl IntoView {
     let context = editor();
@@ -168,6 +172,8 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
     </fieldset>}
 }
 
+/// Editor for one service's secret file references (secret name and container
+/// path), saved as part of the application configuration.
 #[component]
 fn SecretFiles(service_name: String) -> impl IntoView {
     let context = editor();

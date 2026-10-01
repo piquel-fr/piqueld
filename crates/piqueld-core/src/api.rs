@@ -237,6 +237,7 @@ pub struct RenamedApplication {
     pub generation: u64,
 }
 
+// Summarizes a newly accepted operation for mutation responses.
 impl From<&Operation> for AcceptedOperation {
     fn from(operation: &Operation) -> Self {
         Self {
@@ -325,6 +326,12 @@ pub struct LogRecord {
 
 impl LogRecord {
     /// Removes terminal control sequences, including CSI colors and OSC titles/links.
+    /// Other control characters are dropped too, except tabs and newlines.
+    ///
+    /// ```text
+    /// "\x1b[31mred\x1b[0m\r\ttext\n"                -> "red\ttext\n"
+    /// "\x1b]0;title\x07text \x1b]8;;url\x1b\\link" -> "text link"
+    /// ```
     #[must_use]
     pub fn clean_message(value: &str) -> String {
         let mut output = String::new();
@@ -332,6 +339,7 @@ impl LogRecord {
         while let Some(ch) = chars.next() {
             if ch == '\u{1b}' {
                 match chars.next() {
+                    // CSI: parameters run until a final byte in `@..=~`.
                     Some('[') => {
                         for c in chars.by_ref() {
                             if ('@'..='~').contains(&c) {
@@ -339,6 +347,7 @@ impl LogRecord {
                             }
                         }
                     }
+                    // OSC, DCS, PM, APC: strings end at BEL or ST (`ESC \`).
                     Some(']' | 'P' | '^' | '_') => {
                         while let Some(c) = chars.next() {
                             if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some())
@@ -347,6 +356,7 @@ impl LogRecord {
                             }
                         }
                     }
+                    // Other two-byte escapes drop just the escape and its selector.
                     _ => {}
                 }
             } else if !ch.is_control() || matches!(ch, '\t' | '\n') {

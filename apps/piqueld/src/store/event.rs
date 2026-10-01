@@ -8,6 +8,11 @@ use piqueld_core::{
 use sqlx::{QueryBuilder, Sqlite, Transaction};
 
 impl Store {
+    /// Records an event of `kind` copying the operation's current context
+    /// (application, generation, attempt, error, phase, resource).
+    /// For a failed operation it attaches a diagnostic, reusing the one already
+    /// recorded for the same attempt and error code so repeated events share one
+    /// occurrence ID.
     pub(super) async fn operation_event(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
@@ -166,6 +171,12 @@ impl Store {
             .collect::<Result<_, StoreError>>()?;
         Ok((items, checkpoint))
     }
+    /// Parses an event page cursor into the last event ID already returned.
+    ///
+    /// ```text
+    /// "v1:42" -> 42
+    /// "42" | "v1:-1" -> InvalidInput
+    /// ```
     pub(crate) fn event_cursor(cursor: &str) -> Result<i64, StoreError> {
         cursor
             .strip_prefix("v1:")
@@ -240,6 +251,8 @@ impl Store {
         .map_err(StoreError::database)?;
         Ok(())
     }
+    /// Logs a control-plane failure and records it in the journal, falling back
+    /// to the daemon log alone when the journal write fails.
     pub(crate) async fn report_diagnostic(
         &self,
         diagnostic: &Diagnostic,
@@ -257,6 +270,8 @@ impl Store {
     pub async fn prune_events(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
         self.prune_scope(cutoff_ms, EventScope::Application).await
     }
+    /// Prunes daemon-scoped events past the configured retention; zero days
+    /// disables pruning.
     pub(crate) async fn prune_daemon_events(&self) -> Result<(), StoreError> {
         if self.daemon_event_days > 0 {
             self.prune_scope(
@@ -270,6 +285,10 @@ impl Store {
         }
         Ok(())
     }
+    /// Deletes events in `scope` older than `cutoff`, except those still needed
+    /// by open notification conditions, pending deliveries or recoveries, and
+    /// active actions. Advances `history_coverage` so streams resuming before the
+    /// pruned point get `HistoryExpired`. Returns the number of deleted events.
     async fn prune_scope(&self, cutoff: i64, scope: EventScope) -> Result<u64, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let scope = scope.as_str();
@@ -317,6 +336,7 @@ impl Store {
     }
 }
 
+/// Rejects inverted time ranges and malformed application IDs in an event filter.
 fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
     if filter
         .since_ms
@@ -331,8 +351,7 @@ fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
     Ok(())
 }
 
-// Optional predicates are assembled from fixed column names; every value is bound.
-// Direct ordering lets SQLite stop after one page instead of sorting retained history.
+/// Raw `events` row, decoded into an `Event` by `into_event`.
 #[derive(sqlx::FromRow)]
 struct EventRow {
     id: i64,
@@ -356,6 +375,10 @@ struct EventRow {
 }
 
 impl EventRow {
+    /// Builds a keyset-paginated event query after (or, descending, before)
+    /// `cursor`, fetching `fetch` rows.
+    /// Optional predicates are assembled from fixed column names; every value is bound.
+    /// Direct ordering lets `SQLite` stop after one page instead of sorting retained history.
     fn query(
         filter: &EventFilter,
         cursor: i64,
@@ -409,6 +432,8 @@ impl EventRow {
         Ok(query)
     }
 
+    /// Converts raw columns into an `Event`, reporting out-of-range values or
+    /// unknown scopes as corruption.
     fn into_event(self) -> Result<Event, StoreError> {
         Ok(Event {
             id: self.id,

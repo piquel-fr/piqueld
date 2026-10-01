@@ -13,6 +13,10 @@ use std::{
 };
 use utoipa::ToSchema;
 
+// Limits bounding manifest size and validation work. Route, service, and
+// volume counts are checked before any per-item validation and stop it early;
+// the remaining limits are reported alongside per-item errors.
+const MAX_ROUTES: usize = 64;
 const MAX_SERVICES: usize = 64;
 const MAX_VOLUMES: usize = 64;
 const MAX_ENVIRONMENT_ENTRIES: usize = 256;
@@ -28,6 +32,12 @@ const MAX_CPU_MILLIS: u32 = 1_048_576;
 
 impl GitRepository {
     /// Validates Git arguments without executing Git.
+    ///
+    /// Appends errors at `path` for inline URL credentials (any `http(s)`
+    /// userinfo, or `user:password@` in other schemes), empty or option-like
+    /// URLs, branch names failing `git check-ref-format` style rules, and commits
+    /// that are not full lowercase hashes. Leading `-` is rejected so values
+    /// cannot be parsed as Git options.
     pub fn validate(&self, path: &str, errors: &mut Vec<ValidationError>) {
         let inline_credentials = self.url.split_once("://").is_some_and(|(scheme, rest)| {
             let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
@@ -105,6 +115,11 @@ pub fn valid_git_commit(value: &str) -> bool {
 }
 
 /// Whether a path stays lexically inside a checkout. Symlinks are checked at runtime.
+///
+/// ```text
+/// "Dockerfile", "docker/app.Dockerfile", "."  -> valid
+/// "/etc/passwd", "../x", "a/.git/config"     -> invalid
+/// ```
 #[must_use]
 pub fn valid_repository_path(value: &str) -> bool {
     !value.is_empty()
@@ -180,6 +195,7 @@ pub fn parse_json(input: &str) -> Result<ValidatedApplication, ValidationErrors>
     ApplicationManifest::validate(manifest)
 }
 
+/// Builds the single decode error returned for malformed input, with a redacted path.
 fn decode_error(path: &Path) -> ValidationErrors {
     ValidationErrors(vec![ValidationError {
         code: codes::MANIFEST_DECODE_FAILED.into(),
@@ -190,6 +206,15 @@ fn decode_error(path: &Path) -> ValidationErrors {
 }
 
 /// Redacts map keys and unknown components from a serde decode path.
+///
+/// Keeps the longest prefix made of known manifest field names with numeric
+/// indices, so user-supplied map keys (e.g. environment names) never leak.
+///
+/// ```text
+/// "spec.services[0].replicas"         -> "spec.services[0].replicas"
+/// "spec.services[0].environment.KEY"  -> "spec.services[0].environment"
+/// "bogus.field"                       -> "$"
+/// ```
 #[must_use]
 pub fn safe_decode_path(path: &str) -> String {
     const FIELDS: &[&str] = &[
@@ -248,6 +273,7 @@ pub fn safe_decode_path(path: &str) -> String {
     }
 }
 
+/// Whether `value` is zero or more `[<digits>]` groups, e.g. `""` or `"[0][12]"`.
 fn valid_path_indices(mut value: &str) -> bool {
     while !value.is_empty() {
         let Some(after_open) = value.strip_prefix('[') else {
@@ -269,6 +295,8 @@ fn valid_path_indices(mut value: &str) -> bool {
 }
 
 impl ApplicationManifest {
+    /// Canonicalizes route hostnames in place (lowercase, trailing dot removed),
+    /// then checks hostname syntax, uniqueness, the target service, and the port.
     fn validate_routes(&mut self, errors: &mut Vec<ValidationError>) {
         let mut hostnames = BTreeSet::new();
         for (index, route) in self.spec.routes.iter_mut().enumerate() {
@@ -320,6 +348,15 @@ impl ApplicationManifest {
 
     /// Validates manifest semantics and returns a normalized-input wrapper.
     ///
+    /// Collects every independent error rather than stopping at the first:
+    /// 1. Header, metadata, and optional repository manifest source.
+    /// 2. Route, service, and volume budgets; exceeding one returns early to
+    ///    bound work.
+    /// 3. Routes, duplicate names, services, and volumes.
+    /// 4. On success, canonicalizes image registries and converts to domain types.
+    ///
+    /// Errors are sorted by path then code.
+    ///
     /// # Errors
     /// Returns all detected manifest validation errors.
     pub fn validate(mut self) -> Result<ValidatedApplication, ValidationErrors> {
@@ -339,16 +376,6 @@ impl ApplicationManifest {
             }
         }
         // Bound work before walking attacker-controlled collections.
-        if self.spec.routes.len() > 64 {
-            error(
-                &mut errors,
-                "routes_limit",
-                "spec.routes",
-                "at most 64 routes are allowed per application",
-            );
-            return Err(ValidationErrors(errors));
-        }
-
         if !validate_budgets(&self, &mut errors) {
             errors
                 .sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
@@ -385,6 +412,7 @@ impl ApplicationManifest {
     }
 }
 
+/// Checks the API version, kind, and application name.
 fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) {
     if input.api_version != APPLICATION_API_VERSION {
         error(
@@ -405,8 +433,19 @@ fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError
     validate_name(&input.metadata.name, "metadata.name", errors);
 }
 
+/// Checks route, service, and volume counts; returns `false` when a budget is
+/// exceeded.
 fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) -> bool {
     let mut within_budget = true;
+    if input.spec.routes.len() > MAX_ROUTES {
+        error(
+            errors,
+            "routes_limit",
+            "spec.routes",
+            &format!("at most {MAX_ROUTES} routes are allowed per application"),
+        );
+        within_budget = false;
+    }
     if input.spec.services.len() > MAX_SERVICES {
         error(
             errors,
@@ -428,6 +467,11 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
     within_budget
 }
 
+/// Validates every service: name, replicas, source, secrets, environment,
+/// mounts, process arguments, health check, and resource limits.
+///
+/// `volume_names` holds declared volumes for mount references. Secret targets
+/// must be unique under `/run/secrets/` and must not collide with mount targets.
 fn validate_services(
     services: &[Service],
     volume_names: &BTreeSet<String>,
@@ -534,6 +578,8 @@ fn validate_services(
     }
 }
 
+/// Checks environment entry count, key syntax and length, and value content
+/// and size.
 fn validate_environment(
     environment: &BTreeMap<String, String>,
     base: &str,
@@ -582,6 +628,8 @@ fn validate_environment(
     }
 }
 
+/// Quotes a user-supplied key for error messages, truncated to 64 characters with
+/// control characters replaced by `U+FFFD`.
 fn safe_key_echo(key: &str) -> String {
     let truncated: String = key.chars().take(64).collect();
     let sanitized = truncated
@@ -597,6 +645,8 @@ fn safe_key_echo(key: &str) -> String {
     format!("'{sanitized}'")
 }
 
+/// Checks mount count, that each mount references a declared volume, and that
+/// targets are safe and unique.
 fn validate_mounts(
     mounts: &[Mount],
     base: &str,
@@ -634,6 +684,8 @@ fn validate_mounts(
     }
 }
 
+/// Checks optional limits: at least one limit set, CPU in `1..=MAX_CPU_MILLIS`,
+/// and memory nonzero and representable as Docker's `i64`.
 fn validate_resources(
     resources: Option<&ResourceLimits>,
     base: &str,
@@ -681,12 +733,17 @@ fn validate_resources(
     }
 }
 
+/// Checks each declared volume name.
 fn validate_volumes(volumes: &[Volume], errors: &mut Vec<ValidationError>) {
     for (index, volume) in volumes.iter().enumerate() {
         validate_name(&volume.name, &format!("spec.volumes[{index}].name"), errors);
     }
 }
 
+/// Validates a health check's probe, then its timing: interval in
+/// `1..=MAX_HEALTHCHECK_INTERVAL_SECONDS` and timeout in `1..=interval`.
+///
+/// HTTP paths must be normalized absolute paths without query or fragment.
 fn validate_health(value: &HealthCheck, path: &str, errors: &mut Vec<ValidationError>) {
     let (interval, timeout) = match value {
         HealthCheck::Http {
@@ -778,6 +835,7 @@ fn validate_health(value: &HealthCheck, path: &str, errors: &mut Vec<ValidationE
     }
 }
 
+/// Reports duplicates at `{path}[index].name` and returns the set of distinct names.
 fn unique_names<'a>(
     names: impl Iterator<Item = &'a String>,
     path: &str,
@@ -798,6 +856,7 @@ fn unique_names<'a>(
     found
 }
 
+/// Reports `NAME_INVALID` unless `value` is a safe logical resource name.
 fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     if !valid_logical_name(value) {
         error(
@@ -809,6 +868,16 @@ fn validate_name(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     }
 }
 
+/// Whether a value follows Docker's image reference grammar, with extra hardening.
+///
+/// Accepts `[registry/]repository[:tag][@digest]` and rejects whitespace,
+/// control characters, URL schemes (`//`), and `?`/`#`. A first component is a
+/// registry when it contains `.` or `:`, or is `localhost`.
+///
+/// ```text
+/// "nginx", "ghcr.io/org/app:v1", "localhost:5000/app@sha256:..."  -> valid
+/// "https://ghcr.io/app", "Nginx", "app:", "a//b"                  -> invalid
+/// ```
 pub(crate) fn valid_image_reference(value: &str) -> bool {
     if value.is_empty()
         || value.len() > 512
@@ -869,6 +938,8 @@ pub(crate) fn valid_image_reference(value: &str) -> bool {
         .all(|component| valid_repository_component(component))
 }
 
+/// Whether a registry authority is `localhost` or DNS-like labels, with an
+/// optional nonzero port.
 fn valid_registry_authority(value: &str) -> bool {
     let (host, port) = value
         .rsplit_once(':')
@@ -889,6 +960,7 @@ fn valid_registry_authority(value: &str) -> bool {
             }))
 }
 
+/// Returns the leading registry host of an image name, if it has one.
 fn first_registry_component(name: &str) -> Option<&str> {
     let components = name.split('/').collect::<Vec<_>>();
     let first_is_registry = components.len() > 1
@@ -896,6 +968,12 @@ fn first_registry_component(name: &str) -> Option<&str> {
     first_is_registry.then(|| components[0])
 }
 
+/// Lowercases the registry host of an image reference; other parts are case-sensitive.
+/// Invalid references and references without a registry are returned unchanged.
+///
+/// ```text
+/// "GHCR.io/org/app:v1" -> "ghcr.io/org/app:v1"
+/// ```
 fn canonicalize_image_reference(value: &str) -> String {
     if !valid_image_reference(value) {
         return value.to_owned();
@@ -917,6 +995,8 @@ fn canonicalize_image_reference(value: &str) -> String {
     }
 }
 
+/// Whether a repository path component is lowercase alphanumeric runs joined by
+/// one of the Docker separators: `.`, `_`, `__`, or one or more `-`.
 fn valid_repository_component(value: &str) -> bool {
     let bytes = value.as_bytes();
     if !bytes
@@ -956,6 +1036,7 @@ fn valid_repository_component(value: &str) -> bool {
     true
 }
 
+/// Whether a value matches the OCI digest grammar `algorithm:encoded`.
 fn valid_image_digest(value: &str) -> bool {
     let Some((algorithm, encoded)) = value.split_once(':') else {
         return false;
@@ -974,6 +1055,8 @@ fn valid_image_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'=' | b'_' | b'-'))
 }
 
+/// Reports a container path unless it is absolute, normalized (no `.`, `..`, or
+/// empty components), not `/` itself, and free of backslashes and controls.
 fn validate_absolute_path(value: &str, path: &str, errors: &mut Vec<ValidationError>) {
     let components = value.split('/').skip(1);
     if !value.starts_with('/')
@@ -995,6 +1078,7 @@ fn validate_absolute_path(value: &str, path: &str, errors: &mut Vec<ValidationEr
     }
 }
 
+/// Whether an environment key is a POSIX-style identifier (`[A-Za-z_][A-Za-z0-9_]*`).
 fn valid_env_name(value: &str) -> bool {
     !value.is_empty()
         && !value.as_bytes()[0].is_ascii_digit()
@@ -1003,6 +1087,8 @@ fn valid_env_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+/// Bounds a command or argument list by element count and size, and rejects NUL
+/// bytes. `excessive_code` distinguishes commands from arguments.
 fn validate_process_arguments(
     values: &[String],
     path: &str,
@@ -1037,6 +1123,7 @@ fn validate_process_arguments(
     }
 }
 
+/// Appends one validation error.
 fn error(errors: &mut Vec<ValidationError>, code: &str, path: &str, message: &str) {
     errors.push(ValidationError {
         code: code.into(),
