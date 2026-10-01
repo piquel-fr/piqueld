@@ -11,12 +11,14 @@ struct BuildRow {
     application_id: String,
     operation_id: String,
     service: String,
+    job: Option<String>,
     source_json: String,
     state: String,
     started_at_ms: i64,
     finished_at_ms: Option<i64>,
     commit_hash: Option<String>,
     image_id: Option<String>,
+    exit_code: Option<i64>,
     log_bytes: i64,
     log_truncated: i64,
     log_expired: i64,
@@ -36,18 +38,20 @@ impl Store {
         self.build_history = policy;
         self
     }
+    /// Records a source build, or a job run when `job` names the job.
     pub(crate) async fn start_build(
         &self,
         application: &ApplicationId,
         operation: &str,
         service: &str,
         source: &Source,
+        job: Option<&str>,
     ) -> Result<i64, StoreError> {
         let source = serde_json::to_string(source).map_err(StoreError::invalid_input)?;
         let app = application.as_str();
         let now = now_ms();
         let _writer = self.writers.lock().await;
-        Ok(sqlx::query!("INSERT INTO builds(application_id,operation_id,service,source_json,state,started_at_ms) VALUES(?1,?2,?3,?4,'running',?5)",app,operation,service,source,now).execute(&self.pool).await.map_err(StoreError::database)?.last_insert_rowid())
+        Ok(sqlx::query!("INSERT INTO builds(application_id,operation_id,service,job,source_json,state,started_at_ms) VALUES(?1,?2,?3,?4,?5,'running',?6)",app,operation,service,job,source,now).execute(&self.pool).await.map_err(StoreError::database)?.last_insert_rowid())
     }
     pub(crate) async fn append_build_log(
         &self,
@@ -116,6 +120,14 @@ impl Store {
     pub(crate) async fn build_commit(&self, id: i64, commit: &str) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
         sqlx::query!("UPDATE builds SET commit_hash=?1 WHERE id=?2", commit, id)
+            .execute(&self.pool)
+            .await
+            .map_err(StoreError::database)?;
+        Ok(())
+    }
+    pub(crate) async fn build_exit_code(&self, id: i64, code: i64) -> Result<(), StoreError> {
+        let _writer = self.writers.lock().await;
+        sqlx::query!("UPDATE builds SET exit_code=?1 WHERE id=?2", code, id)
             .execute(&self.pool)
             .await
             .map_err(StoreError::database)?;
@@ -190,8 +202,8 @@ impl Store {
             let app = application.as_str();
             sqlx::query_as!(
                 BuildRow,
-                "SELECT id AS \"id!\",application_id,operation_id,service,source_json,state,
-                 started_at_ms,finished_at_ms,commit_hash,image_id,log_bytes,log_truncated,log_expired
+                "SELECT id AS \"id!\",application_id,operation_id,service,job,source_json,state,
+                 started_at_ms,finished_at_ms,commit_hash,image_id,exit_code,log_bytes,log_truncated,log_expired
                  FROM builds WHERE application_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
                 app,
                 before,
@@ -202,8 +214,8 @@ impl Store {
         } else {
             sqlx::query_as!(
                 BuildRow,
-                "SELECT id AS \"id!\",application_id,operation_id,service,source_json,state,
-                 started_at_ms,finished_at_ms,commit_hash,image_id,log_bytes,log_truncated,log_expired
+                "SELECT id AS \"id!\",application_id,operation_id,service,job,source_json,state,
+                 started_at_ms,finished_at_ms,commit_hash,image_id,exit_code,log_bytes,log_truncated,log_expired
                  FROM builds WHERE id<?1 ORDER BY id DESC LIMIT ?2",
                 before,
                 fetch
@@ -225,6 +237,7 @@ impl Store {
                     application_id: r.application_id,
                     operation_id: r.operation_id,
                     service: r.service,
+                    job: r.job,
                     source: serde_json::from_str(&r.source_json).map_err(StoreError::corrupt)?,
                     state: match r.state.as_str() {
                         "running" => BuildState::Running,
@@ -237,6 +250,7 @@ impl Store {
                     finished_at_ms: r.finished_at_ms,
                     commit: r.commit_hash,
                     image_id: r.image_id,
+                    exit_code: r.exit_code,
                     log_bytes: r.log_bytes,
                     log_truncated: r.log_truncated != 0,
                     log_expired: r.log_expired != 0,
@@ -350,6 +364,7 @@ mod tests {
                     &operation.id,
                     "web",
                     &app.spec().services[0].source,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -397,7 +412,13 @@ mod tests {
             id,
         } = Fixture::new().await;
         let other = store
-            .start_build(app.id(), &operation, "web", &app.spec().services[0].source)
+            .start_build(
+                app.id(),
+                &operation,
+                "web",
+                &app.spec().services[0].source,
+                None,
+            )
             .await
             .unwrap();
         let output = async {
@@ -446,7 +467,13 @@ mod tests {
             .normalize(ApplicationId::parse("app-other").unwrap());
         let other_operation = store.save_application(&other, None, Some(0)).await.unwrap();
         let latest = store
-            .start_build(app.id(), &operation, "web", &app.spec().services[0].source)
+            .start_build(
+                app.id(),
+                &operation,
+                "web",
+                &app.spec().services[0].source,
+                None,
+            )
             .await
             .unwrap();
         for _ in 0..3 {
@@ -456,6 +483,7 @@ mod tests {
                     &other_operation.id,
                     "web",
                     &other.spec().services[0].source,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -539,7 +567,13 @@ mod tests {
         assert_eq!(records.items.len(), 1);
         assert_eq!(records.items[0].state, BuildState::Succeeded);
         let interrupted = store
-            .start_build(app.id(), &operation, "web", &app.spec().services[0].source)
+            .start_build(
+                app.id(),
+                &operation,
+                "web",
+                &app.spec().services[0].source,
+                None,
+            )
             .await
             .unwrap();
         store.recover_builds().await.unwrap();

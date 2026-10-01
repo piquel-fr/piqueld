@@ -2,7 +2,7 @@
 
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, GitRepository,
-    HealthCheck, Mount, ResourceLimits, Service, Source, ValidatedApplication, Volume,
+    HealthCheck, Job, Mount, ResourceLimits, Service, Source, ValidatedApplication, Volume,
 };
 use crate::{codes, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,8 @@ use utoipa::ToSchema;
 
 const MAX_SERVICES: usize = 64;
 const MAX_VOLUMES: usize = 64;
+const MAX_JOBS: usize = 16;
+const MAX_JOB_TIMEOUT_SECONDS: u32 = 86_400;
 const MAX_ENVIRONMENT_ENTRIES: usize = 256;
 /// Environment keys share the common 255-byte identifier bound so one entry
 /// cannot dominate a manifest or a container environment list.
@@ -224,6 +226,8 @@ pub fn safe_decode_path(path: &str) -> String {
         "read_only",
         "port",
         "routes",
+        "jobs",
+        "run",
         "hostname",
         "service",
         "path",
@@ -369,6 +373,7 @@ impl ApplicationManifest {
         );
         validate_services(&self.spec.services, &volume_names, &mut errors);
         validate_volumes(&self.spec.volumes, &mut errors);
+        validate_jobs(&self.spec.jobs, &self.spec.services, &mut errors);
         errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
         if !errors.is_empty() {
             return Err(ValidationErrors(errors));
@@ -422,6 +427,15 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
             codes::VOLUME_COUNT_EXCESSIVE,
             "spec.volumes",
             &format!("an application must declare at most {MAX_VOLUMES} volumes"),
+        );
+        within_budget = false;
+    }
+    if input.spec.jobs.len() > MAX_JOBS {
+        error(
+            errors,
+            codes::JOB_COUNT_EXCESSIVE,
+            "spec.jobs",
+            &format!("an application must declare at most {MAX_JOBS} jobs"),
         );
         within_budget = false;
     }
@@ -678,6 +692,53 @@ fn validate_resources(
             &format!("{base}.resources.memory_bytes"),
             "memory limit must be greater than zero and fit the runtime value",
         );
+    }
+}
+
+fn validate_jobs(jobs: &[Job], services: &[Service], errors: &mut Vec<ValidationError>) {
+    unique_names(
+        jobs.iter().map(|job| &job.name),
+        "spec.jobs",
+        codes::JOB_NAME_DUPLICATE,
+        errors,
+    );
+    for (index, job) in jobs.iter().enumerate() {
+        let base = format!("spec.jobs[{index}]");
+        validate_name(&job.name, &format!("{base}.name"), errors);
+        if !services.iter().any(|service| service.name == job.service) {
+            error(
+                errors,
+                codes::JOB_SERVICE_MISSING,
+                &format!("{base}.service"),
+                "job must reference a service in this application",
+            );
+        }
+        if job
+            .command
+            .first()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            error(
+                errors,
+                codes::PROCESS_COMMAND_INVALID,
+                &format!("{base}.command"),
+                "a job command must start with a non-empty executable",
+            );
+        }
+        validate_process_arguments(
+            &job.command,
+            &format!("{base}.command"),
+            codes::PROCESS_COMMAND_EXCESSIVE,
+            errors,
+        );
+        if !(1..=MAX_JOB_TIMEOUT_SECONDS).contains(&job.timeout_seconds) {
+            error(
+                errors,
+                codes::JOB_TIMEOUT_INVALID,
+                &format!("{base}.timeout_seconds"),
+                &format!("job timeout must be between 1 and {MAX_JOB_TIMEOUT_SECONDS} seconds"),
+            );
+        }
     }
 }
 

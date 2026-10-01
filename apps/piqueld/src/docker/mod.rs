@@ -67,12 +67,28 @@ mod logs;
 pub(crate) use limited::LimitedDocker;
 mod errors;
 mod identity;
+mod jobs;
 mod observation;
 mod policy;
 mod resources;
 mod secrets;
 mod spec;
 pub use errors::DockerError;
+
+/// Progress of a started one-shot job.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum JobStatus {
+    /// The job's task has not finished.
+    Running,
+    /// The job's task finished. The exit code is absent when Docker rejected or
+    /// stopped the task without reporting one.
+    Finished {
+        /// Container exit code.
+        exit_code: Option<i64>,
+        /// Bounded container output in capture order.
+        output: Vec<(piqueld_core::api::LogStream, Vec<u8>)>,
+    },
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// The result of checking or initializing the local Swarm.
@@ -157,6 +173,19 @@ pub trait DockerApi: Send + Sync + 'static {
         name: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError>;
+    /// Starts a one-shot job, replacing a finished or abandoned run of the same job.
+    async fn start_job(&self, _job: &piqueld_core::DesiredJob) -> Result<(), DockerError> {
+        Err(DockerError::Unavailable("job start"))
+    }
+    /// Reads a started job's progress, including its output once it finished.
+    async fn job_status(&self, _job: &piqueld_core::DesiredJob) -> Result<JobStatus, DockerError> {
+        Err(DockerError::Unavailable("job status"))
+    }
+    /// Removes every job service owned by an application. Observation never
+    /// reports jobs, so this is the only cleanup path for their services.
+    async fn remove_jobs(&self, _ownership: &BTreeMap<String, String>) -> Result<(), DockerError> {
+        Ok(())
+    }
     /// Removes a managed private network after rechecking its ownership.
     async fn remove_network(
         &self,

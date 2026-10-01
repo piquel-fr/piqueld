@@ -56,6 +56,10 @@ diagnostic_codes! {
     GitBuildFailed => "git_build_failed",
     /// Docker paused a failed service update.
     ServiceUpdateFailed => "service_update_failed",
+    /// A one-shot job exited unsuccessfully before rollout.
+    JobFailed => "job_failed",
+    /// A one-shot job did not finish before its timeout.
+    JobTimeout => "job_timeout",
     /// A runtime resource is not safely owned.
     OwnershipConflict => "ownership_conflict",
     /// An immutable runtime configuration conflicts.
@@ -132,6 +136,11 @@ impl DiagnosticCode {
                 Application,
                 false,
                 "Open the build output, fix the source or build configuration, then deploy again.",
+            ),
+            Self::JobFailed | Self::JobTimeout => (
+                Application,
+                false,
+                "Open the job output in the build history, fix the cause, then deploy again. Running services were not changed.",
             ),
             Self::ServiceUpdateFailed => (
                 Application,

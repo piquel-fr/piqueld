@@ -81,6 +81,20 @@ pub enum OperationError {
     /// The fetched manifest is invalid or selects another application.
     #[error("repository manifest is invalid or its application name does not match")]
     ManifestInvalid,
+    /// A one-shot job failed before rollout; services were not changed.
+    #[error("{}", match .exit_code {
+        Some(code) => format!("job {job} exited with status {code}; services were not changed"),
+        None => format!("job {job} stopped without an exit code; services were not changed"),
+    })]
+    JobFailed {
+        /// Logical job name.
+        job: String,
+        /// Container exit code, absent when Docker reported none.
+        exit_code: Option<i64>,
+    },
+    /// A one-shot job exceeded its timeout and was stopped.
+    #[error("job {0} did not finish before its timeout; services were not changed")]
+    JobTimeout(String),
     /// A service update failed in Docker.
     #[error("service update paused after task failure; the previous healthy task is retained")]
     ServiceUpdateFailed,
@@ -134,6 +148,8 @@ impl OperationError {
             Self::ValidationFailed(_) => DiagnosticCode::ValidationFailed,
             Self::ManifestFetchFailed(_) => DiagnosticCode::ManifestFetchFailed,
             Self::ServiceUpdateFailed => DiagnosticCode::ServiceUpdateFailed,
+            Self::JobFailed { .. } => DiagnosticCode::JobFailed,
+            Self::JobTimeout(_) => DiagnosticCode::JobTimeout,
             Self::PlanBlocked(_) => DiagnosticCode::PlanBlocked,
             Self::ConvergenceTimeout => DiagnosticCode::ConvergenceTimeout,
             Self::PreparationTimeout => DiagnosticCode::PreparationTimeout,

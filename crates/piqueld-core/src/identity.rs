@@ -31,6 +31,8 @@ pub enum ResourceKind {
     Service,
     /// A persistent Docker volume.
     Volume,
+    /// A Swarm replicated job that runs to completion.
+    Job,
 }
 
 impl ResourceKind {
@@ -39,6 +41,7 @@ impl ResourceKind {
             Self::Network => "network",
             Self::Service => "service",
             Self::Volume => "volume",
+            Self::Job => "job",
         }
     }
 }

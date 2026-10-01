@@ -32,6 +32,15 @@ preparation if it never completed. New deployments resolve all sources again.
 Maintaining the active target during preparation does not replace the requested
 candidate or report it as successfully deployed.
 
+Before promotion, each deployment runs its `before-rollout` jobs as Swarm
+replicated jobs pinned to the local node. The private network and volumes they
+need are ensured first; services are not touched. The controller polls each job
+until it exits or its timeout passes, records its output as a build record, and
+removes the job service. A failed job fails the operation while the active
+target keeps being maintained. Observation never reports job services, so
+planning, repair, and health ignore them; deletion removes leftovers before the
+network.
+
 Explicit `deploy` captures the latest saved configuration and resolves its sources
 again without advancing its generation. Each deployment supersedes pending work;
 retries with the same idempotency key return the original operation. Deployment

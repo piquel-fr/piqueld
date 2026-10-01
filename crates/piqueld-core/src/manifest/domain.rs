@@ -1,8 +1,8 @@
 //! Typed values owned by validated applications, exposed through immutable accessors.
 
-use super::input::{self, HealthCheck, RepositoryManifest, ResourceLimits, Source};
+use super::input::{self, HealthCheck, JobRun, RepositoryManifest, ResourceLimits, Source};
 use super::{ValidationError, ValidationErrors};
-use crate::{ApplicationName, ServiceName, VolumeName};
+use crate::{ApplicationName, JobName, ServiceName, VolumeName};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use utoipa::ToSchema;
@@ -27,6 +27,24 @@ pub struct ValidatedSpec {
     /// Exact public HTTP routes.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<super::ValidatedRoute>,
+    /// One-shot jobs in declared execution order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<ValidatedJob>,
+}
+
+/// Validated one-shot job.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
+pub struct ValidatedJob {
+    /// Logical job name.
+    pub name: JobName,
+    /// Service whose prepared container settings the job reuses.
+    pub service: ServiceName,
+    /// Command replacing the service's command and arguments.
+    pub command: Vec<String>,
+    /// Deployment point at which the job runs.
+    pub run: JobRun,
+    /// Seconds the job may run before the deployment fails.
+    pub timeout_seconds: u32,
 }
 
 /// Validated application service.
@@ -112,6 +130,25 @@ impl ValidatedSpec {
                     })
                 })
                 .collect::<Result<_, ValidationErrors>>()?,
+            jobs: value
+                .jobs
+                .into_iter()
+                .enumerate()
+                .map(|(index, job)| {
+                    let path = format!("spec.jobs[{index}]");
+                    Ok(ValidatedJob {
+                        name: JobName::parse(job.name).map_err(|e| {
+                            ValidationErrors::invalid_name(format!("{path}.name"), e)
+                        })?,
+                        service: ServiceName::parse(job.service).map_err(|e| {
+                            ValidationErrors::invalid_name(format!("{path}.service"), e)
+                        })?,
+                        command: job.command,
+                        run: job.run,
+                        timeout_seconds: job.timeout_seconds,
+                    })
+                })
+                .collect::<Result<_, ValidationErrors>>()?,
             manifest: value.manifest,
             services: value
                 .services
@@ -143,6 +180,17 @@ impl ValidatedSpec {
                 .routes
                 .iter()
                 .map(super::ValidatedRoute::to_input)
+                .collect(),
+            jobs: self
+                .jobs
+                .iter()
+                .map(|job| input::Job {
+                    name: job.name.to_string(),
+                    service: job.service.to_string(),
+                    command: job.command.clone(),
+                    run: job.run,
+                    timeout_seconds: job.timeout_seconds,
+                })
                 .collect(),
             manifest: self.manifest.clone(),
             services: self
