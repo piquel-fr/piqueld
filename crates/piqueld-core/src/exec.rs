@@ -8,6 +8,11 @@
 //! Each frame is a one-byte tag, a big-endian `u32` payload length, then the
 //! payload. Decoding is transport-independent: callers append received bytes to
 //! a buffer and remove complete frames with [`ExecFrame::decode`].
+//!
+//! ```text
+//! ExecInput   1 Stdin(bytes)   2 CloseStdin (empty)   3 Resize(u16 width, u16 height)
+//! ExecOutput  1 Stdout(bytes)  2 Stderr(bytes)  3 Exit(i64)  4 Failed(ErrorBody JSON)
+//! ```
 
 use crate::{ServiceName, api::ErrorBody};
 use serde::{Deserialize, Serialize};
@@ -19,6 +24,7 @@ pub const EXEC_PROTOCOL: &str = "piqueld-exec.v1";
 /// Largest accepted frame payload.
 pub const MAX_FRAME_PAYLOAD: usize = 1024 * 1024;
 
+/// Frame header size: the tag byte plus the `u32` payload length.
 const HEADER_BYTES: usize = 5;
 
 /// Program and arguments to execute. The program must be non-empty.
@@ -154,6 +160,10 @@ pub enum ExecOutput {
     Failed(ErrorBody),
 }
 
+/// Appends one frame to `out`.
+///
+/// # Panics
+/// Panics if `payload` is longer than `u32::MAX` bytes.
 fn write_frame(out: &mut Vec<u8>, tag: u8, payload: &[u8]) {
     let length = u32::try_from(payload.len()).expect("frame payloads are bounded by callers");
     out.push(tag);
@@ -161,7 +171,10 @@ fn write_frame(out: &mut Vec<u8>, tag: u8, payload: &[u8]) {
     out.extend_from_slice(payload);
 }
 
-/// Removes the first complete `(tag, payload)` pair from `buffer`.
+/// Removes the first complete `(tag, payload)` pair from `buffer`, or returns
+/// `None` until the whole frame has arrived. Fails with
+/// [`ExecFrameError::TooLarge`] as soon as the header announces an oversized
+/// payload.
 fn take_frame(buffer: &mut Vec<u8>) -> Result<Option<(u8, Vec<u8>)>, ExecFrameError> {
     let Some(header) = buffer.first_chunk::<HEADER_BYTES>() else {
         return Ok(None);

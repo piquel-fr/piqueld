@@ -36,6 +36,14 @@ pub struct ExecIo {
 impl BollardDocker {
     /// Creates `request` in a task of its service whose container runs, or
     /// returns `None` when the service has none.
+    ///
+    /// 1. Resolves the logical service to the owned Swarm service.
+    /// 2. Picks a task desired running, preferring `running` over `starting`.
+    /// 3. Creates an unstarted Docker exec in that task's container.
+    ///
+    /// # Errors
+    /// Returns Docker request errors from listing services or tasks, or
+    /// creating the exec.
     pub(super) async fn create_task_exec(
         &self,
         instance: &InstanceId,
@@ -107,6 +115,10 @@ impl BollardDocker {
     ///
     /// Input failures only close standard input: a command may exit before
     /// reading all of it. Output delivery failures mean the client is gone.
+    ///
+    /// # Errors
+    /// Returns Docker errors from starting, reading or inspecting the exec, and
+    /// a request error when the output channel is closed.
     pub(super) async fn run_task_exec(
         &self,
         exec: &Exec,

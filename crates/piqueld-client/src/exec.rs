@@ -97,6 +97,8 @@ impl ExecWriter {
     }
 }
 
+/// Wraps a failure on the upgraded connection, including malformed frames, as
+/// an exchange transport error.
 fn exchange(error: &impl std::fmt::Display) -> ClientError {
     ClientError::Transport {
         message: format!("exec stream failed: {error}"),

@@ -47,7 +47,8 @@ impl ApplicationService {
 }
 
 impl ExecSession {
-    /// Streams the command until it exits, then records its exit code.
+    /// Streams the command until it exits, then records `command_finished`
+    /// with its exit code. A failure to record completion is only logged.
     /// # Errors
     /// Returns runtime errors, including a disconnected client.
     pub async fn run(self, io: ExecIo) -> Result<i64, ApplicationError> {

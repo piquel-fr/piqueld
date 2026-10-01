@@ -26,6 +26,13 @@ pub(super) struct ExecUpgrade(OnUpgrade);
 impl<S: Send + Sync> FromRequestParts<S> for ExecUpgrade {
     type Rejection = ApiError;
 
+    /// Takes hyper's pending upgrade when the request asks for it with
+    /// `Connection: upgrade` and `Upgrade: piqueld-exec.v1` (comma-separated
+    /// tokens, case-insensitive).
+    ///
+    /// # Errors
+    /// Rejects with 426 `upgrade_required` when either header is missing or the
+    /// connection offers no upgrade.
     async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
         let header_contains = |name: header::HeaderName, value: &str| {
             parts
@@ -52,10 +59,37 @@ impl<S: Send + Sync> FromRequestParts<S> for ExecUpgrade {
     }
 }
 
+/// Runs a one-off command in a running task of an application service.
+///
+/// The command inherits the task's image, environment, secrets, mounts and
+/// networks; healthy tasks are preferred over tasks still starting. The request
+/// must carry `Connection: Upgrade` and `Upgrade: piqueld-exec.v1`, otherwise it
+/// fails with 426 `upgrade_required`. Validation, 404 `not_found`, 409
+/// `service_not_running` and Docker errors are ordinary JSON errors returned
+/// before the upgrade.
+///
+/// After `101 Switching Protocols`, both directions exchange frames made of a
+/// one-byte tag, a big-endian `u32` payload length (at most 1 MiB) and the
+/// payload:
+///
+/// ```text
+/// client -> daemon  1 stdin bytes
+///                   2 end of stdin (ignored with a terminal; disconnect to detach)
+///                   3 terminal resize: u16 width, u16 height
+/// daemon -> client  1 stdout bytes (terminal output with tty)
+///                   2 stderr bytes
+///                   3 final: exit code as big-endian i64
+///                   4 final: JSON error body
+/// ```
+///
+/// History records `command_started` and `command_finished` events with the
+/// account, task and exit code, never the command.
 #[utoipa::path(post,path="/api/v1/applications/{id}/exec",operation_id="execApplicationCommand",params(("id"=String,Path)),request_body=ExecRequest,
- responses((status=101,description="Switched to the piqueld-exec.v1 frame protocol; see piqueld_core::exec"),
+ responses((status=101,description="Switched to the piqueld-exec.v1 frame protocol described in this operation's description"),
  (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),
  (status=426,response=inline(ApiErrorResponse)),(status=502,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+// Creates the command and records `command_started` before answering 101, then
+// streams on a spawned task once hyper completes the upgrade.
 pub(super) async fn exec(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
@@ -88,7 +122,9 @@ pub(super) async fn exec(
 }
 
 /// Relays frames between the client connection and the running command, then
-/// sends the final exit or failure frame.
+/// sends the final exit or failure frame. Malformed client input ends input
+/// forwarding, which closes the command's standard input. When writing to the
+/// client fails, the command stream stops and no final frame is written.
 async fn stream(
     session: ExecSession,
     connection: impl AsyncRead + AsyncWrite + Send + 'static,

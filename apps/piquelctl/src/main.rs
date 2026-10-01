@@ -19,10 +19,12 @@ use output::{Console, reports::ProfilesReport};
 use std::{process::ExitCode, time::Duration};
 use tokio::time::Instant;
 
-/// Parses arguments, then dispatches in three stages:
-/// 1. `profiles` is answered from loaded profile files without connecting.
-/// 2. Connection settings are resolved; `login` runs under its own device-flow deadline.
-/// 3. Every other command runs under the `--timeout` supervisor.
+/// Parses arguments, then dispatches in stages:
+/// 1. `app validate` runs locally, before profiles are loaded.
+/// 2. `profiles` is answered from loaded profile files without connecting.
+/// 3. Connection settings are resolved; `login` runs under its own device-flow
+///    deadline, and `app exec` runs unbounded, exiting with the command's code.
+/// 4. Every other command runs under the `--timeout` supervisor.
 ///
 /// Errors are rendered to stderr and mapped to `ErrorKind` exit codes.
 #[tokio::main]

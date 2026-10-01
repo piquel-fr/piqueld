@@ -19,6 +19,8 @@ use tokio::{
     sync::mpsc,
 };
 
+// Arguments of `app exec`. A `///` here would override the subcommand's
+// `--help` summary in `AppCommand::Exec`.
 #[derive(Debug, Args)]
 pub(crate) struct ExecArgs {
     /// Application name or stable ID.
@@ -38,6 +40,18 @@ pub(crate) struct ExecArgs {
 
 impl ExecArgs {
     /// Runs the command and returns its exit code.
+    ///
+    /// 1. Validates the command and, for `--tty`, that stdin is a terminal.
+    /// 2. Resolves the application and opens the exec stream.
+    /// 3. Switches the terminal to raw mode for `--tty`, restoring it on return.
+    /// 4. Forwards stdin and window resizes in the background while writing
+    ///    output until the final frame.
+    ///
+    /// Exit codes outside `0..=255` become 255.
+    ///
+    /// # Errors
+    /// Returns input errors, API and transport errors, local terminal or output
+    /// errors, and the daemon's failure frame when the session fails.
     pub(crate) async fn run(&self, client: &Client) -> Result<ExitCode> {
         let command = ExecCommand::parse(self.command.clone())
             .map_err(|error| CliError::new(ErrorKind::Input, error.to_string()))?;
@@ -94,6 +108,7 @@ async fn receive(mut output: ExecReader) -> Result<i64> {
     }
 }
 
+/// Writes and flushes one output chunk so interactive output appears immediately.
 fn write(mut target: impl Write, data: &[u8]) -> Result<()> {
     target
         .write_all(data)
@@ -159,6 +174,7 @@ fn read_stdin() -> mpsc::Receiver<Vec<u8>> {
 struct RawTerminal(Termios);
 
 impl RawTerminal {
+    /// Switches standard input to raw mode, remembering the original mode.
     fn enable() -> Result<Self> {
         let original = tcgetattr(std::io::stdin())
             .map_err(|error| local_error("read terminal mode", &error))?;
@@ -169,6 +185,7 @@ impl RawTerminal {
         Ok(Self(original))
     }
 
+    /// Reads the current window size of the terminal on standard input.
     fn size() -> Result<TerminalSize> {
         let size = tcgetwinsize(std::io::stdin())
             .map_err(|error| local_error("read terminal size", &error))?;
@@ -185,6 +202,8 @@ impl Drop for RawTerminal {
     }
 }
 
+/// Builds a general error for a failed local operation, phrased as
+/// `could not <action>: <error>`.
 fn local_error(action: &str, error: &impl std::fmt::Display) -> CliError {
     CliError::new(ErrorKind::General, format!("could not {action}: {error}"))
 }

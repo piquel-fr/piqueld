@@ -7096,6 +7096,7 @@
     },
     "/api/v1/applications/{id}/exec": {
       "post": {
+        "description": "The command inherits the task's image, environment, secrets, mounts and\nnetworks; healthy tasks are preferred over tasks still starting. The request\nmust carry `Connection: Upgrade` and `Upgrade: piqueld-exec.v1`, otherwise it\nfails with 426 `upgrade_required`. Validation, 404 `not_found`, 409\n`service_not_running` and Docker errors are ordinary JSON errors returned\nbefore the upgrade.\n\nAfter `101 Switching Protocols`, both directions exchange frames made of a\none-byte tag, a big-endian `u32` payload length (at most 1 MiB) and the\npayload:\n\n```text\nclient -> daemon  1 stdin bytes\n                  2 end of stdin (ignored with a terminal; disconnect to detach)\n                  3 terminal resize: u16 width, u16 height\ndaemon -> client  1 stdout bytes (terminal output with tty)\n                  2 stderr bytes\n                  3 final: exit code as big-endian i64\n                  4 final: JSON error body\n```\n\nHistory records `command_started` and `command_finished` events with the\naccount, task and exit code, never the command.",
         "operationId": "execApplicationCommand",
         "parameters": [
           {
@@ -7119,7 +7120,7 @@
         },
         "responses": {
           "101": {
-            "description": "Switched to the piqueld-exec.v1 frame protocol; see piqueld_core::exec"
+            "description": "Switched to the piqueld-exec.v1 frame protocol described in this operation's description"
           },
           "400": {
             "content": {
@@ -7191,7 +7192,8 @@
             },
             "description": "Structured, sanitized error"
           }
-        }
+        },
+        "summary": "Runs a one-off command in a running task of an application service."
       }
     },
     "/api/v1/applications/{id}/logs": {
