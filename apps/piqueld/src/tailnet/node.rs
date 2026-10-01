@@ -233,25 +233,39 @@ struct Monitor {
 impl Monitor {
     /// Owns tailscaled until cancellation, then drops (and so kills) it.
     /// Fails if tailscaled exits on its own.
-    async fn run(mut self, mut daemon: Child, cancellation: CancellationToken) -> Result<()> {
+    async fn run(mut self, daemon: Child, cancellation: CancellationToken) -> Result<()> {
+        Self::supervise(daemon, cancellation, self.refresh_loop()).await
+    }
+
+    /// Keep supervision active even while a refresh waits for the CLI.
+    async fn supervise(
+        mut daemon: Child,
+        cancellation: CancellationToken,
+        refresh: impl Future<Output = ()>,
+    ) -> Result<()> {
+        tokio::select! {
+            () = cancellation.cancelled() => Ok(()),
+            exit = daemon.wait() => {
+                // Shutdown signals reach tailscaled too, and may win the race.
+                if tokio::time::timeout(SHUTDOWN_RACE, cancellation.cancelled()).await.is_ok() {
+                    return Ok(());
+                }
+                tracing::error!(?exit, "tailscaled exited; stopping piqueld");
+                cancellation.cancel();
+                bail!("tailscaled exited unexpectedly ({})", exit?);
+            }
+            () = refresh => Ok(()),
+        }
+    }
+
+    async fn refresh_loop(&mut self) {
         let mut ticker = tokio::time::interval_at(
             tokio::time::Instant::now() + REFRESH_INTERVAL,
             REFRESH_INTERVAL,
         );
         loop {
-            tokio::select! {
-                () = cancellation.cancelled() => return Ok(()),
-                exit = daemon.wait() => {
-                    // Shutdown signals reach tailscaled too, and may win the race.
-                    if tokio::time::timeout(SHUTDOWN_RACE, cancellation.cancelled()).await.is_ok() {
-                        return Ok(());
-                    }
-                    tracing::error!(?exit, "tailscaled exited; stopping piqueld");
-                    cancellation.cancel();
-                    bail!("tailscaled exited unexpectedly ({})", exit?);
-                }
-                _ = ticker.tick() => self.refresh().await,
-            }
+            ticker.tick().await;
+            self.refresh().await;
         }
     }
 
@@ -330,6 +344,55 @@ impl Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stalled_refresh_does_not_block_shutdown_or_child_exit() {
+        for child_exits in [false, true] {
+            // EOF lets the test end the child without signalling other processes.
+            let mut daemon = Command::new("sh")
+                .args(["-c", "read ignored"])
+                .stdin(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let stdin = daemon.stdin.take().unwrap();
+            let cancellation = CancellationToken::new();
+            let refresh_dropped = CancellationToken::new();
+            let guard = refresh_dropped.clone().drop_guard();
+            let (started, running) = tokio::sync::oneshot::channel();
+            let supervisor = tokio::spawn(Monitor::supervise(
+                daemon,
+                cancellation.clone(),
+                async move {
+                    let _guard = guard;
+                    started.send(()).unwrap();
+                    std::future::pending::<()>().await;
+                },
+            ));
+            running.await.unwrap();
+            if child_exits {
+                drop(stdin);
+            } else {
+                cancellation.cancel();
+            }
+            let result = tokio::time::timeout(Duration::from_secs(5), supervisor)
+                .await
+                .expect("a stalled refresh must not block supervision")
+                .unwrap();
+            if child_exits {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("tailscaled exited unexpectedly")
+                );
+            } else {
+                result.unwrap();
+            }
+            assert!(cancellation.is_cancelled());
+            assert!(refresh_dropped.is_cancelled());
+        }
+    }
 
     fn observe(state: &str, certificate_error: bool, expires_at_ms: i64) -> Observation {
         Observation {

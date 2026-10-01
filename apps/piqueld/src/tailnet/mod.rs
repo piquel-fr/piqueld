@@ -12,11 +12,14 @@ pub use proxy::ProxyListener;
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
-use std::{path::PathBuf, process::Stdio};
+use std::{path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::Command,
 };
+
+/// Allows certificate issuance time while bounding non-interactive commands.
+const COMMAND_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// The `tailscale` CLI, pointed at the dedicated daemon's socket.
 struct Cli {
@@ -41,12 +44,35 @@ struct NodeStatus {
 impl Cli {
     /// Runs `tailscale <args>` to completion and returns its stdout. Stderr is
     /// logged as it arrives, which is how interactive login URLs from `up`
-    /// reach the operator, and is included in the error on failure.
+    /// reach the operator, and is included in the error on failure. Only `up`
+    /// may wait indefinitely for interactive approval.
     async fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
         let operation = args.first().copied().unwrap_or_default();
-        let mut child = Command::new("tailscale")
-            .arg(format!("--socket={}", self.socket.display()))
-            .args(args)
+        Self::run_command(
+            Command::new("tailscale")
+                .arg(format!("--socket={}", self.socket.display()))
+                .args(args),
+            operation,
+        )
+        .await
+    }
+
+    async fn run_command(command: &mut Command, operation: &str) -> Result<Vec<u8>> {
+        let output = Self::output(command, operation);
+        if operation == "up" {
+            output.await
+        } else {
+            tokio::time::timeout(COMMAND_TIMEOUT, output)
+                .await
+                .with_context(|| {
+                    format!("tailscale {operation} timed out after {COMMAND_TIMEOUT:?}")
+                })?
+        }
+    }
+
+    /// Dropping this future on timeout or shutdown kills the CLI child.
+    async fn output(command: &mut Command, operation: &str) -> Result<Vec<u8>> {
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -107,6 +133,28 @@ impl Cli {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn noninteractive_commands_time_out_but_login_can_wait() {
+        for operation in ["status", "cert", "serve", "up"] {
+            let mut command = Command::new("sh");
+            command.args(["-c", "exec sleep 600"]);
+            let result = tokio::time::timeout(
+                COMMAND_TIMEOUT * 2,
+                Cli::run_command(&mut command, operation),
+            )
+            .await;
+            if operation == "up" {
+                assert!(result.is_err(), "interactive login must keep waiting");
+            } else {
+                let error = result.unwrap().unwrap_err().to_string();
+                assert!(
+                    error.contains(&format!("tailscale {operation} timed out")),
+                    "{error}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn status_reads_login_state_and_node_name() {
