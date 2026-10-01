@@ -380,9 +380,9 @@ pub enum ConfigError {
 
 /// Installs tracing filtered by `RUST_LOG` when present.
 ///
-/// Interactive terminals receive plain-text events for readability; piped or
-/// supervised runs (systemd, containers, log collectors) receive structured
-/// JSON.
+/// Interactive terminals and the systemd journal receive plain text. The
+/// journal gets it without colors or timestamps, which it records itself.
+/// Other pipes (containers, log collectors) receive structured JSON.
 ///
 /// # Errors
 ///
@@ -393,6 +393,12 @@ pub fn init_tracing() -> Result<(), tracing_subscriber::util::TryInitError> {
     use std::io::IsTerminal as _;
     let layer = if std::io::stdout().is_terminal() {
         tracing_subscriber::fmt::layer().compact().boxed()
+    } else if std::env::var_os("JOURNAL_STREAM").is_some() {
+        tracing_subscriber::fmt::layer()
+            .compact()
+            .with_ansi(false)
+            .without_time()
+            .boxed()
     } else {
         tracing_subscriber::fmt::layer().json().boxed()
     };
