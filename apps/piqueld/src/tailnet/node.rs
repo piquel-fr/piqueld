@@ -19,6 +19,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     process::{Child, Command},
     sync::watch,
+    task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -205,13 +206,18 @@ impl Node {
     }
 
     /// Starts accepting forwarded connections and refreshing status until
-    /// cancellation. If tailscaled exits, the daemon is cancelled.
+    /// cancellation. Returns the listener and the supervisor task, which
+    /// cancels the daemon and fails if tailscaled exits, so piqueld exits with
+    /// an error and the service manager restarts both.
     #[must_use]
-    pub fn listener(self, cancellation: CancellationToken) -> NodeListener {
+    pub fn listener(
+        self,
+        cancellation: CancellationToken,
+    ) -> (NodeListener, JoinHandle<Result<()>>) {
         let listener = ProxyListener::spawn(self.listener, self.address, cancellation.clone());
-        tokio::spawn(self.monitor.run(self.daemon, cancellation));
+        let supervisor = tokio::spawn(self.monitor.run(self.daemon, cancellation));
         let tap: fn(&mut TcpStream) = |_| {};
-        listener.tap_io(tap)
+        (listener.tap_io(tap), supervisor)
     }
 }
 
@@ -226,21 +232,23 @@ struct Monitor {
 
 impl Monitor {
     /// Owns tailscaled until cancellation, then drops (and so kills) it.
-    async fn run(mut self, mut daemon: Child, cancellation: CancellationToken) {
+    /// Fails if tailscaled exits on its own.
+    async fn run(mut self, mut daemon: Child, cancellation: CancellationToken) -> Result<()> {
         let mut ticker = tokio::time::interval_at(
             tokio::time::Instant::now() + REFRESH_INTERVAL,
             REFRESH_INTERVAL,
         );
         loop {
             tokio::select! {
-                () = cancellation.cancelled() => return,
+                () = cancellation.cancelled() => return Ok(()),
                 exit = daemon.wait() => {
                     // Shutdown signals reach tailscaled too, and may win the race.
-                    if tokio::time::timeout(SHUTDOWN_RACE, cancellation.cancelled()).await.is_err() {
-                        tracing::error!(?exit, "tailscaled exited; stopping piqueld");
-                        cancellation.cancel();
+                    if tokio::time::timeout(SHUTDOWN_RACE, cancellation.cancelled()).await.is_ok() {
+                        return Ok(());
                     }
-                    return;
+                    tracing::error!(?exit, "tailscaled exited; stopping piqueld");
+                    cancellation.cancel();
+                    bail!("tailscaled exited unexpectedly ({})", exit?);
                 }
                 _ = ticker.tick() => self.refresh().await,
             }

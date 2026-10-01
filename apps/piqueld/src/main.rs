@@ -106,15 +106,17 @@ async fn main() -> Result<()> {
             )
         })
         .collect();
-    if let Some(node) = tailnet {
+    let tailnet_supervisor = tailnet.map(|node| {
         let mut hosts = config.server.allowed_hosts.clone();
         hosts.push(node.dns_name().to_owned());
+        let (listener, supervisor) = node.listener(cancellation.clone());
         tcp_apis.push(spawn_tcp_api(
-            node.listener(cancellation.clone()),
+            listener,
             web_router(hosts),
             cancellation.clone(),
         ));
-    }
+        supervisor
+    });
     let metrics_apis: Vec<_> = metrics_listeners
         .into_iter()
         .map(|listener| {
@@ -144,6 +146,9 @@ async fn main() -> Result<()> {
         .await
         .context("reconciliation controller failed")?
         .context("reconciliation controller stopped unexpectedly")?;
+    if let Some(supervisor) = tailnet_supervisor {
+        supervisor.await.context("tailnet supervisor failed")??;
+    }
     Ok(())
 }
 
