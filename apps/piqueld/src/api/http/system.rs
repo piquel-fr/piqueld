@@ -3,6 +3,11 @@ use piqueld_core::api::{Envelope, SystemStatus};
 
 use super::{ApiState, ok};
 
+/// Gets daemon status.
+///
+/// Reports the daemon version, API version, instance ID, and the recency of the
+/// last successful `piqueld backup`. Returns 503 when control-plane storage
+/// cannot be read.
 #[utoipa::path(
     get,
     path = "/api/v1/system/status",

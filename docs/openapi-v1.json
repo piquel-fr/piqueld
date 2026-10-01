@@ -16739,6 +16739,7 @@
     },
     "/api/v1/system/status": {
       "get": {
+        "description": "Reports the daemon version, API version, instance ID, and the recency of the\nlast successful `piqueld backup`. Returns 503 when control-plane storage\ncannot be read.",
         "operationId": "systemStatus",
         "responses": {
           "200": {

@@ -22,6 +22,7 @@ use zeroize::Zeroizing;
 
 /// Archive layout version written into every manifest.
 const ARCHIVE_FORMAT: u32 = 1;
+// Entry names inside an archive, matching their paths below the data directory.
 const MANIFEST: &str = "manifest.json";
 const DATABASE: &str = "piqueld.db";
 const SECRET_KEY: &str = "secrets.key";
@@ -97,6 +98,7 @@ pub enum BackupError {
 }
 
 impl BackupError {
+    /// Builds a `map_err` closure tagging an I/O failure with its step and path.
     fn io(action: &'static str, path: &Path) -> impl FnOnce(io::Error) -> Self {
         let path = path.to_path_buf();
         move |source| Self::Io {
@@ -106,6 +108,7 @@ impl BackupError {
         }
     }
 
+    /// Builds a `map_err` closure tagging a database failure with its step.
     fn database(action: &'static str) -> impl FnOnce(sqlx::Error) -> Self {
         move |source| Self::Database { action, source }
     }
@@ -127,7 +130,12 @@ pub struct BackupManifest {
 }
 
 impl BackupManifest {
-    /// Describes the database behind `connection`, rejecting schemas it cannot represent.
+    /// Describes the database behind `connection`, stamped with this binary's
+    /// version and the current time.
+    ///
+    /// # Errors
+    /// Returns `Uninitialized` for an unmigrated database, otherwise the
+    /// `schema_version` error or the failed instance ID read.
     async fn read(connection: &mut SqliteConnection) -> Result<Self, BackupError> {
         let schema_version = schema_version(connection).await?;
         if schema_version == 0 {
@@ -148,6 +156,9 @@ impl BackupManifest {
     }
 
     /// Accepts only archives this binary can restore and later open.
+    ///
+    /// # Errors
+    /// Returns `UnsupportedFormat` or `NewerSchema`.
     fn check(&self) -> Result<(), BackupError> {
         if self.format != ARCHIVE_FORMAT {
             return Err(BackupError::UnsupportedFormat(self.format));
@@ -162,7 +173,11 @@ impl BackupManifest {
     }
 }
 
-/// Reads and bounds `PRAGMA user_version`.
+/// Reads `PRAGMA user_version`; zero means no migration has run.
+///
+/// # Errors
+/// Returns `NewerSchema` above `SCHEMA_VERSION`, `Inconsistent` for a negative
+/// version, or the failed query.
 async fn schema_version(connection: &mut SqliteConnection) -> Result<u64, BackupError> {
     let version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(&mut *connection)
@@ -180,6 +195,9 @@ async fn schema_version(connection: &mut SqliteConnection) -> Result<u64, Backup
 }
 
 /// Opens an existing database without creating, migrating, or changing its journal mode.
+///
+/// # Errors
+/// Fails if `path` is a symlink or non-regular file, or cannot be opened.
 async fn connect(path: &Path) -> Result<SqliteConnection, BackupError> {
     ensure_database_target(path).map_err(BackupError::io("use database", path))?;
     let options = SqliteConnectOptions::new()
@@ -192,6 +210,9 @@ async fn connect(path: &Path) -> Result<SqliteConnection, BackupError> {
 }
 
 /// Backup and restore of one daemon data directory.
+///
+/// Used by the `piqueld backup`/`restore` subcommands and by [`Store::open`] for
+/// automatic pre-migration archives.
 pub struct Backups<'a> {
     data_dir: &'a Path,
 }
@@ -246,8 +267,17 @@ impl<'a> Backups<'a> {
         Ok((output, manifest))
     }
 
-    /// Writes `<data_dir>/backups/pre-<schema>-<ms>.tar` before migrations run,
-    /// keeping the newest few.
+    /// Archives the database behind `connection` into
+    /// `<data_dir>/backups/pre-<schema>-<ms>.tar` before migrations run, then
+    /// prunes that directory to the newest `PRE_MIGRATION_KEEP` pre-migration
+    /// archives. Unlike [`Self::create`], the backup time is not recorded.
+    ///
+    /// ```text
+    /// backups/pre-10-1790000000000.tar   schema 10, written at that Unix ms
+    /// ```
+    ///
+    /// # Errors
+    /// Returns the failed step; [`Store::open`] then aborts without migrating.
     pub(super) async fn before_migration(
         &self,
         connection: &mut SqliteConnection,
@@ -266,6 +296,13 @@ impl<'a> Backups<'a> {
 
     /// Restores `archive` into the data directory, which must be empty or absent.
     /// The database keeps its archived schema; the daemon migrates it on start.
+    ///
+    /// 1. Prepares and locks the data directory, then requires it to be empty.
+    /// 2. Unpacks the archive into a `.restore-*` staging directory inside it,
+    ///    accepting only known entries after a supported manifest.
+    /// 3. Checks database integrity and that it matches the manifest.
+    /// 4. Renames the database, key, and ingress state into place and syncs the
+    ///    directory. The staging directory is removed on return.
     ///
     /// # Errors
     /// Rejects newer schemas, unexpected entries, damaged databases, and a
@@ -309,6 +346,13 @@ impl<'a> Backups<'a> {
 
     /// Snapshots the database and key, then archives them with ingress state
     /// under `manifest`, which describes the database behind `connection`.
+    ///
+    /// The snapshot is a `VACUUM INTO` temporary file next to `output`. The key
+    /// is read before and after it so a concurrent key replacement is caught.
+    ///
+    /// # Errors
+    /// Returns `KeyChanged` if the key changed during the snapshot, or the
+    /// failed snapshot, read, or archive step.
     async fn write(
         &self,
         connection: &mut SqliteConnection,
@@ -365,13 +409,23 @@ impl Store {
 /// Inputs gathered from the live data directory, written synchronously.
 struct Archive {
     manifest: BackupManifest,
+    /// Consistent database copy; deleted when the archive is dropped.
     snapshot: NamedTempFile,
+    /// Secret key read alongside the snapshot; `None` when no key exists yet.
     key: Option<Zeroizing<Vec<u8>>>,
+    /// Source of the ingress state, read while archiving.
     data_dir: PathBuf,
     output: PathBuf,
 }
 
 impl Archive {
+    /// Writes the tar to a temporary file beside `output`, syncs it, and moves
+    /// it into place only if `output` still does not exist. Entries are the
+    /// manifest first, then the database, the key if present, and ingress state.
+    ///
+    /// # Errors
+    /// Returns the failed step, including `output` already existing; the
+    /// temporary file is removed on failure.
     fn write(self) -> Result<(), BackupError> {
         let parent = parent_of(&self.output);
         let file =
@@ -428,6 +482,7 @@ struct Entries<'a, W: Write> {
 }
 
 impl<W: Write> Entries<'_, W> {
+    /// Appends one entry stamped with the manifest time.
     fn append(
         &mut self,
         kind: tar::EntryType,
@@ -445,16 +500,19 @@ impl<W: Write> Entries<'_, W> {
             .map_err(BackupError::io("write archive", self.output))
     }
 
+    /// Appends a `0600` regular file.
     fn file(&mut self, name: &Path, data: &[u8]) -> Result<(), BackupError> {
         self.append(tar::EntryType::Regular, 0o600, name, data)
     }
 
+    /// Appends a `0700` directory.
     fn directory(&mut self, name: &Path) -> Result<(), BackupError> {
         self.append(tar::EntryType::Directory, 0o700, name, &[])
     }
 
     /// Appends a directory tree in name order. Files are read whole, since the
-    /// gateway may rewrite them while the archive is being written.
+    /// gateway may rewrite them while the archive is being written. A missing
+    /// `source` is skipped; symlinks and special files are skipped with a warning.
     fn tree(&mut self, source: &Path, name: &Path) -> Result<(), BackupError> {
         let metadata = match fs::symlink_metadata(source) {
             Ok(metadata) => metadata,
@@ -486,6 +544,12 @@ impl<W: Write> Entries<'_, W> {
 }
 
 /// Unpacks `archive` into `staging`, returning its checked manifest.
+///
+/// # Errors
+/// Returns the failed archive read, `Manifest` unless the first entry is a
+/// valid manifest, the manifest's `check` error, `UnexpectedEntry` for any
+/// entry outside the database, key, and ingress state (or escaping `staging`),
+/// and `MissingDatabase` when no database was unpacked.
 fn extract(archive: &Path, staging: &Path) -> Result<BackupManifest, BackupError> {
     let file = File::open(archive).map_err(BackupError::io("open archive", archive))?;
     let mut archive_reader = tar::Archive::new(BufReader::new(file));
@@ -536,6 +600,10 @@ fn extract(archive: &Path, staging: &Path) -> Result<BackupManifest, BackupError
 }
 
 /// Checks a restored database's integrity and that it matches its manifest.
+///
+/// # Errors
+/// Returns `Integrity` with the `PRAGMA integrity_check` findings, or
+/// `Inconsistent` when the schema version or instance ID differs.
 async fn verify(path: &Path, manifest: &BackupManifest) -> Result<(), BackupError> {
     let mut connection = connect(path).await?;
     let integrity: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
@@ -572,7 +640,14 @@ fn read_key(path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, BackupError> {
     }
 }
 
-/// Deletes all but the newest `keep` archives named `<prefix>…-<ms>.tar`.
+/// Deletes all but the newest `keep` archives named `<prefix>…<ms>.tar`,
+/// ordered by the millisecond timestamp after the last `-`. Other files are
+/// left alone.
+///
+/// ```text
+/// prefix "piqueld-":  piqueld-1790000000000.tar
+/// prefix "pre-":      pre-10-1790000000000.tar
+/// ```
 fn prune(directory: &Path, prefix: &str, keep: usize) -> Result<(), BackupError> {
     let mut archives = Vec::new();
     for entry in fs::read_dir(directory).map_err(BackupError::io("read directory", directory))? {
@@ -595,6 +670,8 @@ fn prune(directory: &Path, prefix: &str, keep: usize) -> Result<(), BackupError>
     Ok(())
 }
 
+/// Creates `path` and missing parents with mode `0700`; existing directories
+/// keep their permissions.
 fn create_private_dir(path: &Path) -> Result<(), BackupError> {
     fs::DirBuilder::new()
         .recursive(true)
@@ -603,6 +680,7 @@ fn create_private_dir(path: &Path) -> Result<(), BackupError> {
         .map_err(BackupError::io("create backup directory", path))
 }
 
+/// Fsyncs a directory so renames and new entries in it are durable.
 fn sync_dir(path: &Path) -> Result<(), BackupError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())

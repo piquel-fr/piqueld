@@ -320,9 +320,12 @@ impl Store {
     /// 1. Refuses symlinks and non-regular files at `path`.
     /// 2. Reads `PRAGMA user_version` and rejects databases newer than this binary
     ///    or whose `instance_metadata` disagrees with it.
-    /// 3. Applies each pending migration in its own `BEGIN IMMEDIATE` transaction
+    /// 3. Before migrating an existing database, writes a pre-migration archive
+    ///    to a `backups` directory beside it (see [`Backups`]) so the old binary
+    ///    can be restored; a failed backup aborts before any migration.
+    /// 4. Applies each pending migration in its own `BEGIN IMMEDIATE` transaction
     ///    (see `apply_migration`), so every committed version is reopenable.
-    /// 4. Re-reads and validates the instance ID and recorded schema version.
+    /// 5. Re-reads and validates the instance ID and recorded schema version.
     ///
     /// # Errors
     /// Returns a sanitized storage or schema compatibility error.
@@ -495,8 +498,8 @@ impl Store {
 }
 
 /// Verifies the database target is a regular file or absent before `SQLite`
-/// creates it. The parent directory's privacy is enforced by the daemon's data
-/// directory preparation, not here.
+/// opens or creates it. The parent directory's privacy is enforced by the
+/// daemon's data directory preparation, not here.
 fn ensure_database_target(path: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => Ok(()),

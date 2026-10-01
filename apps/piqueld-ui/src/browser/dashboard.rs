@@ -153,6 +153,7 @@ fn connection_readiness(state: ConnectionState) -> View {
     )
 }
 
+/// Readiness card for backup recency, shown as pending once backups are stale.
 fn backup_readiness(status: &BackupStatus) -> View {
     let now_ms = js_sys::Date::now()
         .to_string()

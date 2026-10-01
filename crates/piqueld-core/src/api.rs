@@ -231,6 +231,12 @@ impl BackupStatus {
     }
 
     /// Human summary shared by the CLI and dashboard, observed at `now_ms`.
+    ///
+    /// ```text
+    /// No backup recorded; run piqueld backup
+    /// Last backup 5 hours ago
+    /// Last backup 9 days ago; back up at least weekly
+    /// ```
     #[must_use]
     pub fn summary(&self, now_ms: i64) -> String {
         let Some(at) = self.last_success_at_ms else {

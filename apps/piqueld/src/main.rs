@@ -58,9 +58,11 @@ enum Command {
     },
 }
 
-/// Starts the daemon and runs until a shutdown signal.
+/// Starts the daemon and runs until a shutdown signal, or runs a maintenance
+/// subcommand against the configured data directory and exits.
 ///
-/// 1. Loads configuration and initializes tracing.
+/// 1. Loads configuration and initializes tracing; a subcommand runs here
+///    instead of the remaining steps.
 /// 2. Prepares and locks the data directory, then validates and locks the runtime
 ///    directory and binds every listener, so misconfiguration fails before any
 ///    state is opened.
@@ -166,6 +168,8 @@ async fn main() -> Result<()> {
 }
 
 impl Command {
+    /// Runs the command against `data_dir` without starting any daemon tasks,
+    /// logging the written archive or restored instance on success.
     async fn run(self, data_dir: &std::path::Path) -> Result<()> {
         let backups = Backups::new(data_dir);
         match self {
