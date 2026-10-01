@@ -37,6 +37,11 @@ is deleted. Secret values are never manifest fields, and there are no manifest
 fields for directly published ports. Exact-host HTTP routes are declared in
 `spec.routes`; see [managed ingress](ingress.md).
 
+Services of one application share a private network on which each answers to
+its manifest name, so `web` reaches a `postgres` service at `postgres:5432`.
+Names resolve only within that application; identically named services in other
+applications are unreachable.
+
 Names are 1–63 lowercase ASCII letters, digits, or hyphens; they start with a
 letter and cannot end with a hyphen. Applications may be empty. Deploying an empty application removes its services and network, retaining volume data.
 Image references reject URL schemes, credentials, malformed tags, and malformed

@@ -200,7 +200,7 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
         healthcheck: desired.healthcheck.clone(),
         healthcheck_configured: desired.healthcheck.is_some(),
         resources: desired.resources.clone(),
-        networks: desired.networks.iter().map(ToString::to_string).collect(),
+        networks: desired.network_attachments(),
         labels: desired.labels.clone(),
         runtime_configuration_matches: true,
         tasks: vec![ObservedTask {

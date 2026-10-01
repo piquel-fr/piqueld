@@ -1,6 +1,6 @@
 use super::{
     BTreeSet, BollardDocker, HEALTH_RETRIES, HealthConfig, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
-    RESTART_DELAY, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum,
+    RESTART_DELAY, SERVICE_LABEL, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum,
     ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec,
     TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
 };
@@ -9,13 +9,13 @@ use super::{
 ///
 /// This policy verifies exactly the fields piqueld authors — replication,
 /// update settings, the restart condition and delay, mounts, environment,
-/// network targets, health checks, resource limits, and the placement pin to
-/// the local node. Fields the builder never sets are accepted only at known
-/// Engine defaults, so ordinary engine-defaulted echo-back does not register as
-/// drift while unsupported non-default values do. Security relevant settings
-/// piqueld cannot express (privileged execution, Linux capabilities, sysctls,
-/// users, runtimes, log drivers) are explicitly denied: their presence means
-/// out-of-band modification.
+/// network targets and logical-name aliases, health checks, resource limits,
+/// and the placement pin to the local node. Fields the builder never sets are
+/// accepted only at known Engine defaults, so ordinary engine-defaulted
+/// echo-back does not register as drift while unsupported non-default values
+/// do. Security relevant settings piqueld cannot express (privileged
+/// execution, Linux capabilities, sysctls, users, runtimes, log drivers) are
+/// explicitly denied: their presence means out-of-band modification.
 pub(super) struct ServiceRuntimePolicy;
 
 impl ServiceRuntimePolicy {
@@ -34,7 +34,7 @@ impl ServiceRuntimePolicy {
             && Self::replicated_mode(spec)
             && Self::mounts(container)
             && Self::environment(container)
-            && Self::networks(task)
+            && Self::networks(spec, task)
             && Self::health(container)
             && Self::resource_limits(task)
             && Self::no_unsupported_service_settings(spec)
@@ -201,9 +201,15 @@ impl ServiceRuntimePolicy {
         })
     }
 
-    /// Requires unique, non-empty network targets without aliases or driver
-    /// options.
-    fn networks(task: &TaskSpec) -> bool {
+    /// Requires unique, non-empty network targets without driver options,
+    /// accepting only the service's logical name as an alias. Which network
+    /// carries it is compared against desired attachments during planning,
+    /// because targets here are still Docker network IDs.
+    fn networks(spec: &ServiceSpec, task: &TaskSpec) -> bool {
+        let logical_name = spec
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(SERVICE_LABEL));
         task.networks.as_ref().is_none_or(|networks| {
             let mut targets = BTreeSet::new();
             networks.iter().all(|network| {
@@ -211,7 +217,9 @@ impl ServiceRuntimePolicy {
                     .target
                     .as_ref()
                     .is_some_and(|value| !value.is_empty() && targets.insert(value.as_str()))
-                    && network.aliases.as_ref().is_none_or(Vec::is_empty)
+                    && network.aliases.as_ref().is_none_or(|aliases| {
+                        aliases.iter().all(|alias| Some(alias) == logical_name)
+                    })
                     && network
                         .driver_opts
                         .as_ref()
@@ -292,9 +300,10 @@ mod tests {
     use piqueld_core::resource::{DesiredService, ResolvedSource};
     use std::collections::BTreeMap;
 
-    #[test]
-    fn default_runtime_echo_back_is_not_drift() {
+    /// Specification authored for a service attached to its private network.
+    fn authored() -> ServiceSpec {
         let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
+        let application = piqueld_core::ApplicationId::parse("app-policy").unwrap();
         let desired = DesiredService {
             secrets: Vec::new(),
             logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
@@ -305,18 +314,33 @@ mod tests {
                 digest_reference: piqueld_core::RepositoryDigest::parse(image.clone()).unwrap(),
             },
             image: piqueld_core::ImmutableImage::parse(image).unwrap(),
-            replicas: 1,
-            environment: BTreeMap::new(),
-            command: Vec::new(),
-            arguments: Vec::new(),
+            replicas: 2,
+            environment: BTreeMap::from([("NOTES_PORT".into(), "8080".into())]),
+            command: vec!["/bin/notes".into()],
+            arguments: vec!["--listen".into(), "8080".into()],
             mounts: Vec::new(),
             healthcheck: None,
-            resources: None,
-            networks: Vec::new(),
-            labels: BTreeMap::new(),
+            resources: Some(ResourceLimits {
+                cpu_millis: Some(250),
+                memory_bytes: Some(1024),
+            }),
+            networks: vec![piqueld_core::DockerNetworkName::for_application(
+                &application,
+            )],
+            labels: piqueld_core::Ownership {
+                instance_id: piqueld_core::InstanceId::parse("instance").unwrap(),
+                application_id: application,
+                service: Some(piqueld_core::ServiceName::parse("web").unwrap()),
+                spec_hash: format!("sha256:{}", "b".repeat(64)),
+            }
+            .labels(),
         };
-        let mut authored =
-            BollardDocker::service_spec(&desired, "local-node").expect("authored specification");
+        BollardDocker::service_spec(&desired, "local-node").expect("authored specification")
+    }
+
+    #[test]
+    fn default_runtime_echo_back_is_not_drift() {
+        let mut authored = authored();
         assert!(ServiceRuntimePolicy::matches(&authored, "local-node"));
         assert!(!ServiceRuntimePolicy::matches(&authored, "another-node"));
         let mut unpinned = authored.clone();
@@ -335,6 +359,22 @@ mod tests {
             task.runtime = Some("custom-runtime".into());
         }
         assert!(!ServiceRuntimePolicy::matches(&authored, "local-node"));
+    }
+
+    #[test]
+    fn logical_name_is_the_only_accepted_alias() {
+        let mut spec = authored();
+        assert!(ServiceRuntimePolicy::matches(&spec, "local-node"));
+        let network = &mut spec
+            .task_template
+            .as_mut()
+            .unwrap()
+            .networks
+            .as_mut()
+            .unwrap()[0];
+        assert_eq!(network.aliases, Some(vec!["web".into()]));
+        network.aliases.as_mut().unwrap().push("other".into());
+        assert!(!ServiceRuntimePolicy::matches(&spec, "local-node"));
     }
 
     #[test]
@@ -405,32 +445,7 @@ mod tests {
 
     #[test]
     fn policy_verifies_exactly_the_authored_fields() {
-        let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
-        let desired = DesiredService {
-            secrets: Vec::new(),
-            logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
-            name: piqueld_core::DockerServiceName::parse("app-policy-web").unwrap(),
-            source: ResolvedSource::Image {
-                requested: piqueld_core::ImageReference::parse("ghcr.io/example/notes:1.4.0")
-                    .unwrap(),
-                digest_reference: piqueld_core::RepositoryDigest::parse(image.clone()).unwrap(),
-            },
-            image: piqueld_core::ImmutableImage::parse(image).unwrap(),
-            replicas: 2,
-            environment: BTreeMap::from([("NOTES_PORT".into(), "8080".into())]),
-            command: vec!["/bin/notes".into()],
-            arguments: vec!["--listen".into(), "8080".into()],
-            mounts: Vec::new(),
-            healthcheck: None,
-            resources: Some(ResourceLimits {
-                cpu_millis: Some(250),
-                memory_bytes: Some(1024),
-            }),
-            networks: Vec::new(),
-            labels: BTreeMap::new(),
-        };
-        let authored =
-            BollardDocker::service_spec(&desired, "local-node").expect("authored specification");
+        let authored = authored();
         assert!(ServiceRuntimePolicy::matches(&authored, "local-node"));
 
         // Known Engine defaults are accepted, while unsupported non-default

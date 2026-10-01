@@ -287,9 +287,9 @@ impl BollardDocker {
             })
             .collect::<Result<Vec<_>, _>>()?;
         for service in &mut services {
-            for target in &mut service.networks {
-                if let Some(name) = network_names.get(target) {
-                    *target = name.clone();
+            for attachment in &mut service.networks {
+                if let Some(name) = network_names.get(&attachment.network) {
+                    attachment.network = name.clone();
                 }
             }
         }
@@ -719,9 +719,9 @@ impl DockerApi for BollardDocker {
                                 .into_iter()
                                 .filter_map(|network| Some((network.id?, network.name?)))
                                 .collect::<HashMap<_, _>>();
-                            for target in &mut observed.networks {
-                                if let Some(name) = network_names.get(target) {
-                                    *target = name.clone();
+                            for attachment in &mut observed.networks {
+                                if let Some(name) = network_names.get(&attachment.network) {
+                                    attachment.network = name.clone();
                                 }
                             }
                             if observed.matches(desired) {

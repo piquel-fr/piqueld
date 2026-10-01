@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 
 use piqueld_core::planner::{ActionKind, PlanRequest};
 use piqueld_core::resource::{
-    Convergence, ObservedApplication, ObservedNetwork, ObservedService, ObservedTask,
-    ObservedVolume, ResolutionRequirement, ResolutionSet, ResolvedSource, TaskState,
+    Convergence, NetworkAttachment, ObservedApplication, ObservedNetwork, ObservedService,
+    ObservedTask, ObservedVolume, ResolutionRequirement, ResolutionSet, ResolvedSource, TaskState,
     compile_application, image_repository, preview_resolution,
 };
-use piqueld_core::{ApplicationId, InstanceId, Plan, parse_toml};
+use piqueld_core::{ApplicationId, DockerNetworkName, InstanceId, Plan, parse_toml};
 
 fn application() -> piqueld_core::NormalizedApplication {
     parse_toml(include_str!("fixtures/manifests/prebuilt.toml"))
@@ -79,7 +79,7 @@ fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedAp
                 healthcheck: service.healthcheck.clone(),
                 healthcheck_configured: service.healthcheck.is_some(),
                 resources: service.resources.clone(),
-                networks: service.networks.iter().map(ToString::to_string).collect(),
+                networks: service.network_attachments(),
                 labels: service.labels.clone(),
                 runtime_configuration_matches: true,
                 tasks: vec![ObservedTask {
@@ -572,12 +572,40 @@ fn observation_matching_ignores_order_but_not_multiplicity() {
 
     // ...but multiplicity is preserved: duplicated attachments are drift.
     let mut duplicated = observed(&desired);
-    let networks = desired.services[0].networks.clone();
-    duplicated.services[0].networks = networks
-        .iter()
-        .flat_map(|network| [network.to_string(), network.to_string()])
+    duplicated.services[0].networks = desired.services[0]
+        .network_attachments()
+        .into_iter()
+        .flat_map(|attachment| [attachment.clone(), attachment])
         .collect();
     assert!(!duplicated.services[0].matches(&desired.services[0]));
+}
+
+#[test]
+fn logical_name_is_an_alias_only_on_the_private_network() {
+    let app = application();
+    let mut desired = compile_application(&app, instance(), &resolutions()).unwrap();
+    let ingress = DockerNetworkName::for_ingress(app.id());
+    desired.services[0].networks.push(ingress.clone());
+    assert_eq!(
+        desired.services[0].network_attachments(),
+        vec![
+            NetworkAttachment {
+                network: DockerNetworkName::for_application(app.id()).to_string(),
+                aliases: vec!["web".into()],
+            },
+            NetworkAttachment {
+                network: ingress.to_string(),
+                aliases: Vec::new(),
+            },
+        ]
+    );
+
+    // Services deployed before aliases existed register as drift and gain them.
+    let mut unaliased = observed(&desired);
+    for attachment in &mut unaliased.services[0].networks {
+        attachment.aliases.clear();
+    }
+    assert!(!unaliased.services[0].matches(&desired.services[0]));
 }
 
 #[test]

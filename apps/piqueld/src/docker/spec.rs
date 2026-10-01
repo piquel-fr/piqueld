@@ -84,10 +84,11 @@ impl BollardDocker {
             }),
             networks: Some(
                 desired
-                    .networks
-                    .iter()
-                    .map(|network| NetworkAttachmentConfig {
-                        target: Some(network.to_string()),
+                    .network_attachments()
+                    .into_iter()
+                    .map(|attachment| NetworkAttachmentConfig {
+                        target: Some(attachment.network),
+                        aliases: BollardDocker::nonempty(&attachment.aliases),
                         ..Default::default()
                     })
                     .collect(),
