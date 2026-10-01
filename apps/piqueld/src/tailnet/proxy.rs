@@ -169,6 +169,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handlers_see_the_proxied_client_address() {
+        use axum::{extract::ConnectInfo, routing::get, serve::ListenerExt};
+        use tokio::io::AsyncWriteExt;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let cancellation = CancellationToken::new();
+        let tap: fn(&mut TcpStream) = |_| {};
+        let proxied = ProxyListener::spawn(listener, address, cancellation.clone()).tap_io(tap);
+        let router = axum::Router::new().route(
+            "/",
+            get(|ConnectInfo(peer): ConnectInfo<SocketAddr>| async move { peer.to_string() }),
+        );
+        tokio::spawn(
+            axum::serve(
+                proxied,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .into_future(),
+        );
+
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let addresses = [[100, 64, 0, 1], [100, 64, 0, 2]].concat();
+        stream
+            .write_all(&header(
+                TCP_V4,
+                &[addresses, vec![0x9c, 0x40, 0x01, 0xbb]].concat(),
+            ))
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: piqueld\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        cancellation.cancel();
+        assert!(response.ends_with("100.64.0.1:40000"), "{response}");
+    }
+
+    #[tokio::test]
     async fn rejects_missing_truncated_and_unsupported_headers() {
         let mut local = header(TCP_V4, &[0; 12]);
         local[12] = 0x20;
