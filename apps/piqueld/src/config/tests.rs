@@ -104,6 +104,25 @@ fn parse_failures_retain_the_underlying_toml_diagnostic() {
 }
 
 #[test]
+fn non_loopback_metrics_listeners_require_a_token_file() {
+    assert!(DaemonConfig::from_toml("[metrics]\nlisten = ['127.0.0.1:9464']").is_ok());
+    assert!(matches!(
+        DaemonConfig::from_toml("[metrics]\nlisten = ['0.0.0.0:9464']"),
+        Err(ConfigError::Invalid(_))
+    ));
+    assert!(matches!(
+        DaemonConfig::from_toml("[metrics]\nlisten = ['0.0.0.0:9464']\ntoken_file = 'token'"),
+        Err(ConfigError::Invalid(_))
+    ));
+    assert!(
+        DaemonConfig::from_toml(
+            "[metrics]\nlisten = ['0.0.0.0:9464']\ntoken_file = '/run/credentials/metrics-token'"
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 fn built_in_defaults_are_valid() {
     assert!(DaemonConfig::validated_default().is_ok());
 }

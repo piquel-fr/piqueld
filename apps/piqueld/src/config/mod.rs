@@ -71,21 +71,13 @@ impl DaemonConfig {
     }
 
     /// Checks cross-field and range invariants that serde cannot express:
-    /// notification settings, non-zero ports, distinct absolute state directories,
+    /// notification settings, non-zero ports, the metrics token file (required
+    /// for non-loopback metrics listeners), distinct absolute state directories,
     /// the public origin, the Docker socket path, `server.allowed_hosts` DNS
     /// hostname syntax, and timeout and build-log bounds.
     fn validate(&self) -> Result<(), ConfigError> {
         self.notifications.validate()?;
-        if self
-            .metrics
-            .listen
-            .iter()
-            .any(|address| address.port() == 0)
-        {
-            return Err(ConfigError::Invalid(
-                "metrics ports must be greater than zero".into(),
-            ));
-        }
+        self.metrics.validate()?;
         for (name, path) in [
             ("server.data_dir", &self.server.data_dir),
             ("server.runtime_dir", &self.server.runtime_dir),

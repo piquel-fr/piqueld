@@ -9,6 +9,34 @@ use serde::Deserialize;
 pub struct MetricsConfig {
     /// Explicit socket addresses; administrative API routes are never served here.
     pub listen: Vec<std::net::SocketAddr>,
+    /// Absolute path of the file holding the bearer token scrapers must present.
+    /// Required when any listener binds a non-loopback address.
+    pub token_file: Option<std::path::PathBuf>,
+}
+impl MetricsConfig {
+    /// Checks that every listener has a non-zero port, that `token_file` is an
+    /// absolute file path when set, and that it is set whenever any listener
+    /// binds a non-loopback address.
+    pub(super) fn validate(&self) -> Result<(), ConfigError> {
+        if self.listen.iter().any(|address| address.port() == 0) {
+            return Err(ConfigError::Invalid(
+                "metrics ports must be greater than zero".into(),
+            ));
+        }
+        match &self.token_file {
+            Some(path) => super::absolute_file("metrics.token_file", path),
+            None if self
+                .listen
+                .iter()
+                .any(|address| !address.ip().is_loopback()) =>
+            {
+                Err(ConfigError::Invalid(
+                    "non-loopback metrics listeners require metrics.token_file".into(),
+                ))
+            }
+            None => Ok(()),
+        }
+    }
 }
 
 /// Startup-loaded global notification policy.

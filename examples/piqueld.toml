@@ -44,6 +44,8 @@ log_retention_days = 30
 # Metrics have a separate listener with no administrative API routes.
 [metrics]
 listen = [] # Example: ["127.0.0.1:7846"]
+# Required for non-loopback listeners; scrapers send it as a bearer token.
+# token_file = "/run/credentials/piqueld.service/metrics-token"
 
 [notifications]
 enabled = false

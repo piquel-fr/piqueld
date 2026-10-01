@@ -35,8 +35,8 @@ struct Args {
 ///
 /// 1. Loads configuration and initializes tracing.
 /// 2. Prepares and locks the data directory, then validates and locks the runtime
-///    directory and binds every listener, so misconfiguration fails before any
-///    state is opened.
+///    directory, reads the metrics token, and binds every listener, so
+///    misconfiguration fails before any state is opened.
 /// 3. Starts the application service and reconciliation controller.
 /// 4. Serves the dashboard/API over TCP, metrics, and the Unix API socket.
 /// 5. After cancellation, waits for every task and surfaces the first failure.
@@ -65,6 +65,15 @@ async fn main() -> Result<()> {
     let runtime_dir = piqueld::RuntimeDir::acquire(&config.server.runtime_dir).await?;
     let tcp_listeners = config.server.bind_tcp().await?;
     let unix_listener = runtime_dir.bind_api().await?;
+    let metrics_token = config
+        .metrics
+        .token_file
+        .as_deref()
+        .map(|path| {
+            piqueld::api::http::MetricsToken::read(path)
+                .with_context(|| format!("failed to read metrics token {}", path.display()))
+        })
+        .transpose()?;
     let mut metrics_listeners = Vec::new();
     for address in &config.metrics.listen {
         metrics_listeners.push(
@@ -108,7 +117,7 @@ async fn main() -> Result<()> {
         .map(|listener| {
             spawn_tcp_api(
                 listener,
-                piqueld::api::http::metrics_router(state.clone()),
+                piqueld::api::http::metrics_router(state.clone(), metrics_token.clone()),
                 cancellation.clone(),
             )
         })

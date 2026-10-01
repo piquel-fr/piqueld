@@ -201,14 +201,20 @@ outside piqueld's deletion policy.
 ```toml
 [metrics]
 listen = ["127.0.0.1:9464"] # default [] disables the listener
+token_file = "/run/credentials/piqueld.service/metrics-token" # optional on loopback
 ```
 
 This separate listener serves only `GET /metrics`, in Prometheus text format. It
 never serves the dashboard or administrative API. Measurements use fixed metric
 names and no application/operation/diagnostic labels. Bind to an address reachable
 by the intended scraper; loopback is only reachable in the host network namespace.
-An enabled listener has no built-in authentication or TLS, so choose its exposure
-accordingly. Its lifetime is supervised with the daemon's API listeners.
+
+With `token_file`, scrapers must send `Authorization: Bearer <token>` (Prometheus:
+`authorization.credentials_file`); other requests receive 401. The token is the
+file's contents without surrounding whitespace, read once at startup. Listening on
+any non-loopback address requires a token. Account credentials are never accepted
+here, and the listener has no TLS, so choose its exposure accordingly. Its lifetime
+is supervised with the daemon's API listeners.
 
 A future user-deployed Prometheus/collector/Grafana application needs:
 
