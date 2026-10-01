@@ -1,10 +1,8 @@
 //! Unsaved edit guards for browser navigation.
+use leptos::ev;
+use leptos::prelude::*;
 use leptos::wasm_bindgen::JsCast;
 use leptos::wasm_bindgen::closure::Closure;
-use leptos::{
-    RwSignal, SignalGetUntracked, SignalSet, create_rw_signal, document, ev, on_cleanup,
-    provide_context, use_context, window, window_event_listener,
-};
 use std::collections::BTreeSet;
 
 /// The editor location to restore if the user cancels a back/forward navigation.
@@ -18,13 +16,13 @@ struct GuardedLocation {
 
 /// App-wide `popstate` guard; holds the active editor's location while one is mounted.
 #[derive(Clone, Copy)]
-pub(in crate::browser) struct HistoryGuard(RwSignal<Option<GuardedLocation>>);
+pub(in crate::browser) struct HistoryGuard(RwSignal<Option<GuardedLocation>, LocalStorage>);
 impl HistoryGuard {
     /// Installs the guard as context; must run before the router mounts because
     /// window-targeted history events must be intercepted before the router's listener.
     /// A cancelled `popstate` re-pushes the saved editor URL and history state.
     pub(in crate::browser) fn install() {
-        let guard = Self(create_rw_signal(None::<GuardedLocation>));
+        let guard = Self(RwSignal::new_local(None::<GuardedLocation>));
         provide_context(guard);
         let listener = window_event_listener(ev::popstate, move |event| {
             let Some(location) = guard.0.get_untracked() else {
@@ -83,12 +81,17 @@ pub(super) fn guard_navigation(dirty: RwSignal<BTreeSet<String>>) {
         .add_event_listener_with_callback_and_bool("click", callback.as_ref().unchecked_ref(), true)
         .is_ok()
     {
+        // Browser handles are not `Send`, so the owner keeps them until its
+        // cleanups run (before it disposes stored values).
+        let listener = StoredValue::new_local((document, callback));
         on_cleanup(move || {
-            let _ = document.remove_event_listener_with_callback_and_bool(
-                "click",
-                callback.as_ref().unchecked_ref(),
-                true,
-            );
+            listener.with_value(|(document, callback)| {
+                let _ = document.remove_event_listener_with_callback_and_bool(
+                    "click",
+                    callback.as_ref().unchecked_ref(),
+                    true,
+                );
+            });
         });
     }
 }

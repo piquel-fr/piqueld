@@ -1,11 +1,6 @@
 //! Shared log viewer, stream filter, and persisted display preferences.
 use crate::log_output::LogLine;
-use leptos::{
-    CollectView, IntoView, RwSignal, Signal, SignalGet, SignalGetUntracked, SignalSet, SignalWith,
-    View, component, create_effect, create_node_ref, create_rw_signal, event_target_checked,
-    event_target_value, html, provide_context, request_animation_frame, store_value, use_context,
-    view, window,
-};
+use leptos::prelude::*;
 use piqueld_client::LogStream;
 
 /// Log display toggles shared by every viewer and persisted in `localStorage`.
@@ -39,8 +34,8 @@ impl LogPreferences {
             .and_then(|storage| storage.get_item(&key).ok().flatten())
             .and_then(|value| value.parse().ok())
             .unwrap_or(default);
-        let value = create_rw_signal(initial);
-        create_effect(move |_| {
+        let value = RwSignal::new(initial);
+        Effect::new(move |_| {
             let current = value.get();
             if let Some(storage) = &storage {
                 // Browser privacy settings may disable preference persistence.
@@ -120,7 +115,7 @@ pub(super) enum LogKind {
     Build,
 }
 
-fn toggle(label: &'static str, value: RwSignal<bool>) -> View {
+fn toggle(label: &'static str, value: RwSignal<bool>) -> AnyView {
     view! {
         <label class="checkbox">
             <input
@@ -131,7 +126,7 @@ fn toggle(label: &'static str, value: RwSignal<bool>) -> View {
             {label}
         </label>
     }
-    .into_view()
+    .into_any()
 }
 
 /// A stable scroll container; refreshing rows never remounts the viewer.
@@ -154,13 +149,13 @@ pub(super) fn LogViewer(
         LogKind::Build => None,
     };
     let show_service = Signal::derive(move || service.is_some_and(|value| value.get()));
-    let container = create_node_ref::<html::Div>();
-    let follow = create_rw_signal(true);
-    let position = create_rw_signal(0);
-    let previous_prepend = store_value(0);
-    let height = store_value(0);
-    let updating = store_value(false);
-    create_effect(move |_| {
+    let container = NodeRef::<leptos::html::Div>::new();
+    let follow = RwSignal::new(true);
+    let position = RwSignal::new(0);
+    let previous_prepend = StoredValue::new(0);
+    let height = StoredValue::new(0);
+    let updating = StoredValue::new(false);
+    Effect::new(move |_| {
         lines.with(|_| ());
         // A prepended chunk can complete an existing partial line, so rendered
         // line equality cannot reliably identify an older page insertion.
@@ -216,7 +211,7 @@ pub(super) fn LogViewer(
             <div class="log-rows">
                 {move || {
                     if lines.with(Vec::is_empty) {
-                        view! { <p class="log-empty">{empty.clone()}</p> }.into_view()
+                        view! { <p class="log-empty">{empty.clone()}</p> }.into_any()
                     } else {
                         lines
                             .get()
@@ -254,6 +249,7 @@ pub(super) fn LogViewer(
                                 }
                             })
                             .collect_view()
+                            .into_any()
                     }
                 }}
             </div>

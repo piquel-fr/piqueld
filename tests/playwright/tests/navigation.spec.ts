@@ -21,7 +21,7 @@ test('the sidebar reaches every page and shows the account and daemon connection
   for (const [link, heading] of pages) {
     await sidebar.getByRole('link', { name: link, exact: true }).click();
     await expect(page.getByRole('heading', { level: 1, name: heading, exact: true })).toBeVisible();
-    await expect(sidebar.getByRole('link', { name: link, exact: true })).toHaveClass(/active/);
+    await expect(sidebar.getByRole('link', { name: link, exact: true })).toHaveAttribute('aria-current', 'page');
   }
   await expect(page.getByRole('heading', { name: 'System status', exact: true })).toBeVisible();
   await expect(page.locator('.status-card', { hasText: 'piqueld daemon' })).toContainText('Reachable');

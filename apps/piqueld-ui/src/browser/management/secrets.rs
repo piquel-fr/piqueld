@@ -1,12 +1,9 @@
 //! Write-only secret values and saved file references.
 use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button, text_input, when};
 use super::{client_error_message, diagnostic_id, dirty_group, editor, save_actions};
-use leptos::{
-    Callable, Callback, CollectView, For, IntoView, SignalGet, SignalGetUntracked, SignalSet,
-    SignalUpdate, SignalWith, SignalWithUntracked, component, create_rw_signal, event_target_value,
-    spawn_local, store_value, view, window,
-};
-use leptos_router::A;
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use leptos_router::components::A;
 use piqueld_client::{
     ApplicationView, Client,
     edit::{ApplicationEdit, ServiceEdit},
@@ -19,11 +16,11 @@ use piqueld_client::{
 #[component]
 pub(super) fn ApplicationSecrets() -> impl IntoView {
     let context = editor();
-    let metadata = create_rw_signal(Vec::<piqueld_client::SecretMetadata>::new());
-    let ready = create_rw_signal(false);
-    let loading = create_rw_signal(false);
-    let error = create_rw_signal(None::<String>);
-    let diagnostic = create_rw_signal(None::<String>);
+    let metadata = RwSignal::new(Vec::<piqueld_client::SecretMetadata>::new());
+    let ready = RwSignal::new(false);
+    let loading = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+    let diagnostic = RwSignal::new(None::<String>);
     let fail = move |message: String, e: &piqueld_client::ClientError| {
         diagnostic.set(diagnostic_id(e));
         error.set(Some(message));
@@ -32,12 +29,12 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
         diagnostic.set(None);
         error.set(None);
     };
-    let notice_text = create_rw_signal(String::new());
-    let name = create_rw_signal(String::new());
-    let value = create_rw_signal(String::new());
-    let empty_value = create_rw_signal(String::new());
+    let notice_text = RwSignal::new(String::new());
+    let name = RwSignal::new(String::new());
+    let value = RwSignal::new(String::new());
+    let empty_value = RwSignal::new(String::new());
     dirty_group("secret-value".into(), value, empty_value);
-    let id = store_value(context.id());
+    let id = StoredValue::new(context.id());
     let reload = Callback::new(move |()| {
         if context.blocked() || loading.get_untracked() {
             return;
@@ -57,7 +54,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
             loading.set(false);
         });
     });
-    reload.call(());
+    reload.run(());
     let write = move |_| {
         if context.blocked() || !ready.get_untracked() {
             return;
@@ -183,7 +180,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                                     type="button"
                                     class="btn btn-ghost btn-sm"
                                     disabled={move || context.blocked() || !ready.get()}
-                                    on:click={move |_| remove.call(secret.clone())}
+                                    on:click={move |_| remove.run(secret.clone())}
                                 >
                                     "Delete"
                                 </button>
@@ -208,7 +205,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                         type="button"
                         class="btn btn-sm"
                         disabled={move || context.blocked() || loading.get()}
-                        on:click={move |_| reload.call(())}
+                        on:click={move |_| reload.run(())}
                     >
                         {icon(Icon::Refresh)}
                         "Refresh"
@@ -257,7 +254,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                                 } else if ready.get() {
                                     empty("No secrets stored for this application.")
                                 } else {
-                                    ().into_view()
+                                    ().into_any()
                                 }
                             } else {
                                 view! {
@@ -274,7 +271,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
                                         <tbody>{secret_rows()}</tbody>
                                     </table>
                                 }
-                                    .into_view()
+                                    .into_any()
                             }
                         }}
                     </div>
@@ -351,7 +348,7 @@ pub(super) fn ApplicationSecrets() -> impl IntoView {
 #[component]
 fn SecretFiles(service_name: String) -> impl IntoView {
     let context = editor();
-    let mounts = create_rw_signal(context.saved.with_untracked(|a| {
+    let mounts = RwSignal::new(context.saved.with_untracked(|a| {
         a.application
             .spec()
             .services
@@ -360,9 +357,9 @@ fn SecretFiles(service_name: String) -> impl IntoView {
             .map(|s| s.secrets.clone())
             .unwrap_or_default()
     }));
-    let baseline = create_rw_signal(mounts.get_untracked());
+    let baseline = RwSignal::new(mounts.get_untracked());
     dirty_group(format!("secret-files:{service_name}"), mounts, baseline);
-    let service = store_value(service_name.clone());
+    let service = StoredValue::new(service_name.clone());
     let save = move || {
         context.save(
             ApplicationEdit::Service {

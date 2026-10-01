@@ -12,13 +12,11 @@ use super::ui::{Icon, Modal, PageHeader, Tabs, Tone, health_badge, icon, notice,
 use super::{client_error_message, dashboard_context, row_health};
 
 use deployments::{DeploymentActions, DeploymentHistory};
-use leptos::{
-    Callable, Callback, CollectView, IntoView, RwSignal, Show, SignalGet, SignalGetUntracked,
-    SignalSet, SignalUpdate, SignalWith, SignalWithUntracked, StoredValue, component,
-    create_effect, create_rw_signal, on_cleanup, provide_context, spawn_local, store_value,
-    use_context, view, window,
-};
-use leptos_router::{A, NavigateOptions, use_navigate};
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use leptos_router::NavigateOptions;
+use leptos_router::components::A;
+use leptos_router::hooks::use_navigate;
 use logs::ApplicationLogs;
 pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
@@ -151,9 +149,9 @@ impl EditorContext {
                         ..saved
                     };
                     self.saved.set(updated.clone());
-                    on_saved.call(updated);
+                    on_saved.run(updated);
                     self.notice.set("Saved.".into());
-                    self.dashboard.with_value(|d| (d.refresh)());
+                    self.dashboard.with_value(|d| d.refresh.run(()));
                 }
                 Err(error) => self.failure(&error),
             }
@@ -202,14 +200,14 @@ fn mutation_client() -> Result<Client, String> {
 }
 /// Tracks whether `draft` differs from `baseline`, keeping `key` in the editor's
 /// dirty set accordingly and removing it when the owning view unmounts.
-fn dirty_group<T: Clone + PartialEq + 'static>(
+fn dirty_group<T: Clone + PartialEq + Send + Sync + 'static>(
     key: String,
     draft: RwSignal<T>,
     baseline: RwSignal<T>,
 ) {
     let context = editor();
     let cleanup = key.clone();
-    create_effect(move |_| {
+    Effect::new(move |_| {
         let dirty = draft.get() != baseline.get();
         context.dirty.update(|groups| {
             if dirty {
@@ -227,11 +225,11 @@ fn dirty_group<T: Clone + PartialEq + 'static>(
 }
 
 /// Save and discard buttons for one settings group, shown only while it has edits.
-fn save_actions<T: Clone + PartialEq + 'static>(
+fn save_actions<T: Clone + PartialEq + Send + Sync + 'static>(
     draft: RwSignal<T>,
     baseline: RwSignal<T>,
     save: impl Fn() + Copy + 'static,
-    disabled: impl Fn() -> bool + Copy + 'static,
+    disabled: impl Fn() -> bool + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     view! {
         <div class="form-actions" hidden={move || draft.get() == baseline.get()}>
@@ -260,10 +258,10 @@ fn save_actions<T: Clone + PartialEq + 'static>(
 /// dashboard and navigates to the new application.
 #[component]
 pub(super) fn CreateApplication() -> impl IntoView {
-    let opened = create_rw_signal(false);
-    let name = create_rw_signal(String::new());
-    let busy = create_rw_signal(false);
-    let error = create_rw_signal(None::<String>);
+    let opened = RwSignal::new(false);
+    let name = RwSignal::new(String::new());
+    let busy = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
     let navigate = use_navigate();
     let refresh = dashboard_context().refresh;
     let create = move |()| {
@@ -290,7 +288,6 @@ pub(super) fn CreateApplication() -> impl IntoView {
             }
         };
         let navigate = navigate.clone();
-        let refresh = refresh.clone();
         busy.set(true);
         error.set(None);
         spawn_local(async move {
@@ -301,7 +298,7 @@ pub(super) fn CreateApplication() -> impl IntoView {
             }
             match result {
                 Ok(saved) => {
-                    refresh();
+                    refresh.run(());
                     navigate(
                         &format!("/dashboard/applications/{}", saved.application_id),
                         NavigateOptions::default(),
@@ -354,8 +351,8 @@ pub(super) fn CreateApplication() -> impl IntoView {
 /// the whole application or for one `service`.
 #[component]
 pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoView {
-    let initial = create_rw_signal(None::<ApplicationView>);
-    let error = create_rw_signal(None::<String>);
+    let initial = RwSignal::new(None::<ApplicationView>);
+    let error = RwSignal::new(None::<String>);
     spawn_local(async move {
         match Client::browser().application(&id).await {
             Ok(app) => initial.set(Some(app)),
@@ -370,7 +367,7 @@ pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoV
                     view! {
                         <div class="stack-sm">
                             {notice(Tone::Bad, e)} <div class="btn-group">
-                                <A class="btn" href="/dashboard/applications">
+                                <A attr:class="btn" href="/dashboard/applications">
                                     {icon(Icon::ArrowLeft)}
                                     "Back to applications"
                                 </A>
@@ -394,17 +391,17 @@ pub(super) fn ApplicationPage(id: String, service: Option<String>) -> impl IntoV
 /// tab comes from the `deployment` or `tab=services` query parameters.
 #[component]
 fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl IntoView {
-    let query = leptos_router::use_query_map();
+    let query = leptos_router::hooks::use_query_map();
     let context = EditorContext {
-        dashboard: store_value(dashboard_context()),
-        saved: create_rw_signal(initial),
-        dirty: create_rw_signal(BTreeSet::new()),
-        busy: create_rw_signal(false),
-        uncertain: create_rw_signal(false),
-        error: create_rw_signal(None),
-        diagnostic_id: create_rw_signal(None),
-        notice: create_rw_signal(String::new()),
-        tab: create_rw_signal(if query.with(|q| q.get("deployment").is_some()) {
+        dashboard: StoredValue::new(dashboard_context()),
+        saved: RwSignal::new(initial),
+        dirty: RwSignal::new(BTreeSet::new()),
+        busy: RwSignal::new(false),
+        uncertain: RwSignal::new(false),
+        error: RwSignal::new(None),
+        diagnostic_id: RwSignal::new(None),
+        notice: RwSignal::new(String::new()),
+        tab: RwSignal::new(if query.with(|q| q.get("deployment").is_some()) {
             "Deployments"
         } else if query.with(|q| q.get("tab").is_some_and(|tab| tab == "services")) {
             "Services"
@@ -415,7 +412,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
     provide_context(context);
     guard_navigation(context.dirty);
     if let Some(name) = service {
-        return view! { <services::ServiceEditor name={name} /> }.into_view();
+        return view! { <services::ServiceEditor name={name} /> }.into_any();
     }
     let signals = context.dashboard.with_value(|d| d.signals);
     let id = context.id();
@@ -476,7 +473,7 @@ fn ApplicationEditor(initial: ApplicationView, service: Option<String>) -> impl 
             <super::observability::EventHistory application={context.id()} />
         </Show>
     }
-    .into_view()
+    .into_any()
 }
 
 /// Danger-zone card that deletes the application (guarded by the saved
@@ -498,7 +495,6 @@ fn DeleteApplication() -> impl IntoView {
         };
         let saved = context.saved.get_untracked();
         let navigate = navigate.clone();
-        let refresh = refresh.clone();
         context.busy.set(true);
         spawn_local(async move {
             match client
@@ -509,7 +505,7 @@ fn DeleteApplication() -> impl IntoView {
                 .await
             {
                 Ok(_) => {
-                    refresh();
+                    refresh.run(());
                     navigate("/dashboard/applications", NavigateOptions::default());
                 }
                 Err(error) => context.failure(&error),
@@ -542,8 +538,8 @@ fn DeleteApplication() -> impl IntoView {
 /// `/settings` page: read-only daemon configuration grouped by section.
 #[component]
 pub(super) fn HostPage() -> impl IntoView {
-    let settings = create_rw_signal(None);
-    let error = create_rw_signal(None::<String>);
+    let settings = RwSignal::new(None);
+    let error = RwSignal::new(None::<String>);
     spawn_local(async move {
         match Client::browser().system_configuration().await {
             Ok(config) => settings.set(Some(config)),
@@ -642,7 +638,7 @@ fn EditorFeedback() -> impl IntoView {
                                         .map(|id| {
                                             view! {
                                                 <A
-                                                    class="btn btn-sm btn-ghost"
+                                                    attr:class="btn btn-sm btn-ghost"
                                                     href={format!("/dashboard/errors/{id}")}
                                                 >
                                                     "Diagnostic details"

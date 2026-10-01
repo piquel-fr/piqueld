@@ -1,17 +1,14 @@
 //! Recent container output for one application or one of its services.
 use super::super::ui::{Icon, Tone, icon, notice};
 use super::{EditorContext, client_error_message};
+use crate::browser::Alive;
 use crate::{
     browser::logs::{LogKind, LogViewer, StreamFilter},
     log_output::LogLine,
 };
-use leptos::{
-    CollectView, IntoView, Show, SignalGet, SignalGetUntracked, SignalSet, SignalWith, component,
-    create_effect, create_memo, create_rw_signal, event_target_value, on_cleanup, spawn_local,
-    use_context, view,
-};
+use leptos::prelude::*;
+use leptos::task::spawn_local;
 use piqueld_client::Client;
-use std::{cell::Cell, rc::Rc};
 
 /// Runtime log card for the editor's application: the latest 200 lines from the
 /// last hour, refetched every 30 seconds while visible or when the service or
@@ -20,20 +17,18 @@ use std::{cell::Cell, rc::Rc};
 #[component]
 pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -> impl IntoView {
     let context = use_context::<EditorContext>().expect("application editor");
-    let logs = create_rw_signal(None::<piqueld_client::ApplicationLogs>);
-    let error = create_rw_signal(None::<String>);
-    let loading = create_rw_signal(false);
+    let logs = RwSignal::new(None::<piqueld_client::ApplicationLogs>);
+    let error = RwSignal::new(None::<String>);
+    let loading = RwSignal::new(false);
     let scoped = fixed_service.is_some();
-    let service = create_rw_signal(fixed_service.unwrap_or_default());
-    let stream = create_rw_signal(None);
-    let refresh = create_rw_signal(true);
-    create_effect(move |_| {
+    let service = RwSignal::new(fixed_service.unwrap_or_default());
+    let stream = RwSignal::new(None);
+    let refresh = RwSignal::new(true);
+    Effect::new(move |_| {
         let _ = (service.get(), stream.get());
         refresh.set(true);
     });
-    let alive = Rc::new(Cell::new(true));
-    let cleanup = alive.clone();
-    on_cleanup(move || cleanup.set(false));
+    let alive = Alive::new();
     let id = context.id();
     spawn_local(async move {
         let mut elapsed = 30;
@@ -73,7 +68,7 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
             elapsed += 1;
         }
     });
-    let lines = create_memo(move |_| {
+    let lines = Memo::new(move |_| {
         logs.get()
             .map(|logs| LogLine::runtime(logs.items))
             .unwrap_or_default()
@@ -113,7 +108,9 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
                                     .services
                                     .into_iter()
                                     .map(|s| {
-                                        view! { <option value={s.name.clone()}>{s.name}</option> }
+                                        view! {
+                                            <option value={s.name.clone()}>{s.name.clone()}</option>
+                                        }
                                     })
                                     .collect_view()
                             }}
