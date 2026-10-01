@@ -1,4 +1,4 @@
-pub use piqueld_core::api::{DependencyStatus, ReadinessStatus, SystemStatus};
+pub use piqueld_core::api::{BackupStatus, DependencyStatus, ReadinessStatus, SystemStatus};
 
 use crate::{
     Client, ClientError,

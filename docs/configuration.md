@@ -256,7 +256,8 @@ Supply new values under the existing names, then explicitly Deploy. The first ne
 value generates a fresh key. Deployments pinned to discarded values fail with
 `secret_unavailable` before changing running services. Recovery replaces the
 storage key, not the passwords or API tokens themselves, and is not a guarantee of
-secure erasure from existing backups. Back up the new key with the database.
+secure erasure from existing backups. Take a new `piqueld backup` so the new key
+is archived with the database; see [backup and restore](backups.md).
 
 ## Managed application ingress
 

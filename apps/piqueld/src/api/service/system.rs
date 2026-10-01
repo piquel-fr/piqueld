@@ -1,14 +1,18 @@
 //! Daemon status and dependency probes.
 
 use super::{ApplicationError, ApplicationService};
-use piqueld_core::api::{DependencyStatus, HostConfiguration, ReadinessStatus, SystemStatus};
+use piqueld_core::api::{
+    BackupStatus, DependencyStatus, HostConfiguration, ReadinessStatus, SystemStatus,
+};
 use std::time::Duration;
 
 impl ApplicationService {
-    /// Returns daemon identity and version information.
-    #[must_use]
-    pub fn system_status(&self) -> SystemStatus {
-        SystemStatus {
+    /// Returns daemon identity, version, and backup recency.
+    /// # Errors
+    /// Returns a storage error if the last backup time cannot be read.
+    pub async fn system_status(&self) -> Result<SystemStatus, ApplicationError> {
+        let last_backup = self.store.last_backup_at_ms().await?;
+        Ok(SystemStatus {
             status: "running".into(),
             api_version: "v1".into(),
             daemon_version: env!("CARGO_PKG_VERSION").into(),
@@ -18,7 +22,8 @@ impl ApplicationService {
                 .as_ref()
                 .map(|status| status.borrow().clone())
                 .unwrap_or_default(),
-        }
+            backup: BackupStatus::new(last_backup, crate::store::now_ms()),
+        })
     }
 
     /// Returns effective host settings without exposing mutable configuration.

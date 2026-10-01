@@ -7499,6 +7499,9 @@ impl Client {
             403u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }

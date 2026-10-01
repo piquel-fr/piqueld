@@ -4,6 +4,8 @@
 mod acceptance;
 mod application;
 mod auth;
+mod backup;
+pub use backup::{BackupError, BackupManifest, Backups};
 mod build;
 mod deployment;
 mod environment;
@@ -122,6 +124,9 @@ pub enum StoreError {
     /// Schema metadata could not be read or decoded.
     #[error("database schema is incompatible")]
     SchemaMismatchSource(#[source] Box<dyn StdError + Send + Sync>),
+    /// The automatic backup taken before applying migrations failed.
+    #[error("pre-migration backup failed; no migration was applied")]
+    PreMigrationBackup(#[source] BackupError),
     /// The configured database path could not be prepared safely.
     #[error("database path could not be prepared")]
     PathSource(#[source] std::io::Error),
@@ -373,7 +378,7 @@ impl Store {
     /// Returns a sanitized storage or schema compatibility error.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let path = path.as_ref();
-        ensure_database_target(path)?;
+        ensure_database_target(path).map_err(StoreError::path)?;
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -409,6 +414,21 @@ impl Store {
             if u64::try_from(recorded).map_err(StoreError::schema_mismatch)? != version {
                 return Err(StoreError::SchemaMismatch);
             }
+        }
+
+        // Migrations are forward-only, so keep a rollback point for the old binary.
+        if version > 0 && version < SCHEMA_VERSION {
+            let mut connection = pool.acquire().await.map_err(StoreError::database)?;
+            let archive = Backups::new(backup::parent_of(path))
+                .before_migration(&mut connection)
+                .await
+                .map_err(StoreError::PreMigrationBackup)?;
+            tracing::info!(
+                path = %archive.display(),
+                from = version,
+                to = SCHEMA_VERSION,
+                "wrote pre-migration backup"
+            );
         }
 
         let migration_start = usize::try_from(version).map_err(StoreError::schema_mismatch)?;
@@ -527,15 +547,15 @@ impl Store {
 /// Verifies the database target is a regular file or absent before `SQLite`
 /// creates it. The parent directory's privacy is enforced by the daemon's data
 /// directory preparation, not here.
-fn ensure_database_target(path: &Path) -> Result<(), StoreError> {
+fn ensure_database_target(path: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => Ok(()),
-        Ok(_) => Err(StoreError::path(std::io::Error::new(
+        Ok(_) => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "database path is not a regular file",
-        ))),
+        )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(StoreError::path(error)),
+        Err(error) => Err(error),
     }
 }
 

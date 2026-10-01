@@ -48,6 +48,7 @@ sqlx.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 syn = { workspace = true, optional = true }
+tar.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

@@ -6,7 +6,7 @@ use super::{ApplicationRow, connection_label, dashboard_context, management, row
 use crate::state::{ApplicationHealth, ConnectionState, DataState};
 use leptos::prelude::*;
 use leptos_router::components::A;
-use piqueld_client::system::DependencyStatus;
+use piqueld_client::system::{BackupStatus, DependencyStatus};
 
 #[component]
 pub(super) fn Sidebar() -> impl IntoView {
@@ -195,6 +195,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                 }}
                 <div class="status-grid">
                     {move || connection_readiness(signals.connection.get())}
+                    {move || signals.system.get().map(|system| backup_readiness(&system.backup))}
                     {move || {
                         signals.system.get().filter(|system| system.tailscale.enabled).map(|system| {
                             let tailnet = system.tailscale;
@@ -242,6 +243,21 @@ fn connection_readiness(state: ConnectionState) -> AnyView {
         ConnectionState::Unreachable => (Tone::Bad, "The dashboard cannot connect to piqueld"),
     };
     status_card("piqueld daemon", tone, connection_label(state), message)
+}
+
+/// Readiness card for the recency of the last `piqueld backup`.
+fn backup_readiness(status: &BackupStatus) -> AnyView {
+    let (tone, label) = if status.stale {
+        (Tone::Warn, "Stale")
+    } else {
+        (Tone::Ok, "Recent")
+    };
+    status_card(
+        "Backups",
+        tone,
+        label,
+        &status.summary(super::format::now_ms()),
+    )
 }
 
 /// Readiness card for one daemon dependency.
