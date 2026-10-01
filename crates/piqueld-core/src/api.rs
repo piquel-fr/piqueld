@@ -203,6 +203,9 @@ pub struct SystemStatus {
     pub daemon_version: String,
     /// Control-plane instance identifier.
     pub instance_id: String,
+    /// Dedicated tailnet node serving the website over HTTPS.
+    #[serde(default)]
+    pub tailscale: TailnetStatus,
 }
 
 /// A change to a manifest field. Environment and process values are redacted.
@@ -536,6 +539,25 @@ pub struct IngressStatus {
     pub message: String,
     /// Deployed routes and their latest independent HTTPS probes.
     pub routes: Vec<RouteStatus>,
+}
+
+/// Login and certificate state of the daemon's own tailnet node.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct TailnetStatus {
+    /// Effective read-only daemon setting.
+    pub enabled: bool,
+    /// The node is logged in and serves an unexpired certificate.
+    pub healthy: bool,
+    /// Tailscale backend state, such as `Running` or `NeedsLogin`.
+    pub state: String,
+    /// The node's fully qualified `MagicDNS` name.
+    pub dns_name: Option<String>,
+    /// Expiry of the served HTTPS certificate.
+    pub certificate_expires_at_ms: Option<i64>,
+    /// Whether `auth.public_url` is the node's HTTPS origin.
+    pub public_url_matches: bool,
+    /// Safe diagnostic, with detailed causes in daemon logs.
+    pub message: String,
 }
 
 /// Public HTTPS readiness is separate from application rollout success.

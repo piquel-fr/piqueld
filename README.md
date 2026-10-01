@@ -24,7 +24,8 @@ operations, attempt outcomes, and informational events remain in SQLite. Deletio
 completes only after services and networks are verified absent; volumes remain.
 
 The daemon exposes a polling HTTP API over a Unix socket and explicitly enabled
-localhost or Tailscale TCP listeners. The CLI and optional dashboard share domain
+localhost or Tailscale TCP listeners. It can also join the tailnet as its own
+node and serve the website over HTTPS with a tailnet-issued certificate. The CLI and optional dashboard share domain
 records and HTTP contracts.
 See [module boundaries](docs/architecture/dependency-flow.md) for the code layout.
 

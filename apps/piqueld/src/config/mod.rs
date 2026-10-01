@@ -18,6 +18,8 @@ pub struct DaemonConfig {
     pub server: ServerConfig,
     /// Canonical browser origin for passkeys and invitation links.
     pub auth: AuthConfig,
+    /// Dedicated tailnet node serving the website over HTTPS.
+    pub tailscale: TailscaleConfig,
     /// Docker Engine connection and bootstrap policy.
     pub docker: DockerConfig,
     /// Installation-owned HTTP ingress. Read once at startup.
@@ -104,8 +106,11 @@ impl DaemonConfig {
                 "server.data_dir and server.runtime_dir must be different directories".into(),
             ));
         }
-        crate::auth::Auth::validate_origin(&self.auth.public_url)
-            .map_err(|error| ConfigError::Invalid(error.to_string()))?;
+        if let Some(public_url) = &self.auth.public_url {
+            crate::auth::Auth::validate_origin(public_url)
+                .map_err(|error| ConfigError::Invalid(error.to_string()))?;
+        }
+        self.tailscale.validate()?;
         absolute_file("docker.socket", &self.docker.socket)?;
         for host in &self.server.allowed_hosts {
             if host.len() > 253
@@ -152,18 +157,73 @@ impl DaemonConfig {
     }
 }
 
-/// Canonical website origin. TLS is terminated by an external proxy.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// Canonical website origin.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthConfig {
-    /// HTTPS origin, or HTTP localhost for development.
-    pub public_url: String,
+    /// HTTPS origin, or HTTP localhost for development. Defaults to the
+    /// tailnet node's HTTPS URL when it is enabled, otherwise localhost.
+    pub public_url: Option<String>,
 }
-impl Default for AuthConfig {
+
+impl DaemonConfig {
+    /// Effective website origin. A tailnet node fills an unset value when it
+    /// joins, before authentication starts.
+    #[must_use]
+    pub fn public_url(&self) -> &str {
+        self.auth
+            .public_url
+            .as_deref()
+            .unwrap_or("http://localhost:7845")
+    }
+}
+
+/// The daemon's own tailnet node, which terminates HTTPS for the website.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TailscaleConfig {
+    /// Join the tailnet and serve the website on port 443 of the node.
+    pub enabled: bool,
+    /// Node name, which becomes `<hostname>.<tailnet>.ts.net`.
+    pub hostname: String,
+    /// File holding an auth key for the first login. Without one, the daemon
+    /// logs an interactive login URL. Later starts reuse the node state.
+    pub auth_key_file: Option<PathBuf>,
+}
+
+impl Default for TailscaleConfig {
     fn default() -> Self {
         Self {
-            public_url: "http://localhost:7845".into(),
+            enabled: false,
+            hostname: "piqueld".into(),
+            auth_key_file: None,
         }
+    }
+}
+
+impl TailscaleConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.enabled && !cfg!(feature = "tailscale") {
+            return Err(ConfigError::Invalid(
+                "tailscale.enabled requires piqueld built with the tailscale feature".into(),
+            ));
+        }
+        if !(1..=63).contains(&self.hostname.len())
+            || self.hostname.starts_with('-')
+            || self.hostname.ends_with('-')
+            || !self
+                .hostname
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(ConfigError::Invalid(
+                "tailscale.hostname must be a single DNS label".into(),
+            ));
+        }
+        if let Some(path) = &self.auth_key_file {
+            absolute_file("tailscale.auth_key_file", path)?;
+        }
+        Ok(())
     }
 }
 
@@ -284,6 +344,13 @@ impl ServerConfig {
     #[must_use]
     pub fn database_path(&self) -> PathBuf {
         self.data_dir.join("piqueld.db")
+    }
+
+    /// Private tailnet node state inside the data directory, so the node
+    /// identity (and the passkeys bound to its name) follows the data.
+    #[must_use]
+    pub fn tailscale_dir(&self) -> PathBuf {
+        self.data_dir.join("tailscale")
     }
 }
 
@@ -446,6 +513,18 @@ impl DaemonConfig {
                         "Initialize Swarm",
                         self.docker.auto_initialize_swarm.to_string(),
                     ),
+                ],
+            ),
+            (
+                "Tailscale",
+                vec![
+                    ("Enabled", self.tailscale.enabled.to_string()),
+                    ("Hostname", self.tailscale.hostname.clone()),
+                    (
+                        "State directory",
+                        self.server.tailscale_dir().display().to_string(),
+                    ),
+                    ("Public URL", self.public_url().to_owned()),
                 ],
             ),
             (

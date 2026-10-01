@@ -3402,6 +3402,10 @@
               "status": {
                 "description": "Machine-readable service status.",
                 "type": "string"
+              },
+              "tailscale": {
+                "$ref": "#/components/schemas/TailnetStatus",
+                "description": "Dedicated tailnet node serving the website over HTTPS."
               }
             },
             "required": [
@@ -5610,6 +5614,10 @@
           "status": {
             "description": "Machine-readable service status.",
             "type": "string"
+          },
+          "tailscale": {
+            "$ref": "#/components/schemas/TailnetStatus",
+            "description": "Dedicated tailnet node serving the website over HTTPS."
           }
         },
         "required": [
@@ -5617,6 +5625,50 @@
           "api_version",
           "daemon_version",
           "instance_id"
+        ],
+        "type": "object"
+      },
+      "TailnetStatus": {
+        "description": "Login and certificate state of the daemon's own tailnet node.",
+        "properties": {
+          "certificate_expires_at_ms": {
+            "description": "Expiry of the served HTTPS certificate.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "dns_name": {
+            "description": "The node's fully qualified `MagicDNS` name.",
+            "nullable": true,
+            "type": "string"
+          },
+          "enabled": {
+            "description": "Effective read-only daemon setting.",
+            "type": "boolean"
+          },
+          "healthy": {
+            "description": "The node is logged in and serves an unexpired certificate.",
+            "type": "boolean"
+          },
+          "message": {
+            "description": "Safe diagnostic, with detailed causes in daemon logs.",
+            "type": "string"
+          },
+          "public_url_matches": {
+            "description": "Whether `auth.public_url` is the node's HTTPS origin.",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "Tailscale backend state, such as `Running` or `NeedsLogin`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "healthy",
+          "state",
+          "public_url_matches",
+          "message"
         ],
         "type": "object"
       },

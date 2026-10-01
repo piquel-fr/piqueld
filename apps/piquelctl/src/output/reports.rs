@@ -38,7 +38,25 @@ impl Report for StatusReport<'_> {
             "daemon {} (version {}, API {}, instance {})",
             s.status, s.daemon_version, s.api_version, s.instance_id
         ))?;
-        out.label("Transport", self.transport)
+        out.label("Transport", self.transport)?;
+        let tailnet = &s.tailscale;
+        if tailnet.enabled {
+            out.label(
+                "Tailnet node",
+                format_args!(
+                    "{} ({}, certificate expires at Unix ms {})",
+                    tailnet.dns_name.as_deref().unwrap_or("unknown"),
+                    tailnet.state,
+                    tailnet
+                        .certificate_expires_at_ms
+                        .map_or_else(|| "unknown".into(), |at| at.to_string()),
+                ),
+            )?;
+            if !tailnet.healthy || !tailnet.public_url_matches {
+                out.label("Tailnet problem", &tailnet.message)?;
+            }
+        }
+        Ok(())
     }
 }
 

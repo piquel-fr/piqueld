@@ -85,12 +85,30 @@ selected port on the Tailscale interface. All callers must authenticate. Configu
 `settings.auth.public_url` with a stable HTTPS hostname and terminate TLS externally;
 see [authentication](authentication.md).
 
+For HTTPS without a proxy, let piqueld join the tailnet as its own node instead.
+It does not use the host's `tailscaled`, and its state lives in `dataDir`:
+
+```nix
+services.piqueld = {
+  tailscaleAuthKeyFile = "/run/secrets/piqueld-ts-auth-key"; # first login only
+  settings.tailscale = {
+    enabled = true;
+    hostname = "piqueld"; # https://piqueld.<tailnet>.ts.net
+  };
+};
+```
+
+The key file is passed to the service as the systemd credential `ts-auth-key`;
+it never enters the Nix store. `settings.auth.public_url` defaults to the node's
+HTTPS URL. See [the tailnet node](configuration.md#tailnet-node) for details.
+
 `settings` declares typed options for `server.listen_mode`, `server.port`,
-`server.allowed_hosts`, `auth.public_url`, `docker.socket`,
-`docker.auto_initialize_swarm`, `ingress.enabled`, all three `reconciliation`
-intervals/timeouts, the `retention` periods, both `build_history` limits,
-`metrics.listen`, and every `notifications` switch and timing, with the daemon's
-defaults. Reconciliation values must be 1–86400 seconds; retention values are
+`server.allowed_hosts`, `auth.public_url`, `tailscale.enabled`,
+`tailscale.hostname`, `docker.socket`, `docker.auto_initialize_swarm`,
+`ingress.enabled`, all three `reconciliation` intervals/timeouts, the
+`retention` periods, both `build_history` limits, `metrics.listen`, and every
+`notifications` switch and timing, with the daemon's defaults. Reconciliation
+values must be 1–86400 seconds; retention values are
 nonnegative days, with zero disabling pruning. Unknown settings are rejected.
 
 Webhook destination URLs usually embed credentials, so they are not Nix

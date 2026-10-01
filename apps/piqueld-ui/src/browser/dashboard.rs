@@ -196,6 +196,17 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                 <div class="status-grid">
                     {move || connection_readiness(signals.connection.get())}
                     {move || {
+                        signals.system.get().filter(|system| system.tailscale.enabled).map(|system| {
+                            let tailnet = system.tailscale;
+                            let (tone, label) = if tailnet.healthy {
+                                (Tone::Ok, "Ready")
+                            } else {
+                                (Tone::Bad, "Unhealthy")
+                            };
+                            status_card("Tailnet node", tone, label, &tailnet.message)
+                        })
+                    }}
+                    {move || {
                         signals
                             .readiness
                             .get()

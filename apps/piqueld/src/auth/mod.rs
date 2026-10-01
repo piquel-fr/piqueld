@@ -85,7 +85,7 @@ impl Auth {
         store: &crate::store::Store,
         config: &crate::config::DaemonConfig,
     ) -> anyhow::Result<Self> {
-        let auth = Self::new(store, &config.auth.public_url)?;
+        let auth = Self::new(store, config.public_url())?;
         let path = config.server.data_dir.join("setup-link");
         auth.prepare_setup(&path).await?;
         if auth.0.setup_link.lock().await.is_some() {

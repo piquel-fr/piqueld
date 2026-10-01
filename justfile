@@ -45,8 +45,9 @@ test-wasm:
     @rustup target add wasm32-unknown-unknown
     @WASM_BINDGEN_TEST_ONLY_WEB=1 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --locked --package piqueld-client --lib --target wasm32-unknown-unknown
 
+# Includes the Go-backed tailscale feature, so tests need a Go toolchain.
 test:
-    @cargo nextest run --locked --workspace
+    @cargo nextest run --locked --workspace --features piqueld/tailscale
 
 # Verify the real embedded bundle and run daemon tests against it.
 test-embedded:
@@ -72,11 +73,12 @@ boundary:
 ui-check:
     @cargo check --target wasm32-unknown-unknown -p piqueld-client -p piqueld-ui
 
-# Release daemon and CLI; the daemon build script compiles the dashboard.
+# Release daemon and CLI; the daemon build script compiles the dashboard,
+# and the tailscale feature needs Go.
 # Select only the shipped binaries to avoid optimizing the OpenAPI generator,
 # and build them together so Cargo can share dependencies and schedule both.
 build-embedded:
-    @cargo build --release --package piqueld --package piquelctl --bin piqueld --bin piquelctl --features piqueld/embedded-ui --locked
+    @cargo build --release --package piqueld --package piquelctl --bin piqueld --bin piquelctl --features piqueld/embedded-ui,piqueld/tailscale --locked
 
 daemon-embedded *ARGS:
     @cargo run --package piqueld --bin piqueld --features embedded-ui -- {{ARGS}}

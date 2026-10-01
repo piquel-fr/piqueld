@@ -13,6 +13,7 @@ pub mod operations;
 pub mod reconcile;
 mod secrets;
 pub mod store;
+pub mod tailnet;
 
 mod command;
 mod directories;
