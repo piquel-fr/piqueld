@@ -56,6 +56,7 @@
               ./crates
               ./migrations
               ./examples
+              ./vendor
             ];
           };
           commonArgs = {
@@ -134,6 +135,12 @@
             // goArgs
             // {
               pname = "piqueld-daemon";
+              # The registry wrapper imports these real FFI bindings; Crane
+              # must not replace this patched dependency with an empty crate.
+              extraDummyScript = ''
+                rm -rf "$out/vendor/libtailscale-sys"
+                cp -R ${./vendor/libtailscale-sys} "$out/vendor/libtailscale-sys"
+              '';
               cargoExtraArgs = "--locked --package piqueld --package piquelctl --features embedded-ui,tailscale";
               CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
               nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.go ];

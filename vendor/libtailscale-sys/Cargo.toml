@@ -1,0 +1,11 @@
+[package]
+name = "libtailscale-sys"
+version = "0.2.2"
+edition = "2021"
+links = "tailscale"
+description = "Rust FFI to libtailscale C API"
+license = "MIT"
+repository = "https://github.com/messense/libtailscale-rs"
+
+[build-dependencies]
+cc = "1.0.79"

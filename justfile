@@ -46,8 +46,12 @@ test-wasm:
     @WASM_BINDGEN_TEST_ONLY_WEB=1 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --locked --package piqueld-client --lib --target wasm32-unknown-unknown
 
 # Includes the Go-backed tailscale feature, so tests need a Go toolchain.
-test:
+test: test-tailnet-bridge
     @cargo nextest run --locked --workspace --features piqueld/tailscale
+
+# Verify the patched descriptor/peer handoff without a tailnet login.
+test-tailnet-bridge:
+    @cd vendor/libtailscale-sys/libtailscale && go test ./...
 
 # Verify the real embedded bundle and run daemon tests against it.
 test-embedded:

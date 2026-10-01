@@ -8,6 +8,12 @@ members = [
   "crates/piqueld-core",
 ]
 
+exclude = ["vendor/libtailscale-sys"]
+
+[patch.crates-io]
+# Fix the accepted descriptor/peer association and IPv6 parsing in 0.2.2.
+libtailscale-sys = { path = "vendor/libtailscale-sys" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
