@@ -37,10 +37,13 @@ impl MetricsToken {
         Ok(Self(Self::digest(token)))
     }
 
+    /// Hashes a token so stored and presented tokens compare as fixed-size digests.
     fn digest(token: &str) -> [u8; 32] {
         Sha256::digest(token.as_bytes()).into()
     }
 
+    /// Whether `headers` carry `Authorization: Bearer <token>` matching this
+    /// token. Missing, non-UTF-8, or non-`Bearer` headers are rejected.
     fn authorizes(&self, headers: &HeaderMap) -> bool {
         headers
             .get(header::AUTHORIZATION)
@@ -51,7 +54,8 @@ impl MetricsToken {
 }
 
 /// Builds an isolated metrics-only router; no administrative routes are installed.
-/// With a token, `GET /metrics` requires `Authorization: Bearer <token>`.
+/// With a token, `GET /metrics` requires `Authorization: Bearer <token>` and
+/// answers anything else with 401 and `WWW-Authenticate: Bearer`.
 pub fn metrics_router(state: ApiState, token: Option<MetricsToken>) -> Router {
     Router::new()
         .route(
@@ -76,6 +80,7 @@ pub fn metrics_router(state: ApiState, token: Option<MetricsToken>) -> Router {
         .with_state(state)
 }
 
+/// Renders the Prometheus text exposition, or 503 when collection fails.
 async fn metrics_response(state: &ApiState) -> Response {
     match state.prometheus_metrics().await {
         Ok(body) => (

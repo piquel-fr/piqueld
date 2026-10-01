@@ -9,11 +9,14 @@ use serde::Deserialize;
 pub struct MetricsConfig {
     /// Explicit socket addresses; administrative API routes are never served here.
     pub listen: Vec<std::net::SocketAddr>,
-    /// File holding the bearer token scrapers must present. Required when any
-    /// listener binds a non-loopback address.
+    /// Absolute path of the file holding the bearer token scrapers must present.
+    /// Required when any listener binds a non-loopback address.
     pub token_file: Option<std::path::PathBuf>,
 }
 impl MetricsConfig {
+    /// Checks that every listener has a non-zero port, that `token_file` is an
+    /// absolute file path when set, and that it is set whenever any listener
+    /// binds a non-loopback address.
     pub(super) fn validate(&self) -> Result<(), ConfigError> {
         if self.listen.iter().any(|address| address.port() == 0) {
             return Err(ConfigError::Invalid(

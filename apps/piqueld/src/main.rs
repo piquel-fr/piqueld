@@ -35,8 +35,8 @@ struct Args {
 ///
 /// 1. Loads configuration and initializes tracing.
 /// 2. Prepares and locks the data directory, then validates and locks the runtime
-///    directory and binds every listener, so misconfiguration fails before any
-///    state is opened.
+///    directory, reads the metrics token, and binds every listener, so
+///    misconfiguration fails before any state is opened.
 /// 3. Starts the application service and reconciliation controller.
 /// 4. Serves the dashboard/API over TCP, metrics, and the Unix API socket.
 /// 5. After cancellation, waits for every task and surfaces the first failure.
