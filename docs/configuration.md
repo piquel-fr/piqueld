@@ -149,8 +149,12 @@ destinations, metrics exposure, diagnostic ownership and retention semantics.
 ## Tailnet node
 
 With `[tailscale]` enabled, piqueld joins the tailnet as its own node and serves
-the website and API over HTTPS on port 443 of that node. TLS is terminated with
-the tailnet-issued certificate; no proxy or Tailscale Serve is involved.
+the website and API over HTTPS on port 443 of that node. piqueld starts and
+supervises a dedicated `tailscaled` in userspace-networking mode, separate from
+any host Tailscale daemon, so `tailscaled` and `tailscale` must be on `PATH`.
+That `tailscaled` terminates TLS with the tailnet-issued certificate and
+forwards connections to a loopback listener with a PROXY protocol header that
+carries the client's tailnet address.
 
 ```toml
 [tailscale]
@@ -160,8 +164,11 @@ auth_key_file = "/run/credentials/piqueld.service/ts-auth-key"
 ```
 
 - The tailnet needs MagicDNS and HTTPS certificates enabled.
-- Node state lives in `<data_dir>/tailscale`, so the node identity, its name and
-  the passkeys bound to it follow the data directory rather than the host.
+- Node state and the `tailscaled` socket live in `<data_dir>/tailscale`, so the
+  node identity, its name and the passkeys bound to it follow the data directory
+  rather than the host.
+- piqueld owns the node's preferences and its Serve configuration for port 443,
+  and rewrites both at every start.
 - `auth_key_file` is only needed for the first login. Without it, startup logs a
   login URL and waits until the node is approved.
 - An unset `auth.public_url` becomes `https://<hostname>.<tailnet>.ts.net`. An
@@ -175,13 +182,12 @@ auth_key_file = "/run/credentials/piqueld.service/ts-auth-key"
 Startup fails if the node cannot start or obtain a certificate. While running,
 piqueld refreshes the login state and certificate every minute; Tailscale renews
 the certificate before it expires. `piquelctl status` and the dashboard report
-the login state, certificate expiry, and whether `auth.public_url` matches.
+the login state, certificate expiry, and whether `auth.public_url` matches. If
+`tailscaled` exits, piqueld stops so the service manager can restart both.
+`tailscaled` logs are forwarded at debug level.
 
-The node requires a daemon built with the `tailscale` Cargo feature, which
-embeds Go tsnet through libtailscale; building it needs a Go toolchain. The Nix
-packages and `just build-embedded` enable it. Other builds reject
-`tailscale.enabled`. `listen_mode` is independent and remains available for
-installations without a dedicated node.
+`listen_mode` is independent and remains available for installations without a
+dedicated node.
 
 ## Authentication origin
 

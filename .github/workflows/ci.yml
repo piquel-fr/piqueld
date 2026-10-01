@@ -73,11 +73,6 @@ jobs:
           cache-on-failure: true
           cache-directories: target-ui
       - run: rustup target add wasm32-unknown-unknown
-      # The tailscale feature compiles Go tsnet through libtailscale.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: "1.26.x"
-          cache: false
       - run: just lint
 
   embedded-test:
@@ -143,11 +138,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-      # The tailscale feature compiles Go tsnet through libtailscale.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: "1.26.x"
-          cache: false
       - name: Run workspace tests
         env:
           NEXTEST_PROFILE: ci
@@ -298,11 +288,6 @@ jobs:
           cache-on-failure: true
           cache-directories: target-ui
       - run: rustup target add wasm32-unknown-unknown
-      # The tailscale feature compiles Go tsnet through libtailscale.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version: "1.26.x"
-          cache: false
       - run: just build-embedded
       - run: test -x target/release/piqueld && test -x target/release/piquelctl
       - name: Upload release binaries

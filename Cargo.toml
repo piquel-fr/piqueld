@@ -8,12 +8,6 @@ members = [
   "crates/piqueld-core",
 ]
 
-exclude = ["vendor/libtailscale-sys"]
-
-[patch.crates-io]
-# Fix the accepted descriptor/peer association and IPv6 parsing in 0.2.2.
-libtailscale-sys = { path = "vendor/libtailscale-sys" }
-
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
@@ -43,8 +37,6 @@ clap = { version = "4.5.40", features = ["derive"] }
 futures-util = "0.3.31"
 http = "1.3.1"
 http-body-util = "0.1.3"
-# Builds Go tsnet through cgo, so it needs a Go toolchain.
-libtailscale = "0.2.2"
 hyper = { version = "1.6.0", features = ["client", "http1"] }
 hyper-util = { version = "0.1.14", features = ["tokio"] }
 rustix = { version = "1.1.4", features = ["fs", "process"] }
@@ -57,7 +49,6 @@ tempfile = "3.20.0"
 thiserror = "2.0.12"
 tokio = { version = "1.45.1", features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7.15"
-tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
 toml = "0.8.22"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "json"] }

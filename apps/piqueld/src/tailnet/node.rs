@@ -1,72 +1,60 @@
-//! Go tsnet embedded through libtailscale. A dedicated thread owns the node and
-//! its port 443 listener; everything else talks to the node's `LocalAPI`.
+//! A dedicated `tailscaled` owns the node. It terminates HTTPS on port 443 with
+//! the tailnet certificate and forwards plain TCP, prefixed with a PROXY v2
+//! header, to a loopback listener that the website is served on.
 
+use super::{Cli, ProxyListener};
 use crate::config::DaemonConfig;
-use anyhow::{Context, Result, anyhow, ensure};
-use axum::serve::{Listener, ListenerExt, TapIo};
+use anyhow::{Context, Result, bail, ensure};
+use axum::serve::{ListenerExt, TapIo};
 use piqueld_core::api::TailnetStatus;
-use serde::Deserialize;
 use std::{
-    net::{IpAddr, SocketAddr},
-    os::{
-        fd::{AsRawFd, OwnedFd},
-        unix::fs::DirBuilderExt,
-    },
-    path::PathBuf,
-    sync::{Arc, PoisonError, RwLock},
-    time::Duration,
+    net::{Ipv4Addr, SocketAddr},
+    os::unix::fs::DirBuilderExt,
+    path::Path,
+    process::Stdio,
+    time::{Duration, Instant},
 };
 use tokio::{
-    net::UnixStream,
-    sync::{mpsc, oneshot, watch},
-};
-use tokio_rustls::{
-    TlsAcceptor,
-    rustls::{
-        self,
-        crypto::CryptoProvider,
-        pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
-        server::{ClientHello, ResolvesServerCert},
-        sign::CertifiedKey,
-    },
-    server::TlsStream,
+    io::{AsyncBufReadExt, BufReader},
+    net::{TcpListener, TcpStream},
+    process::{Child, Command},
+    sync::watch,
 };
 use tokio_util::sync::CancellationToken;
 
 const HTTPS_PORT: u16 = 443;
-/// Tailscale renews certificates itself; refreshing hands the renewed one to
-/// rustls and keeps the reported login state current.
+/// tailscaled renews certificates itself; refreshing keeps the reported
+/// certificate expiry and login state current.
 const REFRESH_INTERVAL: Duration = Duration::from_mins(1);
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Accepted connections queued between the node thread and the TLS handshakes.
-const QUEUE: usize = 64;
+/// tailscaled normally opens its socket well within a second.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long after tailscaled exits a shutdown still explains the exit.
+const SHUTDOWN_RACE: Duration = Duration::from_secs(1);
 
-type Connection = (std::os::unix::net::UnixStream, IpAddr);
-
-/// A logged-in tailnet node holding its HTTPS certificate.
+/// A logged-in tailnet node forwarding its HTTPS port to piqueld.
 pub struct Node {
+    daemon: Child,
     monitor: Monitor,
-    acceptor: TlsAcceptor,
-    connections: mpsc::Receiver<Connection>,
+    listener: TcpListener,
     address: SocketAddr,
 }
 
 /// The node's HTTPS listener. The no-op `tap_io` wrapper is what lets axum
 /// supply `ConnectInfo<SocketAddr>`, which authentication throttling needs;
 /// axum otherwise derives it only for TCP listeners.
-pub type NodeListener = TapIo<TlsListener, fn(&mut TlsStream<UnixStream>)>;
+pub type NodeListener = TapIo<ProxyListener, fn(&mut TcpStream)>;
 
 impl Node {
     /// Starts the node when `tailscale.enabled` is set and waits until it is
-    /// logged in and holds a certificate. An unset `auth.public_url` becomes
-    /// the node's HTTPS origin.
+    /// logged in, holds a certificate, and forwards port 443 to piqueld. An
+    /// unset `auth.public_url` becomes the node's HTTPS origin.
     ///
     /// Without an auth key or saved state, the node needs an interactive
     /// login; the login URL is logged and startup waits for it.
     ///
     /// # Errors
-    /// Returns state directory, auth key, node startup, `LocalAPI`, or
-    /// certificate errors. HTTPS certificates must be enabled for the tailnet.
+    /// Returns state directory, tailscaled, login, certificate, or forwarding
+    /// errors. HTTPS certificates must be enabled for the tailnet.
     pub async fn join(config: &mut DaemonConfig) -> Result<Option<Self>> {
         if !config.tailscale.enabled {
             return Ok(None);
@@ -77,60 +65,48 @@ impl Node {
             .recursive(true)
             .create(&dir)
             .with_context(|| format!("failed to create tailnet state {}", dir.display()))?;
+        let cli = Cli {
+            socket: dir.join("tailscaled.sock"),
+        };
+        let mut daemon = Self::spawn(&dir, &cli.socket).await?;
+
+        let hostname = format!("--hostname={}", config.tailscale.hostname);
         let auth_key = config
             .tailscale
             .auth_key_file
             .as_ref()
-            .map(|path| {
-                std::fs::read_to_string(path)
-                    .map(|key| key.trim().to_owned())
-                    .with_context(|| format!("failed to read auth key {}", path.display()))
-            })
-            .transpose()?;
-        let (started, loopback) = oneshot::channel();
-        let (sender, connections) = mpsc::channel(QUEUE);
-        let thread = Thread {
-            dir,
-            hostname: config.tailscale.hostname.clone(),
-            auth_key,
+            .map(|path| format!("--auth-key=file:{}", path.display()));
+        // `--reset` makes the flags the node's complete preferences, so state
+        // written by older versions or other tools never blocks `up`.
+        let mut up = vec!["up", "--reset", &hostname];
+        up.extend(auth_key.as_deref());
+        tokio::select! {
+            exit = daemon.wait() => bail!("tailscaled exited during login: {}", exit?),
+            result = cli.run(&up) => result.context("failed to log the tailnet node in")?,
         };
-        // A plain thread, not the blocking pool: accept blocks until the next
-        // connection, and runtime shutdown must not wait for it.
-        std::thread::Builder::new()
-            .name("tailnet".into())
-            .spawn(move || thread.run(started, &sender))
-            .context("failed to spawn the tailnet thread")?;
-        let local_api = LocalApi::new(
-            loopback
-                .await
-                .context("tailnet thread exited during startup")?
-                .map_err(|error| anyhow!(error))
-                .context("failed to start the tailnet node")?,
-        )?;
 
-        let status = local_api.wait_until_running().await?;
+        let status = cli.status().await?;
         let dns_name = status
             .node
             .map(|node| node.dns_name.trim_end_matches('.').to_owned())
-            .context("running tailnet node reported no DNS name")?;
-        let address = SocketAddr::new(
-            *status
-                .addresses
-                .unwrap_or_default()
-                .first()
-                .context("running tailnet node reported no addresses")?,
-            HTTPS_PORT,
-        );
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let served = local_api.certificate(&dns_name, &provider).await?;
-        let expires_at_ms = served.expires_at_ms;
-        let certificate = Arc::new(Certificate(RwLock::new(served)));
-        let mut tls = rustls::ServerConfig::builder_with_provider(Arc::clone(&provider))
-            .with_safe_default_protocol_versions()
-            .context("failed to configure TLS")?
-            .with_no_client_auth()
-            .with_cert_resolver(certificate.clone());
-        tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+            .filter(|name| !name.is_empty())
+            .context("logged-in tailnet node reported no DNS name")?;
+        // Issue the certificate now, so the first visitor does not wait for it.
+        let expires_at_ms = cli.certificate_expiry_ms(&dns_name).await?;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .context("failed to bind the tailnet forwarding listener")?;
+        let address = listener.local_addr()?;
+        let target = format!("tcp://{address}");
+        cli.run(&[
+            "serve",
+            "--bg",
+            &format!("--tls-terminated-tcp={HTTPS_PORT}"),
+            "--proxy-protocol=2",
+            &target,
+        ])
+        .await
+        .context("failed to forward the tailnet node's HTTPS port")?;
 
         let url = format!("https://{dns_name}");
         let public_url_matches = match &config.auth.public_url {
@@ -151,24 +127,69 @@ impl Node {
             certificate_error: false,
             expires_at_ms,
         };
-        let monitor = Monitor {
-            status: watch::Sender::new(observation.report(
-                &dns_name,
-                public_url_matches,
-                crate::store::now_ms(),
-            )),
-            local_api,
-            dns_name,
-            public_url_matches,
-            provider,
-            certificate,
-        };
         Ok(Some(Self {
-            monitor,
-            acceptor: TlsAcceptor::from(Arc::new(tls)),
-            connections,
+            daemon,
+            monitor: Monitor {
+                status: watch::Sender::new(observation.report(
+                    &dns_name,
+                    public_url_matches,
+                    crate::store::now_ms(),
+                )),
+                cli,
+                dns_name,
+                public_url_matches,
+                expires_at_ms,
+            },
+            listener,
             address,
         }))
+    }
+
+    /// Starts tailscaled with private state and waits for its socket. Its logs
+    /// are forwarded at debug level. It shares piqueld's process group, so
+    /// terminal interrupts stop both, and is killed when piqueld drops it.
+    async fn spawn(dir: &Path, socket: &Path) -> Result<Child> {
+        // A stale socket from a killed daemon would look ready before it is.
+        match std::fs::remove_file(socket) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error).context("failed to remove the stale tailscaled socket");
+            }
+            _ => {}
+        }
+        let mut daemon = Command::new("tailscaled")
+            .arg("--tun=userspace-networking")
+            .arg("--port=0")
+            .arg("--no-logs-no-support")
+            .arg(format!("--statedir={}", dir.display()))
+            .arg(format!("--socket={}", socket.display()))
+            // Keeps tailscaled's log configuration out of the home directory.
+            .env("TS_LOGS_DIR", dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .context("failed to start tailscaled")?;
+        let mut logs =
+            BufReader::new(daemon.stderr.take().context("capture tailscaled logs")?).lines();
+        tokio::spawn(async move {
+            while let Ok(Some(line)) = logs.next_line().await {
+                tracing::debug!("tailscaled: {line}");
+            }
+        });
+        let started = Instant::now();
+        while !socket.exists() {
+            if let Some(exit) = daemon.try_wait()? {
+                bail!("tailscaled exited during startup ({exit}); its logs are at debug level");
+            }
+            ensure!(
+                started.elapsed() < STARTUP_TIMEOUT,
+                "tailscaled did not open {} within {STARTUP_TIMEOUT:?}",
+                socket.display()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok(daemon)
     }
 
     /// Subscribes to the node's periodically refreshed status.
@@ -183,145 +204,29 @@ impl Node {
         &self.monitor.dns_name
     }
 
-    /// Starts TLS handshakes and status refreshes until cancellation. If the
-    /// node stops accepting connections, the daemon is cancelled.
+    /// Starts accepting forwarded connections and refreshing status until
+    /// cancellation. If tailscaled exits, the daemon is cancelled.
     #[must_use]
     pub fn listener(self, cancellation: CancellationToken) -> NodeListener {
-        let (sender, streams) = mpsc::channel(QUEUE);
-        tokio::spawn(self.monitor.run(cancellation.clone()));
-        tokio::spawn(Self::handshake(
-            self.connections,
-            self.acceptor,
-            sender,
-            cancellation,
-        ));
-        let tap: fn(&mut TlsStream<UnixStream>) = |_| {};
-        TlsListener {
-            streams,
-            address: self.address,
-        }
-        .tap_io(tap)
-    }
-
-    async fn handshake(
-        mut connections: mpsc::Receiver<Connection>,
-        acceptor: TlsAcceptor,
-        streams: mpsc::Sender<(TlsStream<UnixStream>, SocketAddr)>,
-        cancellation: CancellationToken,
-    ) {
-        loop {
-            let (stream, peer) = tokio::select! {
-                () = cancellation.cancelled() => return,
-                connection = connections.recv() => {
-                    if let Some(connection) = connection { connection } else {
-                        tracing::error!("tailnet node stopped accepting connections; stopping piqueld");
-                        cancellation.cancel();
-                        return;
-                    }
-                }
-            };
-            let (acceptor, streams) = (acceptor.clone(), streams.clone());
-            // Handshakes run concurrently so one slow client cannot block others.
-            tokio::spawn(async move {
-                let accepted = async {
-                    stream.set_nonblocking(true)?;
-                    let stream = UnixStream::from_std(stream)?;
-                    tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream))
-                        .await
-                        .map_err(std::io::Error::from)?
-                };
-                match accepted.await {
-                    Ok(stream) => {
-                        // A closed queue means the server is shutting down.
-                        let _ = streams.send((stream, SocketAddr::new(peer, 0))).await;
-                    }
-                    Err(error) => tracing::debug!(%peer, %error, "tailnet TLS handshake failed"),
-                }
-            });
-        }
+        let listener = ProxyListener::spawn(self.listener, self.address, cancellation.clone());
+        tokio::spawn(self.monitor.run(self.daemon, cancellation));
+        let tap: fn(&mut TcpStream) = |_| {};
+        listener.tap_io(tap)
     }
 }
 
-/// Owns the libtailscale handle, which borrows into its listener, for the
-/// process lifetime.
-struct Thread {
-    dir: PathBuf,
-    hostname: String,
-    auth_key: Option<String>,
-}
-
-impl Thread {
-    fn run(
-        self,
-        started: oneshot::Sender<Result<libtailscale::Loopback, String>>,
-        connections: &mpsc::Sender<Connection>,
-    ) {
-        let mut node = libtailscale::Tailscale::new();
-        let listener = match self
-            .start(&mut node)
-            .and_then(|loopback| Ok((loopback, node.listen("tcp", &format!(":{HTTPS_PORT}"))?)))
-        {
-            Ok((loopback, listener)) => {
-                if started.send(Ok(loopback)).is_err() {
-                    return;
-                }
-                listener
-            }
-            Err(error) => {
-                let _ = started.send(Err(error));
-                return;
-            }
-        };
-        loop {
-            let stream = match listener.accept() {
-                Ok(stream) => stream,
-                Err(error) => {
-                    tracing::error!(%error, "tailnet listener failed");
-                    return;
-                }
-            };
-            let peer = match listener.get_remote_addr(stream.as_raw_fd()) {
-                Ok(peer) => peer,
-                Err(error) => {
-                    tracing::warn!(%error, "dropping tailnet connection without a peer address");
-                    continue;
-                }
-            };
-            // libtailscale hands out one end of a Unix socket pair.
-            let stream = std::os::unix::net::UnixStream::from(OwnedFd::from(stream));
-            if connections.blocking_send((stream, peer)).is_err() {
-                return;
-            }
-        }
-    }
-
-    fn start(&self, node: &mut libtailscale::Tailscale) -> Result<libtailscale::Loopback, String> {
-        node.set_dir(
-            self.dir
-                .to_str()
-                .ok_or("tailnet state path must be UTF-8")?,
-        )?;
-        node.set_hostname(&self.hostname)?;
-        if let Some(key) = &self.auth_key {
-            node.set_authkey(key)?;
-        }
-        node.start()?;
-        node.loopback()
-    }
-}
-
-/// Keeps the served certificate and reported status current.
+/// Supervises tailscaled and keeps the reported status current.
 struct Monitor {
-    local_api: LocalApi,
+    cli: Cli,
     dns_name: String,
     public_url_matches: bool,
-    provider: Arc<CryptoProvider>,
-    certificate: Arc<Certificate>,
+    expires_at_ms: i64,
     status: watch::Sender<TailnetStatus>,
 }
 
 impl Monitor {
-    async fn run(self, cancellation: CancellationToken) {
+    /// Owns tailscaled until cancellation, then drops (and so kills) it.
+    async fn run(mut self, mut daemon: Child, cancellation: CancellationToken) {
         let mut ticker = tokio::time::interval_at(
             tokio::time::Instant::now() + REFRESH_INTERVAL,
             REFRESH_INTERVAL,
@@ -329,30 +234,30 @@ impl Monitor {
         loop {
             tokio::select! {
                 () = cancellation.cancelled() => return,
+                exit = daemon.wait() => {
+                    // Shutdown signals reach tailscaled too, and may win the race.
+                    if tokio::time::timeout(SHUTDOWN_RACE, cancellation.cancelled()).await.is_err() {
+                        tracing::error!(?exit, "tailscaled exited; stopping piqueld");
+                        cancellation.cancel();
+                    }
+                    return;
+                }
                 _ = ticker.tick() => self.refresh().await,
             }
         }
     }
 
-    async fn refresh(&self) {
-        let state = match self.local_api.status().await {
+    async fn refresh(&mut self) {
+        let state = match self.cli.status().await {
             Ok(status) => status.backend_state,
             Err(error) => {
                 tracing::warn!(error = %format!("{error:#}"), "tailnet status refresh failed");
                 "Unknown".into()
             }
         };
-        let certificate_error = match self
-            .local_api
-            .certificate(&self.dns_name, &self.provider)
-            .await
-        {
-            Ok(served) => {
-                *self
-                    .certificate
-                    .0
-                    .write()
-                    .unwrap_or_else(PoisonError::into_inner) = served;
+        let certificate_error = match self.cli.certificate_expiry_ms(&self.dns_name).await {
+            Ok(expires_at_ms) => {
+                self.expires_at_ms = expires_at_ms;
                 false
             }
             Err(error) => {
@@ -363,7 +268,7 @@ impl Monitor {
         let observation = Observation {
             state,
             certificate_error,
-            expires_at_ms: self.certificate.expires_at_ms(),
+            expires_at_ms: self.expires_at_ms,
         };
         self.status.send_replace(observation.report(
             &self.dns_name,
@@ -414,174 +319,6 @@ impl Observation {
     }
 }
 
-/// The certificate currently handed to TLS handshakes.
-#[derive(Debug)]
-struct Certificate(RwLock<Served>);
-
-#[derive(Debug)]
-struct Served {
-    key: Arc<CertifiedKey>,
-    expires_at_ms: i64,
-}
-
-impl Certificate {
-    fn expires_at_ms(&self) -> i64 {
-        self.0
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .expires_at_ms
-    }
-}
-
-impl ResolvesServerCert for Certificate {
-    fn resolve(&self, _hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        Some(Arc::clone(
-            &self.0.read().unwrap_or_else(PoisonError::into_inner).key,
-        ))
-    }
-}
-
-/// The node's `LocalAPI`, served on loopback with a per-process credential.
-struct LocalApi {
-    client: reqwest::Client,
-    address: String,
-    credential: String,
-}
-
-/// The fields piqueld reads from `ipnstate.Status`.
-#[derive(Deserialize)]
-struct Status {
-    #[serde(rename = "BackendState")]
-    backend_state: String,
-    #[serde(rename = "AuthURL", default)]
-    auth_url: String,
-    #[serde(rename = "TailscaleIPs", default)]
-    addresses: Option<Vec<IpAddr>>,
-    #[serde(rename = "Self")]
-    node: Option<NodeStatus>,
-}
-
-#[derive(Deserialize)]
-struct NodeStatus {
-    #[serde(rename = "DNSName")]
-    dns_name: String,
-}
-
-impl LocalApi {
-    fn new(loopback: libtailscale::Loopback) -> Result<Self> {
-        Ok(Self {
-            // Issuing a certificate can take a while: Let's Encrypt validates
-            // a DNS challenge.
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .timeout(Duration::from_mins(2))
-                .build()
-                .context("failed to initialize the LocalAPI client")?,
-            address: loopback.address,
-            credential: loopback.credential,
-        })
-    }
-
-    async fn get(&self, path: &str) -> Result<Vec<u8>> {
-        let response = self
-            .client
-            .get(format!("http://{}/localapi/v0/{path}", self.address))
-            .basic_auth("", Some(&self.credential))
-            .header("Sec-Tailscale", "localapi")
-            .send()
-            .await
-            .with_context(|| format!("LocalAPI {path} request failed"))?;
-        let status = response.status();
-        let body = response
-            .bytes()
-            .await
-            .with_context(|| format!("LocalAPI {path} response failed"))?;
-        ensure!(
-            status.is_success(),
-            "LocalAPI {path} returned {status}: {}",
-            String::from_utf8_lossy(&body).trim()
-        );
-        Ok(body.to_vec())
-    }
-
-    async fn status(&self) -> Result<Status> {
-        serde_json::from_slice(&self.get("status").await?).context("invalid LocalAPI status")
-    }
-
-    /// Polls until the node is logged in, logging state changes and login URLs.
-    async fn wait_until_running(&self) -> Result<Status> {
-        let (mut state, mut login) = (String::new(), String::new());
-        loop {
-            let status = self.status().await?;
-            if status.backend_state == "Running"
-                && status
-                    .node
-                    .as_ref()
-                    .is_some_and(|node| !node.dns_name.is_empty())
-            {
-                return Ok(status);
-            }
-            if status.backend_state != state {
-                tracing::info!(state = %status.backend_state, "waiting for the tailnet node to log in");
-                state.clone_from(&status.backend_state);
-            }
-            if !status.auth_url.is_empty() && status.auth_url != login {
-                tracing::warn!(url = %status.auth_url,
-                    "log the tailnet node in at this URL, or set tailscale.auth_key_file");
-                login = status.auth_url;
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    }
-
-    /// Fetches the certificate for the node's name. Tailscale caches it in the
-    /// node state and renews it before expiry.
-    async fn certificate(&self, dns_name: &str, provider: &CryptoProvider) -> Result<Served> {
-        let pem = self
-            .get(&format!("cert/{dns_name}?type=pair"))
-            .await
-            .context("failed to obtain the tailnet HTTPS certificate; enable HTTPS certificates for the tailnet")?;
-        let key = PrivateKeyDer::from_pem_slice(&pem).context("certificate has no private key")?;
-        let chain = CertificateDer::pem_slice_iter(&pem)
-            .collect::<Result<Vec<_>, _>>()
-            .context("invalid certificate PEM")?;
-        let (_, leaf) =
-            x509_parser::parse_x509_certificate(chain.first().context("certificate is empty")?)
-                .map_err(|error| anyhow!("invalid certificate: {error}"))?;
-        let expires_at_ms = leaf.validity().not_after.timestamp().saturating_mul(1000);
-        Ok(Served {
-            key: Arc::new(
-                CertifiedKey::from_der(chain, key, provider)
-                    .context("certificate does not match its key")?,
-            ),
-            expires_at_ms,
-        })
-    }
-}
-
-/// Accepted, TLS-terminated connections from the node.
-pub struct TlsListener {
-    streams: mpsc::Receiver<(TlsStream<UnixStream>, SocketAddr)>,
-    address: SocketAddr,
-}
-
-impl Listener for TlsListener {
-    type Io = TlsStream<UnixStream>;
-    type Addr = SocketAddr;
-
-    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        match self.streams.recv().await {
-            Some(connection) => connection,
-            // The handshake task only stops on shutdown, which also stops serving.
-            None => std::future::pending().await,
-        }
-    }
-
-    fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        Ok(self.address)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,22 +361,5 @@ mod tests {
         assert!(status.healthy);
         assert!(!status.public_url_matches);
         assert!(status.message.contains("https://piqueld.tail.ts.net"));
-    }
-
-    #[test]
-    fn status_reads_login_state_and_node_name() {
-        let status: Status = serde_json::from_str(
-            r#"{"BackendState":"Running","AuthURL":"","TailscaleIPs":["100.64.0.1"],
-                "Self":{"DNSName":"piqueld.tail.ts.net."}}"#,
-        )
-        .unwrap();
-        assert_eq!(status.node.unwrap().dns_name, "piqueld.tail.ts.net.");
-        let login: Status = serde_json::from_str(
-            r#"{"BackendState":"NeedsLogin","AuthURL":"https://login.tailscale.com/a/1",
-                "TailscaleIPs":null,"Self":{"DNSName":""}}"#,
-        )
-        .unwrap();
-        assert_eq!(login.auth_url, "https://login.tailscale.com/a/1");
-        assert!(login.addresses.is_none());
     }
 }

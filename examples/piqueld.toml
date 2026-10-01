@@ -21,7 +21,8 @@ allowed_hosts = []
 
 [tailscale]
 # Join the tailnet as piqueld-dev.<tailnet>.ts.net and serve HTTPS on its port
-# 443. Node state lives in <data_dir>/tailscale. Without an auth key, the daemon
+# 443 through a dedicated tailscaled, which must be on PATH with the tailscale
+# CLI. Node state lives in <data_dir>/tailscale. Without an auth key, the daemon
 # logs a login URL and waits. The tailnet must have HTTPS certificates enabled.
 enabled = false
 hostname = "piqueld-dev"

@@ -193,8 +193,8 @@ fn load_config(explicit_path: Option<&std::path::Path>) -> Result<DaemonConfig> 
     }
 }
 
-/// Serves `router` on a TCP-style listener (plain TCP or the tailnet TLS
-/// listener) until cancellation, recording peer addresses for throttling.
+/// Serves `router` on a TCP-style listener (plain TCP or the tailnet node's
+/// forwarded connections) until cancellation, recording peer addresses for throttling.
 /// In-flight connections get `SHUTDOWN_GRACE` to finish, and the task cancels
 /// the whole daemon when it exits for any reason.
 fn spawn_tcp_api<L>(

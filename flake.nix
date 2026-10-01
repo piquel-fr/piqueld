@@ -56,7 +56,6 @@
               ./crates
               ./migrations
               ./examples
-              ./vendor
             ];
           };
           commonArgs = {
@@ -96,54 +95,12 @@
               CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
             }
           );
-          # libtailscale-sys runs `go build` for the daemon's tailscale feature.
-          # The sandbox has no network, so its Go modules are fetched up front
-          # and served to Go as a file-based module proxy.
-          libtailscaleSrc = pkgs.fetchCrate {
-            pname = "libtailscale-sys";
-            version = "0.2.2";
-            hash = "sha256-l7G8DOpXBEm96rclZa7qIivyBtay9gtFUOB8rIl0nQ8=";
-          };
-          libtailscaleModules = pkgs.stdenvNoCC.mkDerivation {
-            name = "libtailscale-go-modules";
-            src = libtailscaleSrc;
-            nativeBuildInputs = [
-              pkgs.go
-              pkgs.cacert
-            ];
-            buildPhase = ''
-              export HOME="$TMPDIR" GOMODCACHE="$TMPDIR/modules" GOTOOLCHAIN=local GOFLAGS=-modcacherw
-              (cd libtailscale && go mod download)
-              cp -r "$GOMODCACHE/cache/download" "$out"
-            '';
-            dontInstall = true;
-            dontFixup = true;
-            outputHashMode = "recursive";
-            outputHashAlgo = "sha256";
-            outputHash = "sha256-ugpFpSiJhdgu6hstE71dVCExt4yH1+MEMASOr5P3xSk=";
-          };
-          goArgs = {
-            GOPROXY = "file://${libtailscaleModules}";
-            GOSUMDB = "off";
-            GOTOOLCHAIN = "local";
-            preBuild = ''
-              export GOCACHE="$TMPDIR/go-cache" GOMODCACHE="$TMPDIR/go-modules"
-            '';
-          };
           daemonDeps = buildDepsOnly (
             commonArgs
-            // goArgs
             // {
               pname = "piqueld-daemon";
-              # The registry wrapper imports these real FFI bindings; Crane
-              # must not replace this patched dependency with an empty crate.
-              extraDummyScript = ''
-                rm -rf "$out/vendor/libtailscale-sys"
-                cp -R ${./vendor/libtailscale-sys} "$out/vendor/libtailscale-sys"
-              '';
-              cargoExtraArgs = "--locked --package piqueld --package piquelctl --features embedded-ui,tailscale";
+              cargoExtraArgs = "--locked --package piqueld --package piquelctl --features embedded-ui";
               CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
-              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.go ];
             }
           );
           mkPackage =
@@ -154,20 +111,14 @@
               cargoArtifacts,
             }:
             let
-              isDaemon = builtins.elem "piqueld" binaries;
-              features =
-                lib.optional withUi "piqueld/embedded-ui" ++ lib.optional isDaemon "piqueld/tailscale";
-              args =
-                commonArgs
-                // lib.optionalAttrs isDaemon goArgs
-                // {
-                  pname = name;
-                  cargoExtraArgs =
-                    "--locked "
-                    + lib.concatMapStringsSep " " (binary: "--package ${binary}") binaries
-                    + lib.optionalString (features != [ ]) " --features ${lib.concatStringsSep "," features}";
-                  CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
-                };
+              args = commonArgs // {
+                pname = name;
+                cargoExtraArgs =
+                  "--locked "
+                  + lib.concatMapStringsSep " " (binary: "--package ${binary}") binaries
+                  + lib.optionalString withUi " --features embedded-ui";
+                CARGO_BUILD_TARGET = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+              };
             in
             craneLib.buildPackage (
               args
@@ -176,22 +127,18 @@
                 meta.mainProgram = builtins.head binaries;
                 cargoBuildExtraArgs = lib.concatMapStringsSep " " (binary: "--bin ${binary}") binaries;
                 nativeBuildInputs =
-                  commonArgs.nativeBuildInputs
-                  ++ lib.optionals isDaemon [
-                    pkgs.makeWrapper
-                    pkgs.go
-                  ];
+                  commonArgs.nativeBuildInputs ++ lib.optional (builtins.elem "piqueld" binaries) pkgs.makeWrapper;
                 installPhaseCommand = ''
                   ${lib.concatMapStringsSep "\n" (
                     binary:
                     ''install -Dm755 "target/${args.CARGO_BUILD_TARGET}/release/${binary}" "$out/bin/${binary}"''
                   ) binaries}
-                  ${lib.optionalString isDaemon ''
+                  ${lib.optionalString (builtins.elem "piqueld" binaries) ''
                     install -Dm644 examples/piqueld.toml \
                       "$out/share/piqueld/piqueld.example.toml"
                   ''}
                 '';
-                postInstall = lib.optionalString isDaemon ''
+                postInstall = lib.optionalString (builtins.elem "piqueld" binaries) ''
                   wrapProgram "$out/bin/piqueld" --prefix PATH : ${
                     lib.makeBinPath [
                       pkgs.git
@@ -258,7 +205,6 @@
               ++ lib.optionals stdenv.isLinux [
                 cargo-deny
                 cargo-watch
-                go
                 docker-client
                 cmake
                 lld

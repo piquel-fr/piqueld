@@ -233,7 +233,8 @@ in
         pkgs.openssh
         pkgs.docker-client
       ]
-      ++ lib.optional usesTailscale config.services.tailscale.package;
+      # The tailnet node runs its own tailscaled and drives it with the CLI.
+      ++ lib.optional (usesTailscale || cfg.settings.tailscale.enabled) config.services.tailscale.package;
       serviceConfig = {
         ExecStart =
           if cfg.notificationDestinationsFile == null then

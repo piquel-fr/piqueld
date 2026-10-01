@@ -67,7 +67,7 @@ setsid cargo watch \
     --no-process-group \
     --watch apps/piqueld --watch apps/piqueld-ui --watch crates \
     --watch Cargo.toml --watch Cargo.lock \
-    --shell "exec cargo run --package piqueld --bin piqueld --features embedded-ui,tailscale -- --config $config" &
+    --shell "exec cargo run --package piqueld --bin piqueld --features embedded-ui -- --config $config" &
 child_pids+=("$!")
 
 set +e

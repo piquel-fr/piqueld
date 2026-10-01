@@ -169,8 +169,4 @@ fn tailscale_node_settings_are_validated() {
             "accepted {document}"
         );
     }
-    assert_eq!(
-        DaemonConfig::from_toml("[tailscale]\nenabled = true").is_ok(),
-        cfg!(feature = "tailscale")
-    );
 }

@@ -86,7 +86,9 @@ selected port on the Tailscale interface. All callers must authenticate. Configu
 see [authentication](authentication.md).
 
 For HTTPS without a proxy, let piqueld join the tailnet as its own node instead.
-It does not use the host's `tailscaled`, and its state lives in `dataDir`:
+piqueld runs a dedicated, unprivileged `tailscaled` from
+`services.tailscale.package` rather than using the host's, and its state lives
+in `dataDir`. The host does not need `services.tailscale.enable`:
 
 ```nix
 services.piqueld.settings.tailscale = {

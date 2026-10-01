@@ -203,11 +203,6 @@ impl Default for TailscaleConfig {
 
 impl TailscaleConfig {
     fn validate(&self) -> Result<(), ConfigError> {
-        if self.enabled && !cfg!(feature = "tailscale") {
-            return Err(ConfigError::Invalid(
-                "tailscale.enabled requires piqueld built with the tailscale feature".into(),
-            ));
-        }
         if !(1..=63).contains(&self.hostname.len())
             || self.hostname.starts_with('-')
             || self.hostname.ends_with('-')

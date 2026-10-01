@@ -9,12 +9,8 @@ repository.workspace = true
 # Builds with this feature embed the dashboard bundle at compile time. The
 # build script compiles `piqueld-ui` with a nested Cargo, so the
 # wasm32-unknown-unknown target (listed in rust-toolchain.toml) must be installed.
-#
-# The tailscale feature embeds a Go tsnet node through libtailscale, so builds
-# with it need a Go toolchain. Builds without it reject `tailscale.enabled`.
 [features]
 embedded-ui = ["dep:wasm-bindgen-cli-support"]
-tailscale = ["dep:libtailscale", "dep:tokio-rustls", "dep:x509-parser"]
 openapi-codegen = ["dep:prettyplease", "dep:progenitor", "dep:syn"]
 
 [[bin]]
@@ -40,7 +36,6 @@ hyper.workspace = true
 hyper-util.workspace = true
 http.workspace = true
 http-body-util.workspace = true
-libtailscale = { workspace = true, optional = true }
 piqueld-core.workspace = true
 prettyplease = { workspace = true, optional = true }
 progenitor = { workspace = true, optional = true }
@@ -56,7 +51,6 @@ syn = { workspace = true, optional = true }
 tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-tokio-rustls = { workspace = true, optional = true }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -65,7 +59,7 @@ tower-http.workspace = true
 utoipa.workspace = true
 utoipa-axum.workspace = true
 uuid.workspace = true
-x509-parser = { workspace = true, optional = true }
+x509-parser.workspace = true
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["http2"] }
