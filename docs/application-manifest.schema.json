@@ -26,6 +26,14 @@
           },
           "type": "array"
         },
+        "secrets": {
+          "default": [],
+          "description": "Application secrets whose values piqueld generates once.",
+          "items": {
+            "$ref": "#/definitions/SecretDeclaration"
+          },
+          "type": "array"
+        },
         "services": {
           "default": [],
           "description": "Declared services.",
@@ -287,6 +295,86 @@
         "port"
       ],
       "type": "object"
+    },
+    "SecretDeclaration": {
+      "additionalProperties": false,
+      "description": "An application secret whose value piqueld generates when a deployment first\nneeds it. A stored value, generated or set manually, is never replaced.",
+      "properties": {
+        "generate": {
+          "$ref": "#/definitions/SecretGenerator",
+          "description": "How the value is generated."
+        },
+        "name": {
+          "description": "Application-scoped logical secret name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "generate"
+      ],
+      "type": "object"
+    },
+    "SecretEncoding": {
+      "description": "Text encoding of generated random bytes.",
+      "enum": [
+        "hex",
+        "base64url"
+      ],
+      "type": "string"
+    },
+    "SecretGenerator": {
+      "description": "The exhaustive set of secret value generators.",
+      "oneOf": [
+        {
+          "description": "Random bytes from the operating system, encoded as text.",
+          "properties": {
+            "bytes": {
+              "description": "Number of random bytes before encoding.",
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "encoding": {
+              "$ref": "#/definitions/SecretEncoding",
+              "description": "Text encoding of the random bytes."
+            },
+            "type": {
+              "enum": [
+                "random"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "bytes",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "RSA private key in PKCS#8 PEM.",
+          "properties": {
+            "bits": {
+              "description": "Modulus size in bits.",
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "enum": [
+                "rsa"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "bits",
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "SecretMount": {
       "additionalProperties": false,

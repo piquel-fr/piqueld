@@ -3,7 +3,8 @@ mod deletion;
 mod key;
 
 use super::{ApplicationId, NormalizedApplication, Store, StoreError, now_ms};
-use crate::secrets::{Envelope, SecretCipher};
+use crate::secrets::{Envelope, Generate, SecretCipher};
+use anyhow::Context;
 use piqueld_core::api::SecretMetadata;
 use std::collections::{BTreeMap, BTreeSet};
 use zeroize::Zeroizing;
@@ -110,12 +111,53 @@ impl Store {
             Err(StoreError::SecretVersionConflict { expected, actual })
         }
     }
-    /// Pins the secret versions a deployment uses in its own transaction; see `pin_secrets_on`.
+    /// Stores values for declared secrets that have none. A stored value,
+    /// generated or set manually, is never replaced, so deploys never rotate it.
+    /// Call before pinning, outside the writer lock: RSA generation takes time.
+    pub(crate) async fn generate_secrets(
+        &self,
+        app: &NormalizedApplication,
+    ) -> Result<(), StoreError> {
+        let id = app.id();
+        let id_str = id.as_str();
+        let existing = sqlx::query_scalar!(
+            "SELECT name FROM application_secrets WHERE application_id=?1",
+            id_str
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        for secret in &app.spec().secrets {
+            if existing.contains(&secret.name) {
+                continue;
+            }
+            let generator = secret.generate.clone();
+            let mut value = tokio::task::spawn_blocking(move || generator.generate())
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|value| value)
+                .with_context(|| format!("generate secret {}", secret.name))
+                .map_err(StoreError::SecretSource)?;
+            match self
+                .put_secret(id, &secret.name, 0, std::mem::take(&mut *value))
+                .await
+            {
+                // A value set concurrently wins over the generated one.
+                Ok(_) | Err(StoreError::SecretVersionConflict { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+    /// Generates values for declared secrets that have none (see
+    /// `generate_secrets`), then pins the secret versions a deployment uses in
+    /// its own transaction; see `pin_secrets_on`.
     pub(crate) async fn pin_secrets(
         &self,
         operation: &str,
         app: &NormalizedApplication,
     ) -> Result<BTreeMap<String, String>, StoreError> {
+        self.generate_secrets(app).await?;
         let _writer = self.writers.lock().await;
         let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
         let pins = Self::pin_secrets_on(&mut tx, operation, app).await?;

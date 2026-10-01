@@ -29,6 +29,7 @@ async-trait = "0.1.88"
 axum = { version = "0.8.4", default-features = false, features = ["json", "query", "tokio", "http1", "tracing", "matched-path"] }
 base64 = "0.22.1"
 getrandom = "0.3.4"
+openssl = "0.10.81"
 webauthn-rs-core = "=0.5.5"
 bytes = "1.10.1"
 bollard = "0.19.1"

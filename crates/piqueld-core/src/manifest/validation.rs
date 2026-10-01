@@ -2,7 +2,8 @@
 
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, GitRepository,
-    HealthCheck, Mount, ResourceLimits, Service, Source, ValidatedApplication, Volume,
+    HealthCheck, Mount, ResourceLimits, SecretDeclaration, SecretGenerator, Service, Source,
+    ValidatedApplication, Volume,
 };
 use crate::{codes, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,9 @@ const MAX_PROCESS_ELEMENT_BYTES: usize = 4_096;
 const MAX_MOUNTS_PER_SERVICE: usize = 32;
 const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
 const MAX_CPU_MILLIS: u32 = 1_048_576;
+const MAX_GENERATED_SECRETS: usize = 64;
+const RANDOM_SECRET_BYTES: std::ops::RangeInclusive<u16> = 16..=512;
+const RSA_SECRET_BITS: [u16; 3] = [2048, 3072, 4096];
 
 impl GitRepository {
     /// Validates Git arguments without executing Git.
@@ -262,6 +266,10 @@ pub fn safe_decode_path(path: &str) -> String {
         "timeout_seconds",
         "cpu_millis",
         "memory_bytes",
+        "generate",
+        "bytes",
+        "encoding",
+        "bits",
     ];
     let mut safe = Vec::new();
     for component in path.split('.') {
@@ -402,6 +410,7 @@ impl ApplicationManifest {
         );
         validate_services(&self.spec.services, &volume_names, &mut errors);
         validate_volumes(&self.spec.volumes, &mut errors);
+        validate_generated_secrets(&self.spec.secrets, &mut errors);
         errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
         if !errors.is_empty() {
             return Err(ValidationErrors(errors));
@@ -467,6 +476,15 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
             codes::VOLUME_COUNT_EXCESSIVE,
             "spec.volumes",
             &format!("an application must declare at most {MAX_VOLUMES} volumes"),
+        );
+        within_budget = false;
+    }
+    if input.spec.secrets.len() > MAX_GENERATED_SECRETS {
+        error(
+            errors,
+            "secrets_excessive",
+            "spec.secrets",
+            &format!("an application must declare at most {MAX_GENERATED_SECRETS} secrets"),
         );
         within_budget = false;
     }
@@ -743,6 +761,42 @@ fn validate_resources(
 fn validate_volumes(volumes: &[Volume], errors: &mut Vec<ValidationError>) {
     for (index, volume) in volumes.iter().enumerate() {
         validate_name(&volume.name, &format!("spec.volumes[{index}].name"), errors);
+    }
+}
+
+fn validate_generated_secrets(secrets: &[SecretDeclaration], errors: &mut Vec<ValidationError>) {
+    unique_names(
+        secrets.iter().map(|secret| &secret.name),
+        "spec.secrets",
+        "secret_name_duplicate",
+        errors,
+    );
+    for (index, secret) in secrets.iter().enumerate() {
+        let path = format!("spec.secrets[{index}]");
+        validate_name(&secret.name, &format!("{path}.name"), errors);
+        match secret.generate {
+            SecretGenerator::Random { bytes, .. } if !RANDOM_SECRET_BYTES.contains(&bytes) => {
+                error(
+                    errors,
+                    "secret_generator_invalid",
+                    &format!("{path}.generate.bytes"),
+                    &format!(
+                        "random secrets must use {}-{} bytes",
+                        RANDOM_SECRET_BYTES.start(),
+                        RANDOM_SECRET_BYTES.end()
+                    ),
+                );
+            }
+            SecretGenerator::Rsa { bits } if !RSA_SECRET_BITS.contains(&bits) => {
+                error(
+                    errors,
+                    "secret_generator_invalid",
+                    &format!("{path}.generate.bits"),
+                    "RSA keys must use 2048, 3072, or 4096 bits",
+                );
+            }
+            _ => {}
+        }
     }
 }
 

@@ -27,6 +27,9 @@ pub struct ValidatedSpec {
     /// Exact public HTTP routes.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<super::ValidatedRoute>,
+    /// Secrets whose values piqueld generates once.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<input::SecretDeclaration>,
 }
 
 /// Validated application service.
@@ -119,6 +122,7 @@ impl ValidatedSpec {
                 })
                 .collect::<Result<_, ValidationErrors>>()?,
             manifest: value.manifest,
+            secrets: value.secrets,
             services: value
                 .services
                 .into_iter()
@@ -152,6 +156,7 @@ impl ValidatedSpec {
                 .map(super::ValidatedRoute::to_input)
                 .collect(),
             manifest: self.manifest.clone(),
+            secrets: self.secrets.clone(),
             services: self
                 .services
                 .iter()

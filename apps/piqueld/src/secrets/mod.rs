@@ -1,4 +1,7 @@
 //! Authenticated encryption for application secrets. Values never enter API metadata.
+mod generate;
+pub(crate) use generate::Generate;
+
 use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
     aead::{Aead, AeadCore, KeyInit, OsRng, Payload},

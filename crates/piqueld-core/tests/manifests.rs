@@ -724,3 +724,59 @@ fn manifest_json_schema_is_self_contained() {
         );
     }
 }
+
+#[test]
+fn generated_secrets_default_round_trip_and_validate() {
+    use piqueld_core::manifest::{SecretEncoding, SecretGenerator};
+    let declared = |secrets: &str| format!("{}{secrets}", valid_manifest("notes"));
+    let app = parse_toml(&declared(
+        r#"
+[[spec.secrets]]
+name = "signing-key"
+generate = { type = "rsa", bits = 3072 }
+[[spec.secrets]]
+name = "database-password"
+generate = { type = "random", bytes = 32 }
+"#,
+    ))
+    .unwrap()
+    .normalize(ApplicationId::parse("app-notes-01").unwrap());
+    let secrets = &app.spec().secrets;
+    assert_eq!(secrets[0].name, "database-password");
+    assert_eq!(
+        secrets[0].generate,
+        SecretGenerator::Random {
+            bytes: 32,
+            encoding: SecretEncoding::Hex
+        }
+    );
+    let reparsed = parse_toml(&app.export_toml().unwrap())
+        .unwrap()
+        .normalize(app.id().clone());
+    assert_eq!(app, reparsed);
+
+    let error = parse_toml(&declared(
+        r#"
+[[spec.secrets]]
+name = "key"
+generate = { type = "rsa", bits = 1024 }
+[[spec.secrets]]
+name = "key"
+generate = { type = "random", bytes = 8, encoding = "base64url" }
+"#,
+    ))
+    .unwrap_err();
+    let found = error
+        .0
+        .iter()
+        .map(|error| (error.code.as_str(), error.path.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            ("secret_generator_invalid", "spec.secrets[0].generate.bits"),
+            ("secret_generator_invalid", "spec.secrets[1].generate.bytes"),
+            ("secret_name_duplicate", "spec.secrets[1].name"),
+        ]
+    );
+}

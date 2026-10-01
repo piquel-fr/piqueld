@@ -68,6 +68,7 @@ impl Store {
         commit: Option<&str>,
     ) -> Result<(), StoreError> {
         let json = application.canonical_json().map_err(StoreError::corrupt)?;
+        self.generate_secrets(application).await?;
         let (_writer, mut tx) = self.begin_immediate().await?;
         let app_id = operation.application_id.as_str();
         let changed = sqlx::query!("UPDATE deployment_inputs SET application_json=?1,repository_commit=?2,fetched=1 WHERE operation_id=?3 AND fetched=0 AND operation_id=(SELECT id FROM operations WHERE application_id=?4 ORDER BY created_at_ms DESC,id DESC LIMIT 1) AND EXISTS(SELECT 1 FROM operations WHERE id=?3 AND state='running')", json,commit,operation.id,app_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();

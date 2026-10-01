@@ -10,8 +10,8 @@ pub mod validation;
 
 pub use input::{
     ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, HealthExecution,
-    Metadata, Mount, RepositoryManifest, ResourceLimits, Route, SecretMount, Service, Source,
-    Volume,
+    Metadata, Mount, RepositoryManifest, ResourceLimits, Route, SecretDeclaration, SecretEncoding,
+    SecretGenerator, SecretMount, Service, Source, Volume,
 };
 pub(crate) use validation::valid_image_reference;
 pub use validation::{
@@ -103,6 +103,7 @@ fn normalize_spec(spec: &mut ValidatedSpec) {
     }
     spec.volumes.sort();
     spec.routes.sort();
+    spec.secrets.sort();
 }
 
 impl NormalizedApplication {
