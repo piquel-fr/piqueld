@@ -36,3 +36,6 @@ target-ui/
 /tests/playwright/node_modules/
 /tests/playwright/test-results/
 /tests/playwright/playwright-report/
+
+# Private development configuration read by `just dev` instead of the example.
+/piqueld.local.toml

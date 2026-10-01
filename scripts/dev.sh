@@ -49,6 +49,13 @@ trap handle_signal INT TERM HUP
 # Existing directories are validated by the daemon, never silently chmodded.
 mkdir -p -m 0700 /tmp/piqueld-dev-run
 
+# A gitignored piqueld.local.toml overrides the example configuration, e.g. to
+# trust a private hostname such as a Tailscale serve name.
+config=examples/piqueld.toml
+if [[ -f piqueld.local.toml ]]; then
+    config=piqueld.local.toml
+fi
+
 # The daemon embeds the dashboard at compile time, so the UI crate is watched
 # too: every dashboard edit re-runs the build script, which rebuilds the
 # bundle, and restarts the daemon.
@@ -60,7 +67,7 @@ setsid cargo watch \
     --no-process-group \
     --watch apps/piqueld --watch apps/piqueld-ui --watch crates \
     --watch Cargo.toml --watch Cargo.lock \
-    --shell 'exec cargo run --package piqueld --bin piqueld --features embedded-ui -- --config examples/piqueld.toml' &
+    --shell "exec cargo run --package piqueld --bin piqueld --features embedded-ui -- --config $config" &
 child_pids+=("$!")
 
 set +e
