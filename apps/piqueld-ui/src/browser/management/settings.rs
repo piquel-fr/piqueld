@@ -2,11 +2,7 @@
 use super::super::ui::{Icon, Modal, Tone, icon, notice, remove_button, text_input};
 use super::{dirty_group, editor, save_actions};
 use crate::editor::{Section, ServiceForm};
-use leptos::{
-    Callback, For, IntoView, RwSignal, Show, SignalGet, SignalGetUntracked, SignalSet,
-    SignalUpdate, SignalWith, View, component, create_memo, create_rw_signal, event_target_checked,
-    event_target_value, store_value, view,
-};
+use leptos::prelude::*;
 use piqueld_client::{
     ApplicationView, GitRepository, Mount, RepositoryManifest, Service, Source, Volume,
     edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
@@ -20,7 +16,7 @@ use std::collections::BTreeMap;
 pub(super) fn RepositorySettings() -> impl IntoView {
     let context = editor();
     let backing = context.manifest().spec.manifest;
-    let draft = create_rw_signal((
+    let draft = RwSignal::new((
         backing.is_some(),
         backing.unwrap_or(RepositoryManifest {
             repository: GitRepository {
@@ -31,7 +27,7 @@ pub(super) fn RepositorySettings() -> impl IntoView {
             path: "infra/piqueld/app.toml".into(),
         }),
     ));
-    let baseline = create_rw_signal(draft.get_untracked());
+    let baseline = RwSignal::new(draft.get_untracked());
     dirty_group("repository".into(), draft, baseline);
     let other_edits = move || {
         context
@@ -111,9 +107,9 @@ pub(super) fn RepositorySettings() -> impl IntoView {
 #[component]
 pub(super) fn MetadataSettings() -> impl IntoView {
     let context = editor();
-    let editing = create_rw_signal(false);
-    let name = create_rw_signal(context.name());
-    let baseline = create_rw_signal(name.get_untracked());
+    let editing = RwSignal::new(false);
+    let name = RwSignal::new(context.name());
+    let baseline = RwSignal::new(name.get_untracked());
     dirty_group("name".into(), name, baseline);
     let save = move |()| {
         context.save(
@@ -175,7 +171,7 @@ pub(super) fn MetadataSettings() -> impl IntoView {
 #[component]
 pub(super) fn VolumeSettings() -> impl IntoView {
     let context = editor();
-    let volumes = create_rw_signal(
+    let volumes = RwSignal::new(
         context
             .manifest()
             .spec
@@ -184,7 +180,7 @@ pub(super) fn VolumeSettings() -> impl IntoView {
             .map(|v| v.name.clone())
             .collect::<Vec<_>>(),
     );
-    let baseline = create_rw_signal(volumes.get_untracked());
+    let baseline = RwSignal::new(volumes.get_untracked());
     dirty_group("volumes".into(), volumes, baseline);
     let save = move || {
         let changed = volumes
@@ -254,14 +250,14 @@ pub(super) fn VolumeSettings() -> impl IntoView {
     }
 }
 
-fn add_button(label: &'static str, add: impl Fn() + 'static) -> View {
+fn add_button(label: &'static str, add: impl Fn() + 'static) -> AnyView {
     view! {
         <button type="button" class="btn btn-sm" on:click={move |_| add()}>
             {icon(Icon::Plus)}
             {label}
         </button>
     }
-    .into_view()
+    .into_any()
 }
 
 /// Form for one `Section` of service `name`. Saving patches only that section
@@ -277,10 +273,10 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
         .into_iter()
         .find(|s| s.name == name)
         .expect("listed service");
-    let draft = create_rw_signal(ServiceForm::from(&service));
-    let baseline = create_rw_signal(draft.get_untracked());
+    let draft = RwSignal::new(ServiceForm::from(&service));
+    let baseline = RwSignal::new(draft.get_untracked());
     dirty_group(format!("{name}:{}", section.title()), draft, baseline);
-    let name = store_value(name);
+    let name = StoredValue::new(name);
     let save = move || {
         let mut manifest = context.manifest();
         let name = name.get_value();
@@ -345,10 +341,10 @@ const fn section_hint(section: Section) -> &'static str {
 }
 
 /// Input fields for one service `Section`, bound to the shared draft form.
-pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> View {
+pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> AnyView {
     match section {
         Section::General => {
-            let git_source = create_memo(move |_| form.with(|form| form.source_kind == "git"));
+            let git_source = Memo::new(move |_| form.with(|form| form.source_kind == "git"));
             view! {
                 <div class="form-grid">
                     <label class="field">
@@ -398,7 +394,7 @@ pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> V
                                     |v, s| v.context = s,
                                 )}
                             }
-                                .into_view()
+                                .into_any()
                         } else {
                             text_input(
                                 "Container image",
@@ -410,7 +406,7 @@ pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> V
                     }}
                 </div>
             }
-            .into_view()
+            .into_any()
         }
         Section::Environment => environment_fields(form),
         Section::Process => view! {
@@ -429,7 +425,7 @@ pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> V
                 </div>
             </div>
         }
-        .into_view(),
+        .into_any(),
         Section::Storage => mount_fields(form),
         Section::Health => health_fields(form),
         Section::Resources => view! {
@@ -438,7 +434,7 @@ pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> V
                 {text_input("Memory (bytes)", form, |v| v.memory.clone(), |v, s| v.memory = s)}
             </div>
         }
-        .into_view(),
+        .into_any(),
     }
 }
 
@@ -449,7 +445,7 @@ pub(super) fn string_rows(
     form: RwSignal<ServiceForm>,
     read: fn(&ServiceForm) -> &Vec<String>,
     write: fn(&mut ServiceForm) -> &mut Vec<String>,
-) -> View {
+) -> AnyView {
     view! {
         <div class="form-list">
             <For
@@ -481,10 +477,10 @@ pub(super) fn string_rows(
         </div>
         {add_button(label, move || form.update(|v| write(v).push(String::new())))}
     }
-    .into_view()
+    .into_any()
 }
 /// Key/value rows for the service environment.
-pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> View {
+pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> AnyView {
     view! {
         <div class="form-list">
             <For
@@ -533,10 +529,10 @@ pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> View {
             move || form.update(|v| v.environment.push((String::new(), String::new()))),
         )}
     }
-    .into_view()
+    .into_any()
 }
 /// Volume mount rows: volume name, container path and read-only flag.
-pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> View {
+pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> AnyView {
     view! {
         <div class="form-list">
             <For
@@ -609,11 +605,11 @@ pub(super) fn mount_fields(form: RwSignal<ServiceForm>) -> View {
             },
         )}
     }
-    .into_view()
+    .into_any()
 }
 /// Health check type selector with the interval, timeout, and HTTP or command
 /// fields relevant to the chosen type.
-pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> View {
+pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
     view! {
         <div class="form-grid">
             <label class="field">
@@ -667,16 +663,16 @@ pub(super) fn health_fields(form: RwSignal<ServiceForm>) -> View {
             </div>
         </Show>
     }
-    .into_view()
+    .into_any()
 }
 
 /// "Add service" button and modal that saves a new single-replica image service.
 #[component]
 pub(super) fn NewService() -> impl IntoView {
     let context = editor();
-    let opened = create_rw_signal(false);
-    let fields = create_rw_signal((String::new(), String::new()));
-    let baseline = create_rw_signal(fields.get_untracked());
+    let opened = RwSignal::new(false);
+    let fields = RwSignal::new((String::new(), String::new()));
+    let baseline = RwSignal::new(fields.get_untracked());
     dirty_group("new-service".into(), fields, baseline);
     let save = move |()| {
         let (name, image) = fields.get_untracked();

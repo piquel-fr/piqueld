@@ -1,12 +1,9 @@
 //! Browser login gate and account management. The small JavaScript bridge only
 //! translates `WebAuthn` binary fields; all network/state handling stays in Rust.
 use super::ui::{Icon, PageHeader, Tone, badge, empty, icon, notice, text_input, when};
-use leptos::{
-    CollectView, IntoView, RwSignal, Show, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate,
-    SignalWith, StoredValue, View, component, create_effect, create_rw_signal, ev,
-    event_target_value, on_cleanup, provide_context, spawn_local, store_value, use_context, view,
-    wasm_bindgen, web_sys, window_event_listener,
-};
+use leptos::ev;
+use leptos::prelude::*;
+use leptos::task::spawn_local;
 use piqueld_client::{
     Client,
     auth::{Ceremony, CeremonyFinish, DeviceRequest, Directory, Manage, RegistrationStart, User},
@@ -134,11 +131,11 @@ impl Feedback {
     /// Creates idle feedback state.
     fn new() -> Self {
         Self {
-            busy: create_rw_signal(false),
-            error: create_rw_signal(String::new()),
-            message: create_rw_signal(String::new()),
-            secret: create_rw_signal(String::new()),
-            revision: create_rw_signal(0),
+            busy: RwSignal::new(false),
+            error: RwSignal::new(String::new()),
+            message: RwSignal::new(String::new()),
+            secret: RwSignal::new(String::new()),
+            revision: RwSignal::new(0),
         }
     }
     /// Runs `task` unless another action is in progress, showing its success
@@ -224,7 +221,7 @@ struct AuthState {
 impl AuthState {
     /// View shown instead of the dashboard: connecting, a load error with retry,
     /// or the sign-in page.
-    fn pending(self) -> View {
+    fn pending(self) -> AnyView {
         if !self.loaded.get() {
             return view! {
                 <main class="auth-page">
@@ -233,7 +230,7 @@ impl AuthState {
                     </p>
                 </main>
             }
-            .into_view();
+            .into_any();
         }
         if !self.error.get().is_empty() {
             return view! {
@@ -248,7 +245,7 @@ impl AuthState {
                     </section>
                 </main>
             }
-            .into_view();
+            .into_any();
         }
         view! {
             <SignIn
@@ -257,7 +254,7 @@ impl AuthState {
                 invitation={self.invitation.get_value()}
             />
         }
-        .into_view()
+        .into_any()
     }
 }
 
@@ -268,7 +265,7 @@ pub(super) fn auth_user() -> RwSignal<Option<User>> {
         .current
 }
 
-fn brand() -> View {
+fn brand() -> AnyView {
     view! {
         <div class="auth-brand">
             <span class="brand-mark" aria-hidden="true">
@@ -277,7 +274,7 @@ fn brand() -> View {
             "piqueld"
         </div>
     }
-    .into_view()
+    .into_any()
 }
 
 /// Keep the router and route definitions mounted for the lifetime of the page.
@@ -285,12 +282,12 @@ fn brand() -> View {
 #[component]
 pub(super) fn Gate() -> impl IntoView {
     let state = AuthState {
-        loaded: create_rw_signal(false),
-        initialized: create_rw_signal(false),
-        current: create_rw_signal(None::<User>),
-        error: create_rw_signal(String::new()),
-        expired: create_rw_signal(false),
-        invitation: store_value(take_invitation()),
+        loaded: RwSignal::new(false),
+        initialized: RwSignal::new(false),
+        current: RwSignal::new(None::<User>),
+        error: RwSignal::new(String::new()),
+        expired: RwSignal::new(false),
+        invitation: StoredValue::new(take_invitation()),
     };
     provide_context(state);
     let listener = window_event_listener(
@@ -403,9 +400,9 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
     let device = web_sys::window()
         .and_then(|w| w.location().hash().ok())
         .is_some_and(|fragment| fragment == "#device");
-    let username = create_rw_signal(String::new());
-    let display_name = create_rw_signal(String::new());
-    let name = create_rw_signal("My passkey".to_owned());
+    let username = RwSignal::new(String::new());
+    let display_name = RwSignal::new(String::new());
+    let name = RwSignal::new("My passkey".to_owned());
     let is_registration = invitation.is_some();
     let signed_in = current.is_some();
     let who = current.map(|u| u.username).unwrap_or_default();
@@ -453,7 +450,7 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
                 </button>
             </div>
         }
-        .into_view()
+        .into_any()
     } else if !initialized {
         view! {
             <h2>"Set up piqueld"</h2>
@@ -468,7 +465,7 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
                 </button>
             </div>
         }
-        .into_view()
+        .into_any()
     } else if !signed_in {
         view! {
             <h2>"Sign in"</h2>
@@ -491,9 +488,9 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
                 </button>
             </div>
         }
-        .into_view()
+        .into_any()
     } else if device {
-        view! { <DeviceApproval who={who} /> }.into_view()
+        view! { <DeviceApproval who={who} /> }.into_any()
     } else {
         view! {
             <h2>{format!("Signed in as {who}")}</h2>
@@ -504,7 +501,7 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
                 <Logout />
             </div>
         }
-        .into_view()
+        .into_any()
     };
     view! {
         <main class="auth-page">
@@ -520,8 +517,8 @@ fn SignIn(initialized: bool, current: Option<User>, invitation: Option<String>) 
 #[component]
 fn DeviceApproval(who: String) -> impl IntoView {
     let feedback = Feedback::new();
-    let code = create_rw_signal(String::new());
-    let request = create_rw_signal(None::<DeviceRequest>);
+    let code = RwSignal::new(String::new());
+    let request = RwSignal::new(None::<DeviceRequest>);
     let review = move |_| {
         feedback.run(async move {
             let found = Client::browser()
@@ -588,7 +585,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
                             </button>
                         </div>
                     }
-                        .into_view()
+                        .into_any()
                 }
                 Some(pending) => {
                     view! {
@@ -612,7 +609,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
                             </button>
                         </div>
                     }
-                        .into_view()
+                        .into_any()
                 }
             }}
         </fieldset>
@@ -673,7 +670,7 @@ pub(super) fn Logout(#[prop(optional)] compact: bool) -> impl IntoView {
             </button>
             {error}
         }
-        .into_view()
+        .into_any()
     } else {
         view! {
             <button
@@ -687,7 +684,7 @@ pub(super) fn Logout(#[prop(optional)] compact: bool) -> impl IntoView {
             </button>
             {error}
         }
-        .into_view()
+        .into_any()
     }
 }
 
@@ -696,8 +693,8 @@ pub(super) fn Logout(#[prop(optional)] compact: bool) -> impl IntoView {
 #[component]
 pub(super) fn AccountsPage() -> impl IntoView {
     let feedback = Feedback::new();
-    let directory = create_rw_signal(None::<Directory>);
-    create_effect(move |_| {
+    let directory = RwSignal::new(None::<Directory>);
+    Effect::new(move |_| {
         feedback.revision.get();
         spawn_local(async move {
             match Client::browser().auth_directory().await {
@@ -732,7 +729,7 @@ pub(super) fn AccountsPage() -> impl IntoView {
                                     .error
                                     .with(String::is_empty)
                                     .then(|| empty("Loading accounts…"))
-                                    .into_view()
+                                    .into_any()
                             },
                             |data| {
                                 view! {
@@ -752,7 +749,7 @@ pub(super) fn AccountsPage() -> impl IntoView {
                                         .collect_view()}
                                     <Invitations directory={data} feedback={feedback} />
                                 }
-                                    .into_view()
+                                    .into_any()
                             },
                         )
                 }}
@@ -823,7 +820,7 @@ fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
                         <tbody>{rows}</tbody>
                     </table>
                 }
-                    .into_view()
+                    .into_any()
             }}
         </section>
     }
@@ -833,12 +830,12 @@ fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
 /// token creation and account deletion.
 #[component]
 fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoView {
-    let id = store_value(user.id.clone());
-    let username = create_rw_signal(user.username);
-    let display_name = create_rw_signal(user.display_name);
-    let passkey_name = create_rw_signal("New passkey".to_owned());
-    let token_name = create_rw_signal(String::new());
-    let days = create_rw_signal("90".to_owned());
+    let id = StoredValue::new(user.id.clone());
+    let username = RwSignal::new(user.username);
+    let display_name = RwSignal::new(user.display_name);
+    let passkey_name = RwSignal::new("New passkey".to_owned());
+    let token_name = RwSignal::new(String::new());
+    let days = RwSignal::new("90".to_owned());
     let passkeys = directory
         .passkeys
         .into_iter()
@@ -926,8 +923,8 @@ fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoVie
                 {passkeys
                     .into_iter()
                     .map(|key| {
-                        let key_id = store_value(key.id);
-                        let label = create_rw_signal(key.name);
+                        let key_id = StoredValue::new(key.id);
+                        let label = RwSignal::new(key.name);
                         view! {
                             <div class="form-row">
                                 {text_input("Passkey name", label, String::clone, |v, s| *v = s)}
@@ -1031,7 +1028,7 @@ fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoVie
                                                 <td class="muted">
                                                     {credential
                                                         .expires_at
-                                                        .map_or_else(|| "Never".into_view(), |t| when(t * 1000))}
+                                                        .map_or_else(|| "Never".into_any(), |t| when(t * 1000))}
                                                 </td>
                                                 <td class="actions">
                                                     <button
@@ -1054,7 +1051,7 @@ fn Account(user: User, directory: Directory, feedback: Feedback) -> impl IntoVie
                             </tbody>
                         </table>
                     }
-                        .into_view()
+                        .into_any()
                 }}
             </div>
             <div class="form-row" style="margin-top:14px">

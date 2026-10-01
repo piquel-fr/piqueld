@@ -3,11 +3,10 @@ use super::super::ui::{Icon, Tabs, Tone, empty, health_badge, icon, notice};
 use super::{EditorFeedback, editor, settings::ServiceGroup};
 use crate::editor::Section;
 use crate::state::ApplicationHealth;
-use leptos::{
-    Callback, CollectView, IntoView, Show, SignalGet, SignalWith, component, create_rw_signal,
-    view, window,
-};
-use leptos_router::{A, NavigateOptions, use_navigate};
+use leptos::prelude::*;
+use leptos_router::NavigateOptions;
+use leptos_router::components::A;
+use leptos_router::hooks::use_navigate;
 use piqueld_client::{Source, edit::ApplicationEdit};
 
 const SERVICE_TABS: [&str; 7] = [
@@ -66,7 +65,7 @@ pub(super) fn ServiceList() -> impl IntoView {
                         let runtime = observed(&service.name);
                         view! {
                             <A
-                                class="list-row"
+                                attr:class="list-row"
                                 href={format!(
                                     "/dashboard/applications/{id}/services/{}",
                                     service.name,
@@ -77,7 +76,7 @@ pub(super) fn ServiceList() -> impl IntoView {
                                 </span>
                                 <span class="title">
                                     {service.name.clone()}
-                                    <small title={source.clone()}>{source}</small>
+                                    <small title={source.clone()}>{source.clone()}</small>
                                 </span>
                                 <span class="meta">
                                     {runtime
@@ -96,6 +95,7 @@ pub(super) fn ServiceList() -> impl IntoView {
                         }
                     })
                     .collect_view()
+                    .into_any()
             }}
         </div>
     }
@@ -121,14 +121,14 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
                     Tone::Bad,
                     format!("Service {name} is not part of the saved configuration."),
                 )} <div class="btn-group">
-                    <A class="btn" href={app_href}>
+                    <A attr:class="btn" href={app_href}>
                         {icon(Icon::ArrowLeft)}
                         "Back to services"
                     </A>
                 </div>
             </div>
         }
-        .into_view();
+        .into_any();
     }
     let navigate = use_navigate();
     let remove_name = name.clone();
@@ -142,7 +142,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
             Callback::new(move |_| navigate(&href, NavigateOptions::default())),
         );
     };
-    let selected = create_rw_signal(Section::General.title());
+    let selected = RwSignal::new(Section::General.title());
     let log_service = name.clone();
     let groups = Section::ALL
         .into_iter()
@@ -193,5 +193,5 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
             </Show> {groups}
         </div>
     }
-    .into_view()
+    .into_any()
 }

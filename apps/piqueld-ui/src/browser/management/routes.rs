@@ -1,10 +1,7 @@
 //! Application-owned public route editing and independent HTTPS readiness.
 use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button};
 use super::{dirty_group, editor, save_actions};
-use leptos::{
-    Callback, CollectView, For, IntoView, SignalGet, SignalGetUntracked, SignalSet, SignalUpdate,
-    SignalWith, component, create_effect, create_rw_signal, event_target_value, view,
-};
+use leptos::prelude::*;
 use piqueld_client::{Route, edit::ApplicationEdit};
 
 type RouteRow = (String, String, String);
@@ -32,10 +29,10 @@ const fn route_tone(state: &str) -> Tone {
 #[component]
 pub(super) fn RouteSettings() -> impl IntoView {
     let context = editor();
-    let draft = create_rw_signal(route_rows(context.manifest().spec.routes));
-    let baseline = create_rw_signal(draft.get_untracked());
+    let draft = RwSignal::new(route_rows(context.manifest().spec.routes));
+    let baseline = RwSignal::new(draft.get_untracked());
     dirty_group("routes".into(), draft, baseline);
-    create_effect(move |_| {
+    Effect::new(move |_| {
         let saved_routes = context
             .saved
             .with(|saved| route_rows(saved.application.to_manifest().spec.routes));
@@ -159,7 +156,9 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                                             .into_iter()
                                                             .map(|service| {
                                                                 view! {
-                                                                    <option value={service.name.clone()}>{service.name}</option>
+                                                                    <option value={service
+                                                                        .name
+                                                                        .clone()}>{service.name.clone()}</option>
                                                                 }
                                                             })
                                                             .collect_view()
@@ -264,7 +263,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                                     </tbody>
                                 </table>
                             }
-                                .into_view()
+                                .into_any()
                         }
                     }
                 }}

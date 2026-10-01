@@ -19,20 +19,20 @@ use crate::state::{
 };
 use futures_util::StreamExt;
 use gloo_timers::future::TimeoutFuture;
-use leptos::{
-    IntoView, RwSignal, SignalGet, SignalGetUntracked, SignalSet, SignalWith, View, component,
-    create_effect, create_rw_signal, ev, mount_to_body, on_cleanup, provide_context, spawn_local,
-    view, window_event_listener,
-};
-use leptos_router::{A, Outlet, Redirect, Route, Router, Routes, TrailingSlash, use_params_map};
+use leptos::ev;
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use leptos_router::components::{A, Outlet, ParentRoute, Route, Router, Routes};
+use leptos_router::hooks::use_params_map;
+use leptos_router::path;
 use piqueld_client::system::ReadinessStatus;
 use piqueld_client::{
     ApplicationDetailView, ApplicationStatusView, ApplicationSummary, Client, ClientError,
     ListApplicationsOptions, Page, SystemStatus,
 };
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use web_sys::window as browser_window;
 
@@ -87,33 +87,52 @@ impl DashboardSignals {
     /// Creates every signal in its initial loading state.
     fn new() -> Self {
         Self {
-            system: create_rw_signal(None),
-            applications: create_rw_signal(Vec::new()),
-            connection: create_rw_signal(ConnectionState::Loading),
-            data_state: create_rw_signal(DataState::Loading),
-            refresh_error: create_rw_signal(None),
-            refreshing: create_rw_signal(false),
-            readiness: create_rw_signal(None),
-            readiness_error: create_rw_signal(None),
-            pagination_incomplete: create_rw_signal(false),
-            selected_id: create_rw_signal(None),
-            detail: create_rw_signal(None),
-            detail_loading: create_rw_signal(false),
-            detail_request: create_rw_signal(0),
-            detail_error: create_rw_signal(None),
+            system: RwSignal::new(None),
+            applications: RwSignal::new(Vec::new()),
+            connection: RwSignal::new(ConnectionState::Loading),
+            data_state: RwSignal::new(DataState::Loading),
+            refresh_error: RwSignal::new(None),
+            refreshing: RwSignal::new(false),
+            readiness: RwSignal::new(None),
+            readiness_error: RwSignal::new(None),
+            pagination_incomplete: RwSignal::new(false),
+            selected_id: RwSignal::new(None),
+            detail: RwSignal::new(None),
+            detail_loading: RwSignal::new(false),
+            detail_request: RwSignal::new(0),
+            detail_error: RwSignal::new(None),
         }
     }
 }
 
-/// Callback that requests an immediate (manual) dashboard refresh.
-type Refresh = Rc<dyn Fn()>;
+/// Liveness flag for async work spawned by a component: the component's
+/// reactive owner clears it on cleanup, so polling loops and late responses
+/// stop before touching its disposed signals.
+#[derive(Clone)]
+struct Alive(Arc<AtomicBool>);
+
+impl Alive {
+    /// Creates a flag that the current reactive owner clears on cleanup.
+    fn new() -> Self {
+        let flag = Arc::new(AtomicBool::new(true));
+        let cleanup = Arc::clone(&flag);
+        on_cleanup(move || cleanup.store(false, Ordering::Relaxed));
+        Self(flag)
+    }
+
+    /// Whether the owning component is still mounted.
+    fn get(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
 
 /// Context provided by `DashboardLayout` to all nested dashboard routes.
 #[derive(Clone)]
 struct DashboardContext {
     signals: DashboardSignals,
     client: Client,
-    refresh: Refresh,
+    /// Requests an immediate (manual) dashboard refresh.
+    refresh: Callback<()>,
 }
 
 /// Mounts the CSR application into the document body.
@@ -121,77 +140,39 @@ pub fn mount() {
     mount_to_body(|| view! { <auth::Gate /> });
 }
 
-/// Root router. Dashboard pages are served both at `/` and under `/dashboard`,
-/// each behind `auth::ProtectedDashboardLayout`. Also installs log preferences
-/// and the unsaved-changes history guard.
+/// Root router. Dashboard pages live under `/dashboard` (the daemon redirects
+/// `/` there), behind `auth::ProtectedDashboardLayout`; unknown dashboard paths
+/// render `NotFoundPage` inside the layout. Also installs log preferences and
+/// the unsaved-changes history guard.
 #[component]
 fn App() -> impl IntoView {
     logs::LogPreferences::provide();
     management::HistoryGuard::install();
     view! {
-        <Router trailing_slash={TrailingSlash::Exact} fallback={|| view! { <NotFoundPage /> }}>
-            <Routes>
-                <Route path="/dashboard/auth" view={auth::AuthPage} />
-                <Route path="/" view={auth::ProtectedDashboardLayout}>
-                    <Route path="/" view={OverviewPage} />
-                    <Route path="/applications" view={ApplicationsPage} />
-                    <Route path="/settings" view={management::HostPage} />
-                    <Route path="/accounts" view={auth::AccountsPage} />
-                    <Route path="/builds" view={builds::BuildsPage} />
-                    <Route path="/events" view={observability::HistoryPage} />
-                    <Route path="/errors" view={observability::ErrorsPage} />
-                    <Route path="/errors/:id" view={observability::DiagnosticPage} />
-                    <Route path="/system" view={observability::SystemPage} />
-                    <Route path="/analytics" view={observability::AnalyticsPage} />
-                    <Route path="/notifications" view={observability::NotificationsPage} />
-                    <Route path="/applications/:id" view={ApplicationDetailPage} />
+        <Router>
+            <Routes fallback={|| view! { <NotFoundPage /> }}>
+                <Route path={path!("/dashboard/auth")} view={auth::AuthPage} />
+                <ParentRoute path={path!("/dashboard")} view={auth::ProtectedDashboardLayout}>
+                    <Route path={path!("")} view={OverviewPage} />
+                    <Route path={path!("applications")} view={ApplicationsPage} />
+                    <Route path={path!("settings")} view={management::HostPage} />
+                    <Route path={path!("accounts")} view={auth::AccountsPage} />
+                    <Route path={path!("builds")} view={builds::BuildsPage} />
+                    <Route path={path!("events")} view={observability::HistoryPage} />
+                    <Route path={path!("errors")} view={observability::ErrorsPage} />
+                    <Route path={path!("errors/:id")} view={observability::DiagnosticPage} />
+                    <Route path={path!("system")} view={observability::SystemPage} />
+                    <Route path={path!("analytics")} view={observability::AnalyticsPage} />
+                    <Route path={path!("notifications")} view={observability::NotificationsPage} />
+                    <Route path={path!("applications/:id")} view={ApplicationDetailPage} />
                     <Route
-                        path="/applications/:id/services/:service"
+                        path={path!("applications/:id/services/:service")}
                         view={ApplicationDetailPage}
                     />
-                </Route>
-                <Route path="/dashboard" view={auth::ProtectedDashboardLayout}>
-                    <Route path="" view={DashboardRedirect} />
-                    <Route path="/applications" view={ApplicationsPage} />
-                    <Route path="/settings" view={management::HostPage} />
-                    <Route path="/accounts" view={auth::AccountsPage} />
-                    <Route path="/builds" view={builds::BuildsPage} />
-                    <Route path="/events" view={observability::HistoryPage} />
-                    <Route path="/errors" view={observability::ErrorsPage} />
-                    <Route path="/errors/:id" view={observability::DiagnosticPage} />
-                    <Route path="/system" view={observability::SystemPage} />
-                    <Route path="/analytics" view={observability::AnalyticsPage} />
-                    <Route path="/notifications" view={observability::NotificationsPage} />
-                    <Route path="/applications/:id" view={ApplicationDetailPage} />
-                    <Route
-                        path="/applications/:id/services/:service"
-                        view={ApplicationDetailPage}
-                    />
-                    <Route path="/*any" view={DashboardRouteFallback} />
-                </Route>
-                <Route path="/*any" view={NotFoundPage} />
+                    <Route path={path!("*any")} view={NotFoundPage} />
+                </ParentRoute>
             </Routes>
         </Router>
-    }
-}
-
-/// Redirects `/dashboard` to the canonical `/dashboard/` overview.
-#[component]
-fn DashboardRedirect() -> impl IntoView {
-    view! { <Redirect path="/dashboard/" /> }
-}
-
-/// The router reuses this component across `/dashboard/*` paths, so the
-/// overview-or-not decision must follow the parameters reactively.
-#[component]
-fn DashboardRouteFallback() -> impl IntoView {
-    let params = use_params_map();
-    move || {
-        if params.with(|params| params.get("any").is_none_or(String::is_empty)) {
-            view! { <OverviewPage /> }.into_view()
-        } else {
-            view! { <NotFoundPage /> }.into_view()
-        }
     }
 }
 
@@ -202,35 +183,28 @@ fn DashboardRouteFallback() -> impl IntoView {
 fn DashboardLayout() -> impl IntoView {
     let signals = DashboardSignals::new();
     let client = Client::browser();
-    let controller = Rc::new(RefCell::new(PollController::new()));
-    controller.borrow_mut().set_hidden(document_hidden());
+    let mut poll = PollController::new();
+    poll.set_hidden(document_hidden());
+    let controller = StoredValue::new(poll);
 
-    let refresh: Refresh = {
+    let refresh = {
         let client = client.clone();
-        let controller = Rc::clone(&controller);
-        Rc::new(move || {
-            start_refresh(client.clone(), signals, Rc::clone(&controller), true);
-        })
+        Callback::new(move |()| start_refresh(client.clone(), signals, controller, true))
     };
     let context = DashboardContext {
         signals,
         client: client.clone(),
-        refresh: Rc::clone(&refresh),
+        refresh,
     };
     provide_context(context.clone());
 
-    let visibility_listener = {
-        let controller = Rc::clone(&controller);
-        window_event_listener(ev::visibilitychange, move |_| {
-            controller.borrow_mut().set_hidden(document_hidden());
-        })
-    };
+    let visibility_listener = window_event_listener(ev::visibilitychange, move |_| {
+        controller.update_value(|controller| controller.set_hidden(document_hidden()));
+    });
     on_cleanup(move || visibility_listener.remove());
 
-    start_refresh(client.clone(), signals, Rc::clone(&controller), true);
-    let active = Rc::new(Cell::new(true));
-    spawn_poll_loop(client, signals, controller, Rc::clone(&active));
-    on_cleanup(move || active.set(false));
+    start_refresh(client.clone(), signals, controller, true);
+    spawn_poll_loop(client, signals, controller, Alive::new());
 
     view! {
         <a class="skip-link" href="#dashboard-main">
@@ -251,7 +225,7 @@ fn DashboardLayout() -> impl IntoView {
 ///
 /// Panics when called outside a dashboard route.
 fn dashboard_context() -> DashboardContext {
-    leptos::use_context().expect("dashboard routes are descendants of DashboardLayout")
+    use_context().expect("dashboard routes are descendants of DashboardLayout")
 }
 
 /// Route wrapper for `/applications/:id[/services/:service]`. Loads the selected
@@ -264,8 +238,8 @@ fn ApplicationDetailPage() -> impl IntoView {
     let params = use_params_map();
     let client = context.client.clone();
 
-    create_effect(move |_| {
-        let id = params.with(|params| params.get("id").cloned());
+    Effect::new(move |_| {
+        let id = params.with(|params| params.get("id"));
         let Some(id) = id else {
             return;
         };
@@ -280,10 +254,10 @@ fn ApplicationDetailPage() -> impl IntoView {
     });
 
     view! {
-        <leptos::For
+        <For
             each={move || {
                 params
-                    .with(|p| p.get("id").cloned().map(|id| (id, p.get("service").cloned())))
+                    .with(|p| p.get("id").map(|id| (id, p.get("service"))))
                     .into_iter()
                     .collect::<Vec<_>>()
             }}
@@ -303,7 +277,7 @@ fn NotFoundPage() -> impl IntoView {
             <h2 id="not-found-title">"Page not found"</h2>
             <p class="hint">"This dashboard address does not exist."</p>
             <div class="form-actions">
-                <A class="btn" href="/dashboard/">
+                <A attr:class="btn" href="/dashboard/">
                     {icon(Icon::ArrowLeft)}
                     "Back to overview"
                 </A>
@@ -313,7 +287,7 @@ fn NotFoundPage() -> impl IntoView {
 }
 
 /// Alert shown while the last refresh failed, titled by whether the daemon was unreachable.
-fn refresh_error(context: &DashboardContext) -> View {
+fn refresh_error(context: &DashboardContext) -> AnyView {
     let signals = context.signals;
     view! {
         <div
@@ -342,11 +316,11 @@ fn refresh_error(context: &DashboardContext) -> View {
             }}
         </div>
     }
-    .into_view()
+    .into_any()
 }
 
 /// Notice shown when the dashboard is displaying data from an earlier refresh.
-fn stale_notice(signals: DashboardSignals) -> View {
+fn stale_notice(signals: DashboardSignals) -> AnyView {
     view! {
         <div
             class="stack-sm"
@@ -356,7 +330,7 @@ fn stale_notice(signals: DashboardSignals) -> View {
             {notice(Tone::Warn, "Showing the last successful view; the latest refresh failed.")}
         </div>
     }
-    .into_view()
+    .into_any()
 }
 
 /// Starts one dashboard refresh if `PollController` grants the single in-flight slot.
@@ -368,13 +342,16 @@ fn stale_notice(signals: DashboardSignals) -> View {
 fn start_refresh(
     client: Client,
     signals: DashboardSignals,
-    controller: Rc<RefCell<PollController>>,
+    controller: StoredValue<PollController>,
     manual: bool,
 ) {
     if manual {
-        controller.borrow_mut().request_manual_refresh();
+        controller.update_value(PollController::request_manual_refresh);
     }
-    if !controller.borrow_mut().begin_request() {
+    if !controller
+        .try_update_value(PollController::begin_request)
+        .unwrap_or(false)
+    {
         return;
     }
     signals.refreshing.set(true);
@@ -385,7 +362,7 @@ fn start_refresh(
         }
         match result {
             Ok(snapshot) => {
-                controller.borrow_mut().record_success();
+                controller.update_value(PollController::record_success);
                 signals.system.set(Some(snapshot.system));
                 match snapshot.readiness {
                     Ok(readiness) => {
@@ -425,7 +402,7 @@ fn start_refresh(
                 }
             }
             Err(failure) => {
-                controller.borrow_mut().record_failure();
+                controller.update_value(PollController::record_failure);
                 signals.readiness.set(None);
                 signals.readiness_error.set(None);
                 signals.connection.set(if failure.unreachable {
@@ -440,8 +417,8 @@ fn start_refresh(
                 signals.refreshing.set(false);
             }
         }
-        if controller.borrow().manual_pending() {
-            start_refresh(client, signals, Rc::clone(&controller), false);
+        if controller.with_value(PollController::manual_pending) {
+            start_refresh(client, signals, controller, false);
         }
     });
 }
@@ -469,22 +446,22 @@ fn load_detail(client: Client, signals: DashboardSignals, id: String) {
 }
 
 /// Background loop that triggers a refresh after each `PollController` delay
-/// until `active` is cleared by the layout's cleanup.
+/// until the layout unmounts.
 fn spawn_poll_loop(
     client: Client,
     signals: DashboardSignals,
-    controller: Rc<RefCell<PollController>>,
-    active: Rc<Cell<bool>>,
+    controller: StoredValue<PollController>,
+    active: Alive,
 ) {
     spawn_local(async move {
         while active.get() {
-            let delay = controller.borrow().delay();
+            let delay = controller.with_value(PollController::delay);
             let milliseconds = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
             TimeoutFuture::new(milliseconds).await;
             if !active.get() {
                 return;
             }
-            start_refresh(client.clone(), signals, Rc::clone(&controller), false);
+            start_refresh(client.clone(), signals, controller, false);
         }
     });
 }

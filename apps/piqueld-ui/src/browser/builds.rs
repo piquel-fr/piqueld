@@ -1,13 +1,14 @@
 //! Build metadata and bounded output pages, independent of application runtime logs.
+use super::Alive;
 use super::client_error_message;
 use super::format::{bytes, duration, timestamp};
 use super::logs::{LogKind, LogViewer, StreamFilter};
 use super::ui::{Icon, PageHeader, Tone, build_badge, empty, icon, notice, when};
 use crate::log_output::LogLine;
-use leptos::*;
-use leptos_router::A;
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use leptos_router::components::A;
 use piqueld_client::{Build, BuildRecord, BuildState, Client, Source};
-use std::{cell::Cell, rc::Rc};
 
 /// `/builds` page: build history across all applications.
 #[component]
@@ -27,17 +28,15 @@ pub(super) fn BuildsPage() -> impl IntoView {
 /// ID instead of replacing the list so the extra pages are kept.
 #[component]
 pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) -> impl IntoView {
-    let records = create_rw_signal(Vec::<BuildRecord>::new());
-    let cursor = create_rw_signal(None::<String>);
-    let paginated = create_rw_signal(false);
-    let error = create_rw_signal(None::<String>);
-    let loading = create_rw_signal(false);
-    let refresh = create_rw_signal(true);
-    let alive = Rc::new(Cell::new(true));
-    let cleanup = alive.clone();
-    on_cleanup(move || cleanup.set(false));
+    let records = RwSignal::new(Vec::<BuildRecord>::new());
+    let cursor = RwSignal::new(None::<String>);
+    let paginated = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+    let loading = RwSignal::new(false);
+    let refresh = RwSignal::new(true);
+    let alive = Alive::new();
     let scoped = application.is_some();
-    let app = store_value(application);
+    let app = StoredValue::new(application);
     spawn_local(async move {
         while alive.get() {
             let running = records
@@ -159,7 +158,7 @@ pub(super) fn BuildHistory(#[prop(optional, into)] application: Option<String>) 
 /// Expandable summary of one build; expanding shows metadata and mounts `BuildOutput`.
 #[component]
 fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
-    let opened = create_rw_signal(false);
+    let opened = RwSignal::new(false);
     view! {
         <article class="expander">
             <button
@@ -210,9 +209,9 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                                     .map_or_else(
                                         || {
                                             view! { <span class="muted">"Not resolved"</span> }
-                                                .into_view()
+                                                .into_any()
                                         },
-                                        |commit| view! { <code>{commit}</code> }.into_view(),
+                                        |commit| view! { <code>{commit}</code> }.into_any(),
                                     )}
                             </dd> <dt>"Image"</dt>
                             <dd>
@@ -221,9 +220,9 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                                     .map_or_else(
                                         || {
                                             view! { <span class="muted">"Not produced"</span> }
-                                                .into_view()
+                                                .into_any()
                                         },
-                                        |image| view! { <code>{image}</code> }.into_view(),
+                                        |image| view! { <code>{image}</code> }.into_any(),
                                     )}
                             </dd> <dt>"Retained output"</dt>
                             <dd>{bytes(u64::try_from(b.log_bytes).unwrap_or(0))}</dd>
@@ -241,22 +240,20 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
 /// Only mounted for an expanded build; the final successful fetch stops polling.
 #[component]
 fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
-    let chunks = create_rw_signal(Vec::<piqueld_client::BuildLogChunk>::new());
-    let prepend_revision = create_rw_signal(0u64);
-    let previous = create_rw_signal(None::<i64>);
-    let stream = create_rw_signal(None);
-    let loading = create_rw_signal(false);
-    let error = create_rw_signal(None::<String>);
-    let expired = create_rw_signal(false);
-    let refresh = create_rw_signal(true);
-    let older = create_rw_signal(false);
-    create_effect(move |_| {
+    let chunks = RwSignal::new(Vec::<piqueld_client::BuildLogChunk>::new());
+    let prepend_revision = RwSignal::new(0u64);
+    let previous = RwSignal::new(None::<i64>);
+    let stream = RwSignal::new(None);
+    let loading = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+    let expired = RwSignal::new(false);
+    let refresh = RwSignal::new(true);
+    let older = RwSignal::new(false);
+    Effect::new(move |_| {
         let _ = stream.get();
         refresh.set(true);
     });
-    let alive = Rc::new(Cell::new(true));
-    let cleanup = alive.clone();
-    on_cleanup(move || cleanup.set(false));
+    let alive = Alive::new();
     spawn_local(async move {
         let mut elapsed = 30;
         let mut final_loaded = false;
@@ -317,7 +314,7 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
         }
     });
     let service = record.get_untracked().service;
-    let lines = create_memo(move |_| chunks.with(|chunks| LogLine::build(chunks, &service)));
+    let lines = Memo::new(move |_| chunks.with(|chunks| LogLine::build(chunks, &service)));
     view! {
         <div class="section-header">
             <div>
@@ -381,19 +378,19 @@ fn BuildOutput(record: Signal<BuildRecord>) -> impl IntoView {
 }
 
 /// Summary line time: duration and start for finished builds, start otherwise.
-fn build_summary_time(build: &BuildRecord) -> View {
+fn build_summary_time(build: &BuildRecord) -> AnyView {
     match build.finished_at_ms {
         Some(_) => view! {
             {build_duration(build)}
             " · "
             {when(build.started_at_ms)}
         }
-        .into_view(),
+        .into_any(),
         None => view! {
             "Started "
             {when(build.started_at_ms)}
         }
-        .into_view(),
+        .into_any(),
     }
 }
 
@@ -412,7 +409,7 @@ fn build_duration(build: &BuildRecord) -> String {
 }
 
 /// Definition-list rows describing the image or Git source that was built.
-fn source_details(source: Source) -> View {
+fn source_details(source: Source) -> AnyView {
     match source {
         Source::Image { image } => view! {
             <dt>"Source"</dt>
@@ -420,7 +417,7 @@ fn source_details(source: Source) -> View {
                 <code>{image}</code>
             </dd>
         }
-        .into_view(),
+        .into_any(),
         Source::Git {
             repository,
             build:
@@ -446,6 +443,6 @@ fn source_details(source: Source) -> View {
                 <code>{context}</code>
             </dd>
         }
-        .into_view(),
+        .into_any(),
     }
 }

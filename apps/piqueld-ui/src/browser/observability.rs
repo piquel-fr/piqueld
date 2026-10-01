@@ -2,12 +2,10 @@
 use super::client_error_message;
 use super::format::{bytes, duration, duration_f64, duration_secs, now_ms, timestamp};
 use super::ui::{Icon, PageHeader, Tone, badge, empty, icon, metric, notice, when};
-use leptos::{
-    CollectView, IntoView, RwSignal, Show, SignalGet, SignalSet, SignalUpdate, SignalWith, View,
-    component, create_effect, create_local_resource, create_rw_signal, event_target_checked,
-    event_target_value, on_cleanup, set_interval_with_handle, spawn_local, store_value, view,
-};
-use leptos_router::{A, use_params_map, use_query_map};
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use leptos_router::components::A;
+use leptos_router::hooks::{use_params_map, use_query_map};
 use piqueld_client::{
     Client, Event,
     observability::{DaemonStats, DeliveryState, EventFilter, EventScope},
@@ -20,7 +18,7 @@ struct Refresh(RwSignal<u64>);
 impl Refresh {
     /// Starts the 5-second interval, cleared when the owning view unmounts.
     fn new() -> Self {
-        let revision = create_rw_signal(0_u64);
+        let revision = RwSignal::new(0_u64);
         if let Ok(handle) = set_interval_with_handle(
             move || {
                 if !super::document_hidden() {
@@ -47,7 +45,7 @@ impl Refresh {
 }
 
 /// Period picker; `changed` runs after the selection so lists can restart at the newest page.
-fn period_select(days: RwSignal<u32>, all: bool, changed: impl Fn() + 'static) -> View {
+fn period_select(days: RwSignal<u32>, all: bool, changed: impl Fn() + 'static) -> AnyView {
     view! {
         <label class="field">
             <span>"Period"</span>
@@ -68,7 +66,7 @@ fn period_select(days: RwSignal<u32>, all: bool, changed: impl Fn() + 'static) -
             </select>
         </label>
     }
-    .into_view()
+    .into_any()
 }
 
 /// `/events` page: all retained events.
@@ -105,38 +103,36 @@ pub(super) fn EventHistory(
 ) -> impl IntoView {
     let refresh = Refresh::new();
     let scoped = application.is_some();
-    let application = store_value(application);
+    let application = StoredValue::new(application);
     let query = use_query_map();
-    let cursor = create_rw_signal(None::<String>);
-    create_effect(move |previous| {
-        let operation = query.with(|query| query.get("operation").cloned());
+    let cursor = RwSignal::new(None::<String>);
+    Effect::new(move |previous: Option<Option<String>>| {
+        let operation = query.with(|query| query.get("operation"));
         if previous.as_ref() != Some(&operation) {
             cursor.set(None);
         }
         operation
     });
-    let kind = create_rw_signal(String::new());
-    let code = create_rw_signal(String::new());
-    let scope = create_rw_signal(String::new());
-    let days = create_rw_signal(30_u32);
-    let failures = create_rw_signal(errors_only);
-    let data = create_local_resource(
-        move || {
-            (
-                refresh.0.get(),
-                cursor.get(),
-                kind.get(),
-                code.get(),
-                scope.get(),
-                days.get(),
-                failures.get(),
-                query.get(),
-            )
-        },
-        move |(_, cursor, kind, code, scope, days, failures, query)| async move {
+    let kind = RwSignal::new(String::new());
+    let code = RwSignal::new(String::new());
+    let scope = RwSignal::new(String::new());
+    let days = RwSignal::new(30_u32);
+    let failures = RwSignal::new(errors_only);
+    let data = LocalResource::new(move || {
+        refresh.0.track();
+        let (cursor, kind, code, scope, days, failures, query) = (
+            cursor.get(),
+            kind.get(),
+            code.get(),
+            scope.get(),
+            days.get(),
+            failures.get(),
+            query.get(),
+        );
+        async move {
             let filter = EventFilter {
                 application_id: application.get_value(),
-                operation_id: query.get("operation").cloned(),
+                operation_id: query.get("operation"),
                 kind: (!kind.is_empty()).then_some(kind),
                 error_code: (!code.is_empty()).then_some(code),
                 scope: match scope.as_str() {
@@ -153,8 +149,8 @@ pub(super) fn EventHistory(
                 .filtered_events(&filter, cursor.as_deref(), 50)
                 .await
                 .map_err(|e| client_error_message(&e))
-        },
-    );
+        }
+    });
     let reset = move || cursor.set(None);
     view! {
         <div class="toolbar">
@@ -204,7 +200,7 @@ pub(super) fn EventHistory(
             <div class="toolbar-end">
                 {move || {
                     query
-                        .with(|q| q.get("operation").cloned())
+                        .with(|q| q.get("operation"))
                         .map(|operation| {
                             view! {
                                 <span class="tag" title={operation}>
@@ -240,6 +236,7 @@ pub(super) fn EventHistory(
                                 .into_iter()
                                 .map(|event| view! { <EventCard event={event} scoped={scoped} /> })
                                 .collect_view()
+                                .into_any()
                         }}
                     </div>
                     {next
@@ -257,7 +254,7 @@ pub(super) fn EventHistory(
                             }
                         })}
                 }
-                    .into_view()
+                    .into_any()
             }
         }}
         <p class="hint" style="margin-top:12px">
@@ -267,7 +264,7 @@ pub(super) fn EventHistory(
 }
 
 /// Stable event kinds read better as words; failures are highlighted.
-fn kind_badge(event: &Event) -> View {
+fn kind_badge(event: &Event) -> AnyView {
     let failure = event.error_code.is_some() || event.kind.contains("fail");
     let tone = if failure {
         Tone::Bad
@@ -348,15 +345,15 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
 #[component]
 pub(super) fn DiagnosticPage() -> impl IntoView {
     let params = use_params_map();
-    let data = create_local_resource(
-        move || params.with(|p| p.get("id").cloned().unwrap_or_default()),
-        |id| async move {
+    let data = LocalResource::new(move || {
+        let id = params.with(|p| p.get("id").unwrap_or_default());
+        async move {
             Client::browser()
                 .diagnostic(&id)
                 .await
                 .map_err(|e| client_error_message(&e))
-        },
-    );
+        }
+    });
     view! {
         <nav class="breadcrumb" aria-label="Breadcrumb">
             <A href="/dashboard/errors">"Errors"</A>
@@ -367,7 +364,7 @@ pub(super) fn DiagnosticPage() -> impl IntoView {
         {move || match data.get() {
             None => empty("Loading diagnostic…"),
             Some(Err(e)) => notice(Tone::Bad, e),
-            Some(Ok(event)) => view! { <DiagnosticDetails event={event} /> }.into_view(),
+            Some(Ok(event)) => view! { <DiagnosticDetails event={event} /> }.into_any(),
         }}
     }
 }
@@ -437,14 +434,14 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                             .application_id
                             .clone()
                             .map_or_else(
-                                || "Daemon".into_view(),
+                                || "Daemon".into_any(),
                                 |id| {
                                     view! {
                                         <A href={format!(
                                             "/dashboard/applications/{id}",
                                         )}>{id.to_string()}</A>
                                     }
-                                        .into_view()
+                                        .into_any()
                                 },
                             )}
                     </dd>
@@ -453,14 +450,14 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                         {operation
                             .clone()
                             .map_or_else(
-                                || "None".into_view(),
+                                || "None".into_any(),
                                 |id| {
                                     view! {
                                         <A href={format!(
                                             "/dashboard/events?operation={id}",
                                         )}>{id}</A>
                                     }
-                                        .into_view()
+                                        .into_any()
                                 },
                             )}
                     </dd>
@@ -486,15 +483,15 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
 #[component]
 pub(super) fn SystemPage() -> impl IntoView {
     let refresh = Refresh::new();
-    let data = create_local_resource(
-        move || refresh.0.get(),
-        |_| async {
+    let data = LocalResource::new(move || {
+        refresh.0.track();
+        async move {
             Client::browser()
                 .daemon_stats()
                 .await
                 .map_err(|e| client_error_message(&e))
-        },
-    );
+        }
+    });
     view! {
         <PageHeader
             title="Daemon status"
@@ -516,7 +513,7 @@ pub(super) fn SystemPage() -> impl IntoView {
     }
 }
 
-fn resource_stats(stats: &DaemonStats) -> View {
+fn resource_stats(stats: &DaemonStats) -> AnyView {
     let unavailable = || "Unavailable".to_owned();
     let counters = [
         ("Retained events", stats.events.to_string()),
@@ -575,7 +572,7 @@ fn resource_stats(stats: &DaemonStats) -> View {
             </dl>
         </section>
     }
-    .into_view()
+    .into_any()
 }
 
 /// `/analytics` page: deployment outcome, retry, duration and failure-code
@@ -583,16 +580,17 @@ fn resource_stats(stats: &DaemonStats) -> View {
 #[component]
 pub(super) fn AnalyticsPage() -> impl IntoView {
     let refresh = Refresh::new();
-    let days = create_rw_signal(30_u32);
-    let data = create_local_resource(
-        move || (refresh.0.get(), days.get()),
-        |(_, days)| async move {
+    let days = RwSignal::new(30_u32);
+    let data = LocalResource::new(move || {
+        refresh.0.track();
+        let days = days.get();
+        async move {
             Client::browser()
                 .deployment_analytics(None, Refresh::since(days), None)
                 .await
                 .map_err(|e| client_error_message(&e))
-        },
-    );
+        }
+    });
     view! {
         <PageHeader
             title="Analytics"
@@ -677,7 +675,7 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
                                         </tbody>
                                     </table>
                                 }
-                                    .into_view()
+                                    .into_any()
                             }}
                         </section> <section class="card card-flush">
                             <header>
@@ -712,12 +710,12 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
                                         </tbody>
                                     </table>
                                 }
-                                    .into_view()
+                                    .into_any()
                             }}
                         </section>
                     </div>
                 }
-                    .into_view()
+                    .into_any()
             }
         }}
     }
@@ -728,17 +726,18 @@ pub(super) fn AnalyticsPage() -> impl IntoView {
 #[component]
 pub(super) fn NotificationsPage() -> impl IntoView {
     let refresh = Refresh::new();
-    let cursor = create_rw_signal(None::<String>);
-    let error = create_rw_signal(None::<String>);
-    let data = create_local_resource(
-        move || (refresh.0.get(), cursor.get()),
-        |(_, cursor)| async move {
+    let cursor = RwSignal::new(None::<String>);
+    let error = RwSignal::new(None::<String>);
+    let data = LocalResource::new(move || {
+        refresh.0.track();
+        let cursor = cursor.get();
+        async move {
             Client::browser()
                 .notification_deliveries(cursor.as_deref())
                 .await
                 .map_err(|e| client_error_message(&e))
-        },
-    );
+        }
+    });
     let retry = move |id: String| {
         spawn_local(async move {
             match Client::browser().retry_notification(&id).await {
@@ -832,7 +831,7 @@ pub(super) fn NotificationsPage() -> impl IntoView {
                                         </tbody>
                                     </table>
                                 }
-                                    .into_view()
+                                    .into_any()
                             }}
                         </div>
                         {page
@@ -851,7 +850,7 @@ pub(super) fn NotificationsPage() -> impl IntoView {
                                 }
                             })}
                     }
-                        .into_view()
+                        .into_any()
                 }
             }}
         </div>

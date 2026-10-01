@@ -4,27 +4,25 @@ unmaintained = "workspace"
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# Duplicates below are pinned by the Leptos 0.6 dependency tree (leptos_dom,
-# server_fn, gloo-net, dashmap, attribute-derive) and by clap's move to syn 3.
-# They cannot converge until those crates publish releases against the newer
-# majors; skip the legacy side of each pair and revisit after the planned UI
-# stack upgrade.
+# Duplicates below are pinned by transitive dependencies (rand_core 0.6/ring,
+# indexmap under the Leptos 0.8 reactive crates, asn1-rs and gloo-net) and by
+# clap's move to syn 3. They cannot converge until those crates publish
+# releases against the newer majors; skip the legacy side of each pair.
 skip = [
-  { crate = "getrandom@0.2.17", reason = "pinned by leptos_dom 0.6 for wasm32" },
-  { crate = "hashbrown@0.14.5", reason = "pinned by dashmap 5.x under server_fn 0.6" },
-  { crate = "hashbrown@0.17.1", reason = "pulled by indexmap 2.x under leptos_dom; sqlx-core pins hashbrown 0.15 via hashlink until it updates" },
-  { crate = "proc-macro-utils@0.8.0", reason = "pinned by attribute-derive 0.9 under leptos_macro 0.6" },
-  { crate = "serde_qs@0.12.0", reason = "pinned by server_fn 0.6" },
+  { crate = "getrandom@0.2.17", reason = "pinned by rand_core 0.6 and ring" },
+  { crate = "hashbrown@0.17.1", reason = "pulled by indexmap 2.x under reactive_graph/tachys; sqlx-core pins hashbrown 0.15 via hashlink until it updates" },
   { crate = "syn@2.0.119", reason = "clap_derive moved to syn 3 while leptos_macro still requires syn 2" },
-  { crate = "thiserror@1.0.69", reason = "gloo-net/server_fn still require thiserror 1" },
+  { crate = "thiserror@1.0.69", reason = "asn1-rs (webauthn) and gloo-net still require thiserror 1" },
   { crate = "thiserror-impl@1.0.69", reason = "companion of the thiserror 1 pin above" },
 ]
 
 [licenses]
 confidence-threshold = 0.8
-# Native HTTPS uses rustls/ring and Mozilla root-certificate data. Keep these
+# Native HTTPS uses rustls/ring and Mozilla root-certificate data, and Leptos
+# 0.8 always links wasm_split_macros (base16, public-domain CC0). Keep these
 # additional licenses scoped to the dependencies that require them.
 exceptions = [
+  { crate = "base16", allow = ["CC0-1.0"] },
   { crate = "ring", allow = ["ISC"] },
   { crate = "rustls-webpki", allow = ["ISC"] },
   { crate = "untrusted", allow = ["ISC"] },
