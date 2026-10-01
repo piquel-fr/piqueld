@@ -8,6 +8,9 @@ use zeroize::Zeroizing;
 /// Produces a fresh value for a declared secret. RSA generation is CPU-bound,
 /// so async callers run it on a blocking thread.
 pub(crate) trait Generate {
+    /// Returns a new value: random bytes as lowercase hex or unpadded
+    /// `base64url` text, or an RSA private key as PKCS#8 PEM. Fails when the
+    /// operating system's random source or OpenSSL key generation fails.
     fn generate(&self) -> anyhow::Result<Zeroizing<Vec<u8>>>;
 }
 

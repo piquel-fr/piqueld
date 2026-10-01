@@ -30,7 +30,9 @@ const MAX_MOUNTS_PER_SERVICE: usize = 32;
 const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
 const MAX_CPU_MILLIS: u32 = 1_048_576;
 const MAX_GENERATED_SECRETS: usize = 64;
+/// Accepted raw byte counts for random generated secrets, before encoding.
 const RANDOM_SECRET_BYTES: std::ops::RangeInclusive<u16> = 16..=512;
+/// Accepted RSA modulus sizes for generated private keys.
 const RSA_SECRET_BITS: [u16; 3] = [2048, 3072, 4096];
 
 impl GitRepository {
@@ -764,6 +766,10 @@ fn validate_volumes(volumes: &[Volume], errors: &mut Vec<ValidationError>) {
     }
 }
 
+/// Checks generated secret declarations: unique valid names, random byte counts
+/// in `RANDOM_SECRET_BYTES`, and RSA sizes in `RSA_SECRET_BITS`. Invalid
+/// generator parameters are reported at `spec.secrets[i].generate.bytes` or
+/// `.bits` with `secret_generator_invalid`.
 fn validate_generated_secrets(secrets: &[SecretDeclaration], errors: &mut Vec<ValidationError>) {
     unique_names(
         secrets.iter().map(|secret| &secret.name),

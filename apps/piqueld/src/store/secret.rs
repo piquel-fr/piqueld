@@ -114,6 +114,13 @@ impl Store {
     /// Stores values for declared secrets that have none. A stored value,
     /// generated or set manually, is never replaced, so deploys never rotate it.
     /// Call before pinning, outside the writer lock: RSA generation takes time.
+    /// Each value is stored as generation 1 with `put_secret`; losing a race to
+    /// a concurrent write keeps the other value.
+    ///
+    /// # Errors
+    /// Returns `SecretSource` when generation fails, and other `put_secret`
+    /// errors (count or byte quotas, application deletion, key or database
+    /// errors) unchanged.
     pub(crate) async fn generate_secrets(
         &self,
         app: &NormalizedApplication,
