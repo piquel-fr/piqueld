@@ -22,13 +22,14 @@ use bollard::{
 use futures_util::{StreamExt, TryStreamExt, stream};
 use piqueld_core::manifest::{HealthCheck, ResourceLimits};
 use piqueld_core::resource::{
-    APPLICATION_LABEL, Convergence, DesiredNetwork, DesiredService, DesiredVolume, INSTANCE_LABEL,
-    MANAGED_LABEL, NetworkAttachment, ObservedMount, ObservedNetwork, ObservedService,
-    ObservedTask, ObservedVolume, SERVICE_LABEL, TaskDiagnostic, TaskState, image_repository,
+    APPLICATION_LABEL, Convergence, DesiredNetwork, DesiredService, DesiredVolume,
+    INGRESS_PROXIES_ENV, INSTANCE_LABEL, MANAGED_LABEL, NetworkAttachment, ObservedMount,
+    ObservedNetwork, ObservedService, ObservedTask, ObservedVolume, SERVICE_LABEL, TaskDiagnostic,
+    TaskState, image_repository,
 };
 use piqueld_core::{
-    ApplicationId, InstanceId, ObservedApplication, ResourceKind, docker_resource_name,
-    docker_resource_readable_prefix,
+    ApplicationId, DockerNetworkName, InstanceId, ObservedApplication, ResourceKind,
+    docker_resource_name, docker_resource_readable_prefix,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},

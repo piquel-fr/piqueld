@@ -22,6 +22,10 @@ pub const APPLICATION_LABEL: &str = "io.piqueld.application";
 pub const SERVICE_LABEL: &str = "io.piqueld.service";
 /// Label carrying the normalized application spec hash.
 pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
+/// Environment variable listing the ingress network's CIDRs in routed services.
+/// Only the gateway and the application's own routed services share that
+/// network, so `X-Forwarded-For` from these peers carries the client address.
+pub const INGRESS_PROXIES_ENV: &str = "PIQUELD_INGRESS_PROXIES";
 
 validated_string!(
     /// Stable control-plane instance identity.
@@ -404,6 +408,14 @@ impl DesiredService {
                 },
             })
             .collect()
+    }
+
+    /// Returns the application's ingress network when public routes target this service.
+    #[must_use]
+    pub fn ingress_network(&self) -> Option<&DockerNetworkName> {
+        let (application, _) = desired_application_from_labels(&self.labels)?;
+        let ingress = DockerNetworkName::for_ingress(&application);
+        self.networks.iter().find(|network| **network == ingress)
     }
 }
 

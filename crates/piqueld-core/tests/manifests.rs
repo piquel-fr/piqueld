@@ -366,6 +366,33 @@ image = "nginx:1"
 }
 
 #[test]
+fn ingress_proxies_environment_is_reserved() {
+    let manifest = format!(
+        r#"
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+[metadata]
+name = "notes"
+[[spec.services]]
+name = "web"
+[spec.services.environment]
+{} = "0.0.0.0/0"
+[spec.services.source]
+type = "image"
+image = "nginx:1"
+"#,
+        piqueld_core::resource::INGRESS_PROXIES_ENV
+    );
+    let errors = parse_toml(&manifest).unwrap_err();
+    let error = errors
+        .0
+        .iter()
+        .find(|error| error.code == codes::ENVIRONMENT_NAME_INVALID)
+        .expect("reserved key error");
+    assert!(error.message.contains("reserved"), "{}", error.message);
+}
+
+#[test]
 fn environment_entry_count_budget_is_enforced() {
     let entries = (0..257)
         .map(|index| format!("KEY_{index} = \"1\""))
