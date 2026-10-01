@@ -131,6 +131,7 @@ impl From<&Service> for ServiceForm {
                     Build::Docker {
                         dockerfile,
                         context,
+                        ..
                     },
             } => {
                 form.source_kind = "git".into();
@@ -180,17 +181,29 @@ impl ServiceForm {
                     "image" => Source::Image {
                         image: self.image.clone(),
                     },
-                    "git" => Source::Git {
-                        repository: GitRepository {
-                            url: self.repository.clone(),
-                            branch: self.branch.clone(),
-                            commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
-                        },
-                        build: Build::Docker {
-                            dockerfile: self.dockerfile.clone(),
-                            context: self.context.clone(),
-                        },
-                    },
+                    "git" => {
+                        // The form does not edit build arguments or targets; keep saved ones.
+                        let (args, target) = match &mut service.source {
+                            Source::Git {
+                                build: Build::Docker { args, target, .. },
+                                ..
+                            } => (std::mem::take(args), target.take()),
+                            Source::Image { .. } => Default::default(),
+                        };
+                        Source::Git {
+                            repository: GitRepository {
+                                url: self.repository.clone(),
+                                branch: self.branch.clone(),
+                                commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
+                            },
+                            build: Build::Docker {
+                                dockerfile: self.dockerfile.clone(),
+                                context: self.context.clone(),
+                                args,
+                                target,
+                            },
+                        }
+                    }
                     _ => return Err("Choose image or Git as the source.".into()),
                 };
                 service.replicas = self
@@ -346,6 +359,8 @@ mod tests {
             build: Build::Docker {
                 dockerfile: "infra/Dockerfile".into(),
                 context: "app".into(),
+                args: [("ORIGIN".into(), "https://example.com".into())].into(),
+                target: Some("runtime".into()),
             },
         };
         let source = saved.source.clone();

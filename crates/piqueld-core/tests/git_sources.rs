@@ -1,7 +1,9 @@
 //! Git manifest validation and immutable resolution contracts.
 use piqueld_core::manifest::{Build, Source};
 use piqueld_core::resource::{ResolvedSource, Sha256Digest};
-use piqueld_core::{ApplicationId, InstanceId, ResolutionSet, compile_application, parse_json};
+use piqueld_core::{
+    ApplicationId, InstanceId, ResolutionSet, codes, compile_application, parse_json,
+};
 
 fn manifest() -> serde_json::Value {
     serde_json::json!({
@@ -83,4 +85,67 @@ fn git_resolution_retains_commit_and_local_image_and_rejects_mismatched_inputs()
     let changed = changed.validate().unwrap().normalize(app.id().clone());
     assert!(compile_application(&changed, instance, &resolutions).is_err());
     assert!(resolved.reusable_resolutions(&changed).sources.is_empty());
+}
+
+#[test]
+fn docker_build_arguments_and_target_validate_and_are_part_of_source_identity() {
+    let mut valid = manifest();
+    valid["spec"]["services"][0]["source"]["build"]["args"] =
+        serde_json::json!({"VITE_AUTH_ORIGIN": "https://auth.example.com"});
+    valid["spec"]["services"][0]["source"]["build"]["target"] = "runtime".into();
+    let app = parse_json(&valid.to_string())
+        .unwrap()
+        .normalize(ApplicationId::parse("example-id").unwrap());
+    for (field, value, code) in [
+        (
+            "args",
+            serde_json::json!({"1BAD": "x"}),
+            codes::BUILD_ARG_NAME_INVALID,
+        ),
+        (
+            "args",
+            serde_json::json!({"OK": "a\0b"}),
+            codes::BUILD_ARG_VALUE_INVALID,
+        ),
+        ("target", "--push".into(), codes::BUILD_TARGET_INVALID),
+        ("target", "".into(), codes::BUILD_TARGET_INVALID),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["spec"]["services"][0]["source"]["build"][field] = value.clone();
+        let errors = parse_json(&invalid.to_string()).unwrap_err();
+        assert!(
+            errors.0.iter().any(|error| error.code == code),
+            "{field}: {value}"
+        );
+    }
+
+    let resolutions = ResolutionSet {
+        sources: [(
+            piqueld_core::ServiceName::parse("web").unwrap(),
+            ResolvedSource::Git {
+                requested: app.spec().services[0].source.clone(),
+                commit: "b".repeat(40),
+                image_id: Sha256Digest::parse(format!("sha256:{}", "a".repeat(64))).unwrap(),
+            },
+        )]
+        .into(),
+        ..ResolutionSet::default()
+    };
+    let resolved =
+        compile_application(&app, InstanceId::parse("test").unwrap(), &resolutions).unwrap();
+    assert_eq!(resolved.reusable_resolutions(&app), resolutions);
+    for field in ["args", "target"] {
+        let mut changed = valid.clone();
+        changed["spec"]["services"][0]["source"]["build"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        let changed = parse_json(&changed.to_string())
+            .unwrap()
+            .normalize(app.id().clone());
+        assert!(
+            resolved.reusable_resolutions(&changed).sources.is_empty(),
+            "{field}"
+        );
+    }
 }

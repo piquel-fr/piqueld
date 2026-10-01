@@ -3313,6 +3313,8 @@ async fn field_edit_source_endpoints_preserve_other_git_settings() {
         build: Build::Docker {
             dockerfile: "Dockerfile".into(),
             context: ".".into(),
+            args: std::collections::BTreeMap::from([("ORIGIN".into(), "https://a".into())]),
+            target: Some("runtime".into()),
         },
     };
     api.edit_service_field(id, ServiceEdit::Source(source))
@@ -3360,7 +3362,9 @@ async fn field_edit_source_endpoints_preserve_other_git_settings() {
         build,
         Build::Docker {
             dockerfile: "build/Dockerfile".into(),
-            context: "build".into()
+            context: "build".into(),
+            args: std::collections::BTreeMap::from([("ORIGIN".into(), "https://a".into())]),
+            target: Some("runtime".into()),
         }
     );
     let unpinned = api

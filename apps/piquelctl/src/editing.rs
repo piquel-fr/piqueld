@@ -178,8 +178,20 @@ pub(crate) struct GitBuildArgs {
     /// Build context relative to the repository root.
     #[arg(long, requires = "git", default_value = ".")]
     context: String,
+    /// Docker build argument; repeat for several. Values are not secret.
+    #[arg(long = "build-arg", value_name = "KEY=VALUE", requires = "git", value_parser = Self::parse_arg)]
+    build_args: Vec<(String, String)>,
+    /// Multi-stage build target.
+    #[arg(long, requires = "git")]
+    target: Option<String>,
 }
 impl GitBuildArgs {
+    fn parse_arg(value: &str) -> std::result::Result<(String, String), String> {
+        value
+            .split_once('=')
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .ok_or_else(|| "build arguments must use KEY=VALUE".to_owned())
+    }
     /// Git source that builds `url` with Docker using these settings.
     fn source(&self, url: &str) -> Source {
         Source::Git {
@@ -191,6 +203,8 @@ impl GitBuildArgs {
             build: Build::Docker {
                 dockerfile: self.dockerfile.clone(),
                 context: self.context.clone(),
+                args: self.build_args.iter().cloned().collect(),
+                target: self.target.clone(),
             },
         }
     }

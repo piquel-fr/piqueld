@@ -429,22 +429,20 @@ impl DockerApi for BollardDocker {
 
     async fn build_image(
         &self,
-        dockerfile: &std::path::Path,
-        context: &std::path::Path,
+        build: &super::ImageBuild<'_>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        self.build_image_recorded(dockerfile, context, None).await
+        self.build_image_recorded(build, None).await
     }
     async fn build_image_recorded(
         &self,
-        dockerfile: &std::path::Path,
-        context: &std::path::Path,
+        build: &super::ImageBuild<'_>,
         log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         // Builds shell out to the Docker CLI against the same socket and read
         // the image ID Docker writes to `--iidfile`, e.g. `sha256:<64 hex>`.
         use anyhow::Context;
         let result = async {
-            if !dockerfile.is_file() || !context.is_dir() {
+            if !build.dockerfile.is_file() || !build.context.is_dir() {
                 anyhow::bail!("Dockerfile must be a file and build context must be a directory");
             }
             let directory = tempfile::tempdir().context("create Docker build directory")?;
@@ -454,10 +452,11 @@ impl DockerApi for BollardDocker {
                 .arg("--host")
                 .arg(format!("unix://{}", self.socket.display()))
                 .args(["build", "--pull", "--file"])
-                .arg(dockerfile)
+                .arg(&build.dockerfile)
                 .arg("--iidfile")
                 .arg(&iidfile)
-                .arg(context);
+                .args(build.options())
+                .arg(&build.context);
             crate::command::LoggedCommand::run_recorded(&mut command, "build Docker image", log)
                 .await?;
             let id = tokio::fs::read_to_string(iidfile)

@@ -147,6 +147,7 @@ piquelctl app service env remove notes web RUST_LOG --yes
 piquelctl app service command notes web --yes -- /usr/bin/server
 piquelctl app service arguments notes web --yes -- --listen "0.0.0.0:8080"
 piquelctl app service add notes worker --git https://example.com/app.git --branch main --yes
+piquelctl app service source git notes web https://example.com/app.git --target runtime --build-arg ORIGIN=https://notes.example.com --yes
 piquelctl app service source git notes web https://example.com/app.git --branch main --yes
 piquelctl app service source branch notes web release --yes
 piquelctl app service source commit notes web --clear --yes

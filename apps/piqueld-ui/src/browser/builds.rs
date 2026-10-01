@@ -289,13 +289,25 @@ fn build_duration(build: &BuildRecord) -> String {
 fn source_details(source: Source) -> View {
     match source {
         Source::Image { image } => view! {<dt>"Source"</dt><dd><code>{image}</code></dd>}.into_view(),
-        Source::Git {repository,build:Build::Docker {dockerfile,context}} => view! {
+        Source::Git {repository,build:Build::Docker {dockerfile,context,args,target}} => view! {
             <dt>"Repository"</dt><dd><code>{repository.url}</code></dd>
             <dt>"Requested revision"</dt><dd><code>{repository.commit.unwrap_or(repository.branch)}</code></dd>
             <dt>"Dockerfile"</dt><dd><code>{dockerfile}</code></dd>
             <dt>"Build context"</dt><dd><code>{context}</code></dd>
+            {target.map(|target| view! {<dt>"Build target"</dt><dd><code>{target}</code></dd>})}
+            {(!args.is_empty()).then(|| view! {<dt>"Build arguments"</dt><dd><code>{build_arguments(&args)}</code></dd>})}
         }.into_view(),
     }
+}
+
+/// Renders Docker build arguments as space-separated `KEY=VALUE` pairs.
+pub(in crate::browser) fn build_arguments(
+    args: &std::collections::BTreeMap<String, String>,
+) -> String {
+    args.iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Formats a byte count as `B` below 1 `KiB`, otherwise `KiB` with one decimal.
