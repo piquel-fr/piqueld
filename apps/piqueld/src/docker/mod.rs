@@ -98,7 +98,13 @@ pub struct ImageBuild<'a> {
 }
 
 impl ImageBuild<'_> {
-    /// Docker CLI options selecting build arguments and the target stage.
+    /// Docker CLI options selecting build arguments, in name order and passed
+    /// verbatim, followed by the target stage.
+    ///
+    /// ```text
+    /// args {A: "1", B: "x=y"}, target "runtime"
+    ///   -> --build-arg A=1 --build-arg B=x=y --target runtime
+    /// ```
     fn options(&self) -> impl Iterator<Item = String> {
         let args = self
             .args

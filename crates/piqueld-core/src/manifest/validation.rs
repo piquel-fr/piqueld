@@ -32,6 +32,11 @@ const MAX_CPU_MILLIS: u32 = 1_048_576;
 
 impl Build {
     /// Validates build inputs without reading the checkout.
+    ///
+    /// Appends errors at `path` for Dockerfile or context paths that are not
+    /// relative or leave the repository, build arguments that break the
+    /// environment variable name, count, and size rules, and targets that are
+    /// not Docker stage names.
     pub fn validate(&self, path: &str, errors: &mut Vec<ValidationError>) {
         let Self::Docker {
             dockerfile,
@@ -605,6 +610,7 @@ struct VariableMap {
     noun: &'static str,
     /// Field name below the validated path.
     field: &'static str,
+    // Error codes reported for each rule.
     name_invalid: &'static str,
     value_invalid: &'static str,
     count_excessive: &'static str,
@@ -612,6 +618,7 @@ struct VariableMap {
 }
 
 impl VariableMap {
+    /// Service environment, validated at `<service>.environment`.
     const ENVIRONMENT: Self = Self {
         noun: "environment",
         field: "environment",
@@ -620,6 +627,7 @@ impl VariableMap {
         count_excessive: codes::ENVIRONMENT_COUNT_EXCESSIVE,
         value_excessive: codes::ENVIRONMENT_VALUE_EXCESSIVE,
     };
+    /// Docker build arguments, validated at `<build>.args`.
     const BUILD_ARGS: Self = Self {
         noun: "build argument",
         field: "args",
@@ -629,6 +637,9 @@ impl VariableMap {
         value_excessive: codes::BUILD_ARG_VALUE_EXCESSIVE,
     };
 
+    /// Appends errors at `base.field` when `values` has too many entries, a
+    /// name is not a POSIX-style identifier or exceeds the identifier bound, or
+    /// a value contains NUL or exceeds its byte budget.
     fn validate(
         &self,
         values: &BTreeMap<String, String>,

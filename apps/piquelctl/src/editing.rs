@@ -188,6 +188,8 @@ pub(crate) struct GitBuildArgs {
     target: Option<String>,
 }
 impl GitBuildArgs {
+    /// Parses a `--build-arg` value at its first `=`, so values may contain `=`.
+    /// Fails when the value has no `=`; names are checked by manifest validation.
     fn parse_arg(value: &str) -> std::result::Result<(String, String), String> {
         value
             .split_once('=')
