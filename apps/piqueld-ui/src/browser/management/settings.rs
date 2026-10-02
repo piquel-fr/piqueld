@@ -301,6 +301,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             }),
             Section::Storage => ServiceEdit::Mounts(service.mounts.clone()),
             Section::Health => ServiceEdit::Healthcheck(service.healthcheck.clone()),
+            Section::Dependencies => ServiceEdit::DependsOn(service.depends_on.clone()),
             Section::Resources => ServiceEdit::Resources(service.resources.clone()),
         };
         context.save(
@@ -319,7 +320,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             <fieldset disabled={move || {
                 context.blocked() || context.managed()
             }}>
-                {service_fields(section, draft)} {save_actions(draft, baseline, save, || false)}
+                {service_fields(section, name.get_value(), draft)} {save_actions(draft, baseline, save, || false)}
             </fieldset>
         </section>
     }
@@ -336,12 +337,19 @@ const fn section_hint(section: Section) -> &'static str {
         Section::Health => {
             "Docker restarts unhealthy replicas and counts only healthy ones toward readiness."
         }
+        Section::Dependencies => {
+            "Deploy rolls this service out only after the selected services are healthy, or running when they have no health check."
+        }
         Section::Resources => "Leave a limit blank to use the runtime default.",
     }
 }
 
-/// Input fields for one service `Section`, bound to the shared draft form.
-pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> AnyView {
+/// Input fields for one `Section` of `service`, bound to the shared draft form.
+pub(super) fn service_fields(
+    section: Section,
+    service: String,
+    form: RwSignal<ServiceForm>,
+) -> AnyView {
     match section {
         Section::General => {
             let git_source = Memo::new(move |_| form.with(|form| form.source_kind == "git"));
@@ -428,6 +436,7 @@ pub(super) fn service_fields(section: Section, form: RwSignal<ServiceForm>) -> A
         .into_any(),
         Section::Storage => mount_fields(form),
         Section::Health => health_fields(form),
+        Section::Dependencies => dependency_fields(service, form),
         Section::Resources => view! {
             <div class="form-grid">
                 {text_input("CPU (millicores)", form, |v| v.cpu.clone(), |v, s| v.cpu = s)}
@@ -479,6 +488,54 @@ pub(super) fn string_rows(
     }
     .into_any()
 }
+
+/// One checkbox per other saved service; selections stay sorted like saved configuration.
+pub(super) fn dependency_fields(service: String, form: RwSignal<ServiceForm>) -> AnyView {
+    let context = editor();
+    let candidates = move || {
+        context
+            .manifest()
+            .spec
+            .services
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .filter(|candidate| *candidate != service)
+            .collect::<Vec<_>>()
+    };
+    view! {
+        <div class="form-list">
+            <For
+                each={candidates}
+                key={Clone::clone}
+                children={move |candidate| {
+                    let checked = candidate.clone();
+                    let toggled = candidate.clone();
+                    view! {
+                        <label class="checkbox">
+                            <input
+                                type="checkbox"
+                                prop:checked={move || form.with(|v| v.depends_on.contains(&checked))}
+                                on:change={move |ev| {
+                                    let selected = event_target_checked(&ev);
+                                    form.update(|v| {
+                                        v.depends_on.retain(|name| *name != toggled);
+                                        if selected {
+                                            v.depends_on.push(toggled.clone());
+                                            v.depends_on.sort();
+                                        }
+                                    });
+                                }}
+                            />
+                            {candidate}
+                        </label>
+                    }
+                }}
+            />
+        </div>
+    }
+    .into_any()
+}
+
 /// Key/value rows for the service environment.
 pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> AnyView {
     view! {
@@ -687,9 +744,10 @@ pub(super) fn NewService() -> impl IntoView {
             mounts: Vec::new(),
             healthcheck: None,
             resources: None,
+            depends_on: Vec::new(),
         };
         context.save(
-            ApplicationEdit::AddService(service),
+            ApplicationEdit::AddService(Box::new(service)),
             Callback::new(move |_| {
                 fields.set((String::new(), String::new()));
                 opened.set(false);

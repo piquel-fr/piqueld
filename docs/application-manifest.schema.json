@@ -413,6 +413,13 @@
           },
           "type": "array"
         },
+        "depends_on": {
+          "description": "Services in this application that must be healthy before this one rolls out.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "environment": {
           "additionalProperties": {
             "type": "string"

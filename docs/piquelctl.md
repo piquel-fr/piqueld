@@ -149,6 +149,7 @@ piquelctl app service env set notes web RUST_LOG debug --yes
 piquelctl app service env remove notes web RUST_LOG --yes
 piquelctl app service command notes web --yes -- /usr/bin/server
 piquelctl app service arguments notes web --yes -- --listen "0.0.0.0:8080"
+piquelctl app service depends-on notes web --yes -- postgres
 piquelctl app service add notes worker --git https://example.com/app.git --branch main --yes
 piquelctl app service source git notes web https://example.com/app.git --branch main --yes
 piquelctl app service source branch notes web release --yes
@@ -180,8 +181,8 @@ mounts are removed. Removing declarations retains Docker volume data.
 Route edits preserve other routes and use the inspected generation to reject
 concurrent changes. Deploy after saving to activate or remove public routing.
 
-Command and argument arrays preserve individual shell arguments; place command
-options before `--`. An empty array clears the setting. Optional limits and pinned
+Command, argument, and `depends-on` arrays preserve individual elements; place
+command options before `--`. An empty array clears the setting. Optional limits and pinned
 commits use `--clear`; health checks use `health clear`. Nested Git/health settings
 require the corresponding source/check to be configured first. Use `--help` on
 any command for its values and options.

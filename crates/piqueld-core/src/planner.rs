@@ -1,5 +1,6 @@
 //! Pure, deterministic desired/observed planning for the supported Swarm model.
 
+use crate::manifest::dependencies::StartupOrder;
 use crate::resource::{
     Convergence, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
     ResolutionRequirement, ResolvedApplication,
@@ -517,9 +518,7 @@ impl Plan {
         let volumes_ready = plan.ensure_volumes(desired, observed, &mut blocked_names);
         let infrastructure_ready = networks_ready && volumes_ready;
         plan.retain_obsolete_volumes(desired, observed);
-        let (services_ready, mut waits) =
-            plan.ensure_services(desired, observed, &mut blocked_names);
-        plan.actions.append(&mut waits);
+        let services_ready = plan.ensure_services(desired, observed, &mut blocked_names);
         let cleanup_ready = infrastructure_ready && services_ready && !plan.is_blocked();
         plan.remove_obsolete_services(desired, observed, cleanup_ready);
         plan.remove_obsolete_networks(desired, observed, cleanup_ready);
@@ -649,10 +648,27 @@ impl Plan {
         desired: &ResolvedApplication,
         observed: &ObservedApplication,
         blocked: &mut BTreeSet<String>,
-    ) -> (bool, Vec<PlanAction>) {
+    ) -> bool {
         let mut ready = true;
-        let mut waits = Vec::new();
-        for service in &desired.services {
+        // Pending convergence waits, emitted after every ensure unless a
+        // dependent service needs them first.
+        let mut waits: Vec<(&str, PlanAction)> = Vec::new();
+        let (ordered, cyclic) = desired.services.startup_order();
+        for service in ordered.into_iter().chain(cyclic) {
+            // The controller executes the first action and replans, so waiting
+            // here rolls the dependent out only once its dependencies converge.
+            for dependency in &service.depends_on {
+                if let Some(index) = waits
+                    .iter()
+                    .position(|(name, _)| *name == dependency.as_str())
+                {
+                    self.actions.push(waits.remove(index).1);
+                }
+            }
+            let wait = (
+                service.logical_name.as_str(),
+                PlanAction::wait_for_service(service.name.as_str()),
+            );
             match observed
                 .services
                 .iter()
@@ -666,7 +682,7 @@ impl Plan {
                         },
                         ActionReason::Missing,
                     ));
-                    waits.push(PlanAction::wait_for_service(service.name.as_str()));
+                    waits.push(wait);
                 }
                 Some(found) if !found.matches_ownership(service, desired) => {
                     ready = false;
@@ -682,14 +698,14 @@ impl Plan {
                             fields: found.drift(service).into_iter().map(String::from).collect(),
                         },
                     ));
-                    waits.push(PlanAction::wait_for_service(service.name.as_str()));
+                    waits.push(wait);
                 }
                 Some(found) => {
                     match found.convergence {
                         Convergence::Converged => {}
                         Convergence::Updating | Convergence::Degraded => {
                             ready = false;
-                            waits.push(PlanAction::wait_for_service(service.name.as_str()));
+                            waits.push(wait);
                         }
                         Convergence::Failed => {
                             ready = false;
@@ -705,7 +721,8 @@ impl Plan {
                 }
             }
         }
-        (ready, waits)
+        self.actions.extend(waits.into_iter().map(|(_, wait)| wait));
+        ready
     }
 
     /// Removes owned services no longer desired once `cleanup_ready`, appending

@@ -2,8 +2,8 @@
 
 The Leptos dashboard manages application configuration through forms. Create an
 empty application in a modal, add services in a modal and declare named volumes, and edit images, replicas,
-environment variables, commands, arguments, mounts, health checks, and resource
-limits. Each settings group has its own **Save changes** button. Saving updates
+environment variables, commands, arguments, mounts, health checks, startup
+dependencies, and resource limits. Each settings group has its own **Save changes** button. Saving updates
 the database without changing running containers.
 
 **Preview** opens a dialog with the planned changes and actions. **Deploy** captures the saved configuration
@@ -31,8 +31,9 @@ The Overview tab shows the runtime status, the latest operation, observed
 services, reconciliation diagnostics, and the delete action. The Events tab has
 an **Errors only** filter. Each service row opens a service page with a
 breadcrumb back to the application and tabs for source and scaling,
-environment, command and arguments, volume mounts, health checks, resource
-limits, and logs. Service form drafts are retained when switching tabs.
+environment, command and arguments, volume mounts, health checks, startup
+dependencies, resource limits, and logs. Startup dependencies list the
+application's other services as checkboxes. Service form drafts are retained when switching tabs.
 Selecting None for a health check hides its remaining fields.
 The pencil beside the application name opens its rename form.
 The Deployments tab lists expandable deployment rows with Details, Snapshot,

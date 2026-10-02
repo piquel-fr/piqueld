@@ -78,7 +78,7 @@ pub enum ApplicationEdit {
     /// Change the manifest path.
     RepositoryPath(String),
     /// Add a new service, rejecting duplicate names.
-    AddService(Service),
+    AddService(Box<Service>),
     /// Remove a service declaration.
     RemoveService(String),
     /// Edit one existing service.
@@ -158,6 +158,8 @@ pub enum ServiceEdit {
     General(ServiceGeneral),
     /// Entrypoint and arguments saved together.
     Process(ServiceProcess),
+    /// Replace the services that must be healthy before this one rolls out.
+    DependsOn(Vec<String>),
 }
 
 /// Errors applying a structurally valid edit to the current saved configuration.
@@ -225,7 +227,7 @@ impl ApplicationEdit {
                         name: service.name,
                     });
                 }
-                manifest.spec.services.push(service);
+                manifest.spec.services.push(*service);
             }
             Self::RemoveService(name) => {
                 let index = manifest
@@ -239,6 +241,9 @@ impl ApplicationEdit {
                     })?;
                 manifest.spec.services.remove(index);
                 manifest.spec.routes.retain(|route| route.service != name);
+                for service in &mut manifest.spec.services {
+                    service.depends_on.retain(|dependency| *dependency != name);
+                }
             }
             Self::Service { name, edit } => {
                 let renamed_to = match &edit {
@@ -260,6 +265,15 @@ impl ApplicationEdit {
                         if route.service == name {
                             route.service.clone_from(&new_name);
                         }
+                    }
+                    for dependency in manifest
+                        .spec
+                        .services
+                        .iter_mut()
+                        .flat_map(|service| &mut service.depends_on)
+                        .filter(|dependency| **dependency == name)
+                    {
+                        dependency.clone_from(&new_name);
                     }
                 }
             }
@@ -402,6 +416,7 @@ impl ServiceEdit {
                 service.command = value.command;
                 service.arguments = value.arguments;
             }
+            Self::DependsOn(value) => service.depends_on = value,
         }
         Ok(())
     }
@@ -489,26 +504,28 @@ mod tests {
     use crate::manifest::{ApplicationManifest, ApplicationSpec, Metadata, Route, Service, Source};
 
     #[test]
-    fn service_edits_keep_public_routes_attached_to_existing_services() {
+    fn service_edits_keep_routes_and_dependencies_attached_to_existing_services() {
+        let service = |name: &str, depends_on: &[&str]| Service {
+            name: name.into(),
+            source: Source::Image {
+                image: "nginx:alpine".into(),
+            },
+            replicas: 1,
+            environment: std::collections::BTreeMap::default(),
+            command: vec![],
+            arguments: vec![],
+            mounts: vec![],
+            secrets: vec![],
+            healthcheck: None,
+            resources: None,
+            depends_on: depends_on.iter().map(|&name| name.into()).collect(),
+        };
         let mut manifest = ApplicationManifest {
             api_version: crate::manifest::APPLICATION_API_VERSION.into(),
             kind: crate::manifest::APPLICATION_KIND.into(),
             metadata: Metadata { name: "app".into() },
             spec: ApplicationSpec {
-                services: vec![Service {
-                    name: "web".into(),
-                    source: Source::Image {
-                        image: "nginx:alpine".into(),
-                    },
-                    replicas: 1,
-                    environment: std::collections::BTreeMap::default(),
-                    command: vec![],
-                    arguments: vec![],
-                    mounts: vec![],
-                    secrets: vec![],
-                    healthcheck: None,
-                    resources: None,
-                }],
+                services: vec![service("web", &[]), service("worker", &["web"])],
                 ..ApplicationSpec::default()
             },
         };
@@ -526,10 +543,13 @@ mod tests {
         .apply(&mut manifest)
         .unwrap();
         assert_eq!(manifest.spec.routes[0].service, "frontend");
+        assert_eq!(manifest.spec.services[1].depends_on, ["frontend"]);
         manifest.clone().validate().unwrap();
         ApplicationEdit::RemoveService("frontend".into())
             .apply(&mut manifest)
             .unwrap();
         assert_eq!(manifest.spec.routes, [] as [Route; 0]);
+        assert_eq!(manifest.spec.services[0].depends_on, [] as [String; 0]);
+        manifest.validate().unwrap();
     }
 }

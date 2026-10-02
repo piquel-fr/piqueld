@@ -1,5 +1,6 @@
 //! Public application manifests and their validated, canonical domain model.
 
+pub(crate) mod dependencies;
 pub mod domain;
 pub mod input;
 pub mod routes;
@@ -100,6 +101,7 @@ fn normalize_spec(spec: &mut ValidatedSpec) {
     for service in &mut spec.services {
         service.mounts.sort();
         service.secrets.sort();
+        service.depends_on.sort();
     }
     spec.volumes.sort();
     spec.routes.sort();
