@@ -182,7 +182,8 @@ dockerfile = "infra/auth.Dockerfile"
 
 `self` uses the `spec.manifest` repository at the exact commit the manifest was
 fetched from, so every such service in a deployment builds from one revision.
-It requires `spec.manifest`. Disconnecting repository backing replaces `self`
+It requires `spec.manifest` to name the repository the manifest is fetched from;
+otherwise the deployment fails with `manifest_invalid`. Disconnecting repository backing replaces `self`
 with the former manifest repository and branch.
 
 Git checkout permits file, Git, HTTP(S), and SSH transports. Executable remote

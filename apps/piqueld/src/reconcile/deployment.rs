@@ -90,6 +90,21 @@ impl<D: DockerApi> Controller<D> {
         if application.metadata().name != input.application.metadata().name {
             return Err(OperationError::ManifestInvalid);
         }
+        // Retries pin "self" from the stored manifest and commit alone, so the
+        // manifest must name the repository that commit was fetched from.
+        let declared = application.spec().manifest.as_ref();
+        if application.spec().builds_from_manifest()
+            && declared.map(|manifest| &manifest.repository.url) != Some(&backing.repository.url)
+        {
+            tracing::error!("manifest with \"self\" sources names another repository");
+            return Err(OperationError::ManifestInput {
+                not_found: false,
+                source: anyhow::anyhow!(
+                    "\"self\" sources require spec.manifest.repository.url to be {}",
+                    backing.repository.url
+                ),
+            });
+        }
         self.check_current(operation).await?;
         self.store
             .save_deployment_input(operation, &application, Some(&checkout.commit))

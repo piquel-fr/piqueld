@@ -2109,6 +2109,7 @@ mod repository_deployments {
         let application_id = ApplicationId::parse(saved.application_id).unwrap();
         // The override is not saved, and saved configuration keeps "self".
         let expected_spec = fetched
+            .clone()
             .validate()
             .unwrap()
             .normalize(application_id.clone())
@@ -2127,6 +2128,13 @@ mod repository_deployments {
             );
             assert_eq!(stored.application.to_manifest().spec, expected_spec);
         }
+        // "self" would otherwise pin another repository to this one's commit.
+        let mut moved = fetched;
+        moved.spec.manifest.as_mut().unwrap().repository.url = "/elsewhere".into();
+        repository.write("app.json", &moved);
+        repository.commit();
+        let deployment = RepositoryFixture::deploy(&harness, &application_id).await;
+        assert_eq!(deployment.error_code.as_deref(), Some("manifest_invalid"));
     }
 
     #[tokio::test]
