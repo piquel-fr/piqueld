@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     let store = Arc::new(Store::open(dir.join("db")).await?);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://localhost:{}", listener.local_addr()?.port());
-    let auth = piqueld::auth::Auth::new(&store, &origin)?;
+    let auth = piqueld::auth::Auth::new(&store, &origin, std::collections::HashMap::default())?;
     let setup = dir.join("setup-link");
     auth.prepare_setup(&setup).await?;
     let state = ApiState::new(store, Arc::new(Runtime));

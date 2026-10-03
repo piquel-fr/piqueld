@@ -15779,7 +15779,7 @@
     },
     "/api/v1/auth/logout": {
       "post": {
-        "description": "Revokes the credential used for this request and clears the session cookie.",
+        "description": "Revokes the credential used for this request and clears the session cookie.\nTokens declared in configuration cannot sign out and fail with 400.",
         "operationId": "authLogout",
         "responses": {
           "200": {

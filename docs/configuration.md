@@ -43,6 +43,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `server.allowed_hosts` | `[]` (additional trusted DNS hostnames) |
 | derived socket path | `<runtime_dir>/piqueld.sock` |
 | derived database path | `<data_dir>/piqueld.db` |
+| `auth.provisioned_tokens` | `[]` (declarative automation tokens) |
 | `docker.socket` | `/var/run/docker.sock` |
 | `docker.auto_initialize_swarm` | `true` |
 | `ingress.enabled` | `false` (restart required) |

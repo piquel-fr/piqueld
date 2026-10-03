@@ -170,3 +170,60 @@ fn tailscale_node_settings_are_validated() {
         );
     }
 }
+
+#[test]
+fn provisioned_tokens_are_resolved_at_startup_and_never_shown() {
+    let directory = tempfile::tempdir().unwrap();
+    let token = |name: &str, value: &str| {
+        let path = directory.path().join(name);
+        std::fs::write(&path, value).unwrap();
+        format!(
+            "[[auth.provisioned_tokens]]\naccount = 'piquel'\nname = '{name}'\ntoken_file = '{}'\n",
+            path.display()
+        )
+    };
+    let secret = "a".repeat(32);
+    let inline = "b".repeat(32);
+    let ci = token("ci", &format!("{secret}\n"));
+    let cd =
+        format!("[[auth.provisioned_tokens]]\naccount = 'bob'\nname = 'cd'\ntoken = '{inline}'\n");
+    let config = DaemonConfig::from_toml(&format!("{ci}{cd}")).unwrap();
+    assert_eq!(
+        config.auth.read_provisioned_tokens().unwrap(),
+        [
+            (secret.clone(), "piquel".to_owned()),
+            (inline.clone(), "bob".to_owned())
+        ]
+        .into()
+    );
+    let view = format!("{:?} {config:?}", config.view());
+    assert!(view.contains("piquel/ci (from "), "{view}");
+    assert!(view.contains("bob/cd (inline)"), "{view}");
+    assert!(!view.contains(&secret) && !view.contains(&inline), "{view}");
+
+    for document in [
+        "[[auth.provisioned_tokens]]\naccount = 'piquel'\nname = 'ci'\ntoken_file = 'ci'".into(),
+        "[[auth.provisioned_tokens]]\naccount = 'piquel'\nname = 'ci'".into(),
+        format!("{cd}token_file = '/run/token'"),
+        format!("{ci}{}", ci.replace("'piquel'", "'Piquel'")),
+    ] {
+        assert!(
+            matches!(
+                DaemonConfig::from_toml(&document),
+                Err(ConfigError::Invalid(_))
+            ),
+            "accepted {document}"
+        );
+    }
+    for document in [
+        cd.replace(&inline, "short"),
+        format!("{ci}{}", token("copy", &secret)),
+        ci.replace("/ci'", "/missing'"),
+    ] {
+        let config = DaemonConfig::from_toml(&document).unwrap();
+        assert!(
+            config.auth.read_provisioned_tokens().is_err(),
+            "accepted {document}"
+        );
+    }
+}

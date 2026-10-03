@@ -10,13 +10,26 @@ let
     "tailscale"
     "both"
   ];
+  provisionedTokens = cfg.settings.auth.provisioned_tokens;
+  # `token_file` names a host file. systemd copies it into the unit's private
+  # credentials directory, so the file may stay root-only.
+  tokenCredential = index: "token-${toString index}";
   configuration = (pkgs.formats.toml { }).generate "piqueld.toml" (
     lib.recursiveUpdate (lib.filterAttrsRecursive (_: value: value != null) cfg.settings) (
+      # The daemon reads keys and tokens through systemd credentials, not host paths.
       {
         server.data_dir = cfg.dataDir;
         server.runtime_dir = cfg.runtimeDir;
+        auth.provisioned_tokens = lib.imap0 (
+          index: token:
+          lib.filterAttrs (_: value: value != null) (
+            token
+            // lib.optionalAttrs (token.token_file != null) {
+              token_file = "/run/credentials/piqueld.service/${tokenCredential index}";
+            }
+          )
+        ) provisionedTokens;
       }
-      # The daemon reads the key through its systemd credential, not the host path.
       // lib.optionalAttrs (cfg.settings.tailscale.auth_key_file != null) {
         tailscale.auth_key_file = "/run/credentials/piqueld.service/ts-auth-key";
       }
@@ -67,6 +80,35 @@ in
             type = lib.types.nullOr lib.types.str;
             default = null;
             description = "Canonical HTTPS website origin for passkeys; HTTP localhost is allowed for development. Defaults to the tailnet node's HTTPS URL when tailscale.enabled is set, otherwise http://localhost:7845.";
+          };
+          auth.provisioned_tokens = lib.mkOption {
+            type = lib.types.listOf (
+              lib.types.submodule {
+                options = {
+                  account = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Username the token authenticates as.";
+                  };
+                  name = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Token name, unique per account.";
+                  };
+                  token = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Bearer token of at least 32 bytes. It enters the Nix store; prefer token_file.";
+                  };
+                  token_file = lib.mkOption {
+                    # A string, not a path, so the secret is never copied into the Nix store.
+                    type = lib.types.nullOr (lib.types.strMatching "/.+");
+                    default = null;
+                    description = "Host file with the token, such as an agenix secret, passed to piqueld as a systemd credential.";
+                  };
+                };
+              }
+            );
+            default = [ ];
+            description = "API tokens accepted as their account while declared. Each needs exactly one of token and token_file. Removing one revokes it at the next restart.";
           };
           tailscale.enabled = lib.mkOption {
             type = lib.types.bool;
@@ -214,6 +256,10 @@ in
           );
         message = "services.piqueld.runtimeDir must be a dedicated directory below /run";
       }
+      {
+        assertion = lib.all (token: (token.token == null) != (token.token_file == null)) provisionedTokens;
+        message = "services.piqueld.settings.auth.provisioned_tokens: each entry needs exactly one of token and token_file";
+      }
     ];
     users.groups.piqueld = { };
     users.users.piqueld = {
@@ -252,7 +298,12 @@ in
           ) "notification-destinations:${cfg.notificationDestinationsFile}"
           ++ lib.optional (
             cfg.settings.tailscale.auth_key_file != null
-          ) "ts-auth-key:${cfg.settings.tailscale.auth_key_file}";
+          ) "ts-auth-key:${cfg.settings.tailscale.auth_key_file}"
+          ++ lib.concatLists (
+            lib.imap0 (
+              index: token: lib.optional (token.token_file != null) "${tokenCredential index}:${token.token_file}"
+            ) provisionedTokens
+          );
         User = "piqueld";
         Group = "piqueld";
         SupplementaryGroups = [ "docker" ];
