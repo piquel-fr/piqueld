@@ -78,7 +78,7 @@ pub struct ValidatedMount {
 
 impl ValidationErrors {
     /// Wraps a typed name parse failure as a single `NAME_INVALID` error at `path`.
-    fn invalid_name(path: impl Into<String>, source: impl std::fmt::Display) -> Self {
+    pub(super) fn invalid_name(path: impl Into<String>, source: impl std::fmt::Display) -> Self {
         Self(vec![ValidationError {
             code: crate::codes::NAME_INVALID.into(),
             path: path.into(),
@@ -108,19 +108,8 @@ impl ValidatedSpec {
                 .routes
                 .into_iter()
                 .enumerate()
-                .map(|(index, route)| {
-                    let path = format!("spec.routes[{index}]");
-                    Ok(super::ValidatedRoute {
-                        hostname: super::Hostname::parse(route.hostname)
-                            .map_err(|e| ValidationErrors::invalid_name(&path, e))?,
-                        service: ServiceName::parse(route.service)
-                            .map_err(|e| ValidationErrors::invalid_name(&path, e))?,
-                        port: std::num::NonZeroU16::new(route.port).ok_or_else(|| {
-                            ValidationErrors::invalid_name(&path, "port must be nonzero")
-                        })?,
-                    })
-                })
-                .collect::<Result<_, ValidationErrors>>()?,
+                .map(|(index, route)| super::ValidatedRoute::from_input(route, index))
+                .collect::<Result<_, _>>()?,
             manifest: value.manifest,
             secrets: value.secrets,
             services: value

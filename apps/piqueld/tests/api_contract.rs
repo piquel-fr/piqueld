@@ -2949,11 +2949,7 @@ async fn route_field_edits_follow_service_renames_and_removals() {
         .await
         .unwrap();
     let id = &saved.application_id;
-    let route = Route {
-        hostname: "notes.example.com".into(),
-        service: "web".into(),
-        port: 3000,
-    };
+    let route = Route::service("notes.example.com".into(), "web".into(), 3000);
     let options = |generation| EditOptions {
         expected_generation: Some(generation),
         ..EditOptions::default()
@@ -2981,8 +2977,10 @@ async fn route_field_edits_follow_service_renames_and_removals() {
         .unwrap();
     let app = api.client.application(id).await.unwrap();
     assert_eq!(
-        app.application.to_manifest().spec.routes[0].service,
-        "frontend"
+        app.application.to_manifest().spec.routes[0]
+            .service
+            .as_deref(),
+        Some("frontend")
     );
     api.client
         .edit_application(

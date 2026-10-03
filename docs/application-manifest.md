@@ -260,8 +260,21 @@ service = "web"
 port = 3000
 ```
 
-Each route references a service in the same application and its internal HTTP
-port (1–65535). Up to 64 routes are allowed. Hostnames are exact public ASCII
+Each route either references a service in the same application and its internal
+HTTP port (1–65535), or sets `redirect` instead:
+
+```toml
+[[spec.routes]]
+hostname = "www.notes.example.com"
+redirect = { to = "https://notes.example.com", status = 308, preserve_path = true }
+```
+
+Redirects are answered by the gateway, so an application may consist of redirect
+routes alone. `to` is an `http`/`https` URL with a lowercase public hostname, an
+optional port and path, and no query, fragment, or `{}`; it must not target the
+route's own hostname. `status` is 301, 302, 303, 307, or 308 (default 308).
+`preserve_path` (default `true`) appends the request path and query to `to`.
+Up to 64 routes are allowed. Hostnames are exact public ASCII
 DNS names (use Punycode for internationalized domains), normalized to lowercase
 without a trailing dot. Wildcards, paths, schemes, and hostname ports are rejected.
 A hostname belongs to one application across saved, captured, and deployed state.

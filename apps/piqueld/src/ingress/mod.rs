@@ -275,7 +275,7 @@ impl Ingress {
             .collect();
         let mut probes = stream::iter(routes).map(|(id,route)| async move {
             let mut status = RouteStatus {
-                application_id: id.to_string(), hostname: route.hostname.to_string(), service: route.service.to_string(), port: route.port.get(),
+                application_id: id.to_string(), hostname: route.hostname.to_string(), target: route.target.clone(),
                 state: "disabled".into(), message: "Ingress is disabled in daemon configuration".into(),
             };
             if !self.enabled && !healthy {

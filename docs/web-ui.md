@@ -24,7 +24,7 @@ last deployment time.
 
 Applications have one main tab row: Overview (the default), Services, Source,
 Routes, Volumes, Secrets, Deployments, Builds, Logs, and Events. The Routes tab
-edits public hostnames and shows each deployed route's HTTPS readiness and
+edits public hostnames, each pointing at a service port or a redirect, and shows each deployed route's HTTPS readiness and
 diagnostics. Saving routes updates only the route field; Deploy activates the
 change. Services lists saved services with their observed health merged in.
 The Overview tab shows the runtime status, the latest operation, observed

@@ -27,6 +27,16 @@ service = "web"
 port = 3000
 ```
 
+A route can instead redirect its hostname, for example `www` to the apex domain.
+Caddy answers redirects itself; they need no service and get certificates the
+same way:
+
+```toml
+[[spec.routes]]
+hostname = "www.notes.example.com"
+redirect = { to = "https://notes.example.com" }
+```
+
 The dashboard's Routes tab supports the same save/deploy lifecycle. Removing a
 service in the UI also removes its routes from saved configuration. A domain can
 point at only one application's service; multiple domains may point at one service.
@@ -46,7 +56,8 @@ HTTPS reverse proxy must listen on a different address or host.
 
 Only Caddy publishes ports. HTTP redirects to HTTPS for known hosts; unknown HTTP
 hosts receive 404 and unknown TLS names receive no automatically issued certificate.
-Each application's exposed services share a dedicated ingress overlay with Caddy.
+Each application's exposed services share a dedicated ingress overlay with Caddy;
+applications with only redirect routes have none.
 Application ingress networks are separate from each other and from private backend
 networks. The gateway is trusted across all exposed applications.
 

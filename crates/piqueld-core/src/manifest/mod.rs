@@ -3,15 +3,17 @@
 pub mod domain;
 pub mod input;
 pub mod routes;
-pub use routes::{Hostname, ValidatedRoute};
+pub use routes::{
+    Hostname, RedirectStatus, RedirectUrl, RouteTarget, ValidatedRedirect, ValidatedRoute,
+};
 
 use domain::{ValidatedMetadata, ValidatedSpec};
 pub mod validation;
 
 pub use input::{
     ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, HealthExecution,
-    Metadata, Mount, RepositoryManifest, ResourceLimits, Route, SecretDeclaration, SecretEncoding,
-    SecretGenerator, SecretMount, Service, Source, Volume,
+    Metadata, Mount, Redirect, RepositoryManifest, ResourceLimits, Route, SecretDeclaration,
+    SecretEncoding, SecretGenerator, SecretMount, Service, Source, Volume,
 };
 pub(crate) use validation::valid_image_reference;
 pub use validation::{

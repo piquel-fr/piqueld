@@ -224,6 +224,31 @@
       ],
       "type": "object"
     },
+    "Redirect": {
+      "additionalProperties": false,
+      "description": "Redirect route input.",
+      "properties": {
+        "preserve_path": {
+          "description": "Appends the request path and query to `to`.",
+          "type": "boolean"
+        },
+        "status": {
+          "description": "301, 302, 303, 307, or 308.",
+          "format": "int32",
+          "maximum": 308,
+          "minimum": 301,
+          "type": "integer"
+        },
+        "to": {
+          "description": "Absolute `http` or `https` destination URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to"
+      ],
+      "type": "object"
+    },
     "RepositoryManifest": {
       "additionalProperties": false,
       "description": "Independently selects the manifest used by a manual deployment.",
@@ -271,7 +296,7 @@
     },
     "Route": {
       "additionalProperties": false,
-      "description": "Public HTTP route input, validated independently of ingress enablement.",
+      "description": "Public HTTP route input, validated independently of ingress enablement.\nA route sets either `service` and `port`, or `redirect`.",
       "properties": {
         "hostname": {
           "description": "Exact public DNS hostname.",
@@ -282,17 +307,32 @@
           "format": "int32",
           "maximum": 65535,
           "minimum": 1,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "redirect": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/Redirect",
+              "description": "Redirect answered by the gateway instead of a service."
+            }
+          ]
         },
         "service": {
           "description": "Logical service in this application.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
-        "hostname",
-        "service",
-        "port"
+        "hostname"
       ],
       "type": "object"
     },

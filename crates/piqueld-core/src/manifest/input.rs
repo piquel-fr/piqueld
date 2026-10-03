@@ -368,14 +368,67 @@ pub enum SecretEncoding {
 }
 
 /// Public HTTP route input, validated independently of ingress enablement.
+/// A route sets either `service` and `port`, or `redirect`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
     /// Exact public DNS hostname.
     pub hostname: String,
     /// Logical service in this application.
-    pub service: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
     /// Internal HTTP backend port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(minimum = 1, maximum = 65_535)]
-    pub port: u16,
+    pub port: Option<u16>,
+    /// Redirect answered by the gateway instead of a service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect: Option<Redirect>,
+}
+
+impl Route {
+    /// A route proxying `hostname` to a service's internal HTTP port.
+    #[must_use]
+    pub fn service(hostname: String, service: String, port: u16) -> Self {
+        Self {
+            hostname,
+            service: Some(service),
+            port: Some(port),
+            redirect: None,
+        }
+    }
+
+    /// A route redirecting `hostname` without reaching a service.
+    #[must_use]
+    pub fn redirect(hostname: String, redirect: Redirect) -> Self {
+        Self {
+            hostname,
+            service: None,
+            port: None,
+            redirect: Some(redirect),
+        }
+    }
+}
+
+/// Redirect route input.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Redirect {
+    /// Absolute `http` or `https` destination URL.
+    pub to: String,
+    /// 301, 302, 303, 307, or 308.
+    #[serde(default = "default_redirect_status")]
+    #[schema(minimum = 301, maximum = 308)]
+    pub status: u16,
+    /// Appends the request path and query to `to`.
+    #[serde(default = "default_preserve_path")]
+    pub preserve_path: bool,
+}
+
+fn default_redirect_status() -> u16 {
+    super::RedirectStatus::PermanentRedirect.into()
+}
+
+fn default_preserve_path() -> bool {
+    true
 }

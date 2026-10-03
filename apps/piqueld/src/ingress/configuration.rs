@@ -2,13 +2,14 @@
 //! it through Caddy's private Unix admin socket and persists it as the gateway's
 //! autosave configuration for independent container restarts.
 //!
-//! Known hosts redirect HTTP to HTTPS and proxy to their Swarm service's internal
-//! HTTP port. Caddy obtains/renews certificates for those hosts automatically;
-//! explicit redirects keep unknown HTTP hosts on the final 404 handler.
+//! Known hosts redirect HTTP to HTTPS, then either proxy to their Swarm service's
+//! internal HTTP port or answer with their configured redirect. Caddy
+//! obtains/renews certificates for those hosts automatically; explicit
+//! redirects keep unknown HTTP hosts on the final 404 handler.
 
 use super::Ingress;
 use crate::store::ingress::RoutingTable;
-use piqueld_core::DockerServiceName;
+use piqueld_core::{DockerServiceName, manifest::RouteTarget};
 use serde_json::{Value, json};
 
 impl Ingress {
@@ -31,12 +32,20 @@ impl Ingress {
                 // A bounded, side-effect-free endpoint lets the daemon distinguish
                 // this gateway from a different server behind an incorrect DNS record.
                 https.push(json!({"match":[{"host":[host],"path":["/.well-known/piqueld-ingress"]}],"handle":[{"handler":"static_response","body":self.instance_id}],"terminal":true}));
-                https.push(json!({"match":[{"host":[host]}],"handle":[{
-                    "handler":"reverse_proxy",
-                    "upstreams":[{"dial":format!("{}:{}", DockerServiceName::for_service(id,&route.service),route.port)}],
-                    "transport":{"protocol":"http","versions":["1.1"]},
-                    "stream_close_delay":300_000_000_000_u64
-                }],"terminal":true}));
+                let handler = match &route.target {
+                    RouteTarget::Service { service, port } => json!({
+                        "handler":"reverse_proxy",
+                        "upstreams":[{"dial":format!("{}:{port}", DockerServiceName::for_service(id,service))}],
+                        "transport":{"protocol":"http","versions":["1.1"]},
+                        "stream_close_delay":300_000_000_000_u64
+                    }),
+                    RouteTarget::Redirect { redirect } => json!({
+                        "handler":"static_response",
+                        "status_code":u16::from(redirect.status),
+                        "headers":{"Location":[redirect.location()]}
+                    }),
+                };
+                https.push(json!({"match":[{"host":[host]}],"handle":[handler],"terminal":true}));
                 redirects.push(json!({"match":[{"host":[host]}],"handle":[{"handler":"static_response","status_code":308,"headers":{"Location":["https://{http.request.host}{http.request.uri}"]}}],"terminal":true}));
             }
         }

@@ -4766,6 +4766,35 @@
         ],
         "type": "object"
       },
+      "Redirect": {
+        "additionalProperties": false,
+        "description": "Redirect route input.",
+        "properties": {
+          "preserve_path": {
+            "description": "Appends the request path and query to `to`.",
+            "type": "boolean"
+          },
+          "status": {
+            "description": "301, 302, 303, 307, or 308.",
+            "format": "int32",
+            "maximum": 308,
+            "minimum": 301,
+            "type": "integer"
+          },
+          "to": {
+            "description": "Absolute `http` or `https` destination URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "type": "object"
+      },
+      "RedirectUrl": {
+        "description": "Absolute redirect destination: an `http` or `https` scheme, a public\nhostname with an optional port, and an optional path. Queries, fragments,\ncredentials, and Caddy placeholders are rejected.",
+        "type": "string"
+      },
       "RegistrationStart": {
         "description": "New account information and its single-use invitation or setup secret.",
         "properties": {
@@ -5024,7 +5053,7 @@
       },
       "Route": {
         "additionalProperties": false,
-        "description": "Public HTTP route input, validated independently of ingress enablement.",
+        "description": "Public HTTP route input, validated independently of ingress enablement.\nA route sets either `service` and `port`, or `redirect`.",
         "properties": {
           "hostname": {
             "description": "Exact public DNS hostname.",
@@ -5035,59 +5064,112 @@
             "format": "int32",
             "maximum": 65535,
             "minimum": 1,
+            "nullable": true,
             "type": "integer"
+          },
+          "redirect": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Redirect"
+                  }
+                ],
+                "description": "Redirect answered by the gateway instead of a service."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "service": {
             "description": "Logical service in this application.",
+            "nullable": true,
             "type": "string"
           }
         },
         "required": [
-          "hostname",
-          "service",
-          "port"
+          "hostname"
         ],
         "type": "object"
       },
       "RouteStatus": {
-        "description": "Public HTTPS readiness is separate from application rollout success.",
-        "properties": {
-          "application_id": {
-            "description": "Owning application identity.",
-            "type": "string"
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RouteTarget",
+            "description": "Backend service or redirect."
           },
-          "hostname": {
-            "description": "Exact public DNS hostname.",
-            "type": "string"
-          },
-          "message": {
-            "description": "Public diagnostic explaining DNS, TLS, or gateway readiness.",
-            "type": "string"
-          },
-          "port": {
-            "description": "Internal HTTP backend port.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "service": {
-            "description": "Logical backend service.",
-            "type": "string"
-          },
-          "state": {
-            "description": "disabled, pending, ready, or failed.",
-            "type": "string"
+          {
+            "properties": {
+              "application_id": {
+                "description": "Owning application identity.",
+                "type": "string"
+              },
+              "hostname": {
+                "description": "Exact public DNS hostname.",
+                "type": "string"
+              },
+              "message": {
+                "description": "Public diagnostic explaining DNS, TLS, or gateway readiness.",
+                "type": "string"
+              },
+              "state": {
+                "description": "disabled, pending, ready, or failed.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "application_id",
+              "hostname",
+              "state",
+              "message"
+            ],
+            "type": "object"
           }
-        },
-        "required": [
-          "application_id",
-          "hostname",
-          "service",
-          "port",
-          "state",
-          "message"
         ],
-        "type": "object"
+        "description": "Public HTTPS readiness is separate from application rollout success."
+      },
+      "RouteTarget": {
+        "description": "What a route's hostname serves. The variants keep their historical flat\nwire shape (`service`/`port`, or `redirect`) inside [`ValidatedRoute`].",
+        "oneOf": [
+          {
+            "description": "Proxies to a service in the same application.",
+            "properties": {
+              "port": {
+                "description": "Internal HTTP port; never published directly on the host.",
+                "format": "int32",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "service": {
+                "$ref": "#/components/schemas/ServiceName",
+                "description": "Logical HTTP backend service."
+              }
+            },
+            "required": [
+              "service",
+              "port"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Redirects every request without reaching a backend.",
+            "properties": {
+              "redirect": {
+                "$ref": "#/components/schemas/ValidatedRedirect",
+                "description": "Redirect destination and behavior."
+              }
+            },
+            "required": [
+              "redirect"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "RoutesValue": {
         "additionalProperties": false,
@@ -5731,31 +5813,53 @@
         ],
         "type": "object"
       },
-      "ValidatedRoute": {
+      "ValidatedRedirect": {
         "additionalProperties": false,
-        "description": "Validated, application-owned HTTP route; TLS terminates at the gateway.",
+        "description": "An HTTP redirect answered by the gateway itself.",
         "properties": {
-          "hostname": {
-            "$ref": "#/components/schemas/Hostname",
-            "description": "Exact canonical public hostname."
+          "preserve_path": {
+            "description": "Appends the request path and query to `to`.",
+            "type": "boolean"
           },
-          "port": {
-            "description": "Internal HTTP port; never published directly on the host.",
+          "status": {
+            "description": "HTTP redirect status code.",
             "format": "int32",
-            "minimum": 1,
+            "maximum": 308,
+            "minimum": 301,
             "type": "integer"
           },
-          "service": {
-            "$ref": "#/components/schemas/ServiceName",
-            "description": "Logical HTTP backend service."
+          "to": {
+            "$ref": "#/components/schemas/RedirectUrl",
+            "description": "Absolute destination URL."
           }
         },
         "required": [
-          "hostname",
-          "service",
-          "port"
+          "to",
+          "status",
+          "preserve_path"
         ],
         "type": "object"
+      },
+      "ValidatedRoute": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RouteTarget",
+            "description": "Backend service or redirect."
+          },
+          {
+            "properties": {
+              "hostname": {
+                "$ref": "#/components/schemas/Hostname",
+                "description": "Exact canonical public hostname."
+              }
+            },
+            "required": [
+              "hostname"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "Validated, application-owned HTTP route; TLS terminates at the gateway."
       },
       "ValidatedService": {
         "description": "Validated application service.",
