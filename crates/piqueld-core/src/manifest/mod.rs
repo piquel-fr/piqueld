@@ -12,8 +12,9 @@ pub mod validation;
 
 pub use input::{
     ApplicationManifest, ApplicationSpec, Build, GitRepository, HealthCheck, HealthExecution,
-    Metadata, Mount, Redirect, RepositoryManifest, ResourceLimits, Route, SecretDeclaration,
-    SecretEncoding, SecretGenerator, SecretMount, Service, Source, Volume,
+    ManifestRepository, ManifestRevision, Metadata, Mount, Redirect, RepositoryManifest,
+    ResourceLimits, Route, SecretDeclaration, SecretEncoding, SecretGenerator, SecretMount,
+    Service, Source, SourceRepository, Volume,
 };
 pub(crate) use validation::valid_image_reference;
 pub use validation::{
@@ -138,6 +139,47 @@ impl NormalizedApplication {
     #[must_use]
     pub fn with_name(mut self, name: ApplicationName) -> Self {
         self.metadata.name = name;
+        self
+    }
+
+    /// Fetches the manifest from another branch or commit for one deployment.
+    ///
+    /// # Errors
+    ///
+    /// Rejects applications without a manifest repository and invalid revisions.
+    pub fn with_manifest_revision(
+        mut self,
+        revision: &ManifestRevision,
+    ) -> Result<Self, ValidationErrors> {
+        let mut errors = Vec::new();
+        let path = "spec.manifest.repository";
+        match &mut self.spec.manifest {
+            Some(manifest) => {
+                manifest.repository = manifest.repository.at(revision);
+                manifest.repository.validate(path, &mut errors);
+            }
+            None => ManifestRevision::unbacked(path, &mut errors),
+        }
+        if errors.is_empty() {
+            Ok(self)
+        } else {
+            Err(ValidationErrors(errors))
+        }
+    }
+
+    /// Pins `"self"` Git sources to `commit`, the revision this manifest was read
+    /// from. Deployments prepare the pinned application; saved configuration
+    /// keeps `"self"`.
+    #[must_use]
+    pub fn pin_manifest_sources(mut self, commit: &str) -> Self {
+        if let Some(manifest) = &self.spec.manifest {
+            let repository = manifest
+                .repository
+                .at(&ManifestRevision::Commit(commit.into()));
+            for service in &mut self.spec.services {
+                service.source.resolve_manifest_repository(&repository);
+            }
+        }
         self
     }
 

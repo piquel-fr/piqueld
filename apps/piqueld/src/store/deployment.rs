@@ -315,7 +315,7 @@ mod tests {
         );
         let (MutationResponse::Operation(deploy), wake) = store
             .accept(
-                Mutation::Deploy { id: id.clone() },
+                Mutation::deploy(id.clone()),
                 Some(saved.generation),
                 false,
                 Some("deploy-once"),
@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(store.deployment_manifest(&op.id).await.unwrap(), original);
         let (MutationResponse::Operation(replay), wake) = store
             .accept(
-                Mutation::Deploy { id: id.clone() },
+                Mutation::deploy(id.clone()),
                 Some(1),
                 false,
                 Some("deploy-once"),
@@ -373,7 +373,7 @@ mod tests {
         assert!(!wake);
         assert_eq!(replay.operation_id, op.id);
         let (MutationResponse::Operation(next), _) = store
-            .accept(Mutation::Deploy { id: id.clone() }, Some(2), false, None)
+            .accept(Mutation::deploy(id.clone()), Some(2), false, None)
             .await
             .unwrap()
         else {

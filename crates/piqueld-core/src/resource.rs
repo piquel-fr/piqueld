@@ -5,7 +5,10 @@ use crate::names::validated_string;
 use crate::{
     ApplicationId, ApplicationName, DockerNetworkName, DockerServiceName, DockerVolumeName,
     ResourceKind, ServiceName, VolumeName, docker_resource_name,
-    manifest::{HealthCheck, NormalizedApplication, ResourceLimits, Source, valid_image_reference},
+    manifest::{
+        HealthCheck, NormalizedApplication, ResourceLimits, Source, SourceRepository,
+        valid_image_reference,
+    },
 };
 use crate::{ImageReference, ImmutableImage, RepositoryDigest};
 use serde::{Deserialize, Serialize};
@@ -714,8 +717,12 @@ fn resolved_source_matches(source: &Source, resolved: &ResolvedSource) -> bool {
                 digest_reference,
             },
         ) => image == requested.as_str() && same_image_repository(image, digest_reference.as_str()),
+        // Unpinned "self" sources never match; deployments pin them first.
         (
-            Source::Git { repository, .. },
+            Source::Git {
+                repository: SourceRepository::Git(repository),
+                ..
+            },
             ResolvedSource::Git {
                 requested, commit, ..
             },

@@ -600,9 +600,7 @@ mod tests {
         }
         store
             .accept(
-                Mutation::Deploy {
-                    id: operation.application_id.clone(),
-                },
+                Mutation::deploy(operation.application_id.clone()),
                 None,
                 true,
                 None,

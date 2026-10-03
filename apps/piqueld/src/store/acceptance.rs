@@ -155,10 +155,14 @@ impl Store {
                 )
                 .await?
             }
-            Mutation::Deploy { id } => {
-                let app = current.ok_or(StoreError::NotFound)?;
+            Mutation::Deploy { id, revision } => {
+                let mut application = current.ok_or(StoreError::NotFound)?.application;
+                // Only the captured snapshot changes; the fetched manifest replaces it.
+                if let Some(revision) = &revision {
+                    application = application.with_manifest_revision(revision)?;
+                }
                 let op = Self::request_deploy_on(tx, &id, expected_generation).await?;
-                Self::insert_deployment_on(tx, &op, &app.application).await?;
+                Self::insert_deployment_on(tx, &op, &application).await?;
                 (
                     MutationResponse::Operation(AcceptedOperation::from(&op)),
                     true,
@@ -339,7 +343,7 @@ impl Store {
                 (None, Some(application.metadata().name.as_str()))
             }
             Mutation::Edit { id, .. }
-            | Mutation::Deploy { id }
+            | Mutation::Deploy { id, .. }
             | Mutation::Delete { id }
             | Mutation::Reconcile { id }
             | Mutation::Rename { id, .. } => (Some(id.as_str()), None),
@@ -431,5 +435,21 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Receipts recorded before deploy overrides existed must still replay.
+    #[test]
+    fn deploys_without_a_revision_keep_their_original_fingerprint() {
+        let deploy = Mutation::deploy(ApplicationId::parse("input-app").unwrap());
+        let original = Sha256::digest(br#"[{"kind":"deploy","id":"input-app"},null,false]"#);
+        assert_eq!(
+            Store::mutation_fingerprint(&deploy, None, false).unwrap(),
+            format!("{original:x}")
+        );
     }
 }
