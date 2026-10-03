@@ -36,6 +36,20 @@ pub(super) struct DeployQuery {
 }
 
 impl DeployQuery {
+    /// Unwraps the query, mapping rejections to 400 `query_invalid`.
+    fn decode(
+        query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
+    ) -> Result<Self, ApiError> {
+        query.map(|Query(value)| value).map_err(|_| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "query_invalid",
+                "expected_generation must be an integer, force must be true or false, and branch or commit may appear once",
+            )
+        })
+    }
+
+    /// The one-time manifest revision, if `branch` or `commit` was given.
     fn revision(&mut self) -> Result<Option<ManifestRevision>, ApiError> {
         match (self.branch.take(), self.commit.take()) {
             (None, None) => Ok(None),
@@ -67,7 +81,7 @@ pub(super) async fn deploy(
     headers: HeaderMap,
     query: Result<Query<DeployQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiError> {
-    let mut query = super::applications::GenerationQuery::decode(query)?;
+    let mut query = DeployQuery::decode(query)?;
     super::applications::accept_mutation(
         &state,
         crate::api::Mutation::Deploy {

@@ -540,7 +540,7 @@ impl Client {
 
     Arguments:
     - `id`
-    - `expected_generation`: Current intent revision; optional for reconcile, required for deployment and deletion unless forced.
+    - `expected_generation`: Current intent revision; optional for reconcile, required for deletion unless forced.
     - `force`: Explicitly bypass intent preconditions.
     - `idempotency_key`
     */
@@ -1129,7 +1129,7 @@ impl Client {
 
     Arguments:
     - `id`
-    - `expected_generation`: Current intent revision; optional for reconcile, required for deployment and deletion unless forced.
+    - `expected_generation`: Current intent revision; optional for reconcile, required for deletion unless forced.
     - `force`: Explicitly bypass intent preconditions.
     - `idempotency_key`
     */

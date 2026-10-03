@@ -261,18 +261,17 @@ pub(super) async fn status(
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(super) struct GenerationQuery {
-    /// Current intent revision; optional for reconcile, required for deployment and deletion unless forced.
+    /// Current intent revision; optional for reconcile, required for deletion unless forced.
     pub(super) expected_generation: Option<u64>,
     /// Explicitly bypass intent preconditions.
     #[serde(default)]
     pub(super) force: bool,
 }
 impl GenerationQuery {
-    /// Unwraps this or another query carrying generation preconditions, mapping
-    /// rejections to 400 `generation_invalid`.
-    pub(super) fn decode<T>(
-        query: Result<Query<T>, axum::extract::rejection::QueryRejection>,
-    ) -> Result<T, ApiError> {
+    /// Unwraps the query, mapping rejections to 400 `generation_invalid`.
+    pub(super) fn decode(
+        query: Result<Query<Self>, axum::extract::rejection::QueryRejection>,
+    ) -> Result<Self, ApiError> {
         query.map(|Query(value)| value).map_err(|_| {
             ApiError::new(
                 StatusCode::BAD_REQUEST,

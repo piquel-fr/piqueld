@@ -1007,6 +1007,17 @@ impl Target<'_> {
         assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
         assert_eq!(malformed.code(), "json_malformed");
 
+        let repeated_branch = send_raw(
+            self,
+            Method::POST,
+            "/api/v1/applications/doesnotexist1/deploy?branch=a&branch=b",
+            &[],
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(repeated_branch.status, StatusCode::BAD_REQUEST);
+        assert_eq!(repeated_branch.code(), "query_invalid");
+
         let paired = send_raw(
             self,
             Method::GET,
