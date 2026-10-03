@@ -143,7 +143,7 @@ impl ValidatedRedirect {
 /// What a route's hostname serves. The variants keep their historical flat
 /// wire shape (`service`/`port`, or `redirect`) inside [`ValidatedRoute`].
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
-#[serde(untagged)]
+#[serde(untagged, try_from = "RouteTargetFields")]
 pub enum RouteTarget {
     /// Proxies to a service in the same application.
     Service {
@@ -158,6 +158,27 @@ pub enum RouteTarget {
         /// Redirect destination and behavior.
         redirect: ValidatedRedirect,
     },
+}
+
+/// Flat wire fields of a [`RouteTarget`]. Decoding through them rejects routes
+/// that mix or omit destinations, which an untagged enum would silently accept.
+#[derive(Deserialize)]
+struct RouteTargetFields {
+    service: Option<ServiceName>,
+    port: Option<NonZeroU16>,
+    redirect: Option<ValidatedRedirect>,
+}
+
+impl TryFrom<RouteTargetFields> for RouteTarget {
+    type Error = &'static str;
+
+    fn try_from(fields: RouteTargetFields) -> Result<Self, Self::Error> {
+        match (fields.service, fields.port, fields.redirect) {
+            (Some(service), Some(port), None) => Ok(Self::Service { service, port }),
+            (None, None, Some(redirect)) => Ok(Self::Redirect { redirect }),
+            _ => Err(super::validation::ROUTE_TARGET_MESSAGE),
+        }
+    }
 }
 
 impl RouteTarget {
@@ -206,23 +227,30 @@ impl ValidatedRoute {
     pub(super) fn from_input(route: input::Route, index: usize) -> Result<Self, ValidationErrors> {
         let path = format!("spec.routes[{index}]");
         let invalid = |error: &dyn fmt::Display| ValidationErrors::invalid_name(&path, error);
-        let target = match (route.service, route.port, route.redirect) {
-            (Some(service), Some(port), None) => RouteTarget::Service {
-                service: ServiceName::parse(service).map_err(|e| invalid(&e))?,
-                port: NonZeroU16::new(port).ok_or_else(|| invalid(&"port must be nonzero"))?,
-            },
-            (None, None, Some(redirect)) => RouteTarget::Redirect {
-                redirect: ValidatedRedirect {
-                    to: RedirectUrl::parse(redirect.to).map_err(|e| invalid(&e))?,
-                    status: redirect.status.try_into().map_err(|e| invalid(&e))?,
-                    preserve_path: redirect.preserve_path,
-                },
-            },
-            _ => return Err(invalid(&super::validation::ROUTE_TARGET_MESSAGE)),
+        let fields = RouteTargetFields {
+            service: route
+                .service
+                .map(ServiceName::parse)
+                .transpose()
+                .map_err(|e| invalid(&e))?,
+            port: route
+                .port
+                .map(|port| NonZeroU16::new(port).ok_or_else(|| invalid(&"port must be nonzero")))
+                .transpose()?,
+            redirect: route
+                .redirect
+                .map(|redirect| {
+                    Ok::<_, ValidationErrors>(ValidatedRedirect {
+                        to: RedirectUrl::parse(redirect.to).map_err(|e| invalid(&e))?,
+                        status: redirect.status.try_into().map_err(|e| invalid(&e))?,
+                        preserve_path: redirect.preserve_path,
+                    })
+                })
+                .transpose()?,
         };
         Ok(Self {
             hostname: Hostname::parse(route.hostname).map_err(|e| invalid(&e))?,
-            target,
+            target: fields.try_into().map_err(|e| invalid(&e))?,
         })
     }
 
@@ -255,8 +283,8 @@ impl ValidatedRoute {
 mod tests {
     use super::{RouteTarget, ValidatedRoute};
     use crate::{
-        ApplicationId, InstanceId, ResolutionSet, ResolvedSource, ServiceName, compile_application,
-        parse_toml,
+        ApplicationId, InstanceId, ResolutionSet, ResolvedSource, ServiceName, api::RouteStatus,
+        compile_application, parse_toml,
     };
 
     fn manifest(routes: &str) -> String {
@@ -334,13 +362,6 @@ mod tests {
                 .normalize(app.id().clone()),
             app
         );
-        // Stored proxy routes predate redirects and must still decode.
-        let stored: ValidatedRoute = serde_json::from_value(
-            serde_json::json!({"hostname":"a.example.com","service":"web","port":80}),
-        )
-        .unwrap();
-        assert_eq!(stored.target.to_string(), "web:80");
-
         let fixed =
             redirect("redirect={to='http://example.com:8080/a',status=302,preserve_path=false}")
                 .unwrap()
@@ -394,6 +415,40 @@ mod tests {
             assert!(
                 errors.0.iter().any(|e| e.code == code),
                 "{fields}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn decoding_keeps_stored_routes_and_rejects_mixed_targets() {
+        // Stored proxy routes predate redirects and must still decode.
+        let stored: ValidatedRoute = serde_json::from_value(
+            serde_json::json!({"hostname":"a.example.com","service":"web","port":80}),
+        )
+        .unwrap();
+        assert_eq!(stored.target.to_string(), "web:80");
+        let redirect_json =
+            serde_json::json!({"to":"https://example.com/","status":308,"preserve_path":true});
+        for target in [
+            serde_json::json!({"service":"web","port":80,"redirect":redirect_json}),
+            serde_json::json!({"service":"web"}),
+            serde_json::json!({}),
+        ] {
+            let mut route = serde_json::json!({"hostname":"a.example.com"});
+            route
+                .as_object_mut()
+                .unwrap()
+                .extend(target.as_object().unwrap().clone());
+            assert!(
+                serde_json::from_value::<ValidatedRoute>(route.clone()).is_err(),
+                "{route}"
+            );
+            route["application_id"] = "test-app".into();
+            route["state"] = "ready".into();
+            route["message"] = "".into();
+            assert!(
+                serde_json::from_value::<RouteStatus>(route.clone()).is_err(),
+                "{route}"
             );
         }
     }
