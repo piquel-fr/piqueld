@@ -101,15 +101,26 @@ services.piqueld.settings.tailscale = {
 `settings.auth.public_url` defaults to the node's HTTPS URL. See
 [the tailnet node](configuration.md#tailnet-node) for details.
 
+Declare automation tokens with `settings.auth.provisioned_tokens`; see
+[authentication](authentication.md). Each entry needs exactly one of `token` and
+`token_file`. `token` enters the Nix store, so prefer `token_file`, a host path
+the module passes to the service as the systemd credential `token-<index>`:
+
+```nix
+services.piqueld.settings.auth.provisioned_tokens = [
+  { account = "alice"; name = "ci"; token_file = config.age.secrets.piqueld-ci-token.path; }
+];
+```
+
 `settings` declares typed options for `server.listen_mode`, `server.port`,
-`server.allowed_hosts`, `auth.public_url`, `tailscale.enabled`,
-`tailscale.hostname`, `tailscale.auth_key_file`, `docker.socket`,
-`docker.auto_initialize_swarm`, `ingress.enabled`, all three `reconciliation`
-intervals/timeouts, the `retention` periods, both `build_history` limits,
-`metrics.listen`, `notifications.destinations`, and every `notifications` switch
-and timing, with the daemon's defaults. Reconciliation
-values must be 1–86400 seconds; retention values are nonnegative days, with zero
-disabling pruning. Unknown settings are rejected.
+`server.allowed_hosts`, `auth.public_url`, `auth.provisioned_tokens`,
+`tailscale.enabled`, `tailscale.hostname`, `tailscale.auth_key_file`,
+`docker.socket`, `docker.auto_initialize_swarm`, `ingress.enabled`, all three
+`reconciliation` intervals/timeouts, the `retention` periods, both
+`build_history` limits, `metrics.listen`, `notifications.destinations`, and
+every `notifications` switch and timing, with the daemon's defaults.
+Reconciliation values must be 1–86400 seconds; retention values are nonnegative
+days, with zero disabling pruning. Unknown settings are rejected.
 
 ```nix
 services.piqueld.settings.notifications = {

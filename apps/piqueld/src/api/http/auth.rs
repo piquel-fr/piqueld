@@ -316,12 +316,13 @@ pub(super) async fn login_finish(
 /// Signs out.
 ///
 /// Revokes the credential used for this request and clears the session cookie.
+/// Tokens declared in configuration cannot sign out and fail with 400.
 #[utoipa::path(post,path="/api/v1/auth/logout",operation_id="authLogout",responses((status=200,body=Managed)))]
 pub(super) async fn logout(
     Extension(auth): Extension<Auth>,
     Extension(identity): Extension<Identity>,
 ) -> Result<Response, ApiError> {
-    auth.logout(&identity.credential_id).await?;
+    auth.logout(&identity.proof).await?;
     Ok((
         [(header::SET_COOKIE, auth.cookie("piqueld_session", "", 0))],
         Json(Managed::default()),

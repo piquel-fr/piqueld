@@ -196,6 +196,21 @@ impl Store {
         .map_err(StoreError::database)
     }
 
+    /// Reads one account by username, ignoring case.
+    pub(crate) async fn auth_user_by_name(
+        &self,
+        username: &str,
+    ) -> Result<Option<User>, StoreError> {
+        sqlx::query_as!(
+            User,
+            r#"SELECT id AS "id!",username,display_name FROM auth_users WHERE username=?1"#,
+            username
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)
+    }
+
     /// Serialized `WebAuthn` credentials registered to one account.
     pub(crate) async fn passkey_credentials(
         &self,

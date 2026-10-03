@@ -14,7 +14,7 @@ impl Fixture {
             .await
             .unwrap();
         Self {
-            auth: Auth::new(&store, "http://localhost:7845").unwrap(),
+            auth: Auth::new(&store, "http://localhost:7845", &[]).unwrap(),
             dir,
         }
     }
@@ -80,7 +80,7 @@ async fn sessions_expire_revoke_and_survive_restart_without_storing_secrets() {
     let store = crate::store::Store::open(f.dir.path().join("state.db"))
         .await
         .unwrap();
-    let restarted = Auth::new(&store, "http://localhost:7845").unwrap();
+    let restarted = Auth::new(&store, "http://localhost:7845", &[]).unwrap();
     restarted.authenticate(&token).await.unwrap();
     f.auth.0.store.age_auth_credentials(DAY).await;
     assert!(matches!(
@@ -302,7 +302,7 @@ async fn device_approval_is_explicit_single_use_and_bound_to_a_live_session() {
         .device_approve(&start.user_code, &identity)
         .await
         .unwrap();
-    f.auth.logout(&identity.credential_id).await.unwrap();
+    f.auth.logout(&identity.proof).await.unwrap();
     assert!(f.auth.device_poll(&start.device_code).await.is_err());
 }
 
@@ -568,7 +568,7 @@ async fn https_cookies_use_host_prefix_and_ignore_unprefixed_names() {
     let (_, token) = f
         .account("alice", CredentialKind::Browser, Some(now_secs() + DAY))
         .await;
-    let auth = Auth::new(&f.auth.0.store, "https://piqueld.example").unwrap();
+    let auth = Auth::new(&f.auth.0.store, "https://piqueld.example", &[]).unwrap();
     assert_eq!(
         auth.cookie("piqueld_session", "secret", 60),
         "__Host-piqueld_session=secret; Path=/; HttpOnly; SameSite=Strict; Max-Age=60; Secure"
@@ -633,4 +633,33 @@ async fn device_inspection_reports_the_requester_until_approval() {
             .requester
             .is_none()
     );
+}
+
+/// Declared tokens of any length authenticate as their account while it exists,
+/// and can neither log out nor approve device logins.
+#[tokio::test]
+async fn provisioned_tokens_authenticate_as_their_account() {
+    let f = Fixture::new().await;
+    let (alice, _) = f.account("alice", CredentialKind::Browser, None).await;
+    // `openssl rand -base64 32` output, longer than generated tokens.
+    let secret = "oMgZaQ8KMA+5AeyTZQd7kggHoNsNkiS4RMad0e3BiVg=";
+    let auth = |account: &str| {
+        let token = crate::config::ProvisionedToken {
+            account: account.into(),
+            name: "ci".into(),
+            token: secret.into(),
+        };
+        Auth::new(&f.auth.0.store, "http://localhost:7845", &[token]).unwrap()
+    };
+    let identity = auth("Alice").authenticate(secret).await.unwrap();
+    assert_eq!(identity.user.id, alice);
+    assert!(auth("Alice").logout(&identity.proof).await.is_err());
+    let start = f.auth.device_start(None).await.unwrap();
+    assert!(
+        f.auth
+            .device_approve(&start.user_code, &identity)
+            .await
+            .is_err()
+    );
+    assert!(auth("bob").authenticate(secret).await.is_err());
 }

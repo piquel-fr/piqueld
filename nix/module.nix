@@ -13,10 +13,12 @@ let
   withoutNulls = lib.filterAttrsRecursive (_: value: value != null);
   tailscale = cfg.settings.tailscale;
   destinations = cfg.settings.notifications.destinations;
+  provisionedTokens = cfg.settings.auth.provisioned_tokens;
   # `_file` settings name host files. systemd copies each into the unit's
   # private $CREDENTIALS_DIRECTORY, so the files may stay root-only, and the
   # daemon resolves the credential name there.
   webhookCredential = index: "webhook-${toString index}";
+  tokenCredential = index: "token-${toString index}";
   configuration = (pkgs.formats.toml { }).generate "piqueld.toml" (
     lib.recursiveUpdate (withoutNulls cfg.settings) (
       {
@@ -29,6 +31,12 @@ let
             // lib.optionalAttrs (destination.url_file != null) { url_file = webhookCredential index; }
           )
         ) destinations;
+        auth.provisioned_tokens = lib.imap0 (
+          index: token:
+          withoutNulls (
+            token // lib.optionalAttrs (token.token_file != null) { token_file = tokenCredential index; }
+          )
+        ) provisionedTokens;
       }
       // lib.optionalAttrs (tailscale.auth_key_file != null) {
         tailscale.auth_key_file = "ts-auth-key";
@@ -85,6 +93,35 @@ in
             type = lib.types.nullOr lib.types.str;
             default = null;
             description = "Canonical HTTPS website origin for passkeys; HTTP localhost is allowed for development. Defaults to the tailnet node's HTTPS URL when tailscale.enabled is set, otherwise http://localhost:7845.";
+          };
+          auth.provisioned_tokens = lib.mkOption {
+            type = lib.types.listOf (
+              lib.types.submodule {
+                options = {
+                  account = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Username the token authenticates as.";
+                  };
+                  name = lib.mkOption {
+                    type = lib.types.str;
+                    description = "Token name, unique per account.";
+                  };
+                  token = lib.mkOption {
+                    type = lib.types.nullOr lib.types.str;
+                    default = null;
+                    description = "Bearer token of at least 32 bytes. It enters the Nix store; prefer token_file.";
+                  };
+                  token_file = lib.mkOption {
+                    # A string, not a path, so the secret is never copied into the Nix store.
+                    type = lib.types.nullOr (lib.types.strMatching "/.+");
+                    default = null;
+                    description = "Host file with the token, such as an agenix secret, passed to piqueld as a systemd credential.";
+                  };
+                };
+              }
+            );
+            default = [ ];
+            description = "API tokens accepted as their account while declared. Each needs exactly one of token and token_file. Removing one revokes it at the next restart.";
           };
           tailscale.enabled = lib.mkOption {
             type = lib.types.bool;
@@ -270,6 +307,10 @@ in
         ) destinations;
         message = "services.piqueld.settings.notifications.destinations: each entry needs exactly one of url and url_file";
       }
+      {
+        assertion = lib.all (token: (token.token == null) != (token.token_file == null)) provisionedTokens;
+        message = "services.piqueld.settings.auth.provisioned_tokens: each entry needs exactly one of token and token_file";
+      }
     ];
     users.groups.piqueld = { };
     users.users.piqueld = {
@@ -300,6 +341,9 @@ in
               index: destination:
               lib.optional (destination.url_file != null) "${webhookCredential index}:${destination.url_file}"
             ) destinations
+            ++ lib.imap0 (
+              index: token: lib.optional (token.token_file != null) "${tokenCredential index}:${token.token_file}"
+            ) provisionedTokens
           );
         User = "piqueld";
         Group = "piqueld";
