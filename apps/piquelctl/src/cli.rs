@@ -178,7 +178,7 @@ pub(crate) enum AppCommand {
     Apply(ApplyArgs),
     /// Confirm and delete an application by name or ID.
     Delete(DeleteArgs),
-    /// Retry the latest operation with its saved inputs, without fetching or resolving sources.
+    /// Retry the latest operation once it has ended or failed, reusing its saved inputs.
     Reconcile(TargetArgs),
     /// Deploy saved configuration, fetching the manifest and resolving sources again.
     Deploy(DeployArgs),

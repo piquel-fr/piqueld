@@ -42,7 +42,7 @@ normalized manifest is needed.
 | GET | `/api/v1/applications/{id}/deployments` | Deployment snapshots, newest first, three per page |
 | GET | `/api/v1/applications/{id}/deployments/{deployment}/attempts` | Retained outcomes, newest first, 100 per page |
 | DELETE | `/api/v1/applications/{id}` | Request deletion; no body |
-| POST | `/api/v1/applications/{id}/reconcile` | Retry the latest operation with its saved inputs |
+| POST | `/api/v1/applications/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed; an operation still in progress is returned unchanged |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |

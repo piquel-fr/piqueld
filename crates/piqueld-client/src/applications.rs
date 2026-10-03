@@ -263,7 +263,8 @@ impl Client {
             .map(|response| response.data)
     }
 
-    /// Retries the latest operation with its saved inputs, without resolving sources again.
+    /// Retries the latest operation with its saved inputs once it has ended or failed,
+    /// without resolving sources again. An operation still in progress is returned as is.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn reconcile_application(
