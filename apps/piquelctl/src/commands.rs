@@ -1,8 +1,8 @@
 //! Connected command implementations plus shared application lookup and operation waiting.
 use crate::{
     cli::{
-        AppCommand, ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs,
-        TargetArgs,
+        AppCommand, ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, DeployArgs, ManifestArgs,
+        OperationArgs, TargetArgs,
     },
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
@@ -16,8 +16,8 @@ use crate::{
 };
 use futures_util::StreamExt;
 use piqueld_client::{
-    ApplicationSummary, ApplicationView, Client, ClientError, ListApplicationsOptions, Operation,
-    OperationState, Page,
+    AcceptedOperation, ApplicationSummary, ApplicationView, Client, ClientError,
+    ListApplicationsOptions, Operation, OperationState, Page,
 };
 use serde_json::json;
 use std::{
@@ -95,11 +95,7 @@ async fn app(
         AppCommand::Plan(args) => plan_command(console, client, args).await,
         AppCommand::Apply(args) => apply(cli, client, console, args).await,
         AppCommand::Delete(args) => delete(cli, client, console, args).await,
-        AppCommand::Reconcile(args) => {
-            OperationRequest::Reconcile
-                .send(cli, client, console, args)
-                .await
-        }
+        AppCommand::Reconcile(args) => reconcile(cli, client, console, args).await,
         AppCommand::Rename(args) => {
             crate::editing::save(
                 cli,
@@ -111,11 +107,7 @@ async fn app(
             )
             .await
         }
-        AppCommand::Deploy(args) => {
-            OperationRequest::Deploy(args.revision())
-                .send(cli, client, console, &args.target)
-                .await
-        }
+        AppCommand::Deploy(args) => deploy(cli, client, console, args).await,
         AppCommand::Create(args) => crate::editing::create(cli, client, console, args).await,
         AppCommand::Service { command } => command.run(cli, client, console).await,
         AppCommand::Volume { command } => command.run(cli, client, console).await,
@@ -393,6 +385,87 @@ async fn delete(
     console.emit(&DeletionReport::completed(&accepted))
 }
 
+/// Confirms and retries the latest operation with its saved inputs, guarded by the
+/// expected generation only when one is given. Waits for it unless `--no-wait`.
+async fn reconcile(
+    cli: &Cli,
+    client: &Client,
+    console: &mut Console,
+    args: &TargetArgs,
+) -> Result<()> {
+    let application = resolve_application(client, &args.name_or_id).await?;
+    confirm(
+        console,
+        cli.noninteractive,
+        args.yes,
+        &format!(
+            "Retry the latest operation for application {:?}? [y/N] ",
+            application.application.metadata().name
+        ),
+    )
+    .await?;
+    let accepted = retry_transport(|| {
+        client.reconcile_application(
+            application.application.id().as_str(),
+            args.expected_generation,
+        )
+    })
+    .await?;
+    wait_for_accepted(console, client, args.no_wait, &accepted).await
+}
+
+/// Confirms and deploys saved configuration, fetching the manifest and resolving
+/// sources again (from `--branch` or `--commit` for this deployment only). Guarded by
+/// the expected generation, defaulting to the current one. Waits unless `--no-wait`.
+async fn deploy(
+    cli: &Cli,
+    client: &Client,
+    console: &mut Console,
+    args: &DeployArgs,
+) -> Result<()> {
+    let target = &args.target;
+    let application = resolve_application(client, &target.name_or_id).await?;
+    confirm(
+        console,
+        cli.noninteractive,
+        target.yes,
+        &format!(
+            "Deploy application {:?}? [y/N] ",
+            application.application.metadata().name
+        ),
+    )
+    .await?;
+    let revision = args.revision();
+    let accepted = retry_transport(|| {
+        client.deploy_application(
+            application.application.id().as_str(),
+            target.expected_generation.unwrap_or(application.generation),
+            revision.as_ref(),
+        )
+    })
+    .await?;
+    wait_for_accepted(console, client, target.no_wait, &accepted).await
+}
+
+/// Emits an accepted operation as is with `no_wait`, otherwise waits for it and
+/// emits its outcome.
+async fn wait_for_accepted(
+    console: &mut Console,
+    client: &Client,
+    no_wait: bool,
+    accepted: &AcceptedOperation,
+) -> Result<()> {
+    if no_wait {
+        return console.emit(accepted);
+    }
+    let operation = wait_for_operation(console, client, &accepted.operation_id).await?;
+    console.emit(&OperationOutcomeReport {
+        accepted,
+        outcome: operation.state,
+        operation: &operation,
+    })
+}
+
 /// Shows one operation, polling until it reaches a terminal state unless `--no-wait`.
 async fn operation(console: &mut Console, client: &Client, args: &OperationArgs) -> Result<()> {
     let operation = if args.no_wait {
@@ -524,72 +597,6 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
         let message = format!("operation ended in state {}", operation.state);
         Err(CliError::new(ErrorKind::Operation, message)
             .with_details(json!({"operation": operation})))
-    }
-}
-
-/// The operation requested by `app reconcile` or `app deploy`.
-enum OperationRequest {
-    /// Retry the latest operation with its saved inputs, or resume it if it is
-    /// still running. Nothing is fetched or resolved again.
-    Reconcile,
-    /// Start a new deployment of saved configuration that fetches the manifest and
-    /// resolves sources again, optionally from a one-time manifest revision.
-    Deploy(Option<piqueld_client::ManifestRevision>),
-}
-
-impl OperationRequest {
-    /// Confirms, sends the request, and waits for the operation unless `--no-wait`.
-    /// Reconcile only checks the generation when one is given; deploy always sends
-    /// one, defaulting to the current generation.
-    async fn send(
-        &self,
-        cli: &Cli,
-        client: &Client,
-        console: &mut Console,
-        args: &TargetArgs,
-    ) -> Result<()> {
-        let application = resolve_application(client, &args.name_or_id).await?;
-        let name = application.application.metadata().name.clone();
-        let question = match self {
-            Self::Reconcile => format!("Retry the latest operation for application {name:?}?"),
-            Self::Deploy(_) => format!("Deploy application {name:?}?"),
-        };
-        confirm(
-            console,
-            cli.noninteractive,
-            args.yes,
-            &format!("{question} [y/N] "),
-        )
-        .await?;
-        let id = application.application.id().as_str();
-        let accepted = retry_transport(|| async {
-            match self {
-                Self::Reconcile => {
-                    client
-                        .reconcile_application(id, args.expected_generation)
-                        .await
-                }
-                Self::Deploy(revision) => {
-                    client
-                        .deploy_application(
-                            id,
-                            args.expected_generation.unwrap_or(application.generation),
-                            revision.as_ref(),
-                        )
-                        .await
-                }
-            }
-        })
-        .await?;
-        if args.no_wait {
-            return console.emit(&accepted);
-        }
-        let operation = wait_for_operation(console, client, &accepted.operation_id).await?;
-        console.emit(&OperationOutcomeReport {
-            accepted: &accepted,
-            outcome: operation.state,
-            operation: &operation,
-        })
     }
 }
 
