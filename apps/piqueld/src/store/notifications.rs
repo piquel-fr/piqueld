@@ -19,7 +19,7 @@ impl WebhookDestination {
     pub(crate) fn fingerprint(&self) -> String {
         format!(
             "{:x}",
-            Sha256::digest(format!("{:?}:{}", self.kind, self.url))
+            Sha256::digest(format!("{:?}:{}", self.kind, self.url.expose()))
         )
     }
 }

@@ -135,7 +135,7 @@ impl ApplicationService {
             }
         };
         let result = client
-            .post(&destination.url)
+            .post(destination.url.expose())
             .header("Idempotency-Key", &delivery.id)
             .json(&payload)
             .send()
@@ -236,7 +236,7 @@ mod tests {
         config.notifications.enabled = true;
         config.notifications.destinations.push(WebhookDestination {
             name: "test".into(),
-            url: format!("http://{address}/secret"),
+            url: format!("http://{address}/secret").into(),
             enabled: true,
             kind: WebhookKind::Json,
         });

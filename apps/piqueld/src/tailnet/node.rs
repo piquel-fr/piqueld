@@ -76,7 +76,7 @@ impl Node {
             .tailscale
             .auth_key_file
             .as_ref()
-            .map(|path| format!("--auth-key=file:{}", path.display()));
+            .map(|file| format!("--auth-key=file:{}", file.path().display()));
         // `--reset` makes the flags the node's complete preferences, so state
         // written by older versions or other tools never blocks `up`.
         let mut up = vec!["up", "--reset", &hostname];
