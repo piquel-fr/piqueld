@@ -152,6 +152,23 @@ precedence over saved credentials. Tokens have the same capabilities as their
 account. Logging out with `PIQUELD_TOKEN` revokes that token and leaves saved logins
 alone. Do not put token values into connection profiles or Nix configuration.
 
+Deployments can instead declare tokens in the daemon configuration:
+
+```toml
+[[auth.provisioned_tokens]]
+account = "piquel"
+name = "ci-deploy"
+token_file = "/run/credentials/piqueld.service/ci-token" # e.g. `openssl rand -base64 32`
+```
+
+Each entry needs exactly one of `token` (inline) and `token_file` (an absolute
+path; surrounding whitespace is removed). The daemon reads declared tokens at
+startup and keeps them in memory only; they never reach the database. A declared token authenticates as the account with that
+username, ignoring case, and is rejected while no such account exists. It never
+expires. Removing the entry, or changing its value, revokes it at the next restart.
+Values must be unique and at least 32 bytes. Declared tokens do not appear on the
+Accounts page and cannot log out or approve CLI logins.
+
 | Credential | Expiry |
 | --- | --- |
 | Browser session | 24 hours without API use, or 7 days total |

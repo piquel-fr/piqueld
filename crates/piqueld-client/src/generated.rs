@@ -5693,6 +5693,7 @@ impl Client {
     /*Signs out
 
     Revokes the credential used for this request and clears the session cookie.
+    Tokens declared in configuration cannot sign out and fail with 400.
 
     Sends a `POST` request to `/api/v1/auth/logout`
 

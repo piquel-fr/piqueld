@@ -16,7 +16,7 @@ use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::Subscribe
 pub struct DaemonConfig {
     /// API listeners and state directory.
     pub server: ServerConfig,
-    /// Canonical browser origin for passkeys and invitation links.
+    /// Browser origin and declared automation tokens.
     pub auth: AuthConfig,
     /// Dedicated tailnet node serving the website over HTTPS.
     pub tailscale: TailscaleConfig,
@@ -106,10 +106,7 @@ impl DaemonConfig {
                 "server.data_dir and server.runtime_dir must be different directories".into(),
             ));
         }
-        if let Some(public_url) = &self.auth.public_url {
-            crate::auth::Auth::validate_origin(public_url)
-                .map_err(|error| ConfigError::Invalid(error.to_string()))?;
-        }
+        self.auth.validate()?;
         self.tailscale.validate()?;
         absolute_file("docker.socket", &self.docker.socket)?;
         for host in &self.server.allowed_hosts {
@@ -157,13 +154,15 @@ impl DaemonConfig {
     }
 }
 
-/// Canonical website origin.
+/// Canonical website origin and declared automation tokens.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthConfig {
     /// HTTPS origin, or HTTP localhost for development. Defaults to the
     /// tailnet node's HTTPS URL when it is enabled, otherwise localhost.
     pub public_url: Option<String>,
+    /// API tokens accepted in addition to the ones stored in the database.
+    pub provisioned_tokens: Vec<ProvisionedToken>,
 }
 
 impl DaemonConfig {
@@ -198,6 +197,103 @@ impl Default for TailscaleConfig {
             hostname: "piqueld".into(),
             auth_key_file: None,
         }
+    }
+}
+
+impl AuthConfig {
+    /// Shortest accepted provisioned token, matching generated token strength.
+    const MIN_TOKEN_BYTES: usize = 32;
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(public_url) = &self.public_url {
+            crate::auth::Auth::validate_origin(public_url)
+                .map_err(|error| ConfigError::Invalid(error.to_string()))?;
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for token in &self.provisioned_tokens {
+            if token.token.is_some() == token.token_file.is_some() {
+                return Err(ConfigError::Invalid(
+                    "each provisioned token needs exactly one of token and token_file".into(),
+                ));
+            }
+            if let Some(path) = &token.token_file {
+                absolute_file("auth.provisioned_tokens.token_file", path)?;
+            }
+            if token.name.is_empty() || !names.insert((token.account.to_lowercase(), &token.name)) {
+                return Err(ConfigError::Invalid(
+                    "provisioned token names must be non-empty and unique per account".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolves every declared token once at startup, reading `token_file`s,
+    /// and returns account usernames keyed by token. Surrounding whitespace,
+    /// such as a trailing newline, is removed.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a file is unreadable, or a token is shorter than 32 bytes or
+    /// declared twice. Errors name the token's source, never its value.
+    pub fn read_provisioned_tokens(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, ConfigError> {
+        let mut tokens = std::collections::HashMap::new();
+        for declared in &self.provisioned_tokens {
+            let token = match &declared.token_file {
+                Some(path) => {
+                    std::fs::read_to_string(path).map_err(|source| ConfigError::TokenFile {
+                        path: path.clone(),
+                        source,
+                    })?
+                }
+                None => declared.token.clone().unwrap_or_default(),
+            };
+            let token = token.trim().to_owned();
+            if token.len() < Self::MIN_TOKEN_BYTES
+                || tokens.insert(token, declared.account.clone()).is_some()
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "provisioned token {declared} must be unique and at least {} bytes",
+                    Self::MIN_TOKEN_BYTES
+                )));
+            }
+        }
+        Ok(tokens)
+    }
+}
+
+/// An API token declared in configuration with exactly one of `token` and
+/// `token_file`. It is held in memory only, so removing the entry revokes the
+/// token at the next restart.
+#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionedToken {
+    /// Username the token authenticates as. Rejected while no such account exists.
+    pub account: String,
+    /// Token name, unique among the account's provisioned tokens.
+    pub name: String,
+    /// Inline bearer secret; must never be displayed. Prefer `token_file`.
+    pub token: Option<String>,
+    /// Absolute path of a file holding the bearer secret, read at startup.
+    pub token_file: Option<PathBuf>,
+}
+
+/// Shows `account/name` and where the secret comes from, never the secret.
+impl std::fmt::Display for ProvisionedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{} (", self.account, self.name)?;
+        match &self.token_file {
+            Some(path) => write!(f, "from {})", path.display()),
+            None => f.write_str("inline)"),
+        }
+    }
+}
+
+impl std::fmt::Debug for ProvisionedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ProvisionedToken({self})")
     }
 }
 
@@ -431,6 +527,15 @@ pub enum ConfigError {
     /// Reading the source file failed.
     #[error("could not read configuration")]
     Read(#[source] std::io::Error),
+    /// Reading a provisioned token file failed.
+    #[error("could not read provisioned token file {}", path.display())]
+    TokenFile {
+        /// The configured `token_file`.
+        path: PathBuf,
+        /// The underlying read failure.
+        #[source]
+        source: std::io::Error,
+    },
     /// The TOML document was syntactically malformed, had the wrong shape, or
     /// contained unknown keys. Never carries configuration source text.
     #[error("configuration is not valid TOML")]
@@ -577,8 +682,21 @@ impl DaemonConfig {
             )
         })
         .collect();
+        groups.insert("Authentication".into(), self.auth_view());
         groups.insert("Observability".into(), self.observability_view());
         piqueld_core::api::HostConfiguration { groups }
+    }
+    /// Builds the `Authentication` group. Declared tokens appear only as their source.
+    fn auth_view(&self) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([(
+            "Provisioned tokens".into(),
+            self.auth
+                .provisioned_tokens
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        )])
     }
     /// Builds the `Observability` group, listing notification destinations by name
     /// only so webhook URLs never reach the dashboard.

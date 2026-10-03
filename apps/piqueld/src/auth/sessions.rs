@@ -3,12 +3,19 @@ use super::{Auth, AuthError, CredentialKind, DAY, MAX_PENDING, Result, now_secs}
 use piqueld_core::auth::{DeviceRequest, DeviceStart, DeviceToken, User};
 use std::collections::HashMap;
 
-/// The authenticated caller and the credential (session, token, or CLI login)
-/// that proved it.
+/// The authenticated caller and what proved it.
 #[derive(Clone)]
 pub(crate) struct Identity {
     pub user: User,
-    pub credential_id: String,
+    pub proof: Proof,
+}
+/// What authenticated an [`Identity`].
+#[derive(Clone)]
+pub(crate) enum Proof {
+    /// A stored session, token, or CLI login, by credential ID.
+    Stored(String),
+    /// A token declared in configuration, revoked only by removing it there.
+    Provisioned,
 }
 /// A pending CLI device login, following the OAuth device authorization flow.
 pub(super) struct Device {
@@ -26,16 +33,30 @@ pub(super) struct Device {
 impl Auth {
     /// Resolves a bearer or cookie secret to its live credential and owner.
     ///
-    /// Secrets that are not 43 characters are rejected without a database lookup.
-    /// The credential's last-used time is refreshed at most once per minute.
+    /// Declared tokens are checked first, as their length is up to the operator.
+    /// Other secrets that are not 43 characters are rejected without a database
+    /// lookup. A stored credential's last-used time is refreshed at most once
+    /// per minute.
     pub(crate) async fn authenticate(&self, secret: &str) -> Result<Identity> {
+        let hash = Self::hash(secret);
+        if let Some(account) = self.0.provisioned.get(&hash) {
+            return Ok(Identity {
+                user: self
+                    .0
+                    .store
+                    .auth_user_by_name(account)
+                    .await?
+                    .ok_or(AuthError::Unauthorized)?,
+                proof: Proof::Provisioned,
+            });
+        }
         if secret.len() != 43 {
             return Err(AuthError::Unauthorized);
         }
         let owner = self
             .0
             .store
-            .credential_owner(&Self::hash(secret))
+            .credential_owner(&hash)
             .await?
             .ok_or(AuthError::Unauthorized)?;
         // Keep ordinary requests read-only. A refresh queues with reconciliation
@@ -47,12 +68,17 @@ impl Auth {
         }
         Ok(Identity {
             user: owner.user,
-            credential_id: owner.credential_id,
+            proof: Proof::Stored(owner.credential_id),
         })
     }
     /// Revokes the credential used for the current request.
-    pub(crate) async fn logout(&self, credential_id: &str) -> Result<()> {
-        Ok(self.0.store.revoke_credential(credential_id).await?)
+    pub(crate) async fn logout(&self, proof: &Proof) -> Result<()> {
+        match proof {
+            Proof::Stored(id) => Ok(self.0.store.revoke_credential(id).await?),
+            Proof::Provisioned => Err(AuthError::Invalid(
+                "provisioned tokens are revoked by removing them from configuration",
+            )),
+        }
     }
     /// Starts a CLI device login valid for ten minutes.
     ///
@@ -133,8 +159,14 @@ impl Auth {
     /// Marks a pending device login as approved by the caller's credential.
     pub(crate) async fn device_approve(&self, code: &str, identity: &Identity) -> Result<()> {
         let mut devices = self.0.devices.lock().await;
+        // The issued login belongs to the approving credential's owner while it lives.
+        let Proof::Stored(approver) = &identity.proof else {
+            return Err(AuthError::Invalid(
+                "provisioned tokens cannot approve device logins",
+            ));
+        };
         let device = Self::pending_device(&mut devices, code)?;
-        device.approved_by = Some(identity.credential_id.clone());
+        device.approved_by = Some(approver.clone());
         tracing::info!(
             user_id = %identity.user.id,
             username = %identity.user.username,

@@ -18,6 +18,11 @@ allowed_hosts = []
 # Defaults to the tailnet node's HTTPS URL when [tailscale] is enabled, and to
 # http://localhost:7845 otherwise. Other HTTPS origins need external TLS.
 # public_url = "https://piqueld.example"
+# API tokens declared here authenticate as their account; see docs/authentication.md.
+# [[auth.provisioned_tokens]]
+# account = "piquel"
+# name = "ci-deploy"
+# token_file = "/run/credentials/piqueld.service/ci-token"
 
 [tailscale]
 # Join the tailnet as piqueld-dev.<tailnet>.ts.net and serve HTTPS on its port

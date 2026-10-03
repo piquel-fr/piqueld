@@ -1252,7 +1252,8 @@ async fn tcp_login_uses_canonical_origin_behind_https_proxy() {
     let state = state(&temp).await;
     let store = Store::open(temp.path().join("state.db")).await.unwrap();
     let origin = "https://daemon.example.ts.net:8443";
-    let auth = piqueld::auth::Auth::new(&store, origin).unwrap();
+    let auth =
+        piqueld::auth::Auth::new(&store, origin, std::collections::HashMap::default()).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let application = piqueld::api::http::web_router_with_hosts(
@@ -3859,7 +3860,12 @@ async fn every_documented_operation_requires_authentication() {
     ];
     let temp = TempDir::new().unwrap();
     let store = Arc::new(Store::open(temp.path().join("state.db")).await.unwrap());
-    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let auth = piqueld::auth::Auth::new(
+        &store,
+        "https://piqueld.example",
+        std::collections::HashMap::default(),
+    )
+    .unwrap();
     let instance = InstanceId::parse(store.instance_id().to_owned()).unwrap();
     let state = ApiState::new(
         Arc::clone(&store),
@@ -3931,7 +3937,12 @@ async fn setup_link_is_served_only_over_the_unix_socket() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
     let store = Store::open(temp.path().join("state.db")).await.unwrap();
-    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let auth = piqueld::auth::Auth::new(
+        &store,
+        "https://piqueld.example",
+        std::collections::HashMap::default(),
+    )
+    .unwrap();
     let path = temp.path().join("setup-link");
     auth.prepare_setup(&path).await.unwrap();
     let link = std::fs::read_to_string(&path).unwrap();
@@ -3985,7 +3996,12 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
     // must return promptly with log-only diagnostic IDs instead.
     let transaction = connection.begin_with("BEGIN IMMEDIATE").await.unwrap();
     for website in [false, true] {
-        let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+        let auth = piqueld::auth::Auth::new(
+            &store,
+            "https://piqueld.example",
+            std::collections::HashMap::default(),
+        )
+        .unwrap();
         let listener = if website {
             web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth)
         } else {
