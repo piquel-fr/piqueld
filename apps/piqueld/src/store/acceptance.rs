@@ -437,3 +437,19 @@ impl Store {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Receipts recorded before deploy overrides existed must still replay.
+    #[test]
+    fn deploys_without_a_revision_keep_their_original_fingerprint() {
+        let deploy = Mutation::deploy(ApplicationId::parse("input-app").unwrap());
+        let original = Sha256::digest(br#"[{"kind":"deploy","id":"input-app"},null,false]"#);
+        assert_eq!(
+            Store::mutation_fingerprint(&deploy, None, false).unwrap(),
+            format!("{original:x}")
+        );
+    }
+}
