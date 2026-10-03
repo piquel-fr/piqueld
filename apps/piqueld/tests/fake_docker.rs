@@ -2089,7 +2089,7 @@ mod repository_deployments {
     }
 
     #[tokio::test]
-    async fn self_sources_build_the_manifest_commit_including_one_time_branches() {
+    async fn self_sources_build_the_manifest_commit_including_one_time_revisions() {
         let repository = RepositoryFixture::new();
         let harness = ControllerHarness::new().await;
         let mut fetched = repository.manifest("app.json");
@@ -2126,8 +2126,12 @@ mod repository_deployments {
             .to_manifest()
             .spec;
         for (revision, expected) in [
-            (Some(ManifestRevision::Branch("feature".into())), feature),
+            (
+                Some(ManifestRevision::Commit(feature.clone())),
+                feature.clone(),
+            ),
             (None, main),
+            (Some(ManifestRevision::Branch("feature".into())), feature),
         ] {
             let deployment =
                 RepositoryFixture::deploy_revision(&harness, &application_id, revision).await;
