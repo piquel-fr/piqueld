@@ -2,7 +2,7 @@
 use crate::{
     cli::{
         AppCommand, ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, ManifestArgs, OperationArgs,
-        ReconcileArgs,
+        TargetArgs,
     },
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
@@ -96,7 +96,9 @@ async fn app(
         AppCommand::Apply(args) => apply(cli, client, console, args).await,
         AppCommand::Delete(args) => delete(cli, client, console, args).await,
         AppCommand::Reconcile(args) => {
-            reconcile_or_deploy(cli, client, console, args, Intent::Reconcile).await
+            OperationRequest::Reconcile
+                .send(cli, client, console, args)
+                .await
         }
         AppCommand::Rename(args) => {
             crate::editing::save(
@@ -110,8 +112,9 @@ async fn app(
             .await
         }
         AppCommand::Deploy(args) => {
-            let intent = Intent::Deploy(args.revision());
-            reconcile_or_deploy(cli, client, console, &args.target, intent).await
+            OperationRequest::Deploy(args.revision())
+                .send(cli, client, console, &args.target)
+                .await
         }
         AppCommand::Create(args) => crate::editing::create(cli, client, console, args).await,
         AppCommand::Service { command } => command.run(cli, client, console).await,
@@ -524,67 +527,70 @@ fn finish_operation(operation: Operation) -> Result<Operation> {
     }
 }
 
-/// What `reconcile_or_deploy` requests for the latest accepted intent.
-enum Intent {
-    /// Repair the latest deployment without refreshing sources.
+/// The operation requested by `app reconcile` or `app deploy`.
+enum OperationRequest {
+    /// Retry the latest operation with its saved inputs, or resume it if it is
+    /// still running. Nothing is fetched or resolved again.
     Reconcile,
-    /// Deploy saved configuration, optionally from a one-time manifest revision.
+    /// Start a new deployment of saved configuration that fetches the manifest and
+    /// resolves sources again, optionally from a one-time manifest revision.
     Deploy(Option<piqueld_client::ManifestRevision>),
 }
 
-/// Shared `app reconcile` / `app deploy` flow. Reconcile repairs the latest saved
-/// intent (generation check optional); deploy re-resolves sources, optionally from a
-/// one-time manifest revision, and always sends an expected generation, defaulting to
-/// the current one. Waits unless `--no-wait`.
-async fn reconcile_or_deploy(
-    cli: &Cli,
-    client: &Client,
-    console: &mut Console,
-    args: &ReconcileArgs,
-    intent: Intent,
-) -> Result<()> {
-    let application = resolve_application(client, &args.name_or_id).await?;
-    let action = if matches!(intent, Intent::Deploy(_)) {
-        "Deploy"
-    } else {
-        "Reconcile current intent for"
-    };
-    confirm(
-        console,
-        cli.noninteractive,
-        args.yes,
-        &format!(
-            "{action} application {:?}? [y/N] ",
-            application.application.metadata().name
-        ),
-    )
-    .await?;
-    let id = application.application.id().as_str();
-    let accepted = retry_transport(|| async {
-        if let Intent::Deploy(revision) = &intent {
-            client
-                .deploy_application(
-                    id,
-                    args.expected_generation.unwrap_or(application.generation),
-                    revision.as_ref(),
-                )
-                .await
-        } else {
-            client
-                .reconcile_application(id, args.expected_generation)
-                .await
+impl OperationRequest {
+    /// Confirms, sends the request, and waits for the operation unless `--no-wait`.
+    /// Reconcile only checks the generation when one is given; deploy always sends
+    /// one, defaulting to the current generation.
+    async fn send(
+        &self,
+        cli: &Cli,
+        client: &Client,
+        console: &mut Console,
+        args: &TargetArgs,
+    ) -> Result<()> {
+        let application = resolve_application(client, &args.name_or_id).await?;
+        let name = application.application.metadata().name.clone();
+        let question = match self {
+            Self::Reconcile => format!("Retry the latest operation for application {name:?}?"),
+            Self::Deploy(_) => format!("Deploy application {name:?}?"),
+        };
+        confirm(
+            console,
+            cli.noninteractive,
+            args.yes,
+            &format!("{question} [y/N] "),
+        )
+        .await?;
+        let id = application.application.id().as_str();
+        let accepted = retry_transport(|| async {
+            match self {
+                Self::Reconcile => {
+                    client
+                        .reconcile_application(id, args.expected_generation)
+                        .await
+                }
+                Self::Deploy(revision) => {
+                    client
+                        .deploy_application(
+                            id,
+                            args.expected_generation.unwrap_or(application.generation),
+                            revision.as_ref(),
+                        )
+                        .await
+                }
+            }
+        })
+        .await?;
+        if args.no_wait {
+            return console.emit(&accepted);
         }
-    })
-    .await?;
-    if args.no_wait {
-        return console.emit(&accepted);
+        let operation = wait_for_operation(console, client, &accepted.operation_id).await?;
+        console.emit(&OperationOutcomeReport {
+            accepted: &accepted,
+            outcome: operation.state,
+            operation: &operation,
+        })
     }
-    let operation = wait_for_operation(console, client, &accepted.operation_id).await?;
-    console.emit(&OperationOutcomeReport {
-        accepted: &accepted,
-        outcome: operation.state,
-        operation: &operation,
-    })
 }
 
 /// Polls until the application returns 404, which is the success condition.

@@ -178,9 +178,9 @@ pub(crate) enum AppCommand {
     Apply(ApplyArgs),
     /// Confirm and delete an application by name or ID.
     Delete(DeleteArgs),
-    /// Repair latest intent without refreshing resolved images.
-    Reconcile(ReconcileArgs),
-    /// Deploy saved configuration with fresh source resolution.
+    /// Retry the latest operation with its saved inputs, without fetching or resolving sources.
+    Reconcile(TargetArgs),
+    /// Deploy saved configuration, fetching the manifest and resolving sources again.
     Deploy(DeployArgs),
     /// Rename an idle application; optionally deploy with the change.
     Rename(RenameArgs),
@@ -359,7 +359,7 @@ pub(crate) struct RenameArgs {
 #[derive(Debug, Args)]
 pub(crate) struct DeployArgs {
     #[command(flatten)]
-    pub(crate) target: ReconcileArgs,
+    pub(crate) target: TargetArgs,
     /// Fetch the repository manifest from this branch, without saving it.
     #[arg(long, conflicts_with = "commit")]
     pub(crate) branch: Option<String>,
@@ -382,9 +382,10 @@ impl DeployArgs {
     }
 }
 
+/// Application selection, confirmation, and waiting shared by `app reconcile` and `app deploy`.
 #[derive(Debug, Args)]
-pub(crate) struct ReconcileArgs {
-    /// Application name or stable ID; acts on its latest accepted intent.
+pub(crate) struct TargetArgs {
+    /// Application name or stable ID.
     pub(crate) name_or_id: String,
     /// Optionally require this intent generation.
     #[arg(long)]

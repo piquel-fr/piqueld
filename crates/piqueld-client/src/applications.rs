@@ -263,7 +263,7 @@ impl Client {
             .map(|response| response.data)
     }
 
-    /// Repairs the latest accepted intent using its already resolved digests.
+    /// Retries the latest operation with its saved inputs, without resolving sources again.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn reconcile_application(
