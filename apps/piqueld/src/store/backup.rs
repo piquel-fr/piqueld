@@ -301,9 +301,11 @@ impl<'a> Backups<'a> {
     ///
     /// # Errors
     /// Rejects newer schemas, unexpected entries, damaged databases, and a
-    /// running daemon. Nothing is left in the data directory on failure, unless
-    /// undoing a partial publication fails ([`BackupError::PartialRestore`]);
-    /// see [`Self::ensure_restore_complete`] for interruptions.
+    /// running daemon. Failures before publication leave the data directory
+    /// empty. Undoing a failed publication may itself fail
+    /// ([`BackupError::PartialRestore`]), and removing or syncing the staging
+    /// directory may fail after everything was published; both leave restored
+    /// state behind. See [`Self::ensure_restore_complete`] for interruptions.
     pub async fn restore(&self, archive: &Path) -> Result<BackupManifest, BackupError> {
         let data_dir = self.data_dir;
         crate::prepare_data_dir(data_dir)
