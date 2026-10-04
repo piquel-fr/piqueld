@@ -144,6 +144,7 @@ impl SwarmScenario {
             resources: None,
             networks: vec![network.name.clone()],
             labels: service_labels,
+            depends_on: Vec::new(),
         };
         engine.ensure_service_eventually(&service).await;
         assert!(

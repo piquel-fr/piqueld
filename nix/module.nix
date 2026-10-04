@@ -130,7 +130,7 @@ in
           reconciliation.convergence_timeout_seconds = lib.mkOption {
             type = lib.types.ints.between 1 86400;
             default = 120;
-            description = "Timeout in seconds for runtime convergence.";
+            description = "Timeout in seconds for runtime convergence; restarts each time a service converges.";
           };
           retention.finished_operation_days = lib.mkOption {
             type = lib.types.ints.unsigned;

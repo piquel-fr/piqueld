@@ -334,6 +334,7 @@ mod tests {
                 spec_hash: format!("sha256:{}", "b".repeat(64)),
             }
             .labels(),
+            depends_on: Vec::new(),
         };
         BollardDocker::service_spec(&desired, "local-node").expect("authored specification")
     }

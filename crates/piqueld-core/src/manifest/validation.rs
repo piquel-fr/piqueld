@@ -1,5 +1,6 @@
 //! Strict decoding and aggregate semantic validation of manifest inputs.
 
+use super::dependencies::StartupOrder;
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, GitRepository,
     HealthCheck, ManifestRevision, Mount, ResourceLimits, SecretDeclaration, SecretGenerator,
@@ -284,6 +285,7 @@ pub fn safe_decode_path(path: &str) -> String {
         "bytes",
         "encoding",
         "bits",
+        "depends_on",
     ];
     let mut safe = Vec::new();
     for component in path.split('.') {
@@ -466,6 +468,7 @@ impl ApplicationManifest {
             self.spec.manifest.is_some(),
             &mut errors,
         );
+        validate_dependencies(&self.spec.services, &mut errors);
         validate_volumes(&self.spec.volumes, &mut errors);
         validate_generated_secrets(&self.spec.secrets, &mut errors);
         errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
@@ -505,8 +508,8 @@ fn validate_header(input: &ApplicationManifest, errors: &mut Vec<ValidationError
     validate_name(&input.metadata.name, "metadata.name", errors);
 }
 
-/// Checks route, service, and volume counts; returns `false` when a budget is
-/// exceeded.
+/// Checks route, service, volume, secret, and per-service dependency counts;
+/// returns `false` when a budget is exceeded.
 fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationError>) -> bool {
     let mut within_budget = true;
     if input.spec.routes.len() > MAX_ROUTES {
@@ -526,6 +529,19 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
             &format!("an application must declare at most {MAX_SERVICES} services"),
         );
         within_budget = false;
+    } else {
+        // Unique dependencies name other services, so a valid list is shorter.
+        for (index, service) in input.spec.services.iter().enumerate() {
+            if service.depends_on.len() > MAX_SERVICES {
+                error(
+                    errors,
+                    codes::SERVICE_DEPENDENCY_COUNT_EXCESSIVE,
+                    &format!("spec.services[{index}].depends_on"),
+                    &format!("a service must list at most {MAX_SERVICES} dependencies"),
+                );
+                within_budget = false;
+            }
+        }
     }
     if input.spec.volumes.len() > MAX_VOLUMES {
         error(
@@ -672,6 +688,50 @@ fn validate_services(
             validate_health(healthcheck, &format!("{base}.healthcheck"), errors);
         }
         validate_resources(service.resources.as_ref(), &base, errors);
+    }
+}
+
+/// Dependencies must name other services once each and must not form a cycle.
+fn validate_dependencies(services: &[Service], errors: &mut Vec<ValidationError>) {
+    let names = services
+        .iter()
+        .map(|service| service.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, service) in services.iter().enumerate() {
+        let mut listed = BTreeSet::new();
+        for (dependency_index, dependency) in service.depends_on.iter().enumerate() {
+            let path = format!("spec.services[{index}].depends_on[{dependency_index}]");
+            if !names.contains(dependency.as_str()) {
+                error(
+                    errors,
+                    codes::SERVICE_DEPENDENCY_MISSING,
+                    &path,
+                    "dependency must name a service in this application",
+                );
+            } else if !listed.insert(dependency) {
+                error(
+                    errors,
+                    codes::SERVICE_DEPENDENCY_DUPLICATE,
+                    &path,
+                    "dependency is listed more than once",
+                );
+            }
+        }
+    }
+    let (_, cyclic) = services.startup_order();
+    let cyclic = cyclic
+        .into_iter()
+        .map(|service| service.name.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, service) in services.iter().enumerate() {
+        if cyclic.contains(service.name.as_str()) {
+            error(
+                errors,
+                codes::SERVICE_DEPENDENCY_CYCLE,
+                &format!("spec.services[{index}].depends_on"),
+                "dependencies must not form or lead into a cycle",
+            );
+        }
     }
 }
 

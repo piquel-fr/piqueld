@@ -56,6 +56,10 @@ pub struct ValidatedService {
     pub healthcheck: Option<HealthCheck>,
     /// Optional CPU and memory limits.
     pub resources: Option<ResourceLimits>,
+    /// Services in this application that must be healthy before this one rolls out.
+    /// Omitted when empty so existing specification hashes stay stable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<ServiceName>,
 }
 
 /// Validated named volume.
@@ -217,6 +221,19 @@ impl ValidatedService {
                 .collect::<Result<_, ValidationErrors>>()?,
             healthcheck: value.healthcheck,
             resources: value.resources,
+            depends_on: value
+                .depends_on
+                .into_iter()
+                .enumerate()
+                .map(|(dependency_index, name)| {
+                    ServiceName::parse(name).map_err(|source| {
+                        ValidationErrors::invalid_name(
+                            format!("spec.services[{index}].depends_on[{dependency_index}]"),
+                            source,
+                        )
+                    })
+                })
+                .collect::<Result<_, ValidationErrors>>()?,
         })
     }
 
@@ -241,6 +258,7 @@ impl ValidatedService {
                 .collect(),
             healthcheck: self.healthcheck.clone(),
             resources: self.resources.clone(),
+            depends_on: self.depends_on.iter().map(ToString::to_string).collect(),
         }
     }
 }

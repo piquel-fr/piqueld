@@ -17,17 +17,20 @@ pub enum Section {
     Storage,
     /// Container health check.
     Health,
+    /// Services that must be healthy before this one rolls out.
+    Dependencies,
     /// CPU and memory limits.
     Resources,
 }
 impl Section {
     /// All form groups in display order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::General,
         Self::Environment,
         Self::Process,
         Self::Storage,
         Self::Health,
+        Self::Dependencies,
         Self::Resources,
     ];
     /// Human-readable form heading.
@@ -39,6 +42,7 @@ impl Section {
             Self::Process => "Command & arguments",
             Self::Storage => "Volume mounts",
             Self::Health => "Health check",
+            Self::Dependencies => "Startup dependencies",
             Self::Resources => "Resource limits",
         }
     }
@@ -83,6 +87,8 @@ pub struct ServiceForm {
     pub timeout: String,
     /// Health command elements.
     pub health_command: Vec<String>,
+    /// Sorted names of services that must be healthy first.
+    pub depends_on: Vec<String>,
     /// Optional CPU limit in millicores.
     pub cpu: String,
     /// Optional memory limit in bytes.
@@ -115,6 +121,7 @@ impl From<&Service> for ServiceForm {
             interval: "10".into(),
             timeout: "3".into(),
             health_command: Vec::new(),
+            depends_on: service.depends_on.clone(),
             cpu: service
                 .resources
                 .as_ref()
@@ -200,6 +207,38 @@ impl ServiceForm {
         })
     }
 
+    /// Parses the selected health check kind and its numeric fields.
+    fn healthcheck(&self) -> Result<Option<HealthCheck>, String> {
+        let interval_seconds = || {
+            self.interval
+                .parse()
+                .map_err(|_| "Health interval must be a positive integer.")
+        };
+        let timeout_seconds = || {
+            self.timeout
+                .parse()
+                .map_err(|_| "Health timeout must be a positive integer.")
+        };
+        Ok(match self.health_kind.as_str() {
+            "none" => None,
+            "http" => Some(HealthCheck::Http {
+                port: self
+                    .port
+                    .parse()
+                    .map_err(|_| "Health port must be an integer between 1 and 65535.")?,
+                path: self.path.clone(),
+                interval_seconds: interval_seconds()?,
+                timeout_seconds: timeout_seconds()?,
+            }),
+            "command" => Some(HealthCheck::Command {
+                command: self.health_command.clone(),
+                interval_seconds: interval_seconds()?,
+                timeout_seconds: timeout_seconds()?,
+            }),
+            _ => return Err("Choose a supported health check type.".into()),
+        })
+    }
+
     /// Applies a single group to a fresh copy of saved configuration.
     /// # Errors
     /// Returns actionable errors for malformed numeric fields or duplicate environment keys.
@@ -226,38 +265,8 @@ impl ServiceForm {
                 service.arguments.clone_from(&self.arguments);
             }
             Section::Storage => service.mounts.clone_from(&self.mounts),
-            Section::Health => {
-                service.healthcheck = match self.health_kind.as_str() {
-                    "none" => None,
-                    "http" => Some(HealthCheck::Http {
-                        port: self
-                            .port
-                            .parse()
-                            .map_err(|_| "Health port must be an integer between 1 and 65535.")?,
-                        path: self.path.clone(),
-                        interval_seconds: self
-                            .interval
-                            .parse()
-                            .map_err(|_| "Health interval must be a positive integer.")?,
-                        timeout_seconds: self
-                            .timeout
-                            .parse()
-                            .map_err(|_| "Health timeout must be a positive integer.")?,
-                    }),
-                    "command" => Some(HealthCheck::Command {
-                        command: self.health_command.clone(),
-                        interval_seconds: self
-                            .interval
-                            .parse()
-                            .map_err(|_| "Health interval must be a positive integer.")?,
-                        timeout_seconds: self
-                            .timeout
-                            .parse()
-                            .map_err(|_| "Health timeout must be a positive integer.")?,
-                    }),
-                    _ => return Err("Choose a supported health check type.".into()),
-                }
-            }
+            Section::Health => service.healthcheck = self.healthcheck()?,
+            Section::Dependencies => service.depends_on.clone_from(&self.depends_on),
             Section::Resources => {
                 let cpu = if self.cpu.trim().is_empty() {
                     None
@@ -308,6 +317,7 @@ mod tests {
             mounts: Vec::new(),
             healthcheck: None,
             resources: None,
+            depends_on: Vec::new(),
         }
     }
     #[test]

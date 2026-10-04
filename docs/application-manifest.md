@@ -36,8 +36,8 @@ name = "data"
 ```
 
 Services support replicas, environment variables, command and argument arrays,
-health checks, CPU/memory limits, mounts of declared named volumes, and file
-references to application secrets. Named volumes are retained when an application
+health checks, startup dependencies, CPU/memory limits, mounts of declared
+named volumes, and file references to application secrets. Named volumes are retained when an application
 is deleted. Secret values are never manifest fields (manifests may only ask piqueld to
 generate them), and there are no manifest
 fields for directly published ports. Exact-host HTTP routes are declared in
@@ -272,6 +272,36 @@ not generated, so they never count against secret quotas. A value is never
 changed afterwards: later applies, deploys, and edits to the declaration keep
 it. Values set manually with `piquelctl app secret` are kept too, so rotation
 stays explicit. Removing a declaration retains the stored value.
+
+## Startup dependencies
+
+```toml
+[[spec.services]]
+name = "auth"
+depends_on = ["postgres"]
+```
+
+A deployment rolls a service out only after every service in its `depends_on`
+converges in that deployment: all replicas run and pass their health checks.
+A dependency without a health check counts once its replicas are running, so
+declare one on databases and other slow starters. Dependencies that are
+already converged and unchanged do not delay the dependent. A failed or
+timed-out dependency leaves its dependents unchanged. Each dependency gets the
+full `reconciliation.convergence_timeout_seconds` to converge, since the
+deadline restarts whenever a service converges.
+
+Each entry names another service in the same application, at most once
+(`service_dependency_missing`, `service_dependency_duplicate`); lists longer
+than the 64-service limit are rejected (`service_dependency_count_excessive`). Cycles,
+including a service depending on itself, are rejected with
+`service_dependency_cycle` on every service in or behind the cycle.
+Renaming a service through field edits updates references to it; removing one
+drops it from other services' dependencies.
+
+This is startup ordering only. It gives no runtime guarantee after rollout:
+a dependency that later becomes unhealthy does not stop or restart its
+dependents, and drift repair does not pass a dependency that is still
+converging.
 
 ## Public routes
 

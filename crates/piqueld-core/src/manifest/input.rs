@@ -129,6 +129,9 @@ pub struct Service {
     pub healthcheck: Option<HealthCheck>,
     /// Optional CPU and memory limits.
     pub resources: Option<ResourceLimits>,
+    /// Services in this application that must be healthy before this one rolls out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
 }
 
 /// Serde default for `Service::replicas`.

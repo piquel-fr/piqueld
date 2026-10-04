@@ -200,6 +200,10 @@ impl<D: DockerApi> Controller<D> {
 
     /// Plans from fresh observations until no work remains. Only desired state and
     /// operation status are durable; Docker state determines the next action.
+    ///
+    /// The convergence deadline bounds time without progress: it restarts each
+    /// time a service converges, so a dependency chain gets the full timeout per
+    /// link while a single stuck service still times out.
     #[tracing::instrument(skip_all, fields(phase = "convergence"))]
     async fn execute_operation(
         &self,
@@ -207,7 +211,7 @@ impl<D: DockerApi> Controller<D> {
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         let request = self.operation_request(operation, cancellation).await?;
-        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+        let mut deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
         if operation.kind == OperationKind::Delete {
             self.withdraw_routes(operation, deadline).await?;
         }
@@ -294,6 +298,9 @@ impl<D: DockerApi> Controller<D> {
             };
             self.execute_action(action, operation, &ownership, cancellation, deadline)
                 .await?;
+            if matches!(action.kind, piqueld_core::ActionKind::WaitForService { .. }) {
+                deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+            }
         }
     }
 

@@ -403,7 +403,7 @@ impl<D: DockerApi> Controller<D> {
     /// Keeps the currently active (published) target healthy while the latest
     /// operation has not been promoted.
     ///
-    /// Applies at most the first mutating action per call, under the global
+    /// Applies at most `Plan::next_repair` per call, under the global
     /// mutation lock and in its own journal entry. Skips deletions, promoted
     /// operations, blocked plans, and removals that would drop resources still
     /// referenced by routes awaiting cutover.
@@ -435,11 +435,7 @@ impl<D: DockerApi> Controller<D> {
         if plan.is_blocked() {
             return Ok(());
         }
-        let Some(action) = plan
-            .actions
-            .iter()
-            .find(|action| action.kind.mutates_runtime())
-        else {
+        let Some(action) = plan.next_repair() else {
             return Ok(());
         };
         if matches!(
