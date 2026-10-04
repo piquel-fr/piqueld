@@ -31,10 +31,10 @@ const INGRESS: &str = "ingress";
 const INGRESS_STATE: [&str; 2] = ["ingress/data", "ingress/config"];
 /// Tailnet node identity, as laid out by `ServerConfig::tailscale_dir`.
 const TAILNET: &str = "tailscale";
-/// Top-level restored state, in publication order: the database moves last, so
-/// a data directory without it never looks like a completed restore.
-const PUBLISHED: [&str; 4] = [SECRET_KEY, INGRESS, TAILNET, DATABASE];
-/// Name prefix of the staging directory restore unpacks into.
+/// Top-level entries restore moves into the data directory.
+const PUBLISHED: [&str; 4] = [DATABASE, SECRET_KEY, INGRESS, TAILNET];
+/// Name prefix of the staging directory restore unpacks into. While one
+/// exists, the data directory holds an unfinished restore.
 const RESTORE_STAGING: &str = ".restore-";
 /// Pre-migration archives kept in `<data_dir>/backups`.
 const PRE_MIGRATION_KEEP: usize = 3;
@@ -102,7 +102,7 @@ pub enum BackupError {
         #[source]
         source: Box<BackupError>,
     },
-    /// A restore was interrupted before its database was moved into place.
+    /// A restore was interrupted before it finished.
     #[error(
         "an interrupted restore left {}; empty the data directory and run piqueld restore again",
         .0.display()
@@ -333,17 +333,14 @@ impl<'a> Backups<'a> {
         Ok(manifest)
     }
 
-    /// Refuses a data directory left by an interrupted restore: one holding a
-    /// restore staging directory but no database. The daemon checks this before
-    /// creating any state, so it never starts an empty instance over partly
+    /// Refuses a data directory holding a restore staging directory, which an
+    /// interrupted or unrecoverable restore leaves behind. The daemon checks
+    /// this before creating any state, so it never starts over partly
     /// restored state.
     ///
     /// # Errors
     /// Returns [`BackupError::InterruptedRestore`] or the I/O failure.
     pub fn ensure_restore_complete(&self) -> Result<(), BackupError> {
-        if self.data_dir.join(DATABASE).exists() {
-            return Ok(());
-        }
         let entries = fs::read_dir(self.data_dir)
             .map_err(BackupError::io("read data directory", self.data_dir))?;
         for entry in entries {
@@ -595,33 +592,38 @@ fn extract(archive: &Path, staging: &Path) -> Result<BackupManifest, BackupError
     Ok(manifest)
 }
 
-/// Moves sealed state from `staging` into `data_dir` in [`PUBLISHED`] order,
-/// making everything else durable before the database marks the restore
-/// complete. If a step fails, moved state is moved back so the restore can be
-/// retried; if that fails too, `staging` is kept so the daemon refuses to start.
+/// Moves sealed state from `staging` into `data_dir`. The staging directory
+/// marks the restore unfinished ([`Backups::ensure_restore_complete`]): it is
+/// made durable before anything moves and removed only once everything else,
+/// including `data_dir`'s own entry, is durable. If a step fails, moved state
+/// is moved back so the restore can be retried; if that fails too, the marker
+/// is kept.
 fn publish(staging: TempDir, data_dir: &Path) -> Result<(), BackupError> {
     seal(staging.path())?;
-    // The staging directory is the interruption marker; persist it first.
     sync(data_dir)?;
     let mut moved = Vec::new();
-    let result = PUBLISHED.iter().try_for_each(|&name| {
-        let source = staging.path().join(name);
-        if !source.exists() {
-            return Ok(());
-        }
-        if name == DATABASE {
-            sync(data_dir)?;
-        }
-        fs::rename(&source, data_dir.join(name))
-            .map_err(BackupError::io("move restored state into", data_dir))?;
-        moved.push(name);
-        Ok(())
-    });
-    let Err(error) = result.and_then(|()| sync(data_dir)) else {
-        return Ok(());
+    let result = PUBLISHED
+        .iter()
+        .try_for_each(|&name| {
+            let source = staging.path().join(name);
+            if source.exists() {
+                fs::rename(&source, data_dir.join(name))
+                    .map_err(BackupError::io("move restored state into", data_dir))?;
+                moved.push(name);
+            }
+            Ok(())
+        })
+        .and_then(|()| sync(data_dir))
+        .and_then(|()| sync(parent_of(data_dir)));
+    let Err(error) = result else {
+        let marker = staging.path().to_path_buf();
+        staging
+            .close()
+            .map_err(BackupError::io("remove restore staging directory", &marker))?;
+        return sync(data_dir);
     };
     let mut undone = true;
-    for name in moved {
+    for name in moved.into_iter().rev() {
         if let Err(undo) = fs::rename(data_dir.join(name), staging.path().join(name)) {
             tracing::error!(%undo, name, "could not undo a partial restore");
             undone = false;
@@ -961,16 +963,15 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_restores_are_refused_until_the_database_is_in_place() {
+    fn unfinished_restores_are_refused_even_with_a_database() {
         let data_dir = tempfile::tempdir().unwrap();
         let backups = Backups::new(data_dir.path());
+        fs::write(data_dir.path().join(DATABASE), b"").unwrap();
         backups.ensure_restore_complete().unwrap();
         fs::create_dir(data_dir.path().join(".restore-abc")).unwrap();
         assert!(matches!(
             backups.ensure_restore_complete(),
             Err(BackupError::InterruptedRestore(_))
         ));
-        fs::write(data_dir.path().join(DATABASE), b"").unwrap();
-        backups.ensure_restore_complete().unwrap();
     }
 }

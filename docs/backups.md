@@ -68,9 +68,10 @@ whose schema is newer than the binary supports, unknown archive formats, and
 entries outside the layout above. The database must pass
 `PRAGMA integrity_check` and match its manifest before anything is moved into
 place. Restored files get mode `0600` and directories `0700`, whatever the
-archive says. The database is moved into place last; if restore is interrupted
-before then, the daemon refuses to start until the data directory is emptied
-and restore is run again. The restored database keeps its archived schema; the
+archive says. Restore stages everything in a `.restore-*` directory inside the
+data directory and removes it only once the restored state is on disk; while
+one exists, the daemon refuses to start until the data directory is emptied and
+restore is run again. The restored database keeps its archived schema; the
 daemon migrates it on its next start.
 
 The restored tailnet node keeps its name, so passkeys bound to it keep working.
