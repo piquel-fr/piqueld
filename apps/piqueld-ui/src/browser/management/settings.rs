@@ -415,6 +415,23 @@ pub(super) fn service_fields(
                                     |v| v.context.clone(),
                                     |v, s| v.context = s,
                                 )}
+                                {text_input(
+                                    "Build target (optional)",
+                                    form,
+                                    |v| v.target.clone(),
+                                    |v, s| v.target = s,
+                                )}
+                                <div style="grid-column:1/-1">
+                                    <h4 class="hint" style="margin-bottom:8px">
+                                        "Build arguments (not secret)"
+                                    </h4>
+                                    {pair_rows(
+                                        "Add build argument",
+                                        form,
+                                        |v| &v.build_args,
+                                        |v| &mut v.build_args,
+                                    )}
+                                </div>
                             }
                                 .into_any()
                         }
@@ -423,7 +440,12 @@ pub(super) fn service_fields(
             }
             .into_any()
         }
-        Section::Environment => environment_fields(form),
+        Section::Environment => pair_rows(
+            "Add variable",
+            form,
+            |v| &v.environment,
+            |v| &mut v.environment,
+        ),
         Section::Process => view! {
             <div class="stack-sm">
                 <div>
@@ -544,12 +566,18 @@ pub(super) fn dependency_fields(service: String, form: RwSignal<ServiceForm>) ->
     .into_any()
 }
 
-/// Key/value rows for the service environment.
-pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> AnyView {
+/// Editable key/value rows, such as environment variables or build arguments,
+/// selected from the form by the `read`/`write` accessors.
+pub(super) fn pair_rows(
+    add_label: &'static str,
+    form: RwSignal<ServiceForm>,
+    read: fn(&ServiceForm) -> &Vec<(String, String)>,
+    write: fn(&mut ServiceForm) -> &mut Vec<(String, String)>,
+) -> AnyView {
     view! {
         <div class="form-list">
             <For
-                each={move || (0..form.with(|v| v.environment.len())).collect::<Vec<_>>()}
+                each={move || (0..form.with(|v| read(v).len())).collect::<Vec<_>>()}
                 key={|i| *i}
                 children={move |i| {
                     view! {
@@ -557,11 +585,9 @@ pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> AnyView {
                             {text_input(
                                 "Key",
                                 form,
-                                move |v| {
-                                    v.environment.get(i).map_or_else(String::new, |v| v.0.clone())
-                                },
+                                move |v| read(v).get(i).map_or_else(String::new, |v| v.0.clone()),
                                 move |v, s| {
-                                    if let Some(value) = v.environment.get_mut(i) {
+                                    if let Some(value) = write(v).get_mut(i) {
                                         value.0 = s;
                                     }
                                 },
@@ -569,11 +595,9 @@ pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> AnyView {
                             {text_input(
                                 "Value",
                                 form,
-                                move |v| {
-                                    v.environment.get(i).map_or_else(String::new, |v| v.1.clone())
-                                },
+                                move |v| read(v).get(i).map_or_else(String::new, |v| v.1.clone()),
                                 move |v, s| {
-                                    if let Some(value) = v.environment.get_mut(i) {
+                                    if let Some(value) = write(v).get_mut(i) {
                                         value.1 = s;
                                     }
                                 },
@@ -581,7 +605,7 @@ pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> AnyView {
                             {remove_button(move || {
                                 form
                                     .update(|v| {
-                                        v.environment.remove(i);
+                                        write(v).remove(i);
                                     })
                             })}
                         </div>
@@ -589,10 +613,7 @@ pub(super) fn environment_fields(form: RwSignal<ServiceForm>) -> AnyView {
                 }}
             />
         </div>
-        {add_button(
-            "Add variable",
-            move || form.update(|v| v.environment.push((String::new(), String::new()))),
-        )}
+        {add_button(add_label, move || form.update(|v| write(v).push(Default::default())))}
     }
     .into_any()
 }
