@@ -50,8 +50,8 @@ Active-target repair cannot revert or remove prepared job prerequisites, but
 continues maintaining other active services. Job services
 and their containers are labelled with the operation that started them. Every
 deployment, even one without jobs, first removes job services of earlier
-operations and waits until their containers stopped, and a new run is only
-created after the replaced run's container stopped, so runs never overlap. A
+operations and waits until their containers have stopped, and a new run is only
+created after the replaced run's container has stopped, so runs never overlap. A
 retried operation skips jobs it already ran successfully and resumes a run that
 is still running or succeeded, which also covers a start whose response was
 lost; a failed run is replaced. The controller polls each job until it exits or
