@@ -93,10 +93,12 @@ forwarding headers only from peers in that range, e.g. Express
 
 Only the gateway, Swarm's load balancer for that network, and the application's
 own routed services are attached to the ingress network, so a forwarded header
-from that range was set by Caddy or by the application itself. Private networks
-use different ranges, so other services cannot forge it. The value follows the
-network: piqueld updates services if the network is recreated, and treats a
-modified value as drift. Requests reaching Caddy through Docker's userland proxy
+from that range was set by Caddy or by the application itself. Trusting the range
+therefore also trusts every routed service and replica of the application; a
+compromised one could forge client addresses. Private networks use different
+ranges, so services outside the ingress network cannot forge it. The value
+follows the network: piqueld updates services if the network is recreated, and
+treats a modified value as drift. Requests reaching Caddy through Docker's userland proxy
 (for example IPv6 to an IPv4-only bridge) appear to come from the bridge gateway.
 
 ## Status and recovery

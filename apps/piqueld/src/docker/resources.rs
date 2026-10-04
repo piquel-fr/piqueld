@@ -380,12 +380,22 @@ impl BollardDocker {
 
     /// List responses can omit immutable network fields, so reconciliation
     /// decisions must use a complete inspection of the selected resource.
-    ///
-    /// Retries while the inspection lacks a driver or `attachable` flag, up to
-    /// `NETWORK_INSPECT_ATTEMPTS`. Returns `None` when the network is gone.
-    pub(super) async fn inspect_network_complete(
+    async fn inspect_network_complete(
         &self,
         identifier: &str,
+    ) -> Result<Option<bollard::models::Network>, DockerError> {
+        self.inspect_network_until(identifier, |_| true).await
+    }
+
+    /// Inspects a network until it is complete and `ready`.
+    ///
+    /// Retries while the inspection lacks a driver or `attachable` flag, or is
+    /// not `ready`, up to `NETWORK_INSPECT_ATTEMPTS`. Returns `None` when the
+    /// network is gone.
+    pub(super) async fn inspect_network_until(
+        &self,
+        identifier: &str,
+        ready: impl Fn(&bollard::models::Network) -> bool,
     ) -> Result<Option<bollard::models::Network>, DockerError> {
         let mut attempt = 1;
         loop {
@@ -399,7 +409,8 @@ impl BollardDocker {
                         .driver
                         .as_deref()
                         .is_some_and(|driver| !driver.is_empty())
-                        && network.attachable.is_some() =>
+                        && network.attachable.is_some()
+                        && ready(&network) =>
                 {
                     return Ok(Some(network));
                 }

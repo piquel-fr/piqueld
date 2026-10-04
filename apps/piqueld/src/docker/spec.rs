@@ -15,7 +15,8 @@ impl BollardDocker {
     /// ingress network get `INGRESS_PROXIES_ENV` set to that network's subnets.
     ///
     /// Fails when a secret version is missing, or when the ingress network is
-    /// missing or has no subnet.
+    /// missing or still has no subnet after bounded inspection retries, since
+    /// Swarm assigns subnets after creating the network.
     pub(super) async fn runtime_service_spec(
         &self,
         desired: &DesiredService,
@@ -34,7 +35,9 @@ impl BollardDocker {
         }
         if let Some(network) = desired.ingress_network() {
             let proxies = self
-                .inspect_network_complete(network.as_str())
+                .inspect_network_until(network.as_str(), |network| {
+                    Self::ingress_proxies(network).is_some()
+                })
                 .await?
                 .as_ref()
                 .and_then(Self::ingress_proxies)
