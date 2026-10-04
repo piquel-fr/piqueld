@@ -107,8 +107,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     }
     async fn build_image_recorded(
         &self,
-        dockerfile: &std::path::Path,
-        context: &std::path::Path,
+        build: &super::ImageBuild<'_>,
         log: Option<&crate::build::BuildLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         let _permit = self
@@ -116,16 +115,13 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
             .acquire()
             .await
             .map_err(|_| DockerError::Unavailable("build concurrency gate"))?;
-        self.inner
-            .build_image_recorded(dockerfile, context, log)
-            .await
+        self.inner.build_image_recorded(build, log).await
     }
     async fn build_image(
         &self,
-        dockerfile: &std::path::Path,
-        context: &std::path::Path,
+        build: &super::ImageBuild<'_>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        self.build_image_recorded(dockerfile, context, None).await
+        self.build_image_recorded(build, None).await
     }
     /// Waiting for an observation permit counts against the request budget.
     async fn observe(&self, id: &EnvironmentId) -> Result<ObservedApplication, DockerError> {

@@ -158,6 +158,7 @@ impl From<&Service> for ServiceForm {
                     Build::Docker {
                         dockerfile,
                         context,
+                        ..
                     },
             } => {
                 form.source_kind = "self".into();
@@ -200,7 +201,9 @@ impl From<&Service> for ServiceForm {
     }
 }
 impl ServiceForm {
-    fn source(&self) -> Result<Source, String> {
+    /// Builds the edited source. The form does not edit Docker build arguments
+    /// or targets, so they are taken from the saved Git source.
+    fn source(&self, saved: &mut Source) -> Result<Source, String> {
         let repository = match self.source_kind.as_str() {
             "image" => {
                 return Ok(Source::Image {
@@ -215,11 +218,20 @@ impl ServiceForm {
             "self" => SourceRepository::Manifest(ManifestRepository::Manifest),
             _ => return Err("Choose image or Git as the source.".into()),
         };
+        let (args, target) = match saved {
+            Source::Git {
+                build: Build::Docker { args, target, .. },
+                ..
+            } => (std::mem::take(args), target.take()),
+            Source::Image { .. } => Default::default(),
+        };
         Ok(Source::Git {
             repository,
             build: Build::Docker {
                 dockerfile: self.dockerfile.clone(),
                 context: self.context.clone(),
+                args,
+                target,
             },
         })
     }
@@ -281,7 +293,7 @@ impl ServiceForm {
     pub fn patch(&self, section: Section, service: &mut Service) -> Result<(), String> {
         match section {
             Section::General => {
-                service.source = self.source()?;
+                service.source = self.source(&mut service.source)?;
                 service.replicas = self
                     .replicas
                     .parse()
@@ -408,6 +420,8 @@ mod tests {
             build: Build::Docker {
                 dockerfile: "infra/Dockerfile".into(),
                 context: "app".into(),
+                args: [("ORIGIN".into(), "https://example.com".into())].into(),
+                target: Some("runtime".into()),
             },
         };
         let source = saved.source.clone();

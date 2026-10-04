@@ -165,6 +165,9 @@ branch = "main"
 type = "docker"
 dockerfile = "services/web/Dockerfile"
 context = "."
+# Optional: values passed as --build-arg, and a multi-stage target.
+args = { VITE_AUTH_ORIGIN = "https://auth.example.com" }
+target = "runtime"
 ```
 
 The daemon requires Git and the Docker CLI in its PATH. Git inherits the host's
@@ -177,13 +180,19 @@ Increase that budget for longer builds.
 Each preparation gets an isolated checkout. A full configured commit hash is
 used directly; otherwise the branch head is resolved once. Dockerfile and context
 paths are relative to the repository root, must stay within it, and default build
-context is `.`. There is no automatic build backend detection, submodule or LFS
+context is `.`. Build argument names follow the environment variable rules, and
+`target` must name a stage in the Dockerfile; without it Docker builds the final
+stage. Build arguments are not secret: Docker records them in image metadata and
+piqueld shows them in manifests and build history. Use service secrets for
+sensitive values. There is no automatic build backend detection, submodule or LFS
 setup, registry publishing, or automatic image cleanup. Docker's build cache is
 reused and base images are refreshed with `--pull`.
 
 The resolved source records the full Git commit and content-addressed local image
-ID. All service sources are prepared before any application rollout. A failed
-checkout or build preserves the existing running deployment. Normal reconciliation
+ID. Every repository and build field, including build arguments and the target, is
+part of that source's identity, so changing any of them triggers a rebuild. All
+service sources are prepared before any application rollout. A failed checkout or
+build preserves the existing running deployment. Normal reconciliation
 reuses prepared images; explicit deploy resolves and builds sources again.
 Local images are supported only on the existing single-node Swarm topology.
 

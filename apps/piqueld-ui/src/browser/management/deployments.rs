@@ -691,12 +691,24 @@ fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
                 piqueld_client::Build::Docker {
                     dockerfile,
                     context,
+                    args,
+                    target,
                 },
         } => {
-            format!(
+            let mut source = format!(
                 "Git: {} · Dockerfile: {} · context: {}",
                 repository, dockerfile, context,
-            )
+            );
+            if let Some(target) = target {
+                source.push_str(&format!(" · target: {target}"));
+            }
+            if !args.is_empty() {
+                source.push_str(&format!(
+                    " · args: {}",
+                    crate::browser::builds::build_arguments(&args)
+                ));
+            }
+            source
         }
     };
     let list = |items: Vec<String>| {

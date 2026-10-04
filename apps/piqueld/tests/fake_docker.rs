@@ -9,7 +9,7 @@ use application_fixture::TestApplications;
 
 use async_trait::async_trait;
 use piqueld::docker::{
-    DockerApi, DockerError, ImageSource, JobOutput, JobRuns, JobStatus, SwarmState,
+    DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus, SwarmState,
     resolve_image_digest,
 };
 use piqueld::reconcile::Controller;
@@ -307,13 +307,9 @@ impl DockerApi for FakeDocker {
         Ok(SwarmState::Ready)
     }
 
-    async fn build_image(
-        &self,
-        dockerfile: &std::path::Path,
-        context: &std::path::Path,
-    ) -> Result<Sha256Digest, DockerError> {
-        assert!(context.is_dir());
-        let contents = tokio::fs::read_to_string(dockerfile).await.unwrap();
+    async fn build_image(&self, build: &ImageBuild<'_>) -> Result<Sha256Digest, DockerError> {
+        assert!(build.context.is_dir());
+        let contents = tokio::fs::read_to_string(&build.dockerfile).await.unwrap();
         if contents.contains("build-fails") {
             return Err(DockerError::Request("build Docker image"));
         }
@@ -323,11 +319,10 @@ impl DockerApi for FakeDocker {
     /// Build output is not recorded.
     async fn build_image_recorded(
         &self,
-        dockerfile: &std::path::Path,
-        context: &std::path::Path,
+        build: &ImageBuild<'_>,
         _log: Option<&piqueld::build::BuildLog>,
     ) -> Result<Sha256Digest, DockerError> {
-        self.build_image(dockerfile, context).await
+        self.build_image(build).await
     }
     /// The reconciler never runs commands.
     async fn create_exec(
@@ -2385,6 +2380,8 @@ mod repository_deployments {
                 build: piqueld_core::manifest::Build::Docker {
                     dockerfile: "Dockerfile".into(),
                     context: ".".into(),
+                    args: std::collections::BTreeMap::new(),
+                    target: None,
                 },
             }
         }
@@ -2731,6 +2728,8 @@ mod repository_deployments {
             build: piqueld_core::manifest::Build::Docker {
                 dockerfile: "Dockerfile".into(),
                 context: ".".into(),
+                args: std::collections::BTreeMap::new(),
+                target: None,
             },
         };
         repository.write("app.json", &fetched);

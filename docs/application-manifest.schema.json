@@ -67,6 +67,16 @@
         {
           "description": "Build a local container image using Docker.",
           "properties": {
+            "args": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Values passed as `--build-arg`. They are recorded in image\nmetadata, so sensitive values belong in secrets instead.",
+              "propertyNames": {
+                "type": "string"
+              },
+              "type": "object"
+            },
             "context": {
               "description": "Build context relative to the repository root.",
               "type": "string"
@@ -74,6 +84,13 @@
             "dockerfile": {
               "description": "Dockerfile path relative to the repository root.",
               "type": "string"
+            },
+            "target": {
+              "description": "Multi-stage build target; the final stage when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "type": {
               "enum": [

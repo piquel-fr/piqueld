@@ -45,6 +45,8 @@ impl GitBuildFixture {
             build: piqueld_core::manifest::Build::Docker {
                 dockerfile: "Dockerfile".into(),
                 context: ".".into(),
+                args: std::collections::BTreeMap::new(),
+                target: None,
             },
         };
         Self {
