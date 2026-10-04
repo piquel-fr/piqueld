@@ -3504,7 +3504,10 @@ async fn job_timeout_keeps_output_despite_status_errors() {
     assert_eq!(run.state, piqueld_core::api::BuildState::Failed);
     assert_eq!(output, "migrated\n");
     assert!(harness.docker.jobs.lock().await.is_empty());
-    assert!(harness.docker.observed.lock().await.services.is_empty());
+    assert_eq!(
+        harness.docker.observed.lock().await.services,
+        [] as [piqueld_core::ObservedService; 0]
+    );
 }
 
 #[tokio::test]
@@ -3565,5 +3568,5 @@ async fn blocked_deployment_runs_no_jobs() {
         harness.scan_result(&operation).await,
         (OperationState::Failed, Some("ownership_conflict".into()))
     );
-    assert!(harness.started_jobs().await.is_empty());
+    assert_eq!(harness.started_jobs().await, [] as [String; 0]);
 }
