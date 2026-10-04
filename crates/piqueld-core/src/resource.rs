@@ -8,8 +8,8 @@ use crate::{
     ApplicationId, ApplicationName, DockerNetworkName, DockerServiceName, DockerVolumeName,
     JobName, ResourceKind, ServiceName, VolumeName, docker_resource_name,
     manifest::{
-        HealthCheck, JobRun, NormalizedApplication, ResourceLimits, Source, SourceRepository,
-        valid_image_reference,
+        HealthCheck, JobRun, NormalizedApplication, ResourceLimits, Rollout, RolloutPolicy, Source,
+        SourceRepository, valid_image_reference,
     },
 };
 use crate::{ImageReference, ImmutableImage, RepositoryDigest};
@@ -394,9 +394,20 @@ pub struct DesiredService {
     /// Planning order only; it is not part of the Docker specification.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<ServiceName>,
+    /// Rollout settings, resolved by [`Self::rollout_policy`]. Omitted when
+    /// default, so targets prepared before the setting existed still decode.
+    #[serde(default, skip_serializing_if = "Rollout::is_default")]
+    pub rollout: Rollout,
 }
 
 impl DesiredService {
+    /// The update policy Docker applies to this service; see [`Rollout::policy`].
+    #[must_use]
+    pub fn rollout_policy(&self) -> RolloutPolicy {
+        self.rollout
+            .policy(self.mounts.iter().map(|mount| mount.read_only))
+    }
+
     /// Returns whether the service has a canonical name and identity.
     ///
     /// Requires valid ownership labels whose service label equals the logical
@@ -905,6 +916,7 @@ fn compile_service(
         networks: vec![private_network.clone()],
         labels: ownership.labels(),
         depends_on: service.depends_on.clone(),
+        rollout: service.rollout,
     }
 }
 
@@ -926,6 +938,7 @@ fn compile_job(
     container.arguments.clear();
     container.healthcheck = None;
     container.depends_on.clear();
+    container.rollout = Rollout::default();
     container.labels = application_ownership.labels();
     container
         .labels
@@ -1188,6 +1201,8 @@ pub struct ObservedService {
     pub networks: Vec<NetworkAttachment>,
     /// Ownership labels observed on the service.
     pub labels: BTreeMap<String, String>,
+    /// Observed update policy; `None` when Docker reports one piqueld cannot express.
+    pub rollout: Option<RolloutPolicy>,
     /// Whether adapter-owned settings remain canonical.
     pub runtime_configuration_matches: bool,
     /// Task observations used to derive convergence.
@@ -1257,6 +1272,7 @@ impl ObservedService {
             ("networks", self.networks_match(desired)),
             ("healthcheck", self.healthcheck_matches(desired)),
             ("resources", self.resources == desired.resources),
+            ("rollout", self.rollout == Some(desired.rollout_policy())),
             ("runtime_policy", self.runtime_configuration_matches),
             ("labels", owned_label_subset(&self.labels, &desired.labels)),
         ]

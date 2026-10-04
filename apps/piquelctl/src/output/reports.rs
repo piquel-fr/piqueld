@@ -447,6 +447,19 @@ report!(PlanView, self, out, {
         };
         out.line(format_args!("      {risk} · {reason}"))?;
     }
+    if !self.rollouts.is_empty() {
+        out.blank()?;
+        out.heading("Rollout:")?;
+        for rollout in &self.rollouts {
+            out.line(format_args!(
+                "  {}: {} ({}) · monitor {}s",
+                rollout.service,
+                rollout.order,
+                rollout.order_source.as_str(),
+                rollout.monitor_seconds
+            ))?;
+        }
+    }
     for diagnostic in &self.plan.diagnostics {
         out.blank()?;
         out.label(

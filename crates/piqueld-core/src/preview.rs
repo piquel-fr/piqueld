@@ -1,5 +1,9 @@
 //! Manifest differences describe user intent without requiring Docker observation.
-use crate::{NormalizedApplication, api::ManifestChange};
+use crate::{
+    DiagnosticSeverity, NormalizedApplication, PlanDiagnostic,
+    api::{ManifestChange, ServiceRolloutView},
+    codes,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 impl ManifestChange {
@@ -92,7 +96,48 @@ impl ManifestChange {
     }
 }
 
+impl ServiceRolloutView {
+    /// Effective rollout of every service in `application`, in canonical order.
+    #[must_use]
+    pub fn for_application(application: &NormalizedApplication) -> Vec<Self> {
+        application
+            .spec()
+            .services
+            .iter()
+            .map(|service| {
+                let policy = service.rollout_policy();
+                Self {
+                    service: service.name.to_string(),
+                    order: policy.order,
+                    order_source: service.rollout.order_source(),
+                    monitor_seconds: policy.monitor_seconds,
+                }
+            })
+            .collect()
+    }
+}
+
 impl crate::Plan {
+    /// Warns about each service of `application` whose explicit start-first
+    /// order lets the old and new task write the same volume at once.
+    pub fn warn_rollouts(&mut self, application: &NormalizedApplication) {
+        self.diagnostics.extend(
+            application
+                .spec()
+                .services
+                .iter()
+                .filter(|service| service.rollout_overlaps_writable_volume())
+                .map(|service| PlanDiagnostic {
+                    code: codes::ROLLOUT_START_FIRST_WRITABLE_VOLUME.into(),
+                    severity: DiagnosticSeverity::Warning,
+                    resource: service.name.to_string(),
+                    message: "start-first rollouts briefly run two tasks on the same writable volume; single-writer stores such as PostgreSQL or SQLite can corrupt their data".into(),
+                    blocking: false,
+                }),
+        );
+        self.sort_diagnostics();
+    }
+
     /// Removes sensitive configuration from an informational preview's runtime actions.
     /// Execution always recomputes its own plan from the unredacted desired target.
     pub fn redact_configuration(&mut self) {

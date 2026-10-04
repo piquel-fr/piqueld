@@ -354,6 +354,44 @@
       },
       "type": "object"
     },
+    "Rollout": {
+      "additionalProperties": false,
+      "description": "Optional `rollout` block of a service. Omitted fields keep their defaults,\nso an empty block is equivalent to no block.",
+      "properties": {
+        "monitor_seconds": {
+          "default": null,
+          "description": "Seconds Docker watches each replacement task for failure; 30 when omitted.",
+          "format": "int32",
+          "maximum": 3600,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "order": {
+          "default": null,
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/RolloutOrder",
+              "description": "Update order; derived from the service's mounts when omitted."
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RolloutOrder": {
+      "description": "Whether Docker stops a task before or after starting its replacement.",
+      "enum": [
+        "stop-first",
+        "start-first"
+      ],
+      "type": "string"
+    },
     "Route": {
       "additionalProperties": false,
       "description": "Public HTTP route input, validated independently of ingress enablement.\nA route sets either `service` and `port`, or `redirect`.",
@@ -569,6 +607,10 @@
               "description": "Optional CPU and memory limits."
             }
           ]
+        },
+        "rollout": {
+          "$ref": "#/definitions/Rollout",
+          "description": "Optional rollout order and monitor window."
         },
         "secrets": {
           "description": "Application-scoped secrets mounted as files.",

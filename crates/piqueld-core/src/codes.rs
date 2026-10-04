@@ -23,6 +23,10 @@ pub const SERVICE_DEPENDENCY_DUPLICATE: &str = "service_dependency_duplicate";
 pub const SERVICE_DEPENDENCY_COUNT_EXCESSIVE: &str = "service_dependency_count_excessive";
 /// Service dependencies form or lead into a cycle.
 pub const SERVICE_DEPENDENCY_CYCLE: &str = "service_dependency_cycle";
+/// Rollout monitor window is outside its supported range.
+pub const ROLLOUT_MONITOR_INVALID: &str = "rollout_monitor_invalid";
+/// An explicit start-first order lets two tasks share a writable volume.
+pub const ROLLOUT_START_FIRST_WRITABLE_VOLUME: &str = "rollout_start_first_writable_volume";
 /// Replica count is outside its supported range.
 pub const REPLICAS_OUT_OF_RANGE: &str = "replicas_out_of_range";
 /// Image reference is not a safe registry reference.

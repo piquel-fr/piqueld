@@ -8,6 +8,7 @@ use piqueld_core::{
     api::{
         ApplicationDetailView, ApplicationStatusView, ApplicationSummary, ApplicationView,
         DiagnosticView, MAX_APPLICATION_PAGE_SIZE, ManifestChange, Page, PlanView,
+        ServiceRolloutView,
     },
     compile_application, preview_resolution,
 };
@@ -142,7 +143,8 @@ impl ApplicationService {
             |app| app.application.id().clone(),
         );
         let application = manifest.normalize(id.clone());
-        let plan = self.preview_plan(&application, current.as_ref()).await?;
+        let mut plan = self.preview_plan(&application, current.as_ref()).await?;
+        plan.warn_rollouts(&application);
         let operation = if let Some(current) = &current {
             self.store
                 .latest_operation_for_application(current.application.id())
@@ -168,6 +170,7 @@ impl ApplicationService {
             operation,
             changes: ManifestChange::between(baseline.as_ref(), &application),
             plan,
+            rollouts: ServiceRolloutView::for_application(&application),
         })
     }
     /// Plans the runtime changes for `app` against the current observation.

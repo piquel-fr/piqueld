@@ -7,7 +7,7 @@ use super::{client_error_message, editor, mutation_client, transport_failure};
 use crate::browser::Alive;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use piqueld_client::{ApplyApplicationRequest, Client, DeploymentView, Page, Source};
+use piqueld_client::{ApplyApplicationRequest, Client, DeploymentView, Page, Rollout, Source};
 
 /// "Preview" and "Deploy" buttons for the saved configuration. Preview asks the
 /// daemon for a plan (cleared whenever the saved view changes); Deploy starts a
@@ -185,6 +185,32 @@ fn DeploymentPreview(preview: RwSignal<Option<piqueld_client::PlanView>>) -> imp
                                     }
                                         .into_any()
                                 }}
+                            </section>
+                            <section>
+                                <div class="section-header">
+                                    <h3>"Rollout"</h3>
+                                </div>
+                                <ul class="stack-sm">
+                                    {plan
+                                        .rollouts
+                                        .into_iter()
+                                        .map(|rollout| {
+                                            view! {
+                                                <li class="btn-group">
+                                                    <code>{rollout.service}</code>
+                                                    {badge(Tone::Neutral, rollout.order.as_str())}
+                                                    <span class="hint">
+                                                        {format!(
+                                                            "{} · monitor {}s",
+                                                            rollout.order_source.as_str(),
+                                                            rollout.monitor_seconds,
+                                                        )}
+                                                    </span>
+                                                </li>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </ul>
                             </section>
                             {(!plan.plan.diagnostics.is_empty())
                                 .then(|| {
@@ -717,6 +743,14 @@ fn SnapshotService(service: piqueld_client::Service) -> impl IntoView {
                 </dd>
                 <dt>"Startup dependencies"</dt>
                 <dd>{list(service.depends_on.clone())}</dd>
+                <dt>"Rollout"</dt>
+                <dd>
+                    {format!(
+                        "{} · monitor {}s",
+                        service.rollout.order.map_or("derived from mounts", |order| order.as_str()),
+                        service.rollout.monitor_seconds.unwrap_or(Rollout::DEFAULT_MONITOR_SECONDS),
+                    )}
+                </dd>
                 <SnapshotRuntime service={service} />
             </dl>
         </div>

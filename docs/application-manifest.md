@@ -36,7 +36,7 @@ name = "data"
 ```
 
 Services support replicas, environment variables, command and argument arrays,
-health checks, startup dependencies, CPU/memory limits, mounts of declared
+health checks, startup dependencies, rollout settings, CPU/memory limits, mounts of declared
 named volumes, and file references to application secrets. Named volumes are retained when an application
 is deleted. Secret values are never manifest fields (manifests may only ask piqueld to
 generate them), and there are no manifest
@@ -46,7 +46,8 @@ fields for directly published ports. Exact-host HTTP routes are declared in
 Rollouts start each replacement task before stopping the old one, except for
 services that mount any volume without `read_only = true`. Those stop the old
 task first so single-writer stores such as PostgreSQL or SQLite never share
-their data directory, and are briefly unavailable during each rollout.
+their data directory, and are briefly unavailable during each rollout. A
+service can choose its own order; see [Rollout](#rollout).
 
 Services of one application share a private network on which each answers to
 its manifest name, so `web` reaches a `postgres` service at `postgres:5432`.
@@ -81,6 +82,7 @@ error whose message names the offending environment key where applicable:
 | Jobs per application | 16 |
 | Job timeout | 86,400 seconds |
 | Health-check interval | 3,600 seconds |
+| Rollout monitor | 3,600 seconds |
 | CPU limit | 1,048,576 millicores |
 
 Defaults are replicas `1`, empty command and arguments, writable mounts, and
@@ -311,6 +313,40 @@ This is startup ordering only. It gives no runtime guarantee after rollout:
 a dependency that later becomes unhealthy does not stop or restart its
 dependents, and drift repair does not pass a dependency that is still
 converging.
+
+## Rollout
+
+```toml
+[[spec.services]]
+name = "worker"
+
+[spec.services.rollout]
+order = "stop-first"   # or "start-first"
+monitor_seconds = 30
+```
+
+Docker replaces one task at a time and pauses the rollout when a replacement
+fails within `monitor_seconds` of starting. `stop-first` stops the old task
+before starting its replacement: tasks never overlap, at the cost of a short
+downtime. `start-first` starts the replacement first, so there is no downtime
+but the two tasks briefly run side by side. Use `stop-first` for a singleton
+worker that must not run twice, and `start-first` for a store that tolerates
+two writers.
+
+Both fields are optional, and an empty or missing block keeps the defaults:
+the order is derived from the mounts (`stop-first` when any volume is mounted
+writable, `start-first` otherwise) and the monitor window is 30 seconds. The
+order must be one of the two values above, and `monitor_seconds` must be
+between 1 and 3,600 (`rollout_monitor_invalid`). Docker only reports an update
+as complete once the last replacement's monitor window has passed, so keep it
+below `reconciliation.convergence_timeout_seconds`.
+
+`app plan` lists each service's effective order, marked `derived` or
+`explicit`, and its monitor window. It warns with
+`rollout_start_first_writable_volume` when `start-first` is set on a service
+that mounts a volume writable, since two tasks then write the same data
+directory. The warning does not block the deployment. Changing either setting
+updates the service once.
 
 ## Jobs
 

@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use piqueld_core::manifest::{Rollout, RolloutOrder};
 use piqueld_core::planner::{ActionKind, PlanRequest};
 use piqueld_core::resource::{
     Convergence, NetworkAttachment, ObservedApplication, ObservedNetwork, ObservedService,
@@ -81,6 +82,7 @@ fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedAp
                 resources: service.resources.clone(),
                 networks: service.network_attachments(),
                 labels: service.labels.clone(),
+                rollout: Some(service.rollout_policy()),
                 runtime_configuration_matches: true,
                 tasks: vec![ObservedTask {
                     state: TaskState::Running,
@@ -157,6 +159,76 @@ fn planner_creates_only_supported_runtime_actions() {
             .iter()
             .all(|action| !matches!(action.kind, ActionKind::ResolveImage { .. }))
     );
+}
+
+#[test]
+fn plan_shows_effective_rollouts_and_warns_about_overlapping_writers() {
+    use piqueld_core::api::ServiceRolloutView;
+    use piqueld_core::manifest::RolloutOrderSource;
+    let rollout = |app: &piqueld_core::NormalizedApplication| {
+        let mut plan = Plan::default();
+        plan.warn_rollouts(app);
+        let [view] = ServiceRolloutView::for_application(app).try_into().unwrap();
+        (view, plan)
+    };
+
+    // The fixture's only service mounts its volume writable.
+    let (derived, plan) = rollout(&application());
+    assert_eq!(
+        (derived.order, derived.order_source, derived.monitor_seconds),
+        (
+            RolloutOrder::StopFirst,
+            RolloutOrderSource::Derived,
+            Rollout::DEFAULT_MONITOR_SECONDS
+        )
+    );
+    assert_eq!(plan.diagnostics, [] as [piqueld_core::PlanDiagnostic; 0]);
+
+    let overlapping = parse_toml(&format!(
+        "{}\n[spec.services.rollout]\norder = \"start-first\"\n",
+        include_str!("fixtures/manifests/prebuilt.toml")
+    ))
+    .unwrap()
+    .normalize(ApplicationId::parse("app-notes-01").unwrap());
+    let (explicit, plan) = rollout(&overlapping);
+    assert_eq!(
+        (explicit.order, explicit.order_source),
+        (RolloutOrder::StartFirst, RolloutOrderSource::Explicit)
+    );
+    let [warning] = plan.diagnostics.as_slice() else {
+        panic!("expected one warning, got {:?}", plan.diagnostics);
+    };
+    assert_eq!(
+        (warning.code.as_str(), warning.resource.as_str()),
+        (
+            piqueld_core::codes::ROLLOUT_START_FIRST_WRITABLE_VOLUME,
+            "web"
+        )
+    );
+    assert_eq!(warning.severity, piqueld_core::DiagnosticSeverity::Warning);
+    assert!(!plan.is_blocked());
+}
+
+#[test]
+fn changed_rollout_settings_drift_until_applied() {
+    let mut desired = compile_application(&application(), instance(), &resolutions()).unwrap();
+    let converged = observed(&desired).services.remove(0);
+    assert_eq!(converged.drift(&desired.services[0]), [] as [&str; 0]);
+
+    desired.services[0].rollout = Rollout {
+        order: Some(RolloutOrder::StartFirst),
+        monitor_seconds: Some(10),
+    };
+    assert_eq!(converged.drift(&desired.services[0]), ["rollout"]);
+    let updated = observed(&desired).services.remove(0);
+    assert_eq!(updated.drift(&desired.services[0]), [] as [&str; 0]);
+
+    // Docker reporting a policy piqueld cannot express is drift too.
+    let unexpressible = ObservedService {
+        rollout: None,
+        ..updated
+    };
+    assert_eq!(unexpressible.drift(&desired.services[0]), ["rollout"]);
 }
 
 #[test]
@@ -323,6 +395,7 @@ fn desired_identity_matrices_reject_non_canonical_resources() {
         healthcheck: None,
         resources: None,
         depends_on: Vec::new(),
+        rollout: piqueld_core::manifest::Rollout::default(),
         networks: vec![
             piqueld_core::DockerNetworkName::parse(piqueld_core::docker_resource_name(
                 &id,

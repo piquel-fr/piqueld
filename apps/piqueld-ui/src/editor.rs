@@ -1,7 +1,7 @@
 //! Form drafts and section patches. Each save changes only its own settings group.
 use piqueld_client::{
-    Build, GitRepository, HealthCheck, ManifestRepository, Mount, ResourceLimits, Service, Source,
-    SourceRepository,
+    Build, GitRepository, HealthCheck, ManifestRepository, Mount, ResourceLimits, Rollout, Service,
+    Source, SourceRepository,
 };
 
 /// Independently saved service settings.
@@ -19,18 +19,21 @@ pub enum Section {
     Health,
     /// Services that must be healthy before this one rolls out.
     Dependencies,
+    /// Update order and monitor window.
+    Rollout,
     /// CPU and memory limits.
     Resources,
 }
 impl Section {
     /// All form groups in display order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::General,
         Self::Environment,
         Self::Process,
         Self::Storage,
         Self::Health,
         Self::Dependencies,
+        Self::Rollout,
         Self::Resources,
     ];
     /// Human-readable form heading.
@@ -43,6 +46,7 @@ impl Section {
             Self::Storage => "Volume mounts",
             Self::Health => "Health check",
             Self::Dependencies => "Startup dependencies",
+            Self::Rollout => "Rollout",
             Self::Resources => "Resource limits",
         }
     }
@@ -89,6 +93,10 @@ pub struct ServiceForm {
     pub health_command: Vec<String>,
     /// Sorted names of services that must be healthy first.
     pub depends_on: Vec<String>,
+    /// `derived`, `stop-first`, or `start-first`.
+    pub rollout_order: String,
+    /// Optional rollout monitor window in seconds.
+    pub monitor: String,
     /// Optional CPU limit in millicores.
     pub cpu: String,
     /// Optional memory limit in bytes.
@@ -122,6 +130,15 @@ impl From<&Service> for ServiceForm {
             timeout: "3".into(),
             health_command: Vec::new(),
             depends_on: service.depends_on.clone(),
+            rollout_order: service
+                .rollout
+                .order
+                .map_or("derived", |order| order.as_str())
+                .into(),
+            monitor: service
+                .rollout
+                .monitor_seconds
+                .map_or_else(String::new, |v| v.to_string()),
             cpu: service
                 .resources
                 .as_ref()
@@ -239,6 +256,25 @@ impl ServiceForm {
         })
     }
 
+    /// Parses the selected rollout order and the optional monitor window.
+    fn rollout(&self) -> Result<Rollout, String> {
+        Ok(Rollout {
+            order: match self.rollout_order.as_str() {
+                "derived" => None,
+                order => Some(order.parse()?),
+            },
+            monitor_seconds: if self.monitor.trim().is_empty() {
+                None
+            } else {
+                Some(
+                    self.monitor
+                        .parse()
+                        .map_err(|_| "Monitor window must be a positive integer in seconds.")?,
+                )
+            },
+        })
+    }
+
     /// Applies a single group to a fresh copy of saved configuration.
     /// # Errors
     /// Returns actionable errors for malformed numeric fields or duplicate environment keys.
@@ -267,6 +303,7 @@ impl ServiceForm {
             Section::Storage => service.mounts.clone_from(&self.mounts),
             Section::Health => service.healthcheck = self.healthcheck()?,
             Section::Dependencies => service.depends_on.clone_from(&self.depends_on),
+            Section::Rollout => service.rollout = self.rollout()?,
             Section::Resources => {
                 let cpu = if self.cpu.trim().is_empty() {
                     None
@@ -318,6 +355,7 @@ mod tests {
             healthcheck: None,
             resources: None,
             depends_on: Vec::new(),
+            rollout: Rollout::default(),
         }
     }
     #[test]

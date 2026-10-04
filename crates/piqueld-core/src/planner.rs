@@ -400,12 +400,17 @@ impl Plan {
                 plan
             }
         };
-        plan.diagnostics.sort_by(|left, right| {
+        plan.sort_diagnostics();
+        plan
+    }
+
+    /// Sorts diagnostics by resource then code for stable output.
+    pub(crate) fn sort_diagnostics(&mut self) {
+        self.diagnostics.sort_by(|left, right| {
             left.resource
                 .cmp(&right.resource)
                 .then(left.code.cmp(&right.code))
         });
-        plan
     }
 
     /// Records a blocking diagnostic for a same-name resource this application

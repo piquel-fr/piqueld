@@ -1,7 +1,7 @@
 //! Typed values owned by validated applications, exposed through immutable accessors.
 
 use super::input::{self, HealthCheck, JobRun, RepositoryManifest, ResourceLimits, Source};
-use super::{ValidationError, ValidationErrors};
+use super::{Rollout, RolloutPolicy, ValidationError, ValidationErrors};
 use crate::{ApplicationName, JobName, ServiceName, VolumeName};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -78,6 +78,9 @@ pub struct ValidatedService {
     /// Omitted when empty so existing specification hashes stay stable.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<ServiceName>,
+    /// Rollout settings. Omitted when default so existing specification hashes stay stable.
+    #[serde(skip_serializing_if = "Rollout::is_default")]
+    pub rollout: Rollout,
 }
 
 /// Validated named volume.
@@ -287,7 +290,26 @@ impl ValidatedService {
                     })
                 })
                 .collect::<Result<_, ValidationErrors>>()?,
+            rollout: value.rollout,
         })
+    }
+
+    /// The effective rollout policy; see [`Rollout::policy`].
+    #[must_use]
+    pub fn rollout_policy(&self) -> RolloutPolicy {
+        self.rollout.policy(self.read_only_mounts())
+    }
+
+    /// Whether an explicit start-first order lets two tasks share a writable volume.
+    #[must_use]
+    pub fn rollout_overlaps_writable_volume(&self) -> bool {
+        self.rollout
+            .overlaps_writable_volume(self.read_only_mounts())
+    }
+
+    /// Read-only flags of the mounts, from which the default rollout order derives.
+    fn read_only_mounts(&self) -> impl Iterator<Item = bool> + '_ {
+        self.mounts.iter().map(|mount| mount.read_only)
     }
 
     /// Converts back to the editable input shape used for export.
@@ -312,6 +334,7 @@ impl ValidatedService {
             healthcheck: self.healthcheck.clone(),
             resources: self.resources.clone(),
             depends_on: self.depends_on.iter().map(ToString::to_string).collect(),
+            rollout: self.rollout,
         }
     }
 }

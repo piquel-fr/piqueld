@@ -393,7 +393,8 @@ fn plan(id: &str) -> Value {
         "plan": {
             "actions": [],
             "diagnostics": []
-        }
+        },
+        "rollouts": []
     })
 }
 

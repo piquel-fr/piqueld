@@ -239,6 +239,7 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
         resources: desired.resources.clone(),
         networks: desired.network_attachments(),
         labels: desired.labels.clone(),
+        rollout: Some(desired.rollout_policy()),
         runtime_configuration_matches: true,
         tasks: vec![ObservedTask {
             state: TaskState::Running,

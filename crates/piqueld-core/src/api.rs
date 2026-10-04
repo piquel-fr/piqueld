@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::manifest::ApplicationManifest;
+use crate::manifest::{ApplicationManifest, RolloutOrder, RolloutOrderSource};
 use crate::{ApplicationState, Convergence, NormalizedApplication, Operation, Plan};
 
 /// Versioned prefix used by all API endpoints.
@@ -121,6 +121,21 @@ pub struct PlanView {
     pub changes: Vec<ManifestChange>,
     /// Ordered runtime plan; unresolved images are explicit actions.
     pub plan: Plan,
+    /// Effective rollout of each service, sorted by service name.
+    pub rollouts: Vec<ServiceRolloutView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// A service's effective rollout order and monitor window.
+pub struct ServiceRolloutView {
+    /// Logical service name.
+    pub service: String,
+    /// Effective update order.
+    pub order: RolloutOrder,
+    /// Whether the order is set explicitly or derived from the mounts.
+    pub order_source: RolloutOrderSource,
+    /// Effective monitor window in seconds.
+    pub monitor_seconds: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]

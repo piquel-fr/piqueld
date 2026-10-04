@@ -145,6 +145,7 @@ impl SwarmScenario {
             networks: vec![network.name.clone()],
             labels: service_labels,
             depends_on: Vec::new(),
+            rollout: piqueld_core::manifest::Rollout::default(),
         };
         engine.ensure_service_eventually(&service).await;
         assert!(

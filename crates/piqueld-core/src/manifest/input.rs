@@ -135,6 +135,9 @@ pub struct Service {
     /// Services in this application that must be healthy before this one rolls out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    /// Optional rollout order and monitor window.
+    #[serde(default, skip_serializing_if = "super::Rollout::is_default")]
+    pub rollout: super::Rollout,
 }
 
 /// Serde default for `Service::replicas`.

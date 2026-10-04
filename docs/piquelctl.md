@@ -150,6 +150,7 @@ piquelctl app service env remove notes web RUST_LOG --yes
 piquelctl app service command notes web --yes -- /usr/bin/server
 piquelctl app service arguments notes web --yes -- --listen "0.0.0.0:8080"
 piquelctl app service depends-on notes web --yes -- postgres
+piquelctl app service rollout notes worker --order stop-first --monitor-seconds 60 --yes
 piquelctl app service add notes worker --git https://example.com/app.git --branch main --yes
 piquelctl app service source git notes web https://example.com/app.git --branch main --yes
 piquelctl app service source branch notes web release --yes
@@ -196,6 +197,12 @@ their transitive dependencies start or update and pass health checks before
 the job runs. Configure dependencies with `app service depends-on`. Other
 services wait for all jobs to succeed; a failed job does not roll back its
 dependencies. Jobs of dependency services must come earlier in the saved order.
+
+`app service rollout` replaces the service's rollout block: an omitted `--order`
+derives the order from the mounts, and an omitted `--monitor-seconds` uses 30
+seconds, so running it without flags restores the defaults. `app plan` lists each
+service's effective order and monitor window, and warns when `start-first` is set
+on a service with a writable volume.
 
 Command, argument, job command, and `depends-on` arrays preserve individual elements; place
 command options before `--`. An empty array clears the setting. Optional limits and pinned

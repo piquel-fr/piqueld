@@ -3,8 +3,8 @@
 use super::dependencies::StartupOrder;
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, GitRepository,
-    HealthCheck, Job, ManifestRevision, Mount, ResourceLimits, SecretDeclaration, SecretGenerator,
-    Service, Source, SourceRepository, ValidatedApplication, Volume,
+    HealthCheck, Job, ManifestRevision, Mount, ResourceLimits, Rollout, SecretDeclaration,
+    SecretGenerator, Service, Source, SourceRepository, ValidatedApplication, Volume,
 };
 use crate::{codes, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
@@ -288,6 +288,9 @@ pub fn safe_decode_path(path: &str) -> String {
         "encoding",
         "bits",
         "depends_on",
+        "rollout",
+        "order",
+        "monitor_seconds",
     ];
     let mut safe = Vec::new();
     for component in path.split('.') {
@@ -703,6 +706,21 @@ fn validate_services(
             validate_health(healthcheck, &format!("{base}.healthcheck"), errors);
         }
         validate_resources(service.resources.as_ref(), &base, errors);
+        if service
+            .rollout
+            .monitor_seconds
+            .is_some_and(|seconds| !(1..=Rollout::MAX_MONITOR_SECONDS).contains(&seconds))
+        {
+            error(
+                errors,
+                codes::ROLLOUT_MONITOR_INVALID,
+                &format!("{base}.rollout.monitor_seconds"),
+                &format!(
+                    "rollout monitor must be between 1 and {} seconds",
+                    Rollout::MAX_MONITOR_SECONDS
+                ),
+            );
+        }
     }
 }
 
