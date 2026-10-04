@@ -60,6 +60,9 @@ impl<D: DockerApi> Controller<D> {
             return Ok(());
         }
         for job in &jobs {
+            // A completed run must stop before another job of this operation
+            // starts: cleanup selects runs by operation ID.
+            self.retry_job_cleanup(&operation.application_id).await?;
             self.prepare_job_dependencies(operation, target, job, &ownership, cancellation)
                 .await?;
             self.run_job(operation, job, &ownership, cancellation)
@@ -155,12 +158,6 @@ impl<D: DockerApi> Controller<D> {
                 &attempt.log,
             )
             .await;
-        self.store
-            .finish_action(
-                &journal,
-                result.as_ref().err().map(OperationError::diagnostic),
-            )
-            .await?;
         // Failed means the job itself failed; any other error ended the
         // attempt before its outcome was known.
         let state = match &result {
@@ -170,13 +167,42 @@ impl<D: DockerApi> Controller<D> {
             }
             Err(_) => BuildState::Interrupted,
         };
-        attempt
+        let finished = attempt
             .finish(state, Some(job.container.image.as_str()))
-            .await?;
-        if !self.resumable(operation, &result).await {
+            .await;
+        // Keep an unrecorded success available for resumption. A timeout or
+        // cancellation must still stop even if bookkeeping failed.
+        let stop =
+            !self.resumable(operation, &result).await && (finished.is_ok() || result.is_err());
+        let queued = if stop {
+            self.store.request_job_cleanup(&operation.id).await
+        } else {
+            Ok(())
+        };
+        let journaled = self
+            .store
+            .finish_action(
+                &journal,
+                result.as_ref().err().map(OperationError::diagnostic),
+            )
+            .await;
+        if stop {
             // Removing the service also stops a run that timed out or was
             // superseded or cancelled.
             self.remove_job_run(operation, ownership).await;
+        }
+        for recorded in [finished, queued, journaled] {
+            if let Err(error) = recorded {
+                let error = OperationError::from(error);
+                if result.is_ok() {
+                    return Err(error);
+                }
+                // Retain the terminal job error so retrying bookkeeping never
+                // reruns a timed-out or failed migration.
+                self.store
+                    .report_diagnostic(&error.diagnostic(), Some(&operation.application_id))
+                    .await;
+            }
         }
         result
     }
@@ -370,34 +396,57 @@ impl<D: DockerApi> Controller<D> {
         result
     }
 
-    /// Removes this operation's run once, even after the operation was
-    /// superseded. Failures are only logged: the job's outcome is already
-    /// recorded, and the next deployment or deletion removes leftovers.
+    /// Retries durable cleanup independently of deployment execution. The
+    /// mutation lock covers reading and clearing intent, so an old cleanup
+    /// request cannot remove a newly started run of the same operation.
+    pub(super) async fn retry_job_cleanup(
+        &self,
+        application: &piqueld_core::ApplicationId,
+    ) -> Result<(), OperationError> {
+        let _guard = self.mutations.lock().await;
+        let ownership = self.ownership_labels(application);
+        for operation in self.store.pending_job_cleanup(application).await? {
+            self.stop_job_run(&operation, &ownership).await?;
+        }
+        Ok(())
+    }
+
+    /// Attempts immediate cleanup even after bookkeeping failed. Failed removal
+    /// leaves durable intent for subsequent scans, including after a restart.
     async fn remove_job_run(&self, operation: &Operation, ownership: &BTreeMap<String, String>) {
-        let result: Result<(), OperationError> = async {
-            let journal = self
-                .store
-                .begin_action(Some(&operation.id), "remove_jobs", None)
-                .await?;
-            let result = {
-                let _guard = self.mutations.lock().await;
-                self.store.action_request(&journal, 1).await?;
-                self.docker
-                    .remove_jobs(ownership, JobRuns::Of(&operation.id))
-                    .await
-                    .map_err(OperationError::from)
-            };
-            self.store
-                .finish_action(
-                    &journal,
-                    result.as_ref().err().map(OperationError::diagnostic),
-                )
-                .await?;
-            result
+        let _guard = self.mutations.lock().await;
+        if let Err(error) = self.stop_job_run(&operation.id, ownership).await {
+            tracing::warn!(error = ?error, operation = %operation.id, "job service removal failed; cleanup will be retried");
         }
-        .await;
-        if let Err(error) = result {
-            tracing::warn!(error = ?error, operation = %operation.id, "job service removal failed");
-        }
+    }
+
+    /// Called under the mutation lock. Clears cleanup intent only when both
+    /// container shutdown and its journal outcome have been confirmed.
+    async fn stop_job_run(
+        &self,
+        operation: &str,
+        ownership: &BTreeMap<String, String>,
+    ) -> Result<(), OperationError> {
+        let journal = self
+            .store
+            .begin_action(Some(operation), "remove_jobs", None)
+            .await?;
+        let result = match self.store.action_request(&journal, 1).await {
+            Ok(()) => self
+                .docker
+                .remove_jobs(ownership, JobRuns::Of(operation))
+                .await
+                .map_err(OperationError::from),
+            Err(error) => Err(OperationError::from(error)),
+        };
+        self.store
+            .finish_action(
+                &journal,
+                result.as_ref().err().map(OperationError::diagnostic),
+            )
+            .await?;
+        result?;
+        self.store.finish_job_cleanup(operation).await?;
+        Ok(())
     }
 }

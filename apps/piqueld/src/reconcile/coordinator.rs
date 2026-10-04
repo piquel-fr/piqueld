@@ -245,7 +245,29 @@ impl<D: DockerApi> Controller<D> {
         )
     }
 
-    /// Processes one application during a scan.
+    /// Retries pending cleanup before processing the application's latest
+    /// operation. Cleanup alone never reopens a terminal job failure. Normal
+    /// execution still runs when due, enforcing its backoff and cleanup fence.
+    #[tracing::instrument(skip_all, fields(application_id = %application.application.id(), generation = application.generation))]
+    async fn scan_application(
+        &self,
+        application: &StoredApplication,
+        cancellation: &CancellationToken,
+        failures: &ScanFailures,
+    ) -> Result<(), StoreError> {
+        if let Err(error) = self.retry_job_cleanup(application.application.id()).await {
+            self.record_scan_diagnostic(
+                application.application.id(),
+                &error.diagnostic(),
+                failures,
+            )
+            .await?;
+        }
+        self.scan_latest_operation(application, cancellation, failures)
+            .await
+    }
+
+    /// Processes the latest operation during a scan.
     ///
     /// 1. Repairs drift in the active target while a newer target is unpromoted.
     /// 2. Runs requested, cleanly running, or retry-due operations.
@@ -254,8 +276,7 @@ impl<D: DockerApi> Controller<D> {
     ///    after success (or a cleared permanent blocker) reopens the operation.
     ///
     /// Observation failures are recorded as deduplicated diagnostics, not errors.
-    #[tracing::instrument(skip_all, fields(application_id = %application.application.id(), generation = application.generation))]
-    async fn scan_application(
+    async fn scan_latest_operation(
         &self,
         application: &StoredApplication,
         cancellation: &CancellationToken,

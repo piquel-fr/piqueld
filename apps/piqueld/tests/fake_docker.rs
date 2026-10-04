@@ -1200,10 +1200,8 @@ impl ControllerHarness {
             .scan(&CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(
-            self.store.operation(&operation.id).await.unwrap().state,
-            OperationState::Succeeded
-        );
+        let recorded = self.store.operation(&operation.id).await.unwrap();
+        assert_eq!(recorded.state, OperationState::Succeeded, "{recorded:?}");
     }
 
     /// Moves a persisted failure beyond its retry backoff without sleeping.
@@ -3268,7 +3266,9 @@ async fn job_dependencies_converge_before_migration_and_other_services() {
         .slow_services
         .lock()
         .await
-        .extend([("storage".into(), 12), ("db".into(), 12)]);
+        // Each dependency waits about two seconds, with room for journal I/O.
+        // Their combined wait still exceeds the three-second budget.
+        .extend([("storage".into(), 9), ("db".into(), 9)]);
     let mut input = manifest_with_job_dependencies();
     // A prerequisite's own job must succeed before that service is started.
     let mut storage_job = input.spec.jobs[0].clone();
@@ -3736,6 +3736,159 @@ async fn job_timeout_keeps_output_and_stops_the_run() {
 }
 
 #[tokio::test]
+async fn timed_out_job_cleanup_retries_after_restart_without_rerunning() {
+    let mut harness = ControllerHarness::new().await;
+    harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+    harness
+        .docker
+        .fail_job_cleanup
+        .store(true, Ordering::SeqCst);
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_jobs(&["migrate"], 1).validate().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.scan_result(&operation).await,
+        (OperationState::Failed, Some("job_timeout".into()))
+    );
+    let failed = harness.store.operation(&operation.id).await.unwrap();
+    // Repeated scans retry stopping, without changing the job's failure or
+    // starting another run while Docker is unavailable.
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(harness.docker.jobs.lock().await.len(), 1);
+    assert_eq!(
+        harness.store.operation(&operation.id).await.unwrap(),
+        failed
+    );
+
+    harness.reopen().await;
+    harness
+        .docker
+        .fail_job_cleanup
+        .store(false, Ordering::SeqCst);
+    harness
+        .controller
+        .scan(&CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(harness.docker.jobs.lock().await.is_empty());
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
+    assert_eq!(
+        harness.store.operation(&operation.id).await.unwrap(),
+        failed
+    );
+    assert!(
+        harness
+            .store
+            .get(&operation.application_id)
+            .await
+            .unwrap()
+            .resolved
+            .is_none()
+    );
+    let (run, output) = harness.latest_run(&operation.application_id).await;
+    assert_eq!(run.state, piqueld_core::api::BuildState::Failed);
+    assert_eq!(output, "migrated\n");
+}
+
+#[tokio::test]
+async fn job_cleanup_still_runs_when_outcome_recording_fails() {
+    for trigger in [
+        "CREATE TRIGGER reject_job_outcome BEFORE UPDATE OF state ON builds WHEN NEW.job IS NOT NULL AND NEW.state='failed' BEGIN SELECT RAISE(FAIL,'build history unavailable'); END",
+        "CREATE TRIGGER reject_job_outcome BEFORE INSERT ON events WHEN NEW.phase='run_job' AND NEW.kind='action_failed' BEGIN SELECT RAISE(FAIL,'journal unavailable'); END",
+    ] {
+        let harness = ControllerHarness::new().await;
+        let mut connection =
+            SqliteConnection::connect(&format!("sqlite://{}", harness.database_path.display()))
+                .await
+                .unwrap();
+        sqlx::query(trigger).execute(&mut connection).await.unwrap();
+        harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+        let operation = harness
+            .applications()
+            .apply(
+                manifest_with_jobs(&["migrate"], 1).validate().unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            harness.scan_result(&operation).await,
+            (OperationState::Failed, Some("job_timeout".into()))
+        );
+        assert!(harness.docker.jobs.lock().await.is_empty());
+        sqlx::query("DROP TRIGGER reject_job_outcome")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        harness
+            .controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(harness.started_jobs().await, ["migrate"]);
+    }
+}
+
+#[tokio::test]
+async fn pending_cleanup_blocks_the_next_job() {
+    let harness = ControllerHarness::new().await;
+    harness
+        .docker
+        .fail_job_cleanup
+        .store(true, Ordering::SeqCst);
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_jobs(&["migrate", "seed"], 300)
+                .validate()
+                .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.scan_result(&operation).await,
+        (OperationState::Failed, Some("docker_request_failed".into()))
+    );
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
+    assert_eq!(harness.docker.jobs.lock().await.len(), 1);
+    // A still-failing cleanup on a due deployment retry must refresh the
+    // deployment's backoff, while keeping the successful job skipped.
+    harness.expire_backoff(&operation).await;
+    assert_eq!(
+        harness.scan_result(&operation).await,
+        (OperationState::Failed, Some("docker_request_failed".into()))
+    );
+    assert_eq!(
+        harness
+            .store
+            .operation(&operation.id)
+            .await
+            .unwrap()
+            .consecutive_failures,
+        2
+    );
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
+    harness
+        .docker
+        .fail_job_cleanup
+        .store(false, Ordering::SeqCst);
+    harness.expire_backoff(&operation).await;
+    harness.finish(&operation).await;
+    assert_eq!(harness.started_jobs().await, ["migrate", "seed"]);
+    assert!(harness.docker.jobs.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn unknown_job_status_keeps_the_run_for_a_retry() {
     let harness = ControllerHarness::new().await;
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
@@ -3887,13 +4040,13 @@ async fn job_outcome_survives_output_and_cleanup_failures() {
     );
     assert_eq!(harness.docker.jobs.lock().await.len(), 1);
     assert_eq!(harness.started_jobs().await, ["migrate"]);
-    // The next deployment removes the leftover run, even without jobs.
-    let next = harness
-        .applications()
-        .apply(manifest().validate().unwrap(), None)
-        .await
-        .unwrap();
-    harness.finish(&next).await;
+    // A periodic scan removes the leftover without another deployment.
+    harness
+        .docker
+        .fail_job_cleanup
+        .store(false, Ordering::SeqCst);
+    harness.finish(&operation).await;
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
     assert!(harness.docker.jobs.lock().await.is_empty());
 }
 

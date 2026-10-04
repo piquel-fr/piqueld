@@ -8,6 +8,7 @@ mod build;
 mod deployment;
 mod event;
 pub(crate) mod ingress;
+mod jobs;
 mod journal;
 mod notifications;
 mod observability;

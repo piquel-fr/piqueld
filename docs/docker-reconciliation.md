@@ -56,7 +56,14 @@ retried operation skips jobs it already ran successfully and resumes a run that
 is still running or succeeded, which also covers a start whose response was
 lost; a failed run is replaced. The controller polls each job until it exits or
 its timeout passes, records its outcome and output as a build record, and only
-then removes the job service. On shutdown, or when Docker could not report the
+then removes the job service. Cleanup intent is persisted independently of the
+operation's outcome. If removal fails, periodic application scans retry stopping
+the run, including after a daemon restart, without rerunning the job or changing
+its recorded outcome. A later job cannot start until pending cleanup completes;
+a failure to record a timeout or cancellation does not skip the stop attempt.
+Terminal job failures and their cleanup requests are committed atomically, and
+history retention keeps operations whose cleanup is still pending.
+On shutdown, or when Docker could not report the
 status before the timeout, the run is left for the retried operation to resume;
 a superseded or cancelled operation stops its own run. A failed job fails the
 operation; prerequisite changes remain, and other active services keep being

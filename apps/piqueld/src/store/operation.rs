@@ -125,6 +125,9 @@ impl Store {
             to,code,message,now,finished,id,from)
             .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if changed == 1 {
+            if matches!(code, Some("job_failed" | "job_timeout")) {
+                Self::request_job_cleanup_on(&mut tx, id).await?;
+            }
             if terminal {
                 Self::record_deployment_attempt(&mut tx, id).await?;
             }
@@ -339,13 +342,13 @@ impl Store {
     }
 
     /// Prunes old terminal history, always retaining the latest operation per app.
-    /// Operations backing a deployment record are kept as well.
+    /// Operations backing a deployment record or pending job cleanup are kept as well.
     ///
     /// # Errors
     /// Returns a storage error.
     pub async fn prune_finished_operations(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
         let _writer = self.writers.lock().await;
-        Ok(sqlx::query!("DELETE FROM operations WHERE NOT EXISTS(SELECT 1 FROM deployments WHERE deployments.id=operations.id) AND finished_at_ms < ?1 AND id != (SELECT latest.id FROM operations latest WHERE latest.application_id=operations.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",cutoff_ms)
+        Ok(sqlx::query!("DELETE FROM operations WHERE NOT EXISTS(SELECT 1 FROM deployments WHERE deployments.id=operations.id) AND NOT EXISTS(SELECT 1 FROM job_cleanup WHERE job_cleanup.operation_id=operations.id) AND finished_at_ms < ?1 AND id != (SELECT latest.id FROM operations latest WHERE latest.application_id=operations.application_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",cutoff_ms)
             .execute(&self.pool).await.map_err(StoreError::database)?.rows_affected())
     }
 
