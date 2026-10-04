@@ -492,8 +492,12 @@ impl SwarmScenario {
                 error: None
             }
         );
+        // Docker copies stdout and stderr independently, so their relative
+        // order is not guaranteed.
+        let mut output = docker.job_output(&first).await.unwrap();
+        output.sort_by_key(|(stream, _)| *stream == piqueld_core::api::LogStream::Stderr);
         assert_eq!(
-            docker.job_output(&first).await.unwrap(),
+            output,
             [
                 (piqueld_core::api::LogStream::Stdout, b"out\n".to_vec()),
                 (piqueld_core::api::LogStream::Stderr, b"err\n".to_vec()),
