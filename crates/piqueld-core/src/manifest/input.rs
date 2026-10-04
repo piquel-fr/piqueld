@@ -192,6 +192,9 @@ impl std::fmt::Display for SourceRepository {
 }
 
 /// The literal `"self"`, selecting the manifest's own repository.
+// A unit variant of the untagged `SourceRepository` would match `null`, not
+// `"self"`. Serde's per-variant `untagged` would avoid this type, but utoipa
+// only supports `untagged` on the whole enum and would misdescribe Git sources.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub enum ManifestRepository {
     /// The manifest's own repository.
