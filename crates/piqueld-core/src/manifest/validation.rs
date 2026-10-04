@@ -3,7 +3,7 @@
 use super::dependencies::StartupOrder;
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, Build, GitRepository,
-    HealthCheck, ManifestRevision, Mount, ResourceLimits, SecretDeclaration, SecretGenerator,
+    HealthCheck, Job, ManifestRevision, Mount, ResourceLimits, SecretDeclaration, SecretGenerator,
     Service, Source, SourceRepository, ValidatedApplication, Volume,
 };
 use crate::{codes, resource::valid_logical_name};
@@ -274,6 +274,8 @@ pub fn safe_decode_path(path: &str) -> String {
         "read_only",
         "port",
         "routes",
+        "jobs",
+        "run",
         "hostname",
         "service",
         "path",
@@ -471,6 +473,7 @@ impl ApplicationManifest {
         validate_dependencies(&self.spec.services, &mut errors);
         validate_volumes(&self.spec.volumes, &mut errors);
         validate_generated_secrets(&self.spec.secrets, &mut errors);
+        validate_jobs(&self.spec.jobs, &self.spec.services, &mut errors);
         errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
         if !errors.is_empty() {
             return Err(ValidationErrors(errors));
@@ -558,6 +561,18 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
             "secrets_excessive",
             "spec.secrets",
             &format!("an application must declare at most {MAX_GENERATED_SECRETS} secrets"),
+        );
+        within_budget = false;
+    }
+    if input.spec.jobs.len() > Job::MAX_PER_APPLICATION {
+        error(
+            errors,
+            codes::JOB_COUNT_EXCESSIVE,
+            "spec.jobs",
+            &format!(
+                "an application must declare at most {} jobs",
+                Job::MAX_PER_APPLICATION
+            ),
         );
         within_budget = false;
     }
@@ -887,6 +902,71 @@ fn validate_resources(
             &format!("{base}.resources.memory_bytes"),
             "memory limit must be greater than zero and fit the runtime value",
         );
+    }
+}
+
+fn validate_jobs(jobs: &[Job], services: &[Service], errors: &mut Vec<ValidationError>) {
+    unique_names(
+        jobs.iter().map(|job| &job.name),
+        "spec.jobs",
+        codes::JOB_NAME_DUPLICATE,
+        errors,
+    );
+    for (index, job) in jobs.iter().enumerate() {
+        let base = format!("spec.jobs[{index}]");
+        validate_name(&job.name, &format!("{base}.name"), errors);
+        if !services.iter().any(|service| service.name == job.service) {
+            error(
+                errors,
+                codes::JOB_SERVICE_MISSING,
+                &format!("{base}.service"),
+                "job must reference a service in this application",
+            );
+        }
+        let dependencies = services.dependencies_of(&job.service);
+        for prerequisite in jobs[index..]
+            .iter()
+            .filter(|prerequisite| dependencies.contains(prerequisite.service.as_str()))
+        {
+            error(
+                errors,
+                codes::JOB_DEPENDENCY_ORDER_INVALID,
+                &format!("{base}.service"),
+                &format!(
+                    "job {} for dependency service {} must run before job {}",
+                    prerequisite.name, prerequisite.service, job.name
+                ),
+            );
+        }
+        if job
+            .command
+            .first()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            error(
+                errors,
+                codes::PROCESS_COMMAND_INVALID,
+                &format!("{base}.command"),
+                "a job command must start with a non-empty executable",
+            );
+        }
+        validate_process_arguments(
+            &job.command,
+            &format!("{base}.command"),
+            codes::PROCESS_COMMAND_EXCESSIVE,
+            errors,
+        );
+        if !(1..=Job::MAX_TIMEOUT_SECONDS).contains(&job.timeout_seconds) {
+            error(
+                errors,
+                codes::JOB_TIMEOUT_INVALID,
+                &format!("{base}.timeout_seconds"),
+                &format!(
+                    "job timeout must be between 1 and {} seconds",
+                    Job::MAX_TIMEOUT_SECONDS
+                ),
+            );
+        }
     }
 }
 

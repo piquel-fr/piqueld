@@ -153,6 +153,15 @@ impl ActionKind {
         }
     }
 
+    /// Pinned secret files the action's service mounts; empty for other actions.
+    #[must_use]
+    pub fn secrets(&self) -> &[crate::resource::SecretFile] {
+        match self {
+            Self::EnsureService { service } => &service.secrets,
+            _ => &[],
+        }
+    }
+
     /// Classifies the effect of executing this action.
     #[must_use]
     pub const fn risk(&self) -> ActionRisk {
@@ -496,6 +505,45 @@ impl Plan {
                     || matches!(action.kind, ActionKind::WaitForService { .. })
             })
             .filter(|action| action.kind.mutates_runtime())
+    }
+
+    /// Filters old-target repair actions that would revert or remove prepared
+    /// job prerequisites. A prerequisite's wait remains only while it is still
+    /// converging, so it gates active dependents without blocking their repair.
+    pub fn preserve_job_prerequisites(
+        &mut self,
+        prepared: &ResolvedApplication,
+        observed: &ObservedApplication,
+    ) {
+        let dependencies = prepared
+            .jobs
+            .iter()
+            .flat_map(|job| prepared.job_dependencies(job))
+            .collect::<BTreeSet<_>>();
+        let services = prepared
+            .services
+            .iter()
+            .filter(|service| dependencies.contains(service.logical_name.as_str()))
+            .map(|service| service.name.as_str())
+            .collect::<BTreeSet<_>>();
+        self.actions.retain(|action| match &action.kind {
+            ActionKind::EnsureService { service } => !services.contains(service.name.as_str()),
+            ActionKind::RemoveService { name } => !services.contains(name.as_str()),
+            ActionKind::WaitForService { service } => {
+                !services.contains(service.as_str())
+                    || !observed.services.iter().any(|found| {
+                        found.name == *service && found.convergence == Convergence::Converged
+                    })
+            }
+            ActionKind::RemoveNetwork { name } => {
+                prepared.jobs.is_empty()
+                    || !prepared
+                        .networks
+                        .iter()
+                        .any(|network| network.name.as_str() == name)
+            }
+            _ => true,
+        });
     }
 
     /// True when the plan is unblocked and only cleanup actions (removals,

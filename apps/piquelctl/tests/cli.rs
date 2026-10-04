@@ -1770,6 +1770,106 @@ fn field_edit_sends_only_the_selected_value_and_defaults_to_save_only() {
 }
 
 #[test]
+fn job_commands_edit_the_loaded_jobs_and_save_the_whole_list() {
+    let job = |name: &str, command: &[&str], timeout: u32| json!({"name": name, "service": "web", "command": command, "run": "before-rollout", "timeout_seconds": timeout});
+    for (arguments, expected) in [
+        // Replacing keeps the job's position and, without --timeout, its timeout.
+        (
+            vec![
+                "app",
+                "job",
+                "set",
+                "app-notes-01",
+                "migrate",
+                "web",
+                "--yes",
+                "--",
+                "notes",
+                "migrate",
+                "--all",
+            ],
+            json!([
+                job("migrate", &["notes", "migrate", "--all"], 60),
+                job("seed", &["notes", "seed"], 300)
+            ]),
+        ),
+        (
+            vec![
+                "app",
+                "job",
+                "set",
+                "app-notes-01",
+                "cleanup",
+                "web",
+                "--timeout-seconds",
+                "30",
+                "--yes",
+                "--",
+                "notes",
+                "cleanup",
+            ],
+            json!([
+                job("migrate", &["notes", "migrate"], 60),
+                job("seed", &["notes", "seed"], 300),
+                job("cleanup", &["notes", "cleanup"], 30)
+            ]),
+        ),
+        // Moving reorders without changing the job; past the end moves it last.
+        (
+            vec![
+                "app",
+                "job",
+                "move",
+                "app-notes-01",
+                "migrate",
+                "9",
+                "--yes",
+            ],
+            json!([
+                job("seed", &["notes", "seed"], 300),
+                job("migrate", &["notes", "migrate"], 60)
+            ]),
+        ),
+        (
+            vec!["app", "job", "remove", "app-notes-01", "seed", "--yes"],
+            json!([job("migrate", &["notes", "migrate"], 60)]),
+        ),
+    ] {
+        let mut view = app_view("app-notes-01", "notes");
+        view["application"]["spec"]["jobs"] = json!([
+            job("migrate", &["notes", "migrate"], 60),
+            job("seed", &["notes", "seed"], 300)
+        ]);
+        let server = start_server(false, 2, move |request| {
+            if request.method == "GET" {
+                return Reply::json(view.clone());
+            }
+            assert_eq!(request.method, "PUT");
+            assert_eq!(
+                request.path,
+                "/api/v1/applications/app-notes-01/jobs?deploy=false&expected_generation=1&force=false"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&request.body).unwrap(),
+                json!({"value": expected})
+            );
+            Reply::json(json!({"application_id":"app-notes-01","generation":2,"operation_id":null}))
+        });
+        let output = run(&server, &arguments);
+        assert_eq!(assert_json_success(&output)["generation"], 2);
+        assert_eq!(server.finish().len(), 2);
+    }
+
+    let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
+    let output = run(
+        &server,
+        &["app", "job", "remove", "app-notes-01", "seed", "--yes"],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(server.finish().len(), 1);
+}
+
+#[test]
 fn field_edit_deploy_is_explicit_and_no_wait_returns_the_saved_receipt() {
     let server = start_server(false, 2, |request| {
         if request.method == "GET" {

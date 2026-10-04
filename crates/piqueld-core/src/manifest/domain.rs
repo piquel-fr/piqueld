@@ -1,8 +1,8 @@
 //! Typed values owned by validated applications, exposed through immutable accessors.
 
-use super::input::{self, HealthCheck, RepositoryManifest, ResourceLimits, Source};
+use super::input::{self, HealthCheck, JobRun, RepositoryManifest, ResourceLimits, Source};
 use super::{ValidationError, ValidationErrors};
-use crate::{ApplicationName, ServiceName, VolumeName};
+use crate::{ApplicationName, JobName, ServiceName, VolumeName};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
@@ -30,6 +30,24 @@ pub struct ValidatedSpec {
     /// Secrets whose values piqueld generates once.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<input::SecretDeclaration>,
+    /// One-shot jobs in declared execution order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<ValidatedJob>,
+}
+
+/// Validated one-shot job.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
+pub struct ValidatedJob {
+    /// Logical job name.
+    pub name: JobName,
+    /// Service whose prepared container settings the job reuses.
+    pub service: ServiceName,
+    /// Command replacing the service's command and arguments.
+    pub command: Vec<String>,
+    /// Deployment point at which the job runs.
+    pub run: JobRun,
+    /// Seconds the job may run before the deployment fails.
+    pub timeout_seconds: u32,
 }
 
 /// Validated application service.
@@ -114,6 +132,12 @@ impl ValidatedSpec {
                 .enumerate()
                 .map(|(index, route)| super::ValidatedRoute::from_input(route, index))
                 .collect::<Result<_, _>>()?,
+            jobs: value
+                .jobs
+                .into_iter()
+                .enumerate()
+                .map(|(index, job)| ValidatedJob::from_input(job, index))
+                .collect::<Result<_, _>>()?,
             manifest: value.manifest,
             secrets: value.secrets,
             services: value
@@ -171,6 +195,7 @@ impl ValidatedSpec {
                 .iter()
                 .map(super::ValidatedRoute::to_input)
                 .collect(),
+            jobs: self.jobs.iter().map(ValidatedJob::to_input).collect(),
             manifest: self.manifest.clone(),
             secrets: self.secrets.clone(),
             services: self
@@ -185,6 +210,34 @@ impl ValidatedSpec {
                     name: volume.name.to_string(),
                 })
                 .collect(),
+        }
+    }
+}
+
+impl ValidatedJob {
+    /// Parses the job and referenced service names; `index` locates error paths.
+    fn from_input(value: input::Job, index: usize) -> Result<Self, ValidationErrors> {
+        let path = format!("spec.jobs[{index}]");
+        Ok(Self {
+            name: JobName::parse(value.name)
+                .map_err(|source| ValidationErrors::invalid_name(format!("{path}.name"), source))?,
+            service: ServiceName::parse(value.service).map_err(|source| {
+                ValidationErrors::invalid_name(format!("{path}.service"), source)
+            })?,
+            command: value.command,
+            run: value.run,
+            timeout_seconds: value.timeout_seconds,
+        })
+    }
+
+    /// Converts back to the editable input shape used for export.
+    fn to_input(&self) -> input::Job {
+        input::Job {
+            name: self.name.to_string(),
+            service: self.service.to_string(),
+            command: self.command.clone(),
+            run: self.run,
+            timeout_seconds: self.timeout_seconds,
         }
     }
 }

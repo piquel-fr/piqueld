@@ -3,6 +3,7 @@ use super::{
     OperationKind, OperationState, Plan, PlanRequest, StoreError, blocked_plan_error,
 };
 use crate::application::RuntimeBoundary;
+use crate::docker::JobRuns;
 use std::sync::Arc;
 
 impl<D: DockerApi> Controller<D> {
@@ -211,10 +212,6 @@ impl<D: DockerApi> Controller<D> {
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         let request = self.operation_request(operation, cancellation).await?;
-        let mut deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
-        if operation.kind == OperationKind::Delete {
-            self.withdraw_routes(operation, deadline).await?;
-        }
         let ownership = self.ownership_labels(&operation.application_id);
         if operation.kind != OperationKind::Delete
             && !self
@@ -224,6 +221,17 @@ impl<D: DockerApi> Controller<D> {
                 .map_err(OperationError::from)?
         {
             return Err(OperationError::Superseded);
+        }
+        if let PlanRequest::Reconcile { desired } = &request {
+            self.run_jobs(operation, desired, cancellation).await?;
+        }
+        // Jobs have their own timeouts; convergence starts after them.
+        let mut deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+        if operation.kind == OperationKind::Delete {
+            self.withdraw_routes(operation, deadline).await?;
+            // Job services would keep the private network attached.
+            self.remove_jobs(operation, &ownership, JobRuns::All, cancellation)
+                .await?;
         }
         tracing::debug!(
             timeout_seconds = self.retry.convergence_timeout.as_secs(),
@@ -396,7 +404,11 @@ impl<D: DockerApi> Controller<D> {
 
     /// Records the planning phase (naming the first blocking resource, if any) and
     /// rejects blocked plans with their classified error.
-    async fn check_plan(&self, operation: &Operation, plan: &Plan) -> Result<(), OperationError> {
+    pub(super) async fn check_plan(
+        &self,
+        operation: &Operation,
+        plan: &Plan,
+    ) -> Result<(), OperationError> {
         tracing::debug!(
             actions = plan.actions.len(),
             blocked = plan.is_blocked(),

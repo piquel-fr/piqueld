@@ -44,17 +44,19 @@ impl<D: DockerApi> Controller<D> {
         // Actions enforce the deadline themselves so a timeout closes the action as
         // a failure instead of leaving it for interrupted-action recovery.
         let result = match &action.kind {
-            kind if kind.mutates_runtime() => match self.service_secrets(kind, ownership).await {
-                Ok(secrets) => tokio::time::timeout_at(
-                    deadline,
-                    self.retry(operation, &journal, cancellation, || {
-                        self.mutate_action(kind, ownership, &secrets)
-                    }),
-                )
-                .await
-                .unwrap_or(Err(OperationError::ConvergenceTimeout)),
-                Err(error) => Err(error),
-            },
+            kind if kind.mutates_runtime() => {
+                match self.service_secrets(kind.secrets(), ownership).await {
+                    Ok(secrets) => tokio::time::timeout_at(
+                        deadline,
+                        self.retry(operation, &journal, cancellation, || {
+                            self.mutate_action(kind, ownership, &secrets)
+                        }),
+                    )
+                    .await
+                    .unwrap_or(Err(OperationError::ConvergenceTimeout)),
+                    Err(error) => Err(error),
+                }
+            }
             ActionKind::WaitForService { service } => {
                 self.wait_service(operation, service, false, cancellation, deadline)
                     .await
@@ -85,25 +87,22 @@ impl<D: DockerApi> Controller<D> {
         result
     }
 
-    /// Decrypts a service's pinned secret versions before any Docker request, so key
+    /// Decrypts pinned secret versions before any Docker request, so key
     /// failures are classified as secret storage rather than runtime failures.
     pub(super) async fn service_secrets(
         &self,
-        kind: &ActionKind,
+        secrets: &[piqueld_core::resource::SecretFile],
         ownership: &std::collections::BTreeMap<String, String>,
     ) -> Result<SecretValues, OperationError> {
-        let ActionKind::EnsureService { service } = kind else {
-            return Ok(Vec::new());
-        };
-        if service.secrets.is_empty() {
+        if secrets.is_empty() {
             return Ok(Vec::new());
         }
         let app = ownership
             .get(super::APPLICATION_LABEL)
             .and_then(|app| piqueld_core::ApplicationId::parse(app).ok())
             .ok_or(OperationError::OwnershipConflict)?;
-        let mut values = Vec::with_capacity(service.secrets.len());
-        for secret in &service.secrets {
+        let mut values = Vec::with_capacity(secrets.len());
+        for secret in secrets {
             let value = self
                 .store
                 .secret_plaintext(&app, &secret.secret_name)

@@ -231,6 +231,21 @@
       "rustType": "piqueld_core::edit::RoutesValue"
     },
     {
+      "schema": "Job",
+      "name": "Job",
+      "rustType": "piqueld_core::manifest::Job"
+    },
+    {
+      "schema": "JobRun",
+      "name": "JobRun",
+      "rustType": "piqueld_core::manifest::JobRun"
+    },
+    {
+      "schema": "JobsValue",
+      "name": "JobsValue",
+      "rustType": "piqueld_core::edit::JobsValue"
+    },
+    {
       "schema": "Volume",
       "name": "Volume",
       "rustType": "piqueld_core::manifest::Volume"

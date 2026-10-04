@@ -77,12 +77,62 @@ mod logs;
 pub(crate) use limited::LimitedDocker;
 mod errors;
 mod identity;
+mod jobs;
 mod observation;
 mod policy;
 mod resources;
 mod secrets;
 mod spec;
 pub use errors::DockerError;
+
+/// Progress of one operation's run of a one-shot job.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum JobStatus {
+    /// The operation has no run of the job; any run of another operation is ignored.
+    Missing,
+    /// The run has not finished.
+    Running,
+    /// The run finished.
+    Finished {
+        /// Container exit code, absent when Docker rejected or stopped the task
+        /// without reporting one.
+        exit_code: Option<i64>,
+        /// Docker's explanation when the task did not complete successfully.
+        error: Option<String>,
+    },
+}
+
+/// Output of one job run, merging consecutive chunks of the same stream.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct JobOutput {
+    /// Output in the order Docker returned it.
+    pub chunks: Vec<(piqueld_core::api::LogStream, Vec<u8>)>,
+    /// Whether output past the read limit was dropped.
+    pub truncated: bool,
+}
+
+/// Selects job services by the operation that started them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JobRuns<'a> {
+    /// Every job run of the application.
+    All,
+    /// Runs started by this operation.
+    Of(&'a str),
+    /// Runs started by any other operation.
+    Except(&'a str),
+}
+
+impl JobRuns<'_> {
+    /// Returns whether a run started by `operation` is selected.
+    #[must_use]
+    pub fn selects(self, operation: Option<&str>) -> bool {
+        match self {
+            Self::All => true,
+            Self::Of(selected) => operation == Some(selected),
+            Self::Except(kept) => operation != Some(kept),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// The result of checking or initializing the local Swarm.
@@ -170,6 +220,26 @@ pub trait DockerApi: Send + Sync + 'static {
         &self,
         name: &str,
         ownership: &BTreeMap<String, String>,
+    ) -> Result<(), DockerError>;
+    /// Starts the run of `job`. Any existing service of the same job, including
+    /// a finished run of the same operation, is removed first, and its
+    /// container has stopped before the new run is created, so two runs never
+    /// overlap.
+    async fn start_job(&self, job: &piqueld_core::DesiredJobRun) -> Result<(), DockerError>;
+    /// Reads the progress of the run of `job` by its operation.
+    async fn job_status(&self, job: &piqueld_core::DesiredJobRun)
+    -> Result<JobStatus, DockerError>;
+    /// Reads the run's bounded output so far.
+    async fn job_output(&self, job: &piqueld_core::DesiredJobRun)
+    -> Result<JobOutput, DockerError>;
+    /// Removes the selected job services owned by an application and waits
+    /// until their containers have stopped. Waiting is based on the containers
+    /// still running, so a retry after a failed wait waits again. Observation
+    /// never reports jobs, so this is the only cleanup path for them.
+    async fn remove_jobs(
+        &self,
+        ownership: &BTreeMap<String, String>,
+        runs: JobRuns<'_>,
     ) -> Result<(), DockerError>;
     /// Removes a managed private network after rechecking its ownership.
     async fn remove_network(

@@ -181,9 +181,14 @@ report!(BuildLogPage, self, out, {
 
 report!(Page<BuildRecord>, self, out, {
     for build in &self.items {
+        // Job runs share build history; name the job and its service.
+        let subject = build.job.as_ref().map_or_else(
+            || build.service.clone(),
+            |job| format!("job {job} ({})", build.service),
+        );
         out.line(format_args!(
             "{}  {}  {}  {:?}  {}",
-            build.id, build.application_id, build.service, build.state, build.started_at_ms
+            build.id, build.application_id, subject, build.state, build.started_at_ms
         ))?;
     }
     if let Some(cursor) = &self.next_cursor {

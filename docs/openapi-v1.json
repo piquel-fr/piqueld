@@ -491,6 +491,14 @@
         "additionalProperties": false,
         "description": "User-provided application resource lists.",
         "properties": {
+          "jobs": {
+            "default": [],
+            "description": "One-shot jobs, run in declared order at their deployment point.",
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            },
+            "type": "array"
+          },
           "manifest": {
             "default": null,
             "oneOf": [
@@ -827,7 +835,7 @@
         "type": "object"
       },
       "BuildRecord": {
-        "description": "Durable source-preparation attempt, independent of the build executor.",
+        "description": "Durable source-preparation attempt or one-shot job run, independent of the executor.",
         "properties": {
           "application_id": {
             "description": "Owning application ID.",
@@ -837,6 +845,12 @@
             "description": "Resolved Git commit, when checkout completed.",
             "nullable": true,
             "type": "string"
+          },
+          "exit_code": {
+            "description": "Job container exit code, when the job ran to completion.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
           },
           "finished_at_ms": {
             "description": "Completion time, absent while running.",
@@ -850,7 +864,12 @@
             "type": "integer"
           },
           "image_id": {
-            "description": "Built image identifier, when successful.",
+            "description": "Built image identifier, when successful; for job runs, the image that ran.",
+            "nullable": true,
+            "type": "string"
+          },
+          "job": {
+            "description": "Logical job name when this record is a job run rather than a source build.",
             "nullable": true,
             "type": "string"
           },
@@ -872,7 +891,7 @@
             "type": "string"
           },
           "service": {
-            "description": "Logical service name.",
+            "description": "Logical service name; for job runs, the service whose container the job reuses.",
             "type": "string"
           },
           "source": {
@@ -904,7 +923,7 @@
         "type": "object"
       },
       "BuildState": {
-        "description": "Outcome of a source-preparation attempt.",
+        "description": "Outcome of a source-preparation attempt or job run.",
         "enum": [
           "running",
           "succeeded",
@@ -2607,7 +2626,7 @@
               "items": {
                 "description": "Items in this page.",
                 "items": {
-                  "description": "Durable source-preparation attempt, independent of the build executor.",
+                  "description": "Durable source-preparation attempt or one-shot job run, independent of the executor.",
                   "properties": {
                     "application_id": {
                       "description": "Owning application ID.",
@@ -2617,6 +2636,12 @@
                       "description": "Resolved Git commit, when checkout completed.",
                       "nullable": true,
                       "type": "string"
+                    },
+                    "exit_code": {
+                      "description": "Job container exit code, when the job ran to completion.",
+                      "format": "int64",
+                      "nullable": true,
+                      "type": "integer"
                     },
                     "finished_at_ms": {
                       "description": "Completion time, absent while running.",
@@ -2630,7 +2655,12 @@
                       "type": "integer"
                     },
                     "image_id": {
-                      "description": "Built image identifier, when successful.",
+                      "description": "Built image identifier, when successful; for job runs, the image that ran.",
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "job": {
+                      "description": "Logical job name when this record is a job run rather than a source build.",
                       "nullable": true,
                       "type": "string"
                     },
@@ -2652,7 +2682,7 @@
                       "type": "string"
                     },
                     "service": {
-                      "description": "Logical service name.",
+                      "description": "Logical service name; for job runs, the service whose container the job reuses.",
                       "type": "string"
                     },
                     "source": {
@@ -3908,6 +3938,71 @@
           "id",
           "issuer_id",
           "expires_at"
+        ],
+        "type": "object"
+      },
+      "Job": {
+        "additionalProperties": false,
+        "description": "A container that runs to completion at a defined point in each deployment.",
+        "properties": {
+          "command": {
+            "description": "Command replacing the service's command and arguments.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "Logical job name.",
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/components/schemas/JobRun",
+            "description": "Deployment point at which the job runs."
+          },
+          "service": {
+            "description": "Service whose prepared image, environment, secrets, and mounts the job reuses.",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "description": "Seconds the job may run before the deployment fails.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "service",
+          "command",
+          "run"
+        ],
+        "type": "object"
+      },
+      "JobName": {
+        "description": "Logical one-shot job name.",
+        "type": "string"
+      },
+      "JobRun": {
+        "description": "Deployment point at which a job runs.",
+        "enum": [
+          "before-rollout"
+        ],
+        "type": "string"
+      },
+      "JobsValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "description": "New value; null explicitly clears an optional setting.",
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "value"
         ],
         "type": "object"
       },
@@ -5811,6 +5906,44 @@
         ],
         "type": "object"
       },
+      "ValidatedJob": {
+        "description": "Validated one-shot job.",
+        "properties": {
+          "command": {
+            "description": "Command replacing the service's command and arguments.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "$ref": "#/components/schemas/JobName",
+            "description": "Logical job name."
+          },
+          "run": {
+            "$ref": "#/components/schemas/JobRun",
+            "description": "Deployment point at which the job runs."
+          },
+          "service": {
+            "$ref": "#/components/schemas/ServiceName",
+            "description": "Service whose prepared container settings the job reuses."
+          },
+          "timeout_seconds": {
+            "description": "Seconds the job may run before the deployment fails.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "service",
+          "command",
+          "run",
+          "timeout_seconds"
+        ],
+        "type": "object"
+      },
       "ValidatedMetadata": {
         "description": "Validated application metadata.",
         "properties": {
@@ -6007,6 +6140,13 @@
       "ValidatedSpec": {
         "description": "Validated application resource lists.",
         "properties": {
+          "jobs": {
+            "description": "One-shot jobs in declared execution order.",
+            "items": {
+              "$ref": "#/components/schemas/ValidatedJob"
+            },
+            "type": "array"
+          },
           "manifest": {
             "oneOf": [
               {
@@ -7347,6 +7487,180 @@
           }
         },
         "summary": "Get desired and observed application state"
+      }
+    },
+    "/api/v1/applications/{id}/jobs": {
+      "put": {
+        "operationId": "set_application_jobs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required inspected generation unless force is set.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass the revision check.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Deploy the changed configuration; omitted/false saves only.",
+            "in": "query",
+            "name": "deploy",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobsValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved and deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        }
       }
     },
     "/api/v1/applications/{id}/logs": {

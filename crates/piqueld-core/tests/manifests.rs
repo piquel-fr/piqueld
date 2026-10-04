@@ -883,3 +883,111 @@ generate = { type = "random", bytes = 8, encoding = "base64url" }
         ]
     );
 }
+
+#[test]
+fn jobs_keep_declared_order_and_reference_declared_services() {
+    let jobs = r#"
+[[spec.jobs]]
+name = "migrate"
+service = "web"
+command = ["notes", "migrate"]
+run = "before-rollout"
+[[spec.jobs]]
+name = "seed"
+service = "web"
+command = ["notes", "seed"]
+run = "before-rollout"
+timeout_seconds = 60
+"#;
+    let app = parse_toml(&(valid_manifest("notes") + jobs))
+        .unwrap()
+        .normalize(ApplicationId::parse("app-notes-01").unwrap());
+    let names = app
+        .spec()
+        .jobs
+        .iter()
+        .map(|job| (job.name.as_str(), job.timeout_seconds))
+        .collect::<Vec<_>>();
+    assert_eq!(names, [("migrate", 300), ("seed", 60)]);
+    let reparsed = parse_toml(&app.export_toml().unwrap())
+        .unwrap()
+        .normalize(app.id().clone());
+    assert_eq!(reparsed, app);
+    let without_jobs = parse_toml(&valid_manifest("notes"))
+        .unwrap()
+        .normalize(app.id().clone());
+    assert_ne!(app.spec_hash(), without_jobs.spec_hash());
+
+    let invalid = r#"
+[[spec.jobs]]
+name = "migrate"
+service = "api"
+command = [""]
+run = "before-rollout"
+timeout_seconds = 0
+[[spec.jobs]]
+name = "migrate"
+service = "web"
+command = ["notes"]
+run = "before-rollout"
+"#;
+    let error = parse_toml(&(valid_manifest("notes") + invalid)).unwrap_err();
+    let found = error
+        .0
+        .iter()
+        .map(|error| (error.code.as_str(), error.path.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            (codes::PROCESS_COMMAND_INVALID, "spec.jobs[0].command"),
+            (codes::JOB_SERVICE_MISSING, "spec.jobs[0].service"),
+            (codes::JOB_TIMEOUT_INVALID, "spec.jobs[0].timeout_seconds"),
+            (codes::JOB_NAME_DUPLICATE, "spec.jobs[1].name"),
+        ]
+    );
+}
+
+#[test]
+fn dependency_jobs_must_precede_jobs_that_start_their_services() {
+    let mut manifest = parse_toml(&format!(
+        "{}\n[[spec.services]]\nname = \"db\"\ndepends_on = [\"storage\"]\n\
+         [spec.services.source]\ntype = \"image\"\nimage = \"postgres:17\"\n\
+         [[spec.services]]\nname = \"storage\"\n[spec.services.source]\n\
+         type = \"image\"\nimage = \"storage:1\"\n",
+        valid_manifest("notes")
+    ))
+    .unwrap()
+    .normalize(ApplicationId::parse("app-notes-01").unwrap())
+    .to_manifest();
+    manifest
+        .spec
+        .services
+        .iter_mut()
+        .find(|service| service.name == "web")
+        .unwrap()
+        .depends_on = vec!["db".into()];
+    manifest.spec.jobs = ["storage", "db", "web"]
+        .into_iter()
+        .map(|service| piqueld_core::manifest::Job {
+            name: format!("initialize-{service}"),
+            service: service.into(),
+            command: vec!["initialize".into()],
+            run: piqueld_core::manifest::JobRun::BeforeRollout,
+            timeout_seconds: 300,
+        })
+        .collect();
+    manifest.clone().validate().unwrap();
+    for dependency in [0, 1] {
+        let mut invalid = manifest.clone();
+        invalid.spec.jobs.swap(dependency, 2);
+        let errors = invalid.validate().unwrap_err();
+        assert!(
+            errors
+                .0
+                .iter()
+                .any(|error| error.code == codes::JOB_DEPENDENCY_ORDER_INVALID
+                    && error.path == format!("spec.jobs[{dependency}].service"))
+        );
+    }
+}

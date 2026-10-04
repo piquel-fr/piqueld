@@ -2,10 +2,10 @@
 use crate::{Client, ClientError, SavedApplication, client::generated_result};
 use piqueld_core::{
     edit::{
-        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, MemoryValue,
-        MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue, ResourcesValue,
-        RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess,
-        SourceValue, StringValue, StringsValue, VolumesValue,
+        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, HealthValue, JobsValue,
+        MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositoryValue,
+        ResourcesValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral,
+        ServiceProcess, SourceValue, StringValue, StringsValue, VolumesValue,
     },
     manifest::{Mount, Service, Volume},
 };
@@ -28,6 +28,7 @@ macro_rules! edit_method {
 }
 edit_method!(set_application_volumes, (id), request: VolumesValue);
 edit_method!(set_application_routes, (id), request: RoutesValue);
+edit_method!(set_application_jobs, (id), request: JobsValue);
 edit_method!(set_application_name, (id), request: StringValue);
 edit_method!(set_manifest_repository, (id), request: RepositoryValue);
 edit_method!(disconnect_manifest_repository, (id));
@@ -112,6 +113,7 @@ impl Client {
             ApplicationEdit::Routes(value) => {
                 send!(set_application_routes, RoutesValue, value.clone())
             }
+            ApplicationEdit::Jobs(value) => send!(set_application_jobs, JobsValue, value.clone()),
             ApplicationEdit::Name(value) => send!(set_application_name, StringValue, value.clone()),
             ApplicationEdit::Repository(None) => {
                 self.disconnect_manifest_repository(id, options).await

@@ -16,7 +16,7 @@ pub(super) fn BuildsPage() -> impl IntoView {
     view! {
         <PageHeader
             title="Builds"
-            description="Every Git source preparation is recorded, including failed checkouts and cached builds. Image pulls do not create builds."
+            description="Every Git source preparation and job run is recorded, including failed checkouts and cached builds. Image pulls do not create builds."
         />
         <BuildHistory />
     }
@@ -171,7 +171,16 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                     {icon(Icon::ChevronRight)}
                 </span>
                 {move || build_badge(record.get().state)}
-                <strong>{move || format!("Build #{}", record.get().id)}</strong>
+                <strong>
+                    {move || {
+                        let b = record.get();
+                        b.job
+                            .map_or_else(
+                                || format!("Build #{}", b.id),
+                                |job| format!("Job {job} #{}", b.id),
+                            )
+                    }}
+                </strong>
                 <span class="tag">{move || record.get().service}</span>
                 <span class="meta">{move || build_summary_time(&record.get())}</span>
             </button>
@@ -197,7 +206,21 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                                 <A href={format!("/dashboard/events?operation={operation_id}")}>
                                     <code>{operation_id.clone()}</code>
                                 </A>
-                            </dd> <dt>"Started"</dt> <dd>{timestamp(b.started_at_ms)}</dd>
+                            </dd>
+                            {b
+                                .job
+                                .map(|job| {
+                                    view! {
+                                        <dt>"Job"</dt>
+                                        <dd>{job}</dd>
+                                        <dt>"Exit code"</dt>
+                                        <dd>
+                                            {b
+                                                .exit_code
+                                                .map_or_else(|| "None".into(), |code| code.to_string())}
+                                        </dd>
+                                    }
+                                })} <dt>"Started"</dt> <dd>{timestamp(b.started_at_ms)}</dd>
                             <dt>"Finished"</dt>
                             <dd>
                                 {b.finished_at_ms.map_or_else(|| "In progress".into(), timestamp)}

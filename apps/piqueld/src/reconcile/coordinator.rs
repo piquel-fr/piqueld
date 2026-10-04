@@ -235,7 +235,39 @@ impl<D: DockerApi> Controller<D> {
             .saturating_add(delay)
     }
 
-    /// Processes one application during a scan.
+    /// Whether a failure persists even when services match the target: ingress
+    /// still awaits publication, or a failed job ended the deployment before
+    /// promotion.
+    fn failure_outlives_converged_plan(operation: &super::Operation) -> bool {
+        matches!(
+            operation.error_code.as_deref(),
+            Some("ingress_unavailable" | "job_failed" | "job_timeout")
+        )
+    }
+
+    /// Retries pending cleanup before processing the application's latest
+    /// operation. Cleanup alone never reopens a terminal job failure. Normal
+    /// execution still runs when due, enforcing its backoff and cleanup fence.
+    #[tracing::instrument(skip_all, fields(application_id = %application.application.id(), generation = application.generation))]
+    async fn scan_application(
+        &self,
+        application: &StoredApplication,
+        cancellation: &CancellationToken,
+        failures: &ScanFailures,
+    ) -> Result<(), StoreError> {
+        if let Err(error) = self.retry_job_cleanup(application.application.id()).await {
+            self.record_scan_diagnostic(
+                application.application.id(),
+                &error.diagnostic(),
+                failures,
+            )
+            .await?;
+        }
+        self.scan_latest_operation(application, cancellation, failures)
+            .await
+    }
+
+    /// Processes the latest operation during a scan.
     ///
     /// 1. Repairs drift in the active target while a newer target is unpromoted.
     /// 2. Runs requested, cleanly running, or retry-due operations.
@@ -244,8 +276,7 @@ impl<D: DockerApi> Controller<D> {
     ///    after success (or a cleared permanent blocker) reopens the operation.
     ///
     /// Observation failures are recorded as deduplicated diagnostics, not errors.
-    #[tracing::instrument(skip_all, fields(application_id = %application.application.id(), generation = application.generation))]
-    async fn scan_application(
+    async fn scan_latest_operation(
         &self,
         application: &StoredApplication,
         cancellation: &CancellationToken,
@@ -319,7 +350,7 @@ impl<D: DockerApi> Controller<D> {
         }
         if !plan_requires_execution(&plan)
             && !application.delete_intent
-            && latest.error_code.as_deref() != Some("ingress_unavailable")
+            && !Self::failure_outlives_converged_plan(&latest)
         {
             self.store
                 .set_status_for_operation(&latest.id, ApplicationState::Ready, None)
@@ -406,7 +437,8 @@ impl<D: DockerApi> Controller<D> {
     /// Applies at most `Plan::next_repair` per call, under the global
     /// mutation lock and in its own journal entry. Skips deletions, promoted
     /// operations, blocked plans, and removals that would drop resources still
-    /// referenced by routes awaiting cutover.
+    /// referenced by routes awaiting cutover. Prepared job prerequisites are
+    /// left to the deployment so repair cannot revert or remove them.
     async fn maintain_active(
         &self,
         id: &piqueld_core::ApplicationId,
@@ -424,7 +456,7 @@ impl<D: DockerApi> Controller<D> {
         };
         let accepted_routes = self.store.applied_routes(id).await?;
         let observed = self.docker.observe(id).await?;
-        let plan = Plan::from_request(
+        let mut plan = Plan::from_request(
             &PlanRequest::Reconcile {
                 desired: target
                     .clone()
@@ -433,17 +465,6 @@ impl<D: DockerApi> Controller<D> {
             &observed,
         );
         if plan.is_blocked() {
-            return Ok(());
-        }
-        let Some(action) = plan.next_repair() else {
-            return Ok(());
-        };
-        if matches!(
-            action.kind,
-            piqueld_core::ActionKind::RemoveService { .. }
-                | piqueld_core::ActionKind::RemoveNetwork { .. }
-        ) && target.routes != accepted_routes
-        {
             return Ok(());
         }
         let _guard = self.mutations.lock().await;
@@ -456,6 +477,20 @@ impl<D: DockerApi> Controller<D> {
         {
             return Ok(());
         }
+        if let Some(prepared) = self.store.prepared_target(operation_id).await? {
+            plan.preserve_job_prerequisites(&prepared, &observed);
+        }
+        let Some(action) = plan.next_repair() else {
+            return Ok(());
+        };
+        if matches!(
+            action.kind,
+            piqueld_core::ActionKind::RemoveService { .. }
+                | piqueld_core::ActionKind::RemoveNetwork { .. }
+        ) && target.routes != accepted_routes
+        {
+            return Ok(());
+        }
         let ownership = self.ownership_labels(id);
         let journal = self
             .store
@@ -465,7 +500,10 @@ impl<D: DockerApi> Controller<D> {
                 Some(action.kind.resource_name()),
             )
             .await?;
-        let result = match self.service_secrets(&action.kind, &ownership).await {
+        let result = match self
+            .service_secrets(action.kind.secrets(), &ownership)
+            .await
+        {
             Ok(secrets) => match self.store.action_request(&journal, 1).await {
                 Ok(()) => self
                     .mutate_action(&action.kind, &ownership, &secrets)

@@ -65,6 +65,7 @@ immutable deployment snapshot commit in the same transaction.
 | POST | `/volumes` | `{ "name": "data" }` |
 | DELETE | `/volumes/{volume}` | None; mounted volumes are rejected |
 | PUT | `/routes` | `{ "value": [{ "hostname": "notes.example.com", "service": "web", "port": 3000 }] }`; replaces this application's routes |
+| PUT | `/jobs` | `{ "value": [{ "name": "migrate", "service": "web", "command": ["notes", "migrate"], "run": "before-rollout", "timeout_seconds": 300 }] }`; replaces the jobs, in execution order |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }` |
 | PUT | `/services/{service}/source` | `{ "value": Source }` |
@@ -88,8 +89,13 @@ source/check settings require the appropriate variant; switch variants through
 missing resources are rejected. Optional values must explicitly use null to clear.
 The same validation and Git ownership rules apply even with `force=true`.
 Disconnecting a repository preserves saved services and volumes for local editing.
-Renaming a service updates its routes and dependents' `depends_on`; removing a
-service removes its routes and drops it from other services' `depends_on`.
+Renaming a service updates its routes, its jobs, and dependents' `depends_on`;
+removing a service removes its routes and jobs and drops it from other services'
+`depends_on`.
+Jobs inherit the referenced service's `depends_on`, including transitive
+dependencies. Those services converge before the job starts; other services
+wait for all jobs to succeed. If a dependency has its own jobs, they must appear
+earlier in the job list (`job_dependency_order_invalid`).
 Routes remain saved while ingress is disabled and become active only after deployment
 with ingress enabled in the daemon's read-only TOML configuration.
 
@@ -256,7 +262,11 @@ per-route public HTTPS readiness without affecting `ready`; see
 `cursor`, and `limit` (1–100, default 50). Each executed Git-service preparation
 creates an independent record before checkout. Image pulls do not create records.
 Outcomes are running, succeeded, failed, or interrupted. Resolved commits and
-image IDs are recorded when available; retries create new attempts.
+image IDs are recorded when available; retries create new attempts. Job runs
+appear in the same history with `job` set, the service whose container they
+reuse, the image that ran, and `exit_code` once the container exited. Notes
+from piqueld, such as Docker's explanation of a failed task or unavailable
+output, are appended to a job's output as stderr lines prefixed `piqueld:`.
 
 `GET /api/v1/builds/{id}/logs` returns the newest output in chronological order,
 with `previous_offset` as an exclusive `before` cursor to load older chunks.

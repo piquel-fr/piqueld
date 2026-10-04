@@ -411,7 +411,7 @@ pub struct ReadinessStatus {
     pub ingress: IngressStatus,
 }
 
-/// Durable source-preparation attempt, independent of the build executor.
+/// Durable source-preparation attempt or one-shot job run, independent of the executor.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct BuildRecord {
     /// Monotonic build identifier.
@@ -420,8 +420,11 @@ pub struct BuildRecord {
     pub application_id: String,
     /// Source operation ID, retained even after operation pruning.
     pub operation_id: String,
-    /// Logical service name.
+    /// Logical service name; for job runs, the service whose container the job reuses.
     pub service: String,
+    /// Logical job name when this record is a job run rather than a source build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
     /// Requested build source.
     pub source: crate::manifest::Source,
     /// Current attempt outcome.
@@ -432,8 +435,11 @@ pub struct BuildRecord {
     pub finished_at_ms: Option<i64>,
     /// Resolved Git commit, when checkout completed.
     pub commit: Option<String>,
-    /// Built image identifier, when successful.
+    /// Built image identifier, when successful; for job runs, the image that ran.
     pub image_id: Option<String>,
+    /// Job container exit code, when the job ran to completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
     /// Number of currently retained output bytes.
     pub log_bytes: i64,
     /// Output exceeded the configured per-build cap.
@@ -441,7 +447,7 @@ pub struct BuildRecord {
     /// Output was removed by retention.
     pub log_expired: bool,
 }
-/// Outcome of a source-preparation attempt.
+/// Outcome of a source-preparation attempt or job run.
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
 )]
@@ -449,9 +455,9 @@ pub struct BuildRecord {
 pub enum BuildState {
     /// Source preparation is running.
     Running,
-    /// An image was produced successfully.
+    /// An image was produced successfully, or the job exited with status zero.
     Succeeded,
-    /// Checkout or build execution failed.
+    /// Checkout or build execution failed, or the job failed or timed out.
     Failed,
     /// Execution was cancelled or interrupted by daemon shutdown.
     Interrupted,

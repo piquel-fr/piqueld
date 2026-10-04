@@ -21,8 +21,9 @@ Apply with deployment and explicit Deploy prepare all sources, check a fresh
 plan, then deploy the complete target. Previous resolved state remains available
 while replacement preparation is pending or blocked; old services keep running,
 and the controller continues correcting drift toward that active target. Once
-preparation and a fresh concrete plan succeed, promotion switches the maintained
-target immediately before rollout. Promotion and active repair share the mutation
+preparation, a fresh concrete plan, and before-rollout jobs succeed, promotion
+switches the maintained target before the remaining services roll out. Job
+prerequisites may roll out before promotion. Promotion and active repair share the mutation
 lock, so old-target repair cannot continue after promotion. There is no automatic
 rollback after rollout starts.
 
@@ -34,6 +35,41 @@ same execution path. They reuse the latest intent's prepared digests, or retry
 preparation if it never completed. New deployments resolve all sources again.
 Maintaining the active target during preparation does not replace the requested
 candidate or report it as successfully deployed.
+
+Before promotion, each deployment runs its `before-rollout` jobs as Swarm
+replicated jobs pinned to the local node, without restarts, health checks, or
+network aliases. A blocked plan runs no jobs; otherwise the private network and
+volumes they need are ensured first. Before each job, the referenced service's
+`depends_on` and transitive dependencies roll out to their prepared configuration
+and converge using normal service health checks and convergence deadlines. The
+controller replans after each action and resets the deadline after each service
+converges. Other services wait for all jobs to succeed, and the job's timeout
+starts only after its dependencies are ready. Jobs of a prerequisite service
+must precede jobs that need it; manifest validation rejects the opposite order.
+Active-target repair cannot revert or remove prepared job prerequisites, but
+continues maintaining other active services. Job services
+and their containers are labelled with the operation that started them. Every
+deployment, even one without jobs, first removes job services of earlier
+operations and waits until their containers have stopped, and a new run is only
+created after the replaced run's container has stopped, so runs never overlap. A
+retried operation skips jobs it already ran successfully and resumes a run that
+is still running or succeeded, which also covers a start whose response was
+lost; a failed run is replaced. The controller polls each job until it exits or
+its timeout passes, records its outcome and output as a build record, and only
+then removes the job service. Cleanup intent is persisted independently of the
+operation's outcome. If removal fails, periodic application scans retry stopping
+the run, including after a daemon restart, without rerunning the job or changing
+its recorded outcome. A later job cannot start until pending cleanup completes;
+a failure to record a timeout or cancellation does not skip the stop attempt.
+Terminal job failures and their cleanup requests are committed atomically, and
+history retention keeps operations whose cleanup is still pending.
+On shutdown, or when Docker could not report the
+status before the timeout, the run is left for the retried operation to resume;
+a superseded or cancelled operation stops its own run. A failed job fails the
+operation; prerequisite changes remain, and other active services keep being
+maintained. Observation never
+reports job services, so planning, repair, and health ignore them; deletion
+removes leftovers before the network.
 
 Explicit `deploy` captures the latest saved configuration and resolves its sources
 again without advancing its generation. Each deployment supersedes pending work;

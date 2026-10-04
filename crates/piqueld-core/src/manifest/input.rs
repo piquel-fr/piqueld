@@ -86,6 +86,9 @@ pub struct ApplicationSpec {
     /// Application secrets whose values piqueld generates once.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretDeclaration>,
+    /// One-shot jobs, run in declared order at their deployment point.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<Job>,
 }
 
 /// Independently selects the manifest used by a manual deployment.
@@ -137,6 +140,45 @@ pub struct Service {
 /// Serde default for `Service::replicas`.
 fn default_replicas() -> u16 {
     1
+}
+
+/// A container that runs to completion at a defined point in each deployment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Job {
+    /// Logical job name.
+    pub name: String,
+    /// Service whose prepared image, environment, secrets, and mounts the job reuses.
+    pub service: String,
+    /// Command replacing the service's command and arguments.
+    pub command: Vec<String>,
+    /// Deployment point at which the job runs.
+    pub run: JobRun,
+    /// Seconds the job may run before the deployment fails.
+    #[serde(default = "default_job_timeout")]
+    pub timeout_seconds: u32,
+}
+
+/// Deployment point at which a job runs.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobRun {
+    /// After sources and startup dependencies are ready, before other services roll out.
+    BeforeRollout,
+}
+
+impl Job {
+    /// Timeout applied when a job declares none.
+    pub const DEFAULT_TIMEOUT_SECONDS: u32 = 300;
+    /// Longest timeout a job may declare.
+    pub const MAX_TIMEOUT_SECONDS: u32 = 86_400;
+    /// Most jobs one application may declare.
+    pub const MAX_PER_APPLICATION: usize = 16;
+}
+
+/// Serde default for `Job::timeout_seconds`.
+fn default_job_timeout() -> u32 {
+    Job::DEFAULT_TIMEOUT_SECONDS
 }
 
 /// The exhaustive set of deployable service sources.

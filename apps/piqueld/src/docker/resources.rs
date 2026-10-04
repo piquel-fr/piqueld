@@ -189,6 +189,15 @@ impl BollardDocker {
                 .into_iter()
                 .filter(|service| seen_services.insert(service.id.clone())),
         );
+        // One-shot jobs run outside the maintained target. Planning, repair, and
+        // health never see them; job execution and deletion remove them.
+        listed_services.retain(|service| {
+            !service
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.labels.as_ref())
+                .is_some_and(|labels| labels.contains_key(piqueld_core::resource::JOB_LABEL))
+        });
         let service_names = listed_services
             .iter()
             .filter_map(|service| service.spec.as_ref()?.name.clone())
@@ -300,6 +309,43 @@ impl BollardDocker {
             if let Some(name) = network_names.get(&attachment.network) {
                 attachment.network = name.clone();
             }
+        }
+    }
+
+    /// Deletes a service or job service after rechecking its ownership and role.
+    pub(super) async fn remove_owned_service(
+        &self,
+        name: &str,
+        ownership: &BTreeMap<String, String>,
+        kind: ResourceKind,
+    ) -> Result<(), DockerError> {
+        let existing = match self
+            .docker
+            .inspect_service(name, None::<InspectServiceOptions>)
+            .await
+        {
+            Ok(value) => value,
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => return Ok(()),
+            Err(error) => return Err(DockerError::request("inspect service", error)),
+        };
+        let id = existing
+            .id
+            .clone()
+            .ok_or(DockerError::Request("read existing service identity"))?;
+        let labels = existing.spec.and_then(|s| s.labels).unwrap_or_default();
+        if !Self::owns_resource(labels, ownership, kind, name) {
+            return Err(DockerError::OwnershipConflict);
+        }
+        // Delete the resource that was inspected, even if the name is replaced
+        // between the ownership check and this request.
+        match self.docker.delete_service(&id).await {
+            Ok(())
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
+            Err(error) => Err(DockerError::request("delete service", error)),
         }
     }
 
@@ -755,38 +801,40 @@ impl DockerApi for BollardDocker {
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
         DockerTimeout::Request
-            .run("remove service", async {
-                let existing = match self
-                    .docker
-                    .inspect_service(name, None::<InspectServiceOptions>)
-                    .await
-                {
-                    Ok(value) => value,
-                    Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
-                    }) => return Ok(()),
-                    Err(error) => return Err(DockerError::request("inspect service", error)),
-                };
-                let id = existing
-                    .id
-                    .clone()
-                    .ok_or(DockerError::Request("read existing service identity"))?;
-                let labels = existing.spec.and_then(|s| s.labels).unwrap_or_default();
-                if !Self::owns_resource(labels, ownership, ResourceKind::Service, name) {
-                    return Err(DockerError::OwnershipConflict);
-                }
-                // Delete the resource that was inspected, even if the name is replaced
-                // between the ownership check and this request.
-                match self.docker.delete_service(&id).await {
-                    Ok(())
-                    | Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
-                    }) => Ok(()),
-                    Err(error) => Err(DockerError::request("delete service", error)),
-                }
-            })
+            .run(
+                "remove service",
+                self.remove_owned_service(name, ownership, ResourceKind::Service),
+            )
+            .await
+    }
+    async fn start_job(&self, job: &piqueld_core::DesiredJobRun) -> Result<(), DockerError> {
+        DockerTimeout::Request
+            .run("start job", Box::pin(self.create_job(job)))
+            .await
+    }
+    async fn job_status(
+        &self,
+        job: &piqueld_core::DesiredJobRun,
+    ) -> Result<super::JobStatus, DockerError> {
+        DockerTimeout::Request
+            .run("inspect job", self.inspect_job(job))
+            .await
+    }
+    async fn job_output(
+        &self,
+        job: &piqueld_core::DesiredJobRun,
+    ) -> Result<super::JobOutput, DockerError> {
+        DockerTimeout::Request
+            .run("read job output", self.read_job_output(job))
+            .await
+    }
+    async fn remove_jobs(
+        &self,
+        ownership: &BTreeMap<String, String>,
+        runs: super::JobRuns<'_>,
+    ) -> Result<(), DockerError> {
+        DockerTimeout::Request
+            .run("remove jobs", self.remove_owned_jobs(ownership, runs))
             .await
     }
     /// Removes the private network by its inspected ID after rechecking

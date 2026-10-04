@@ -133,6 +133,11 @@ pub(crate) enum AppCommand {
         #[command(subcommand)]
         command: crate::editing::RouteCommand,
     },
+    /// Add, replace, or remove one-shot jobs that run before rollout.
+    Job {
+        #[command(subcommand)]
+        command: crate::editing::JobCommand,
+    },
     /// Connect, edit, or disconnect the manifest repository.
     Repository {
         #[command(subcommand)]
