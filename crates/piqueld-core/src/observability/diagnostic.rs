@@ -147,7 +147,7 @@ impl DiagnosticCode {
             Self::JobFailed | Self::JobTimeout => (
                 Application,
                 false,
-                "Open the job output in the build history, fix the cause, then deploy again. Running services were not changed.",
+                "Open the job output in the build history, fix the cause, then deploy again. Startup dependencies may have changed; other services were not rolled out.",
             ),
             Self::ServiceUpdateFailed => (
                 Application,

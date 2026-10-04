@@ -184,7 +184,7 @@ pub(super) fn JobSettings() -> impl IntoView {
                 <div>
                     <h3>"Jobs"</h3>
                     <p>
-                        "Each deployment runs these commands to completion, in order, after preparing images and before changing any service — for example database migrations. A job reuses its service's image, environment, secrets, and volume mounts. A failed job stops the deployment and the current version keeps running. Each command element is one row; no shell parsing is applied."
+                        "Each deployment runs these commands to completion, in order, after preparing images. A job reuses its service's image, environment, secrets, and volume mounts, and waits for that service's startup dependencies to be healthy. Dependencies start or update first; other services roll out only after all jobs succeed. A failed job stops the deployment; dependency changes remain. Each command element is one row; no shell parsing is applied."
                     </p>
                 </div>
             </header>

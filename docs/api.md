@@ -92,6 +92,10 @@ Disconnecting a repository preserves saved services and volumes for local editin
 Renaming a service updates its routes, its jobs, and dependents' `depends_on`;
 removing a service removes its routes and jobs and drops it from other services'
 `depends_on`.
+Jobs inherit the referenced service's `depends_on`, including transitive
+dependencies. Those services converge before the job starts; other services
+wait for all jobs to succeed. If a dependency has its own jobs, they must appear
+earlier in the job list (`job_dependency_order_invalid`).
 Routes remain saved while ingress is disabled and become active only after deployment
 with ingress enabled in the daemon's read-only TOML configuration.
 

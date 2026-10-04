@@ -1,5 +1,5 @@
-//! One-shot jobs run after preparation and before promotion, so a failed job
-//! leaves the active target and its running services untouched.
+//! One-shot jobs run after preparation and before promotion. Their service's
+//! startup dependencies converge first; other services wait for job success.
 //!
 //! Each job succeeds at most once per operation. Retries and restarts skip jobs
 //! with a recorded success, and resume a run that is still running or
@@ -59,37 +59,63 @@ impl<D: DockerApi> Controller<D> {
         if jobs.is_empty() {
             return Ok(());
         }
-        // Jobs join the private network and mount the target's volumes, which a
-        // first deployment has not created yet. Services are not touched, and a
-        // blocked deployment runs no jobs because it could never roll out.
-        let deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
-        let observed = self
-            .observe_with_retry(operation, cancellation, deadline)
-            .await?;
-        let accepted_routes = self.store.applied_routes(&operation.application_id).await?;
-        let plan = Plan::from_request(
-            &PlanRequest::Reconcile {
-                desired: target
-                    .clone()
-                    .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
-            },
-            &observed,
-        );
-        self.check_plan(operation, &plan).await?;
-        for action in plan.actions.iter().filter(|action| {
-            matches!(
-                action.kind,
-                ActionKind::EnsureNetwork { .. } | ActionKind::EnsureVolume { .. }
-            )
-        }) {
-            self.execute_action(action, operation, &ownership, cancellation, deadline)
-                .await?;
-        }
         for job in &jobs {
+            self.prepare_job_dependencies(operation, target, job, &ownership, cancellation)
+                .await?;
             self.run_job(operation, job, &ownership, cancellation)
                 .await?;
         }
         Ok(())
+    }
+
+    /// Uses the full rollout plan to check blockers, but executes only shared
+    /// infrastructure and this job's startup dependencies. Replanning preserves
+    /// dependency ordering without promoting the candidate or touching other
+    /// services. Each dependency receives its own convergence budget.
+    async fn prepare_job_dependencies(
+        &self,
+        operation: &Operation,
+        target: &ResolvedApplication,
+        job: &DesiredJobRun,
+        ownership: &BTreeMap<String, String>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        let dependencies = target.job_dependencies(job);
+        let mut deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+        loop {
+            let observed = self
+                .observe_with_retry(operation, cancellation, deadline)
+                .await?;
+            let accepted_routes = self.store.applied_routes(&operation.application_id).await?;
+            let plan = Plan::from_request(
+                &PlanRequest::Reconcile {
+                    desired: target
+                        .clone()
+                        .with_ingress_routes(self.ingress_enabled(), &accepted_routes),
+                },
+                &observed,
+            );
+            self.check_plan(operation, &plan).await?;
+            let action = plan.actions.iter().find(|action| match &action.kind {
+                ActionKind::EnsureNetwork { .. } | ActionKind::EnsureVolume { .. } => true,
+                ActionKind::EnsureService { service } => {
+                    dependencies.contains(service.logical_name.as_str())
+                }
+                ActionKind::WaitForService { service } => target.services.iter().any(|desired| {
+                    desired.name.as_str() == service
+                        && dependencies.contains(desired.logical_name.as_str())
+                }),
+                _ => false,
+            });
+            let Some(action) = action else {
+                return Ok(());
+            };
+            self.execute_action(action, operation, ownership, cancellation, deadline)
+                .await?;
+            if matches!(action.kind, ActionKind::WaitForService { .. }) {
+                deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
+            }
+        }
     }
 
     /// Records one job run in build history, then removes its service unless

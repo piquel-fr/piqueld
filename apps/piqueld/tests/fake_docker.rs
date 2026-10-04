@@ -45,6 +45,7 @@ struct FakeDocker {
     deny_network_removal: Arc<AtomicBool>,
     fail_observations: Arc<AtomicBool>,
     stall_convergence: Arc<AtomicBool>,
+    fail_convergence: Arc<AtomicBool>,
     /// Logical services that stay updating for this many observations after an ensure.
     slow_services: Arc<Mutex<BTreeMap<String, usize>>>,
     /// Service ensures and convergences as `ensure name` / `converged name`, in order.
@@ -449,7 +450,9 @@ impl DockerApi for FakeDocker {
             .retain(|service| service.name != desired.name.as_str());
         let mut service = observed_service(desired);
         let logical = desired.logical_name.to_string();
-        if self.stall_convergence.load(Ordering::SeqCst)
+        if self.fail_convergence.load(Ordering::SeqCst) {
+            service.convergence = Convergence::Failed;
+        } else if self.stall_convergence.load(Ordering::SeqCst)
             || self.slow_services.lock().await.get(&logical) > Some(&0)
         {
             service.convergence = Convergence::Updating;
@@ -490,6 +493,10 @@ impl DockerApi for FakeDocker {
             networks: observed.networks.len(),
             volumes: observed.volumes.len(),
         });
+        self.rollout
+            .lock()
+            .await
+            .push(format!("job {}", job.logical_name));
         self.jobs.lock().await.insert(
             job.container.name.to_string(),
             (job.operation().into(), self.job_exit.load(Ordering::SeqCst)),
@@ -3222,6 +3229,219 @@ fn manifest_with_jobs(
         })
         .collect();
     input
+}
+
+/// A migration whose database depends on storage, plus an unrelated service.
+fn manifest_with_job_dependencies() -> piqueld_core::manifest::ApplicationManifest {
+    let mut input = manifest_with_jobs(&["migrate"], 300);
+    input.spec.services[0].depends_on = vec!["db".into()];
+    for (name, dependencies) in [
+        ("db", vec!["storage".into()]),
+        ("storage", vec![]),
+        ("other", vec![]),
+    ] {
+        let mut service = input.spec.services[0].clone();
+        service.name = name.into();
+        service.depends_on = dependencies;
+        service.mounts.clear();
+        service.healthcheck = Some(piqueld_core::manifest::HealthCheck::Command {
+            command: vec!["ready".into()],
+            interval_seconds: 1,
+            timeout_seconds: 1,
+        });
+        input.spec.services.push(service);
+    }
+    input
+}
+
+#[tokio::test]
+async fn job_dependencies_converge_before_migration_and_other_services() {
+    let mut harness = ControllerHarness::new().await;
+    harness.controller = harness
+        .controller
+        .with_retry_policy(piqueld::reconcile::RetryPolicy {
+            convergence_timeout: std::time::Duration::from_secs(3),
+            ..Default::default()
+        });
+    harness
+        .docker
+        .slow_services
+        .lock()
+        .await
+        .extend([("storage".into(), 12), ("db".into(), 12)]);
+    let mut input = manifest_with_job_dependencies();
+    // A prerequisite's own job must succeed before that service is started.
+    let mut storage_job = input.spec.jobs[0].clone();
+    storage_job.name = "initialize-storage".into();
+    storage_job.service = "storage".into();
+    input.spec.jobs.insert(0, storage_job);
+    let operation = harness
+        .applications()
+        .apply(input.validate().unwrap(), None)
+        .await
+        .unwrap();
+    harness.finish(&operation).await;
+    assert_eq!(
+        *harness.docker.job_starts.lock().await,
+        [
+            JobStart {
+                job: "initialize-storage".into(),
+                services: 0,
+                networks: 1,
+                volumes: 1
+            },
+            JobStart {
+                job: "migrate".into(),
+                services: 2,
+                networks: 1,
+                volumes: 1
+            },
+        ]
+    );
+    let rollout = harness.docker.rollout.lock().await;
+    assert_eq!(
+        &rollout[..6],
+        [
+            "job initialize-storage",
+            "ensure storage",
+            "converged storage",
+            "ensure db",
+            "converged db",
+            "job migrate"
+        ]
+    );
+    assert!(rollout[6..].contains(&"ensure web".to_owned()));
+    assert!(rollout[6..].contains(&"ensure other".to_owned()));
+}
+
+#[tokio::test]
+async fn failed_or_timed_out_job_dependencies_prevent_jobs_and_other_services() {
+    for failed in [false, true] {
+        let mut harness = ControllerHarness::new().await;
+        harness.controller =
+            harness
+                .controller
+                .with_retry_policy(piqueld::reconcile::RetryPolicy {
+                    convergence_timeout: std::time::Duration::from_secs(3),
+                    ..Default::default()
+                });
+        harness
+            .docker
+            .stall_convergence
+            .store(!failed, Ordering::SeqCst);
+        harness
+            .docker
+            .fail_convergence
+            .store(failed, Ordering::SeqCst);
+        let operation = harness
+            .applications()
+            .apply(manifest_with_job_dependencies().validate().unwrap(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            harness.scan_result(&operation).await,
+            (
+                OperationState::Failed,
+                Some(
+                    if failed {
+                        "service_update_failed"
+                    } else {
+                        "convergence_timeout"
+                    }
+                    .into()
+                )
+            )
+        );
+        assert_eq!(harness.started_jobs().await, [] as [String; 0]);
+        assert_eq!(*harness.docker.rollout.lock().await, ["ensure storage"]);
+        assert!(
+            harness
+                .store
+                .get(&operation.application_id)
+                .await
+                .unwrap()
+                .resolved
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_migration_keeps_prerequisites_and_repairs_other_active_services() {
+    for existing_dependencies in [false, true] {
+        let harness = ControllerHarness::new().await;
+        let mut initial = manifest_with_job_dependencies();
+        initial.spec.jobs.clear();
+        if !existing_dependencies {
+            initial.spec.services[0].depends_on.clear();
+            initial
+                .spec
+                .services
+                .retain(|service| matches!(service.name.as_str(), "web" | "other"));
+        }
+        let first = harness
+            .applications()
+            .apply(initial.validate().unwrap(), None)
+            .await
+            .unwrap();
+        harness.finish(&first).await;
+        let mut replacement = manifest_with_job_dependencies();
+        for service in &mut replacement.spec.services {
+            if matches!(service.name.as_str(), "web" | "db") {
+                service.replicas = 2;
+            }
+        }
+        harness.docker.job_exit.store(3, Ordering::SeqCst);
+        let operation = harness
+            .applications()
+            .apply(replacement.validate().unwrap(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            harness.scan_result(&operation).await,
+            (OperationState::Failed, Some("job_failed".into()))
+        );
+        // Repair must keep both newly created and updated prerequisites, while
+        // continuing to maintain unrelated services against the active target.
+        {
+            let mut observed = harness.docker.observed.lock().await;
+            let other = observed
+                .services
+                .iter_mut()
+                .find(|service| service.labels[SERVICE_LABEL] == "other")
+                .unwrap();
+            other.replicas = 9;
+        }
+        for _ in 0..3 {
+            assert_eq!(
+                harness.scan_result(&operation).await,
+                (OperationState::Failed, Some("job_failed".into()))
+            );
+        }
+        let observed = harness.docker.observed.lock().await;
+        let replicas = |name: &str| {
+            observed
+                .services
+                .iter()
+                .find(|service| service.labels[SERVICE_LABEL] == name)
+                .unwrap()
+                .replicas
+        };
+        assert_eq!(replicas("db"), 2);
+        assert_eq!(replicas("storage"), 1);
+        assert_eq!(replicas("web"), 1);
+        assert_eq!(replicas("other"), 1);
+        assert_eq!(harness.started_jobs().await, ["migrate"]);
+        assert_eq!(
+            harness
+                .store
+                .get(&operation.application_id)
+                .await
+                .unwrap()
+                .resolved_generation,
+            Some(1)
+        );
+    }
 }
 
 impl ControllerHarness {

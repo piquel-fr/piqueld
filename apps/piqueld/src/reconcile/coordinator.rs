@@ -416,7 +416,8 @@ impl<D: DockerApi> Controller<D> {
     /// Applies at most `Plan::next_repair` per call, under the global
     /// mutation lock and in its own journal entry. Skips deletions, promoted
     /// operations, blocked plans, and removals that would drop resources still
-    /// referenced by routes awaiting cutover.
+    /// referenced by routes awaiting cutover. Prepared job prerequisites are
+    /// left to the deployment so repair cannot revert or remove them.
     async fn maintain_active(
         &self,
         id: &piqueld_core::ApplicationId,
@@ -434,7 +435,7 @@ impl<D: DockerApi> Controller<D> {
         };
         let accepted_routes = self.store.applied_routes(id).await?;
         let observed = self.docker.observe(id).await?;
-        let plan = Plan::from_request(
+        let mut plan = Plan::from_request(
             &PlanRequest::Reconcile {
                 desired: target
                     .clone()
@@ -445,6 +446,19 @@ impl<D: DockerApi> Controller<D> {
         if plan.is_blocked() {
             return Ok(());
         }
+        let _guard = self.mutations.lock().await;
+        if self
+            .store
+            .latest_operation_for_application(id)
+            .await?
+            .is_none_or(|op| op.id != operation_id)
+            || self.store.is_promoted(operation_id).await?
+        {
+            return Ok(());
+        }
+        if let Some(prepared) = self.store.prepared_target(operation_id).await? {
+            plan.preserve_job_prerequisites(&prepared);
+        }
         let Some(action) = plan.next_repair() else {
             return Ok(());
         };
@@ -453,16 +467,6 @@ impl<D: DockerApi> Controller<D> {
             piqueld_core::ActionKind::RemoveService { .. }
                 | piqueld_core::ActionKind::RemoveNetwork { .. }
         ) && target.routes != accepted_routes
-        {
-            return Ok(());
-        }
-        let _guard = self.mutations.lock().await;
-        if self
-            .store
-            .latest_operation_for_application(id)
-            .await?
-            .is_none_or(|op| op.id != operation_id)
-            || self.store.is_promoted(operation_id).await?
         {
             return Ok(());
         }

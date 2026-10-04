@@ -923,6 +923,21 @@ fn validate_jobs(jobs: &[Job], services: &[Service], errors: &mut Vec<Validation
                 "job must reference a service in this application",
             );
         }
+        let dependencies = services.dependencies_of(&job.service);
+        for prerequisite in jobs[index..]
+            .iter()
+            .filter(|prerequisite| dependencies.contains(prerequisite.service.as_str()))
+        {
+            error(
+                errors,
+                codes::JOB_DEPENDENCY_ORDER_INVALID,
+                &format!("{base}.service"),
+                &format!(
+                    "job {} for dependency service {} must run before job {}",
+                    prerequisite.name, prerequisite.service, job.name
+                ),
+            );
+        }
         if job
             .command
             .first()

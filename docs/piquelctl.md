@@ -191,6 +191,11 @@ in place, keeping its timeout unless `--timeout-seconds` is given (300 for a new
 job). `job move` sets a job's 1-based position in the run order. Jobs run in
 their saved order before each rollout; like routes, job edits
 preserve the other jobs and use the inspected generation.
+Each job inherits its referenced service's `depends_on`: those services and
+their transitive dependencies start or update and pass health checks before
+the job runs. Configure dependencies with `app service depends-on`. Other
+services wait for all jobs to succeed; a failed job does not roll back its
+dependencies. Jobs of dependency services must come earlier in the saved order.
 
 Command, argument, job command, and `depends-on` arrays preserve individual elements; place
 command options before `--`. An empty array clears the setting. Optional limits and pinned

@@ -32,6 +32,10 @@ impl Dependent for crate::resource::DesiredService {
 
 /// Orders services so each one follows every service it depends on.
 pub(crate) trait StartupOrder<T> {
+    /// Direct and transitive dependencies of one service. The service itself
+    /// is excluded for acyclic input; visited names also bound invalid cycles.
+    fn dependencies_of(&self, name: &str) -> BTreeSet<&str>;
+
     /// Returns services in startup order, preserving declaration order where
     /// dependencies allow, followed by the services in or behind a cycle.
     /// Unknown dependency names do not constrain the order.
@@ -39,6 +43,23 @@ pub(crate) trait StartupOrder<T> {
 }
 
 impl<T: Dependent> StartupOrder<T> for [T] {
+    fn dependencies_of(&self, name: &str) -> BTreeSet<&str> {
+        let mut pending = self
+            .iter()
+            .find(|service| service.name() == name)
+            .map(|service| service.dependencies().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut dependencies = BTreeSet::new();
+        while let Some(name) = pending.pop() {
+            if dependencies.insert(name)
+                && let Some(service) = self.iter().find(|service| service.name() == name)
+            {
+                pending.extend(service.dependencies());
+            }
+        }
+        dependencies
+    }
+
     fn startup_order(&self) -> (Vec<&T>, Vec<&T>) {
         let known = self.iter().map(Dependent::name).collect::<BTreeSet<_>>();
         let mut started = BTreeSet::new();

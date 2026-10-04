@@ -349,7 +349,7 @@ pub(crate) struct JobTarget {
 pub(crate) struct SetJobArgs {
     #[command(flatten)]
     target: JobTarget,
-    /// Service whose prepared image, environment, secrets, and mounts the job reuses.
+    /// Service whose image, environment, secrets, mounts, and startup dependencies the job reuses.
     service: String,
     /// Seconds before the job fails the deployment. Defaults to the job's
     /// current timeout, or 300 for a new job.

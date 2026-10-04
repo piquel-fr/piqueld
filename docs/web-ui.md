@@ -25,7 +25,10 @@ last deployment time.
 Applications have one main tab row: Overview (the default), Services, Source,
 Routes, Volumes, Jobs, Secrets, Deployments, Builds, Logs, and Events. The Jobs
 tab adds, edits, reorders, and removes the one-shot jobs that run before each
-rollout, with one row per command element; saving replaces only the job list. The Routes tab
+rollout, with one row per command element; saving replaces only the job list.
+Jobs inherit the referenced service's startup dependencies, which start or
+update and become healthy first. Other services wait for all jobs to succeed;
+dependency changes remain if a job fails. The Routes tab
 edits public hostnames, each pointing at a service port or a redirect, and shows each deployed route's HTTPS readiness and
 diagnostics. Saving routes updates only the route field; Deploy activates the
 change. Services lists saved services with their observed health merged in.

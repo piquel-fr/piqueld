@@ -81,6 +81,8 @@ pub const JOB_COUNT_EXCESSIVE: &str = "job_count_excessive";
 pub const JOB_NAME_DUPLICATE: &str = "job_name_duplicate";
 /// Job references an undeclared service.
 pub const JOB_SERVICE_MISSING: &str = "job_service_missing";
+/// A job would start a dependency before that dependency's own jobs succeeded.
+pub const JOB_DEPENDENCY_ORDER_INVALID: &str = "job_dependency_order_invalid";
 /// Job timeout is outside its supported range.
 pub const JOB_TIMEOUT_INVALID: &str = "job_timeout_invalid";
 

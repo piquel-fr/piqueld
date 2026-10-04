@@ -163,7 +163,7 @@ pub struct Job {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum JobRun {
-    /// After sources are prepared, before the deployment changes any service.
+    /// After sources and startup dependencies are ready, before other services roll out.
     BeforeRollout,
 }
 

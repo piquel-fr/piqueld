@@ -330,15 +330,31 @@ deployment. Its `command` replaces the service's command and arguments. Health
 checks do not apply, including an image's `HEALTHCHECK`, and a job does not
 answer for the service's network name. `before-rollout` is currently the only
 run point: jobs run in declared order after every source is prepared and before
-the deployment is promoted or changes any service. Missing networks and volumes
-are created first, and a deployment whose plan is blocked runs no jobs. Because
-services have not changed yet, a first deployment's jobs cannot reach services
-that the same deployment creates, and the referenced service's `depends_on`
-does not apply to them.
+the deployment is promoted. Missing networks and volumes are created first, and
+a deployment whose plan is blocked runs no jobs.
+
+Jobs inherit their referenced service's `depends_on`. Before each job, those
+services and their transitive dependencies start or update to the prepared
+configuration and converge, including their health checks. For example, set
+`depends_on = ["postgres"]` on `auth` and give `postgres` a readiness health
+check: even on the first deployment, the sequence is start Postgres, wait until
+it is healthy, run the migration, then roll out auth. Without a health check,
+a dependency counts as ready once its replicas are running. Each dependency
+gets the normal service convergence timeout; the job's own timeout starts
+after dependencies are ready.
+
+Other services wait until all jobs succeed. If a dependency has its own jobs,
+put all of them before the job that needs that dependency, or validation rejects
+the order with `job_dependency_order_invalid`. This also applies to transitive
+dependencies. Jobs cannot reach services that have not started and are not in
+their inherited dependency list.
 
 A non-zero exit, a rejected task, or exceeding `timeout_seconds` (1–86,400) fails
-the deployment with `job_failed` or `job_timeout`. The previous target keeps
-running, the application stays degraded, and failed jobs are not retried
+the deployment with `job_failed` or `job_timeout`. Services outside the job's
+startup dependencies keep their previous configuration; dependencies may have
+already started or updated and are not rolled back. Active-target repair does
+not revert or remove those prerequisites while the deployment is unpromoted.
+The application stays degraded, and failed jobs are not retried
 automatically; deploy again after fixing the cause. Each job succeeds at most
 once per deployment: a retried deployment skips jobs that already succeeded,
 and after a daemon restart, or when Docker could not report a job's status, a

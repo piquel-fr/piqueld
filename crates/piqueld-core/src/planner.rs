@@ -507,6 +507,34 @@ impl Plan {
             .filter(|action| action.kind.mutates_runtime())
     }
 
+    /// Filters old-target repair actions that would revert or remove prepared
+    /// job prerequisites. Convergence waits remain to gate active dependents.
+    pub fn preserve_job_prerequisites(&mut self, prepared: &ResolvedApplication) {
+        let dependencies = prepared
+            .jobs
+            .iter()
+            .flat_map(|job| prepared.job_dependencies(job))
+            .collect::<BTreeSet<_>>();
+        let services = prepared
+            .services
+            .iter()
+            .filter(|service| dependencies.contains(service.logical_name.as_str()))
+            .map(|service| service.name.as_str())
+            .collect::<BTreeSet<_>>();
+        self.actions.retain(|action| match &action.kind {
+            ActionKind::EnsureService { service } => !services.contains(service.name.as_str()),
+            ActionKind::RemoveService { name } => !services.contains(name.as_str()),
+            ActionKind::RemoveNetwork { name } => {
+                prepared.jobs.is_empty()
+                    || !prepared
+                        .networks
+                        .iter()
+                        .any(|network| network.name.as_str() == name)
+            }
+            _ => true,
+        });
+    }
+
     /// True when the plan is unblocked and only cleanup actions (removals,
     /// removal waits, and volume retention) remain.
     #[must_use]

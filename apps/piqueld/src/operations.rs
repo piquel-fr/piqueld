@@ -81,10 +81,10 @@ pub enum OperationError {
     /// The fetched manifest is invalid or selects another application.
     #[error("repository manifest is invalid or its application name does not match")]
     ManifestInvalid,
-    /// A one-shot job failed before rollout; services were not changed.
+    /// A one-shot job failed before rollout; prerequisites may have changed.
     #[error("{}", match .exit_code {
-        Some(code) => format!("job {job} exited with status {code}; services were not changed"),
-        None => format!("job {job} stopped without an exit code; services were not changed"),
+        Some(code) => format!("job {job} exited with status {code}; rollout stopped"),
+        None => format!("job {job} stopped without an exit code; rollout stopped"),
     })]
     JobFailed {
         /// Logical job name.
@@ -93,7 +93,7 @@ pub enum OperationError {
         exit_code: Option<i64>,
     },
     /// A one-shot job exceeded its timeout and was stopped.
-    #[error("job {0} did not finish before its timeout; services were not changed")]
+    #[error("job {0} did not finish before its timeout; rollout stopped")]
     JobTimeout(String),
     /// A service update failed in Docker.
     #[error("service update paused after task failure; the previous healthy task is retained")]

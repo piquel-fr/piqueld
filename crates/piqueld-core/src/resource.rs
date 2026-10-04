@@ -14,7 +14,7 @@ use crate::{
 };
 use crate::{ImageReference, ImmutableImage, RepositoryDigest};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
 /// Label marking a resource as managed by piqueld.
@@ -527,6 +527,16 @@ pub struct ResolvedApplication {
 }
 
 impl ResolvedApplication {
+    /// Services that must converge before this job starts, inherited from its
+    /// referenced service. Read the service so prepared targets saved by older
+    /// versions, which cleared job container dependencies, work too.
+    #[must_use]
+    pub fn job_dependencies(&self, job: &DesiredJob) -> BTreeSet<&str> {
+        use crate::manifest::dependencies::StartupOrder;
+        self.services
+            .dependencies_of(job.container.logical_name.as_str())
+    }
+
     /// Projects route intent into runtime networks only when ingress is enabled.
     ///
     /// Shorthand for `with_ingress_routes` with no previously accepted routes.

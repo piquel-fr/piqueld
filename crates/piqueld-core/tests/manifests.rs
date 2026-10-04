@@ -947,3 +947,47 @@ run = "before-rollout"
         ]
     );
 }
+
+#[test]
+fn dependency_jobs_must_precede_jobs_that_start_their_services() {
+    let mut manifest = parse_toml(&format!(
+        "{}\n[[spec.services]]\nname = \"db\"\ndepends_on = [\"storage\"]\n\
+         [spec.services.source]\ntype = \"image\"\nimage = \"postgres:17\"\n\
+         [[spec.services]]\nname = \"storage\"\n[spec.services.source]\n\
+         type = \"image\"\nimage = \"storage:1\"\n",
+        valid_manifest("notes")
+    ))
+    .unwrap()
+    .normalize(ApplicationId::parse("app-notes-01").unwrap())
+    .to_manifest();
+    manifest
+        .spec
+        .services
+        .iter_mut()
+        .find(|service| service.name == "web")
+        .unwrap()
+        .depends_on = vec!["db".into()];
+    manifest.spec.jobs = ["storage", "db", "web"]
+        .into_iter()
+        .map(|service| piqueld_core::manifest::Job {
+            name: format!("initialize-{service}"),
+            service: service.into(),
+            command: vec!["initialize".into()],
+            run: piqueld_core::manifest::JobRun::BeforeRollout,
+            timeout_seconds: 300,
+        })
+        .collect();
+    manifest.clone().validate().unwrap();
+    for dependency in [0, 1] {
+        let mut invalid = manifest.clone();
+        invalid.spec.jobs.swap(dependency, 2);
+        let errors = invalid.validate().unwrap_err();
+        assert!(
+            errors
+                .0
+                .iter()
+                .any(|error| error.code == codes::JOB_DEPENDENCY_ORDER_INVALID
+                    && error.path == format!("spec.jobs[{dependency}].service"))
+        );
+    }
+}
