@@ -351,18 +351,28 @@ pub(crate) struct SetJobArgs {
     target: JobTarget,
     /// Service whose prepared image, environment, secrets, and mounts the job reuses.
     service: String,
-    /// Seconds before the job fails the deployment (1–86400). Defaults to the
-    /// job's current timeout, or 300 for a new job.
+    /// Seconds before the job fails the deployment. Defaults to the job's
+    /// current timeout, or 300 for a new job.
     #[arg(long)]
     timeout_seconds: Option<u32>,
     /// Command elements after --, replacing the service's command and arguments.
     #[arg(last = true, required = true)]
     command: Vec<String>,
 }
+#[derive(Debug, Args)]
+pub(crate) struct MoveJobArgs {
+    #[command(flatten)]
+    target: JobTarget,
+    /// 1-based position in the run order; past the end moves the job last.
+    #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+    position: u32,
+}
 #[derive(Debug, Subcommand)]
 pub(crate) enum JobCommand {
     /// Add a job that runs before rollout, or replace the job with this name in place.
     Set(SetJobArgs),
+    /// Move a job to another position in the run order.
+    Move(MoveJobArgs),
     /// Remove a job by name.
     Remove(JobTarget),
 }
@@ -668,7 +678,7 @@ impl RouteCommand {
 impl JobCommand {
     /// Edits jobs client-side and saves the whole list, like routes: a new job
     /// runs after the existing ones, a replaced job keeps its position, and
-    /// removing an unknown job is an input error.
+    /// moving or removing an unknown job is an input error.
     pub(crate) async fn run(
         &self,
         cli: &Cli,
@@ -677,6 +687,7 @@ impl JobCommand {
     ) -> Result<()> {
         let target = match self {
             Self::Set(args) => &args.target,
+            Self::Move(args) => &args.target,
             Self::Remove(target) => target,
         };
         let current = resolve_application(client, &target.app).await?;
@@ -699,10 +710,15 @@ impl JobCommand {
                     None => jobs.push(job),
                 }
             }
+            (Self::Move(args), Some(index)) => {
+                let job = jobs.remove(index);
+                let position = usize::try_from(args.position).unwrap_or(usize::MAX);
+                jobs.insert((position - 1).min(jobs.len()), job);
+            }
             (Self::Remove(_), Some(index)) => {
                 jobs.remove(index);
             }
-            (Self::Remove(_), None) => {
+            (Self::Move(_) | Self::Remove(_), None) => {
                 return Err(CliError::new(
                     ErrorKind::Input,
                     format!("job {:?} was not found", target.job),

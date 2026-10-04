@@ -170,6 +170,10 @@ pub enum JobRun {
 impl Job {
     /// Timeout applied when a job declares none.
     pub const DEFAULT_TIMEOUT_SECONDS: u32 = 300;
+    /// Longest timeout a job may declare.
+    pub const MAX_TIMEOUT_SECONDS: u32 = 86_400;
+    /// Most jobs one application may declare.
+    pub const MAX_PER_APPLICATION: usize = 16;
 }
 
 /// Serde default for `Job::timeout_seconds`.

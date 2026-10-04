@@ -20,8 +20,6 @@ use utoipa::ToSchema;
 const MAX_ROUTES: usize = 64;
 const MAX_SERVICES: usize = 64;
 const MAX_VOLUMES: usize = 64;
-const MAX_JOBS: usize = 16;
-const MAX_JOB_TIMEOUT_SECONDS: u32 = 86_400;
 const MAX_ENVIRONMENT_ENTRIES: usize = 256;
 /// Environment keys share the common 255-byte identifier bound so one entry
 /// cannot dominate a manifest or a container environment list.
@@ -566,12 +564,15 @@ fn validate_budgets(input: &ApplicationManifest, errors: &mut Vec<ValidationErro
         );
         within_budget = false;
     }
-    if input.spec.jobs.len() > MAX_JOBS {
+    if input.spec.jobs.len() > Job::MAX_PER_APPLICATION {
         error(
             errors,
             codes::JOB_COUNT_EXCESSIVE,
             "spec.jobs",
-            &format!("an application must declare at most {MAX_JOBS} jobs"),
+            &format!(
+                "an application must declare at most {} jobs",
+                Job::MAX_PER_APPLICATION
+            ),
         );
         within_budget = false;
     }
@@ -940,12 +941,15 @@ fn validate_jobs(jobs: &[Job], services: &[Service], errors: &mut Vec<Validation
             codes::PROCESS_COMMAND_EXCESSIVE,
             errors,
         );
-        if !(1..=MAX_JOB_TIMEOUT_SECONDS).contains(&job.timeout_seconds) {
+        if !(1..=Job::MAX_TIMEOUT_SECONDS).contains(&job.timeout_seconds) {
             error(
                 errors,
                 codes::JOB_TIMEOUT_INVALID,
                 &format!("{base}.timeout_seconds"),
-                &format!("job timeout must be between 1 and {MAX_JOB_TIMEOUT_SECONDS} seconds"),
+                &format!(
+                    "job timeout must be between 1 and {} seconds",
+                    Job::MAX_TIMEOUT_SECONDS
+                ),
             );
         }
     }

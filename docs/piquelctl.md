@@ -168,6 +168,7 @@ piquelctl app route add notes notes.example.com web 3000 --yes
 piquelctl app route redirect notes www.notes.example.com https://notes.example.com --yes
 piquelctl app route remove notes notes.example.com --yes
 piquelctl app job set notes migrate web --timeout-seconds 600 --yes -- notes migrate
+piquelctl app job move notes migrate 1 --yes
 piquelctl app job remove notes migrate --yes
 piquelctl app service health http notes web 8080 --path /live --check-timeout 3 --yes
 piquelctl app service health interval notes web 20 --yes
@@ -187,7 +188,8 @@ request path and query to the destination; use `--status` and
 `--no-preserve-path` to change that. Deploy after saving to activate or remove public routing.
 `job set` adds a job after the existing ones, or replaces the job with that name
 in place, keeping its timeout unless `--timeout-seconds` is given (300 for a new
-job). Jobs run in their saved order before each rollout; like routes, job edits
+job). `job move` sets a job's 1-based position in the run order. Jobs run in
+their saved order before each rollout; like routes, job edits
 preserve the other jobs and use the inspected generation.
 
 Command, argument, job command, and `depends-on` arrays preserve individual elements; place

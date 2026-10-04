@@ -4,9 +4,6 @@ use super::{dirty_group, editor, save_actions};
 use leptos::prelude::*;
 use piqueld_client::{Job, JobRun, edit::ApplicationEdit};
 
-/// Most jobs one application may declare.
-const MAX_JOBS: usize = 16;
-
 /// One editable job. The command keeps one element per row, without shell parsing.
 #[derive(Clone, PartialEq)]
 struct JobDraft {
@@ -244,7 +241,7 @@ pub(super) fn JobSettings() -> impl IntoView {
                                         <input
                                             type="number"
                                             min="1"
-                                            max="86400"
+                                            max={Job::MAX_TIMEOUT_SECONDS}
                                             prop:value={move || field(draft, index, |j| j.timeout.clone())}
                                             on:input={move |event| {
                                                 edit(draft, index, |j| j.timeout = event_target_value(&event));
@@ -285,7 +282,7 @@ pub(super) fn JobSettings() -> impl IntoView {
                     <button
                         type="button"
                         class="btn btn-sm"
-                        disabled={move || draft.with(Vec::len) >= MAX_JOBS}
+                        disabled={move || draft.with(Vec::len) >= Job::MAX_PER_APPLICATION}
                         on:click={move |_| draft.update(|jobs| jobs.push(JobDraft::default()))}
                     >
                         {icon(Icon::Plus)}

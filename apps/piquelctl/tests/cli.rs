@@ -1814,6 +1814,22 @@ fn job_commands_edit_the_loaded_jobs_and_save_the_whole_list() {
                 job("cleanup", &["notes", "cleanup"], 30)
             ]),
         ),
+        // Moving reorders without changing the job; past the end moves it last.
+        (
+            vec![
+                "app",
+                "job",
+                "move",
+                "app-notes-01",
+                "migrate",
+                "9",
+                "--yes",
+            ],
+            json!([
+                job("seed", &["notes", "seed"], 300),
+                job("migrate", &["notes", "migrate"], 60)
+            ]),
+        ),
         (
             vec!["app", "job", "remove", "app-notes-01", "seed", "--yes"],
             json!([job("migrate", &["notes", "migrate"], 60)]),
