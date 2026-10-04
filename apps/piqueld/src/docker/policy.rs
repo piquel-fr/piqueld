@@ -1,8 +1,7 @@
 use super::{
     BTreeSet, BollardDocker, HEALTH_RETRIES, HealthConfig, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
-    RESTART_DELAY, SERVICE_LABEL, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum,
-    ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec,
-    TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
+    RESTART_DELAY, SERVICE_LABEL, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum, TaskSpec,
+    TaskSpecContainerSpec, TaskSpecRestartPolicyConditionEnum, UPDATE_MONITOR,
 };
 
 /// The runtime policy emitted by the desired-service Docker specification builder.
@@ -30,7 +29,7 @@ impl ServiceRuntimePolicy {
             return false;
         };
         Self::restart_policy(task)
-            && Self::update_policy(spec)
+            && Self::update_policy(spec, container)
             && Self::replicated_mode(spec)
             && Self::mounts(container)
             && Self::environment(container)
@@ -150,16 +149,18 @@ impl ServiceRuntimePolicy {
         })
     }
 
-    /// Requires the authored one-at-a-time, start-first update policy that
-    /// pauses on failure.
-    fn update_policy(spec: &ServiceSpec) -> bool {
+    /// Requires the authored one-at-a-time update policy that pauses on
+    /// failure, in the order derived from the observed mounts. Mounts are
+    /// compared against desired state separately, so a matching service is
+    /// never flagged for its order alone.
+    fn update_policy(spec: &ServiceSpec, container: &TaskSpecContainerSpec) -> bool {
         spec.update_config.as_ref().is_some_and(|update| {
             update.parallelism == Some(1)
                 && update.delay.is_none_or(|value| value == 0)
                 && update.failure_action == Some(ServiceSpecUpdateConfigFailureActionEnum::PAUSE)
                 && update.monitor == Some(UPDATE_MONITOR)
                 && update.max_failure_ratio == Some(0.0)
-                && update.order == Some(ServiceSpecUpdateConfigOrderEnum::START_FIRST)
+                && update.order == Some(BollardDocker::update_order(container))
         })
     }
 
@@ -295,13 +296,18 @@ impl ServiceRuntimePolicy {
 mod tests {
     use super::super::HealthCheck;
     use super::*;
-    use bollard::models::ServiceSpecRollbackConfig;
+    use bollard::models::{ServiceSpecRollbackConfig, ServiceSpecUpdateConfigOrderEnum};
     use piqueld_core::manifest::ResourceLimits;
-    use piqueld_core::resource::{DesiredService, ResolvedSource};
+    use piqueld_core::resource::{DesiredMount, DesiredService, ResolvedSource};
     use std::collections::BTreeMap;
 
     /// Specification authored for a service attached to its private network.
     fn authored() -> ServiceSpec {
+        authored_with_mounts(Vec::new())
+    }
+
+    /// Specification authored for the same service mounting `mounts`.
+    fn authored_with_mounts(mounts: Vec<DesiredMount>) -> ServiceSpec {
         let image = format!("ghcr.io/example/notes@sha256:{}", "a".repeat(64));
         let application = piqueld_core::ApplicationId::parse("app-policy").unwrap();
         let desired = DesiredService {
@@ -318,7 +324,7 @@ mod tests {
             environment: BTreeMap::from([("NOTES_PORT".into(), "8080".into())]),
             command: vec!["/bin/notes".into()],
             arguments: vec!["--listen".into(), "8080".into()],
-            mounts: Vec::new(),
+            mounts,
             healthcheck: None,
             resources: Some(ResourceLimits {
                 cpu_millis: Some(250),
@@ -360,6 +366,35 @@ mod tests {
             task.runtime = Some("custom-runtime".into());
         }
         assert!(!ServiceRuntimePolicy::matches(&authored, "local-node"));
+    }
+
+    #[test]
+    fn writable_volumes_update_stop_first() {
+        let mount = |read_only| DesiredMount {
+            volume_name: piqueld_core::DockerVolumeName::parse("app-policy-data").unwrap(),
+            target: "/data".into(),
+            read_only,
+        };
+        let order = |spec: &ServiceSpec| spec.update_config.as_ref().unwrap().order;
+
+        let read_only = authored_with_mounts(vec![mount(true)]);
+        assert_eq!(
+            order(&read_only),
+            Some(ServiceSpecUpdateConfigOrderEnum::START_FIRST)
+        );
+        assert!(ServiceRuntimePolicy::matches(&read_only, "local-node"));
+
+        let mut writable = authored_with_mounts(vec![mount(true), mount(false)]);
+        assert_eq!(
+            order(&writable),
+            Some(ServiceSpecUpdateConfigOrderEnum::STOP_FIRST)
+        );
+        assert!(ServiceRuntimePolicy::matches(&writable, "local-node"));
+
+        // Services deployed before stop-first existed are updated once.
+        writable.update_config.as_mut().unwrap().order =
+            Some(ServiceSpecUpdateConfigOrderEnum::START_FIRST);
+        assert!(!ServiceRuntimePolicy::matches(&writable, "local-node"));
     }
 
     #[test]

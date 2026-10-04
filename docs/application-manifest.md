@@ -43,6 +43,11 @@ generate them), and there are no manifest
 fields for directly published ports. Exact-host HTTP routes are declared in
 `spec.routes`; see [managed ingress](ingress.md).
 
+Rollouts start each replacement task before stopping the old one, except for
+services that mount any volume without `read_only = true`. Those stop the old
+task first so single-writer stores such as PostgreSQL or SQLite never share
+their data directory, and are briefly unavailable during each rollout.
+
 Services of one application share a private network on which each answers to
 its manifest name, so `web` reaches a `postgres` service at `postgres:5432`.
 Names resolve only within that application; identically named services in other

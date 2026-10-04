@@ -33,17 +33,24 @@ impl BollardDocker {
         desired: &DesiredService,
         node_id: &str,
     ) -> Result<ServiceSpec, DockerError> {
+        let task_template = Self::task_spec(desired, node_id)?;
+        let update_config = Self::update_config(
+            task_template
+                .container_spec
+                .as_ref()
+                .expect("container spec"),
+        );
         Ok(ServiceSpec {
             name: Some(desired.name.to_string()),
             labels: Some(desired.labels.clone().into_iter().collect()),
-            task_template: Some(Self::task_spec(desired, node_id)?),
+            task_template: Some(task_template),
             mode: Some(ServiceSpecMode {
                 replicated: Some(ServiceSpecModeReplicated {
                     replicas: Some(i64::from(desired.replicas)),
                 }),
                 ..Default::default()
             }),
-            update_config: Some(BollardDocker::update_config()),
+            update_config: Some(update_config),
             ..Default::default()
         })
     }
@@ -159,16 +166,35 @@ impl BollardDocker {
         }))
     }
 
-    /// Returns the rollout policy: one task at a time, start the replacement
-    /// first, and pause on failure after the monitor window.
-    pub(super) fn update_config() -> ServiceSpecUpdateConfig {
+    /// Returns the rollout policy for `container`: one task at a time in
+    /// `update_order`, pausing on failure after the monitor window.
+    pub(super) fn update_config(container: &TaskSpecContainerSpec) -> ServiceSpecUpdateConfig {
         ServiceSpecUpdateConfig {
             parallelism: Some(1),
             delay: Some(0),
             failure_action: Some(ServiceSpecUpdateConfigFailureActionEnum::PAUSE),
             monitor: Some(UPDATE_MONITOR),
             max_failure_ratio: Some(0.0),
-            order: Some(ServiceSpecUpdateConfigOrderEnum::START_FIRST),
+            order: Some(Self::update_order(container)),
+        }
+    }
+
+    /// Returns stop-first when `container` mounts any volume read-write, so two
+    /// tasks never share a writable data directory (e.g. PostgreSQL), at the
+    /// cost of a short downtime per rollout. Every other service starts its
+    /// replacement first. piqueld only authors named-volume mounts.
+    pub(super) fn update_order(
+        container: &TaskSpecContainerSpec,
+    ) -> ServiceSpecUpdateConfigOrderEnum {
+        if container
+            .mounts
+            .iter()
+            .flatten()
+            .any(|mount| !mount.read_only.unwrap_or(false))
+        {
+            ServiceSpecUpdateConfigOrderEnum::STOP_FIRST
+        } else {
+            ServiceSpecUpdateConfigOrderEnum::START_FIRST
         }
     }
 
