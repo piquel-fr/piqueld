@@ -5,7 +5,7 @@ use bollard::query_parameters::{InspectServiceOptions, UpdateServiceOptionsBuild
 mod git_fixture;
 use git_fixture::GitBuildFixture;
 use piqueld::application::RuntimeBoundary;
-use piqueld::docker::{BollardDocker, DockerApi, DockerError};
+use piqueld::docker::{BollardDocker, DockerApi, DockerError, JobRuns, JobStatus};
 use piqueld_core::manifest::HealthCheck;
 use piqueld_core::resource::{DesiredNetwork, DesiredService, DesiredVolume, ResolvedSource};
 use piqueld_core::{ApplicationId, InstanceId, ResourceKind, docker_resource_name};
@@ -437,6 +437,133 @@ impl SwarmScenario {
         );
     }
 
+    /// Runs one-shot jobs derived from the service: they read its secret,
+    /// never answer for its alias, ignore image health checks, report exit
+    /// codes and output, and are replaced or removed by operation.
+    async fn run_jobs(&self) {
+        let docker = &self.engine.docker;
+        let job = |operation: &str, script: &str| {
+            let name = piqueld_core::JobName::parse("migrate").unwrap();
+            let mut container = self.service.clone();
+            container.name = piqueld_core::DockerServiceName::for_job(&self.app, &name);
+            container.command = vec!["/bin/sh".into(), "-c".into(), script.into()];
+            container.arguments.clear();
+            container.healthcheck = None;
+            container.labels = self.labels.clone();
+            container
+                .labels
+                .insert(piqueld_core::resource::JOB_LABEL.into(), name.to_string());
+            piqueld_core::DesiredJob {
+                logical_name: name,
+                run: piqueld_core::manifest::JobRun::BeforeRollout,
+                timeout_seconds: 60,
+                container,
+            }
+            .for_operation(operation)
+        };
+        let first = job(
+            "operation-1",
+            "test \"$(cat /run/secrets/token)\" = mounted-value && echo out && echo err >&2",
+        );
+        assert_eq!(docker.job_status(&first).await.unwrap(), JobStatus::Missing);
+        docker.start_job(&first).await.unwrap();
+        // Bollard's typed model misses Docker's `Healthcheck` key, so the
+        // stored specification is read as raw JSON.
+        let spec = self.raw_service_spec(first.container.name.as_str()).await;
+        assert!(spec["Mode"]["ReplicatedJob"].is_object(), "{spec}");
+        let task = &spec["TaskTemplate"];
+        assert_eq!(
+            task["ContainerSpec"]["Healthcheck"]["Test"],
+            serde_json::json!(["NONE"])
+        );
+        assert_eq!(task["RestartPolicy"]["Condition"], "none");
+        let networks = task["Networks"].as_array().unwrap();
+        assert!(
+            !networks.is_empty()
+                && networks
+                    .iter()
+                    .all(|network| network["Aliases"].as_array().is_none_or(Vec::is_empty)),
+            "a job must not answer for the service's alias: {spec}"
+        );
+        assert_eq!(
+            Self::wait_job(docker, &first).await,
+            JobStatus::Finished {
+                exit_code: Some(0),
+                error: None
+            }
+        );
+        assert_eq!(
+            docker.job_output(&first).await.unwrap(),
+            [
+                (piqueld_core::api::LogStream::Stdout, b"out\n".to_vec()),
+                (piqueld_core::api::LogStream::Stderr, b"err\n".to_vec()),
+            ]
+        );
+
+        // Another operation's run of the same job replaces this one.
+        let second = job("operation-2", "exit 3");
+        assert_eq!(
+            docker.job_status(&second).await.unwrap(),
+            JobStatus::Missing
+        );
+        docker.start_job(&second).await.unwrap();
+        assert_eq!(docker.job_status(&first).await.unwrap(), JobStatus::Missing);
+        let JobStatus::Finished { exit_code, error } = Self::wait_job(docker, &second).await else {
+            panic!("the failing job must finish");
+        };
+        assert_eq!(exit_code, Some(3));
+        assert!(error.is_some(), "Docker explains a failed task");
+        docker
+            .remove_jobs(&self.labels, JobRuns::Except("operation-2"))
+            .await
+            .unwrap();
+        assert_ne!(
+            docker.job_status(&second).await.unwrap(),
+            JobStatus::Missing
+        );
+        docker
+            .remove_jobs(&self.labels, JobRuns::All)
+            .await
+            .unwrap();
+        assert_eq!(
+            docker.job_status(&second).await.unwrap(),
+            JobStatus::Missing
+        );
+    }
+
+    /// Reads a service's stored specification over Docker's HTTP API.
+    async fn raw_service_spec(&self, name: &str) -> serde_json::Value {
+        use std::io::{Read, Write};
+        let socket = self.engine.socket.clone();
+        let request = format!("GET /services/{name} HTTP/1.0\r\nHost: docker\r\n\r\n");
+        let response = tokio::task::spawn_blocking(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+            stream.write_all(request.as_bytes()).unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            response
+        })
+        .await
+        .unwrap();
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        assert!(head.contains(" 200 "), "{head}");
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["Spec"].take()
+    }
+
+    /// Polls a job run until it stops.
+    async fn wait_job(docker: &BollardDocker, job: &piqueld_core::DesiredJob) -> JobStatus {
+        tokio::time::timeout(Duration::from_mins(1), async {
+            loop {
+                match docker.job_status(job).await.unwrap() {
+                    JobStatus::Running => tokio::time::sleep(Duration::from_millis(250)).await,
+                    status => return status,
+                }
+            }
+        })
+        .await
+        .expect("job finishes")
+    }
+
     async fn delete_retaining_volume(&self, http_service: &DesiredService) {
         self.engine
             .docker
@@ -540,13 +667,14 @@ impl SwarmScenario {
 /// Privileged lifecycle qualification; ordinary validation never mutates Docker.
 #[tokio::test]
 #[ignore = "requires an isolated privileged Docker Engine"]
-async fn swarm_init_create_replica_drift_restart_delete_and_volume_retention() {
+async fn swarm_init_create_replica_drift_restart_jobs_delete_and_volume_retention() {
     let mut scenario = SwarmScenario::new().await;
     scenario.assert_logs().await;
     let http_service = scenario.add_http_service().await;
     scenario.assert_healthchecks(&http_service).await;
     scenario.scale_and_reconnect().await;
     scenario.assert_idempotence_and_repair_drift().await;
+    scenario.run_jobs().await;
     scenario.delete_retaining_volume(&http_service).await;
 }
 

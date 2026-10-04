@@ -161,6 +161,22 @@ impl Store {
         sqlx::query!("UPDATE builds SET state=?1,finished_at_ms=?2,image_id=?3 WHERE id=?4 AND state='running'",state,now,image,id).execute(&self.pool).await.map_err(StoreError::database)?;
         Ok(())
     }
+    /// Names of the jobs an operation already ran successfully. Retries and
+    /// restarts skip them, so each job succeeds at most once per operation.
+    pub(crate) async fn succeeded_jobs(
+        &self,
+        operation: &str,
+    ) -> Result<std::collections::BTreeSet<String>, StoreError> {
+        Ok(sqlx::query_scalar!(
+            "SELECT job AS \"job!\" FROM builds WHERE operation_id=?1 AND job IS NOT NULL AND state='succeeded'",
+            operation
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .collect())
+    }
     /// Marks builds left running by a previous daemon process as interrupted.
     pub(crate) async fn recover_builds(&self) -> Result<(), StoreError> {
         let now = now_ms();

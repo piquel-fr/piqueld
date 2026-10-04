@@ -258,7 +258,9 @@ creates an independent record before checkout. Image pulls do not create records
 Outcomes are running, succeeded, failed, or interrupted. Resolved commits and
 image IDs are recorded when available; retries create new attempts. Job runs
 appear in the same history with `job` set, the service whose container they
-reuse, the image that ran, and `exit_code` once the container exited.
+reuse, the image that ran, and `exit_code` once the container exited. Notes
+from piqueld, such as Docker's explanation of a failed task or unavailable
+output, are appended to a job's output as stderr lines prefixed `piqueld:`.
 
 `GET /api/v1/builds/{id}/logs` returns the newest output in chronological order,
 with `previous_offset` as an exclusive `before` cursor to load older chunks.

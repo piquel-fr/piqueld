@@ -820,9 +820,21 @@ impl DockerApi for BollardDocker {
             .run("inspect job", self.inspect_job(job))
             .await
     }
-    async fn remove_jobs(&self, ownership: &BTreeMap<String, String>) -> Result<(), DockerError> {
+    async fn job_output(
+        &self,
+        job: &piqueld_core::DesiredJob,
+    ) -> Result<Vec<(piqueld_core::api::LogStream, Vec<u8>)>, DockerError> {
         DockerTimeout::Request
-            .run("remove jobs", self.remove_owned_jobs(ownership))
+            .run("read job output", self.read_job_output(job))
+            .await
+    }
+    async fn remove_jobs(
+        &self,
+        ownership: &BTreeMap<String, String>,
+        runs: super::JobRuns<'_>,
+    ) -> Result<(), DockerError> {
+        DockerTimeout::Request
+            .run("remove jobs", self.remove_owned_jobs(ownership, runs))
             .await
     }
     /// Removes the private network by its inspected ID after rechecking

@@ -9,7 +9,7 @@ use application_fixture::TestApplications;
 
 use async_trait::async_trait;
 use piqueld::docker::{
-    DockerApi, DockerError, ImageSource, JobStatus, SwarmState, resolve_image_digest,
+    DockerApi, DockerError, ImageSource, JobRuns, JobStatus, SwarmState, resolve_image_digest,
 };
 use piqueld::reconcile::Controller;
 use piqueld::store::Store;
@@ -56,7 +56,19 @@ struct FakeDocker {
     observations: Arc<Probe>,
     job_exit: Arc<AtomicI64>,
     job_starts: Arc<Mutex<Vec<JobStart>>>,
-    running_jobs: Arc<Mutex<std::collections::BTreeSet<String>>>,
+    /// Job services by Docker name, with the operation that started each run.
+    jobs: Arc<Mutex<BTreeMap<String, Option<String>>>>,
+    /// Keeps job runs running.
+    hold_jobs: Arc<AtomicBool>,
+    /// Fails status checks of started runs.
+    fail_job_status: Arc<AtomicBool>,
+    /// Fails the next job start after creating the run, like a lost response.
+    lose_job_start: Arc<AtomicBool>,
+    /// Rejects starting the named job as an ownership conflict.
+    conflicting_job: Arc<Mutex<Option<String>>>,
+    fail_job_output: Arc<AtomicBool>,
+    /// Fails removing an operation's own run; stale-run removal still works.
+    fail_job_cleanup: Arc<AtomicBool>,
 }
 
 /// A started job with the services, networks, and volumes it could see.
@@ -462,6 +474,9 @@ impl DockerApi for FakeDocker {
 
     async fn start_job(&self, job: &piqueld_core::DesiredJob) -> Result<(), DockerError> {
         let _probe = self.mutations.enter().await;
+        if self.conflicting_job.lock().await.as_deref() == Some(job.logical_name.as_str()) {
+            return Err(DockerError::OwnershipConflict);
+        }
         let observed = self.observed.lock().await;
         self.job_starts.lock().await.push(JobStart {
             job: job.logical_name.to_string(),
@@ -469,22 +484,64 @@ impl DockerApi for FakeDocker {
             networks: observed.networks.len(),
             volumes: observed.volumes.len(),
         });
-        self.running_jobs
-            .lock()
-            .await
-            .insert(job.container.name.to_string());
+        self.jobs.lock().await.insert(
+            job.container.name.to_string(),
+            job.operation().map(Into::into),
+        );
+        if self.lose_job_start.swap(false, Ordering::SeqCst) {
+            return Err(DockerError::Request("start job"));
+        }
         Ok(())
     }
 
-    async fn job_status(&self, _job: &piqueld_core::DesiredJob) -> Result<JobStatus, DockerError> {
+    async fn job_status(&self, job: &piqueld_core::DesiredJob) -> Result<JobStatus, DockerError> {
+        let run = self
+            .jobs
+            .lock()
+            .await
+            .get(job.container.name.as_str())
+            .cloned();
+        if run != Some(job.operation().map(Into::into)) {
+            return Ok(JobStatus::Missing);
+        }
+        if self.fail_job_status.load(Ordering::SeqCst) {
+            return Err(DockerError::Request("inspect job"));
+        }
+        if self.hold_jobs.load(Ordering::SeqCst) {
+            return Ok(JobStatus::Running);
+        }
+        let exit_code = self.job_exit.load(Ordering::SeqCst);
         Ok(JobStatus::Finished {
-            exit_code: Some(self.job_exit.load(Ordering::SeqCst)),
-            output: vec![(piqueld_core::api::LogStream::Stdout, b"migrated\n".to_vec())],
+            exit_code: Some(exit_code),
+            error: (exit_code != 0).then(|| format!("task: non-zero exit ({exit_code})")),
         })
     }
 
-    async fn remove_jobs(&self, _ownership: &BTreeMap<String, String>) -> Result<(), DockerError> {
-        self.running_jobs.lock().await.clear();
+    async fn job_output(
+        &self,
+        _job: &piqueld_core::DesiredJob,
+    ) -> Result<Vec<(piqueld_core::api::LogStream, Vec<u8>)>, DockerError> {
+        if self.fail_job_output.load(Ordering::SeqCst) {
+            return Err(DockerError::Request("read job output"));
+        }
+        Ok(vec![(
+            piqueld_core::api::LogStream::Stdout,
+            b"migrated\n".to_vec(),
+        )])
+    }
+
+    async fn remove_jobs(
+        &self,
+        _ownership: &BTreeMap<String, String>,
+        runs: JobRuns<'_>,
+    ) -> Result<(), DockerError> {
+        if matches!(runs, JobRuns::Of(_)) && self.fail_job_cleanup.load(Ordering::SeqCst) {
+            return Err(DockerError::Request("remove jobs"));
+        }
+        self.jobs
+            .lock()
+            .await
+            .retain(|_, operation| !runs.selects(operation.as_deref()));
         Ok(())
     }
 
@@ -3149,18 +3206,95 @@ async fn deletion_proceeds_after_another_node_joins() {
     harness.assert_deleted().await;
 }
 
+/// The fixture manifest with before-rollout jobs that reuse its `web` service.
+fn manifest_with_jobs(
+    jobs: &[&str],
+    timeout_seconds: u32,
+) -> piqueld_core::manifest::ApplicationManifest {
+    let mut input = manifest();
+    input.spec.jobs = jobs
+        .iter()
+        .map(|name| piqueld_core::manifest::Job {
+            name: (*name).into(),
+            service: "web".into(),
+            command: vec!["notes".into(), (*name).into()],
+            run: piqueld_core::manifest::JobRun::BeforeRollout,
+            timeout_seconds,
+        })
+        .collect();
+    input
+}
+
+impl ControllerHarness {
+    /// Names of the jobs started so far, in start order.
+    async fn started_jobs(&self) -> Vec<String> {
+        self.docker
+            .job_starts
+            .lock()
+            .await
+            .iter()
+            .map(|start| start.job.clone())
+            .collect()
+    }
+
+    /// The application's newest build record and its retained output.
+    async fn latest_run(
+        &self,
+        application: &ApplicationId,
+    ) -> (piqueld_core::api::BuildRecord, String) {
+        let run = self
+            .store
+            .builds(Some(application), None, 10)
+            .await
+            .unwrap()
+            .items
+            .remove(0);
+        let output = self
+            .store
+            .build_logs(run.id, None, None)
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        (run, output)
+    }
+
+    /// Scans once and returns the operation's resulting state and error code.
+    async fn scan_result(&self, operation: &Operation) -> (OperationState, Option<String>) {
+        self.controller
+            .scan(&CancellationToken::new())
+            .await
+            .unwrap();
+        let operation = self.store.operation(&operation.id).await.unwrap();
+        (operation.state, operation.error_code)
+    }
+
+    /// Waits until `count` job runs have been started.
+    async fn wait_for_job_starts(&self, count: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while self.docker.job_starts.lock().await.len() < count {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("job starts");
+    }
+}
+
 #[tokio::test]
 async fn before_rollout_jobs_gate_service_changes_and_record_output() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
-    let mut input = manifest();
-    input.spec.jobs.push(piqueld_core::manifest::Job {
-        name: "migrate".into(),
-        service: "web".into(),
-        command: vec!["notes".into(), "migrate".into()],
-        run: piqueld_core::manifest::JobRun::BeforeRollout,
-        timeout_seconds: 300,
-    });
+    let mut input = manifest_with_jobs(&["migrate"], 300);
+    // A run left by an earlier operation is removed before jobs start.
+    harness
+        .docker
+        .jobs
+        .lock()
+        .await
+        .insert("leftover".into(), Some("earlier-operation".into()));
     let first = applications
         .apply(input.clone().validate().unwrap(), None)
         .await
@@ -3176,13 +3310,8 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
             volumes: 1,
         }]
     );
-    assert!(harness.docker.running_jobs.lock().await.is_empty());
-    let run = &harness
-        .store
-        .builds(Some(&first.application_id), None, 10)
-        .await
-        .unwrap()
-        .items[0];
+    assert!(harness.docker.jobs.lock().await.is_empty());
+    let (run, output) = harness.latest_run(&first.application_id).await;
     assert_eq!(
         (run.job.as_deref(), run.exit_code, run.state),
         (
@@ -3191,8 +3320,7 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
             piqueld_core::api::BuildState::Succeeded
         )
     );
-    let output = harness.store.build_logs(run.id, None, None).await.unwrap();
-    assert_eq!(output.items[0].text, "migrated\n");
+    assert_eq!(output, "migrated\n");
 
     // A failing job fails the deployment before the running service changes.
     harness.docker.job_exit.store(3, Ordering::SeqCst);
@@ -3201,14 +3329,10 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
         .apply(input.validate().unwrap(), None)
         .await
         .unwrap();
-    harness
-        .controller
-        .scan(&CancellationToken::new())
-        .await
-        .unwrap();
-    let failure = harness.store.operation(&failed.id).await.unwrap();
-    assert_eq!(failure.state, OperationState::Failed);
-    assert_eq!(failure.error_code.as_deref(), Some("job_failed"));
+    assert_eq!(
+        harness.scan_result(&failed).await,
+        (OperationState::Failed, Some("job_failed".into()))
+    );
     assert_eq!(harness.docker.observed.lock().await.services[0].replicas, 1);
     assert_eq!(
         harness
@@ -3219,15 +3343,227 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
             .resolved_generation,
         Some(1)
     );
-    let run = &harness
-        .store
-        .builds(Some(&first.application_id), None, 10)
-        .await
-        .unwrap()
-        .items[0];
+    let (run, output) = harness.latest_run(&first.application_id).await;
     assert_eq!(
         (run.exit_code, run.state),
         (Some(3), piqueld_core::api::BuildState::Failed)
     );
-    assert!(harness.docker.running_jobs.lock().await.is_empty());
+    assert_eq!(output, "migrated\npiqueld: task: non-zero exit (3)\n");
+    assert!(harness.docker.jobs.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn failed_job_keeps_an_unchanged_application_degraded() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let first = applications
+        .apply(
+            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    harness.finish(&first).await;
+    harness.docker.job_exit.store(3, Ordering::SeqCst);
+    let redeploy = applications
+        .deploy(&first.application_id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.scan_result(&redeploy).await,
+        (OperationState::Failed, Some("job_failed".into()))
+    );
+    // Services already match the target, but the deployment still failed.
+    harness.scan_result(&redeploy).await;
+    let status = harness.store.status(&first.application_id).await.unwrap();
+    assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
+    assert_eq!(harness.started_jobs().await, ["migrate", "migrate"]);
+}
+
+#[tokio::test]
+async fn retried_operation_skips_jobs_that_already_succeeded() {
+    let harness = ControllerHarness::new().await;
+    *harness.docker.conflicting_job.lock().await = Some("seed".into());
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_jobs(&["migrate", "seed"], 300)
+                .validate()
+                .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.scan_result(&operation).await,
+        (OperationState::Failed, Some("ownership_conflict".into()))
+    );
+    // Planning cannot see the conflict, so the next scan retries the same
+    // operation, which runs only the job that has not succeeded yet.
+    *harness.docker.conflicting_job.lock().await = None;
+    harness.finish(&operation).await;
+    assert_eq!(harness.started_jobs().await, ["migrate", "seed"]);
+}
+
+#[tokio::test]
+async fn job_run_accepted_before_a_lost_response_is_not_started_again() {
+    let harness = ControllerHarness::new().await;
+    harness.docker.lose_job_start.store(true, Ordering::SeqCst);
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    harness.finish(&operation).await;
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
+}
+
+#[tokio::test]
+async fn restarted_daemon_resumes_a_running_job() {
+    let mut harness = ControllerHarness::new().await;
+    harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let shutdown = CancellationToken::new();
+    let (scanned, ()) = tokio::join!(harness.controller.scan(&shutdown), async {
+        harness.wait_for_job_starts(1).await;
+        shutdown.cancel();
+    });
+    scanned.unwrap();
+    // Shutdown leaves the run in Docker for the restarted daemon.
+    assert_eq!(harness.docker.jobs.lock().await.len(), 1);
+
+    harness.reopen().await;
+    harness.docker.hold_jobs.store(false, Ordering::SeqCst);
+    harness.finish(&operation).await;
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
+    assert!(harness.docker.jobs.lock().await.is_empty());
+    let (run, output) = harness.latest_run(&operation.application_id).await;
+    assert_eq!(run.state, piqueld_core::api::BuildState::Succeeded);
+    assert_eq!(output, "migrated\n");
+}
+
+#[tokio::test]
+async fn superseded_job_run_is_stopped() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+    let first = applications
+        .apply(
+            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let (scanned, second) = tokio::join!(harness.controller.scan(&cancellation), async {
+        harness.wait_for_job_starts(1).await;
+        applications
+            .apply(manifest().validate().unwrap(), None)
+            .await
+            .unwrap()
+    });
+    scanned.unwrap();
+    // The replacement deployment declares no jobs, so the superseded
+    // operation must stop its own run.
+    assert!(harness.docker.jobs.lock().await.is_empty());
+    let (run, _) = harness.latest_run(&first.application_id).await;
+    assert_eq!(run.state, piqueld_core::api::BuildState::Interrupted);
+    harness.finish(&second).await;
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
+}
+
+#[tokio::test]
+async fn job_timeout_keeps_output_despite_status_errors() {
+    let harness = ControllerHarness::new().await;
+    harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+    harness.docker.fail_job_status.store(true, Ordering::SeqCst);
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_jobs(&["migrate"], 1).validate().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    // Status errors until the deadline end as a timeout, which is not retried.
+    assert_eq!(
+        harness.scan_result(&operation).await,
+        (OperationState::Failed, Some("job_timeout".into()))
+    );
+    let (run, output) = harness.latest_run(&operation.application_id).await;
+    assert_eq!(run.state, piqueld_core::api::BuildState::Failed);
+    assert_eq!(output, "migrated\n");
+    assert!(harness.docker.jobs.lock().await.is_empty());
+    assert!(harness.docker.observed.lock().await.services.is_empty());
+}
+
+#[tokio::test]
+async fn job_outcome_survives_output_and_cleanup_failures() {
+    let harness = ControllerHarness::new().await;
+    harness.docker.fail_job_output.store(true, Ordering::SeqCst);
+    harness
+        .docker
+        .fail_job_cleanup
+        .store(true, Ordering::SeqCst);
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    harness.finish(&operation).await;
+    let (run, output) = harness.latest_run(&operation.application_id).await;
+    assert_eq!(
+        (run.exit_code, run.state),
+        (Some(0), piqueld_core::api::BuildState::Succeeded)
+    );
+    assert!(
+        output.starts_with("piqueld: job output unavailable"),
+        "{output}"
+    );
+    // The leftover run is removed by the next deployment with jobs.
+    assert_eq!(harness.docker.jobs.lock().await.len(), 1);
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
+}
+
+#[tokio::test]
+async fn blocked_deployment_runs_no_jobs() {
+    let harness = ControllerHarness::new().await;
+    let operation = harness
+        .applications()
+        .apply(
+            manifest_with_jobs(&["migrate"], 300).validate().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    harness
+        .docker
+        .observed
+        .lock()
+        .await
+        .networks
+        .push(ObservedNetwork {
+            name: piqueld_core::DockerNetworkName::for_application(&operation.application_id)
+                .to_string(),
+            runtime_configuration_matches: true,
+            labels: foreign_labels(&operation.application_id),
+        });
+    assert_eq!(
+        harness.scan_result(&operation).await,
+        (OperationState::Failed, Some("ownership_conflict".into()))
+    );
+    assert!(harness.started_jobs().await.is_empty());
 }

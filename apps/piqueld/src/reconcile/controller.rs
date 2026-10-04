@@ -229,8 +229,13 @@ impl<D: DockerApi> Controller<D> {
         if operation.kind == OperationKind::Delete {
             self.withdraw_routes(operation, deadline).await?;
             // Job services would keep the private network attached.
-            self.remove_jobs(operation, &ownership, cancellation)
-                .await?;
+            self.remove_jobs(
+                operation,
+                &ownership,
+                crate::docker::JobRuns::All,
+                cancellation,
+            )
+            .await?;
         }
         tracing::debug!(
             timeout_seconds = self.retry.convergence_timeout.as_secs(),
@@ -403,7 +408,11 @@ impl<D: DockerApi> Controller<D> {
 
     /// Records the planning phase (naming the first blocking resource, if any) and
     /// rejects blocked plans with their classified error.
-    async fn check_plan(&self, operation: &Operation, plan: &Plan) -> Result<(), OperationError> {
+    pub(super) async fn check_plan(
+        &self,
+        operation: &Operation,
+        plan: &Plan,
+    ) -> Result<(), OperationError> {
         tracing::debug!(
             actions = plan.actions.len(),
             blocked = plan.is_blocked(),

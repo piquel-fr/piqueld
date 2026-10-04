@@ -235,6 +235,16 @@ impl<D: DockerApi> Controller<D> {
             .saturating_add(delay)
     }
 
+    /// Whether a failure persists even when services match the target: ingress
+    /// still awaits publication, or a failed job ended the deployment before
+    /// promotion.
+    fn failure_outlives_converged_plan(operation: &super::Operation) -> bool {
+        matches!(
+            operation.error_code.as_deref(),
+            Some("ingress_unavailable" | "job_failed" | "job_timeout")
+        )
+    }
+
     /// Processes one application during a scan.
     ///
     /// 1. Repairs drift in the active target while a newer target is unpromoted.
@@ -319,7 +329,7 @@ impl<D: DockerApi> Controller<D> {
         }
         if !plan_requires_execution(&plan)
             && !application.delete_intent
-            && latest.error_code.as_deref() != Some("ingress_unavailable")
+            && !Self::failure_outlives_converged_plan(&latest)
         {
             self.store
                 .set_status_for_operation(&latest.id, ApplicationState::Ready, None)

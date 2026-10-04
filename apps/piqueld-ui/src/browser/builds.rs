@@ -16,7 +16,7 @@ pub(super) fn BuildsPage() -> impl IntoView {
     view! {
         <PageHeader
             title="Builds"
-            description="Every Git source preparation is recorded, including failed checkouts and cached builds. Image pulls do not create builds."
+            description="Every Git source preparation and job run is recorded, including failed checkouts and cached builds. Image pulls do not create builds."
         />
         <BuildHistory />
     }

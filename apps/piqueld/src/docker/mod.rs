@@ -85,19 +85,44 @@ mod secrets;
 mod spec;
 pub use errors::DockerError;
 
-/// Progress of a started one-shot job.
+/// Progress of one operation's run of a one-shot job.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JobStatus {
-    /// The job's task has not finished.
+    /// The operation has no run of the job; any run of another operation is ignored.
+    Missing,
+    /// The run has not finished.
     Running,
-    /// The job's task finished. The exit code is absent when Docker rejected or
-    /// stopped the task without reporting one.
+    /// The run finished.
     Finished {
-        /// Container exit code.
+        /// Container exit code, absent when Docker rejected or stopped the task
+        /// without reporting one.
         exit_code: Option<i64>,
-        /// Bounded container output in capture order.
-        output: Vec<(piqueld_core::api::LogStream, Vec<u8>)>,
+        /// Docker's explanation when the task did not complete successfully.
+        error: Option<String>,
     },
+}
+
+/// Selects job services by the operation that started them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JobRuns<'a> {
+    /// Every job run of the application.
+    All,
+    /// Runs started by this operation.
+    Of(&'a str),
+    /// Runs started by any other operation.
+    Except(&'a str),
+}
+
+impl JobRuns<'_> {
+    /// Returns whether a run started by `operation` is selected.
+    #[must_use]
+    pub fn selects(self, operation: Option<&str>) -> bool {
+        match self {
+            Self::All => true,
+            Self::Of(selected) => operation == Some(selected),
+            Self::Except(kept) => operation != Some(kept),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -187,19 +212,26 @@ pub trait DockerApi: Send + Sync + 'static {
         name: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError>;
-    /// Starts a one-shot job, replacing a finished or abandoned run of the same job.
-    async fn start_job(&self, _job: &piqueld_core::DesiredJob) -> Result<(), DockerError> {
-        Err(DockerError::Unavailable("job start"))
-    }
-    /// Reads a started job's progress, including its output once it finished.
-    async fn job_status(&self, _job: &piqueld_core::DesiredJob) -> Result<JobStatus, DockerError> {
-        Err(DockerError::Unavailable("job status"))
-    }
-    /// Removes every job service owned by an application. Observation never
-    /// reports jobs, so this is the only cleanup path for their services.
-    async fn remove_jobs(&self, _ownership: &BTreeMap<String, String>) -> Result<(), DockerError> {
-        Ok(())
-    }
+    /// Starts the run of `job`, which carries its operation label. Any other
+    /// run of the same job is removed first, and its container has stopped
+    /// before the new run is created, so two runs never overlap.
+    async fn start_job(&self, job: &piqueld_core::DesiredJob) -> Result<(), DockerError>;
+    /// Reads the progress of the run of `job` by its operation.
+    async fn job_status(&self, job: &piqueld_core::DesiredJob) -> Result<JobStatus, DockerError>;
+    /// Reads the run's bounded output so far, merging consecutive chunks of
+    /// the same stream.
+    async fn job_output(
+        &self,
+        job: &piqueld_core::DesiredJob,
+    ) -> Result<Vec<(piqueld_core::api::LogStream, Vec<u8>)>, DockerError>;
+    /// Removes the selected job services owned by an application, stopping
+    /// their runs. Observation never reports jobs, so this is the only cleanup
+    /// path for their services.
+    async fn remove_jobs(
+        &self,
+        ownership: &BTreeMap<String, String>,
+        runs: JobRuns<'_>,
+    ) -> Result<(), DockerError>;
     /// Removes a managed private network after rechecking its ownership.
     async fn remove_network(
         &self,

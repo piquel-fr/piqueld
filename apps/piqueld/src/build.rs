@@ -46,6 +46,7 @@ impl BuildLog {
     pub(crate) async fn commit(&self, commit: &str) -> Result<(), StoreError> {
         self.store.build_commit(self.id, commit).await
     }
+    /// Records a finished job run's exit code.
     pub(crate) async fn exit_code(&self, code: i64) -> Result<(), StoreError> {
         self.store.build_exit_code(self.id, code).await
     }

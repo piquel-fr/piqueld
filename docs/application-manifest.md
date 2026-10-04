@@ -326,19 +326,25 @@ timeout_seconds = 300        # default
 
 A job reuses the prepared image, environment, secret files, volume mounts,
 resource limits, and private network of the referenced service in the same
-deployment. Its `command` replaces the service's command and arguments; health
-checks do not apply. `before-rollout` is currently the only run point: jobs run
-in declared order after every source is prepared and before the deployment is
-promoted or changes any service. Missing networks and volumes are created first.
-Because services have not changed yet, a first deployment's jobs cannot reach
-services that the same deployment creates.
+deployment. Its `command` replaces the service's command and arguments. Health
+checks do not apply, including an image's `HEALTHCHECK`, and a job does not
+answer for the service's network name. `before-rollout` is currently the only
+run point: jobs run in declared order after every source is prepared and before
+the deployment is promoted or changes any service. Missing networks and volumes
+are created first, and a deployment whose plan is blocked runs no jobs. Because
+services have not changed yet, a first deployment's jobs cannot reach services
+that the same deployment creates.
 
 A non-zero exit, a rejected task, or exceeding `timeout_seconds` (1–86,400) fails
 the deployment with `job_failed` or `job_timeout`. The previous target keeps
-running and failed jobs are not retried automatically; deploy again after
-fixing the cause. Jobs run once per deployment: retrying a promoted deployment
-or repairing drift never runs them again. Each run and its bounded output is
-kept in the application's build history.
+running, the application stays degraded, and failed jobs are not retried
+automatically; deploy again after fixing the cause. Each job succeeds at most
+once per deployment: a retried deployment skips jobs that already succeeded,
+and after a daemon restart a still-running job is resumed rather than started
+again, with a fresh timeout. Retrying a promoted deployment or repairing drift
+never runs jobs. A deployment that is superseded or cancelled stops its running
+job. Each run, its bounded output, and Docker's explanation of a failed task
+are kept in the application's build history.
 
 ## Public routes
 

@@ -29,6 +29,8 @@ pub const SERVICE_LABEL: &str = "io.piqueld.service";
 pub const SPEC_HASH_LABEL: &str = "io.piqueld.spec-hash";
 /// Label carrying the logical job identity of a one-shot job service.
 pub const JOB_LABEL: &str = "io.piqueld.job";
+/// Label carrying the operation that started a one-shot job run.
+pub const JOB_OPERATION_LABEL: &str = "io.piqueld.job-operation";
 
 validated_string!(
     /// Stable control-plane instance identity.
@@ -456,6 +458,26 @@ impl DesiredJob {
             && labels.get(JOB_LABEL).map(String::as_str) == Some(self.logical_name.as_str())
             && self.container.name == DockerServiceName::for_job(&application, &self.logical_name)
     }
+
+    /// Returns this job's run for `operation`. The label lets a retried or
+    /// restarted operation find and resume its own run instead of starting over.
+    #[must_use]
+    pub fn for_operation(&self, operation: &str) -> Self {
+        let mut run = self.clone();
+        run.container
+            .labels
+            .insert(JOB_OPERATION_LABEL.into(), operation.into());
+        run
+    }
+
+    /// Operation that started this run, when it was created by `for_operation`.
+    #[must_use]
+    pub fn operation(&self) -> Option<&str> {
+        self.container
+            .labels
+            .get(JOB_OPERATION_LABEL)
+            .map(String::as_str)
+    }
 }
 
 /// Desired state for an application and its resources.
@@ -645,8 +667,9 @@ pub struct CompileError {
 ///
 /// # Panics
 ///
-/// Panics only if the domain hasher produced a malformed spec hash or a
-/// validated resolution is missing, both of which indicate internal bugs.
+/// Panics only if the domain hasher produced a malformed spec hash, a
+/// validated resolution is missing, or a validated job references an
+/// undeclared service, all of which indicate internal bugs.
 pub fn compile_application(
     app: &NormalizedApplication,
     instance_id: InstanceId,
